@@ -1,0 +1,529 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <time.h>
+#include <ctype.h>
+
+#include "kernel.h"
+
+enum
+{
+  FILER_SWI_LOGGING = 0,
+  FILER_SWI_USERDB
+};
+
+enum
+{
+  FILER_USERDB_CMD_ADD = 0,
+  FILER_USERDB_CMD_UPDATE,
+  FILER_USERDB_CMD_DELETE,
+  FILER_USERDB_CMD_SEARCH
+};
+
+#define MAX_USERNAME 32
+#define MAX_REALNAME 64
+#define MAX_EMAIL 64
+#define MAX_PASSWORD 32
+#define MAX_KEYS 128
+#define MAX_DIR 256
+#define MAX_NAME 64
+#define MAX_DESC 256
+
+typedef struct
+{
+  int deleted;
+  int ansi;
+  int more;
+  int lines;
+  int cls;
+  int sysop;
+  int cli;
+  int registered;
+  int expert;
+  int lockedout;
+  int nolimit;
+  int invisible;
+  int userdir;
+  int chataccess;
+  int resettime;
+  int accesslevel;
+  int ratios;
+  int maxtime;
+} USER_FLAGS;
+
+typedef struct
+{
+  time_t lastlogon;
+  time_t lastscan;
+  int calls;
+  int todaytime;
+  int uploadskb;
+  int downloadskb;
+  int uploads;
+  int downloads;
+} USER_STATS;
+
+typedef struct
+{
+  int messagebase;
+  int filebase;
+} USER_HISTORY;
+
+typedef struct
+{
+  int id;
+  char username[MAX_USERNAME];
+  char realname[MAX_REALNAME];
+  char email[MAX_EMAIL];
+  char password[MAX_PASSWORD];
+  char keys[MAX_KEYS];
+  char userdir[MAX_DIR];
+  USER_FLAGS user_flags;
+  USER_HISTORY user_history;
+  USER_STATS user_stats;
+} USER_RECORD;
+
+#define CONVERSE_FILER_BASE 0x16F00
+#define SWI_CONVERSE_FILER_USERBASE (CONVERSE_FILER_BASE + FILER_SWI_USERDB)
+
+static const char *program_leaf(const char *path)
+{
+  const char *leaf = path;
+  const char *scan = path;
+
+  if (path == NULL)
+  {
+    return "userdb";
+  }
+
+  while (*scan != '\0')
+  {
+    if (*scan == '.' || *scan == '/' || *scan == '\\' || *scan == ':')
+    {
+      leaf = scan + 1;
+    }
+    ++scan;
+  }
+
+  return (*leaf != '\0') ? leaf : path;
+}
+
+static void usage(const char *invocation)
+{
+  const char *prog = program_leaf(invocation);
+  fprintf(stderr,
+          "Usage:\n"
+          "  %s add <username> <realname> <email>\n"
+          "  %s search <id>\n"
+          "  %s delete <id>\n"
+          "  %s update-email <id> <email>\n"
+          "  %s update-password <id> <password>\n"
+          "  %s set-sysop <id> <on|off>\n",
+          prog,
+          prog,
+          prog,
+          prog,
+          prog,
+          prog);
+}
+
+static int equals_ignore_case(const char *lhs, const char *rhs)
+{
+  if (lhs == NULL || rhs == NULL)
+  {
+    return 0;
+  }
+
+  while (*lhs != '\0' && *rhs != '\0')
+  {
+    if (tolower((unsigned char)*lhs) != tolower((unsigned char)*rhs))
+    {
+      return 0;
+    }
+    ++lhs;
+    ++rhs;
+  }
+
+  return *lhs == '\0' && *rhs == '\0';
+}
+
+static int parse_on_off(const char *text, int *value_out)
+{
+  if (text == NULL || value_out == NULL)
+  {
+    return 0;
+  }
+
+  if (equals_ignore_case(text, "on") || equals_ignore_case(text, "enable") || strcmp(text, "1") == 0)
+  {
+    *value_out = 1;
+    return 1;
+  }
+
+  if (equals_ignore_case(text, "off") || equals_ignore_case(text, "disable") || strcmp(text, "0") == 0)
+  {
+    *value_out = 0;
+    return 1;
+  }
+
+  return 0;
+}
+
+static void copy_field(char *dest, size_t dest_bytes, const char *src)
+{
+  if (dest == NULL || dest_bytes == 0)
+  {
+    return;
+  }
+
+  dest[0] = '\0';
+  if (src == NULL)
+  {
+    return;
+  }
+
+  strncpy(dest, src, dest_bytes - 1);
+  dest[dest_bytes - 1] = '\0';
+}
+
+static _kernel_oserror *filer_userdb_add(USER_RECORD *record, int *assigned_id)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_ADD;
+  regs.r[1] = (int)(uintptr_t)record;
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_FILER_USERBASE, &regs, &regs);
+  if (!error && assigned_id)
+  {
+    *assigned_id = regs.r[0];
+  }
+  return error;
+}
+
+static _kernel_oserror *filer_userdb_update(int user_id, USER_RECORD *record, int *result)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_UPDATE;
+  regs.r[1] = user_id;
+  regs.r[2] = (int)(uintptr_t)record;
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_FILER_USERBASE, &regs, &regs);
+  if (!error && result)
+  {
+    *result = regs.r[0];
+  }
+  return error;
+}
+
+static _kernel_oserror *filer_userdb_delete(int user_id, int *result)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_DELETE;
+  regs.r[1] = user_id;
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_FILER_USERBASE, &regs, &regs);
+  if (!error && result)
+  {
+    *result = regs.r[0];
+  }
+  return error;
+}
+
+static _kernel_oserror *filer_userdb_search(int user_id, USER_RECORD **record_out)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_SEARCH;
+  regs.r[1] = user_id;
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_FILER_USERBASE, &regs, &regs);
+  if (!error && record_out)
+  {
+    *record_out = (USER_RECORD *)regs.r[0];
+  }
+  return error;
+}
+
+static void print_record(const USER_RECORD *record)
+{
+  if (record == NULL)
+  {
+    puts("Record pointer is NULL.");
+    return;
+  }
+
+  printf("User #%d\n", record->id);
+  printf("  Username : %s\n", record->username);
+  printf("  Real name: %s\n", record->realname);
+  printf("  Email    : %s\n", record->email);
+  printf("  Flags    : sysop=%d cli=%d registered=%d invisible=%d\n",
+         record->user_flags.sysop,
+         record->user_flags.cli,
+         record->user_flags.registered,
+         record->user_flags.invisible);
+}
+
+static void seed_defaults(USER_RECORD *record)
+{
+  memset(record, 0, sizeof(*record));
+  record->user_flags.registered = 1;
+  record->user_flags.cli = 1;
+  record->user_flags.more = 1;
+  record->user_flags.lines = 24;
+  record->user_stats.calls = 0;
+  record->user_stats.todaytime = 0;
+}
+
+int main(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    usage(argv[0]);
+    return 1;
+  }
+
+  if (strcmp(argv[1], "add") == 0)
+  {
+    USER_RECORD record;
+    int new_id = 0;
+    _kernel_oserror *error;
+
+    if (argc < 5)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    seed_defaults(&record);
+    copy_field(record.username, sizeof(record.username), argv[2]);
+    copy_field(record.realname, sizeof(record.realname), argv[3]);
+    copy_field(record.email, sizeof(record.email), argv[4]);
+    copy_field(record.password, sizeof(record.password), "password");
+    copy_field(record.keys, sizeof(record.keys), "A");
+
+    error = filer_userdb_add(&record, &new_id);
+    if (error)
+    {
+      fprintf(stderr, "Add failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (new_id <= 0)
+    {
+      fprintf(stderr, "Add failed: module returned %d\n", new_id);
+      return 1;
+    }
+
+    printf("Created user #%d\n", new_id);
+    return 0;
+  }
+  else if (strcmp(argv[1], "search") == 0)
+  {
+    USER_RECORD *record = NULL;
+    _kernel_oserror *error;
+    int user_id;
+
+    if (argc < 3)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    user_id = atoi(argv[2]);
+    error = filer_userdb_search(user_id, &record);
+    if (error)
+    {
+      fprintf(stderr, "Search failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (record == NULL)
+    {
+      printf("User #%d not found.\n", user_id);
+      return 1;
+    }
+
+    print_record(record);
+    return 0;
+  }
+  else if (strcmp(argv[1], "delete") == 0)
+  {
+    _kernel_oserror *error;
+    int user_id;
+    int result = 0;
+
+    if (argc < 3)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    user_id = atoi(argv[2]);
+    error = filer_userdb_delete(user_id, &result);
+    if (error)
+    {
+      fprintf(stderr, "Delete failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (result != 1)
+    {
+      printf("User #%d not deleted (result=%d).\n", user_id, result);
+      return 1;
+    }
+
+    printf("Deleted user #%d\n", user_id);
+    return 0;
+  }
+  else if (strcmp(argv[1], "update-email") == 0)
+  {
+    USER_RECORD *remote = NULL;
+    USER_RECORD updated;
+    _kernel_oserror *error;
+    int user_id;
+    int result = 0;
+
+    if (argc < 4)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    user_id = atoi(argv[2]);
+    error = filer_userdb_search(user_id, &remote);
+    if (error)
+    {
+      fprintf(stderr, "Search failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (remote == NULL)
+    {
+      printf("User #%d not found.\n", user_id);
+      return 1;
+    }
+
+    memcpy(&updated, remote, sizeof(updated));
+    copy_field(updated.email, sizeof(updated.email), argv[3]);
+
+    error = filer_userdb_update(user_id, &updated, &result);
+    if (error)
+    {
+      fprintf(stderr, "Update failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (result != 1)
+    {
+      printf("Update returned %d\n", result);
+      return 1;
+    }
+
+    printf("Updated user #%d email to %s\n", user_id, updated.email);
+    return 0;
+  }
+  else if (strcmp(argv[1], "update-password") == 0)
+  {
+    USER_RECORD *remote = NULL;
+    USER_RECORD updated;
+    _kernel_oserror *error;
+    int user_id;
+    int result = 0;
+
+    if (argc < 4)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    user_id = atoi(argv[2]);
+    error = filer_userdb_search(user_id, &remote);
+    if (error)
+    {
+      fprintf(stderr, "Search failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (remote == NULL)
+    {
+      printf("User #%d not found.\n", user_id);
+      return 1;
+    }
+
+    memcpy(&updated, remote, sizeof(updated));
+    copy_field(updated.password, sizeof(updated.password), argv[3]);
+
+    error = filer_userdb_update(user_id, &updated, &result);
+    if (error)
+    {
+      fprintf(stderr, "Update failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (result != 1)
+    {
+      printf("Update returned %d\n", result);
+      return 1;
+    }
+
+    printf("Updated user #%d password.\n", user_id);
+    return 0;
+  }
+  else if (strcmp(argv[1], "set-sysop") == 0)
+  {
+    USER_RECORD *remote = NULL;
+    USER_RECORD updated;
+    _kernel_oserror *error;
+    int user_id;
+    int result = 0;
+    int new_state = 0;
+
+    if (argc < 4)
+    {
+      usage(argv[0]);
+      return 1;
+    }
+
+    if (!parse_on_off(argv[3], &new_state))
+    {
+      fprintf(stderr, "Invalid sysop state '%s'. Use on/off.\n", argv[3]);
+      return 1;
+    }
+
+    user_id = atoi(argv[2]);
+    error = filer_userdb_search(user_id, &remote);
+    if (error)
+    {
+      fprintf(stderr, "Search failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (remote == NULL)
+    {
+      printf("User #%d not found.\n", user_id);
+      return 1;
+    }
+
+    memcpy(&updated, remote, sizeof(updated));
+    updated.user_flags.sysop = new_state;
+
+    error = filer_userdb_update(user_id, &updated, &result);
+    if (error)
+    {
+      fprintf(stderr, "Update failed: %s\n", error->errmess);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (result != 1)
+    {
+      printf("Update returned %d\n", result);
+      return 1;
+    }
+
+    printf("User #%d sysop flag set to %s.\n", user_id, new_state ? "on" : "off");
+    return 0;
+  }
+
+  usage(argv[0]);
+  return 1;
+}

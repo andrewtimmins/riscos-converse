@@ -1,0 +1,24 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LOGGING_H
+#define LOGGING_H
+
+#define SYSTEMLOG "<Converse$Dir>.Logs.System"
+#define CALLLOG "<Converse$Dir>.Logs.Calls"
+#define LINELOG "<Converse$Dir>.Logs.Line_"
+#define FTNLOG "<Converse$Dir>.Logs.FTN"
+
+#include "structs.h"
+
+void log_header(int log_type);
+void log_footer(int log_type);
+void log_line_header(int line_id);
+void log_line_footer(int line_id);
+void log_system(char *log_entry);
+void log_call(int line_id, int user_id, int status_id);
+void log_line(int line_id, char *log_entry);
+void log_ftn(char *log_entry);
+
+#endif

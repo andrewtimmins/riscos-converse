@@ -1,0 +1,15 @@
+{
+    "files.associations": {
+        "userdb": "c",
+        "structs": "c",
+        "database": "c",
+        "typeinfo": "c",
+        "logging": "c",
+        "filer": "c",
+        "test": "c",
+        "switest": "c",
+        "stdbool.h": "c",
+        "time.h": "c",
+        "string.h": "c"
+    }
+}

@@ -1,0 +1,33 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FILEBASE_H
+#define FILEBASE_H
+
+#include "kernel.h"
+
+#include "structs.h"
+
+#define FILEBASE_RESOURCE_DIR "<Converse$Dir>.Resources"
+#define FILEBASE_DB_PATH "<Converse$Dir>.Resources.Data.FileDB"
+#define FILEBASE_DB_TEMP_PATH "<Converse$Dir>.Resources.Data.FileDBTmp"
+#define FILEBASE_IDX_PATH "<Converse$Dir>.Resources.Data.FileIDX"
+#define FILEBASE_ROOT_DIR "<Converse$Dir>.FileBases"
+
+int filebase_initialise(void);
+void filebase_finalise(void);
+void filebase_swi_handler(_kernel_swi_regs *r);
+
+int filebase_count_bases(int *count_out, long *db_size_out);
+int filebase_peek_next_base_id(int *next_id_out, long *idx_size_out);
+int filebase_collect_file_stats(int *file_count_out, long *bytes_out);
+int filebase_iterate_bases(int (*callback)(const FILEBASE_RECORD *record, void *context), void *context);
+int filebase_iterate_areas(int base_id, int (*callback)(const FILEBASE_AREA_RECORD *record, void *context), void *context);
+int filebase_iterate_files(int base_id, int (*callback)(const FILE_RECORD *record, void *context), void *context);
+int filebase_get_file_record(int base_id, int file_id, FILE_RECORD *record_out);
+int filebase_save_file_record(int base_id, const FILE_RECORD *record);
+int filebase_delete_file(int base_id, int file_id, int remove_payload);
+int filebase_upload_from_host(int base_id, int area_id, const char *host_path, const char *name, const char *description, int uploaded_by);
+
+#endif

@@ -1,0 +1,2549 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <stdarg.h>
+#include <time.h>
+
+#include "script.h"
+
+#define SCRIPT_DEFAULT_INSTRUCTION_CAPACITY 32
+#define SCRIPT_DEFAULT_LABEL_CAPACITY 16
+#define SCRIPT_DEFAULT_VARIABLE_CAPACITY 8
+#define SCRIPT_INPUT_BUFFER_CHUNK 64
+#define SCRIPT_LITERAL_BUFFER_CHUNK 256
+
+typedef struct script_buffer
+{
+    char *data;
+    size_t length;
+    size_t capacity;
+} script_buffer;
+
+typedef int (*script_text_handler)(script_state *state, const char *text, size_t length, int line_number, void *context);
+typedef int (*script_command_handler)(script_state *state, const char *command_text, int line_number, void *context);
+
+static void script_clear_program(script_state *state);
+static void script_clear_variables(script_state *state);
+static int script_load_file(script_state *state, const char *path);
+static int script_parse_line(script_state *state, const char *line, int line_number);
+static int script_build_instruction(script_state *state, char *line, int line_number, script_instruction *instruction);
+static char *script_duplicate_string(const char *source);
+static char *script_duplicate_range(const char *source, size_t length);
+static int script_append_instruction(script_state *state, script_instruction *instr);
+static int script_register_label(script_state *state, const char *name);
+static void script_execute_instruction(script_state *state, script_instruction *instruction);
+static void script_expand_macros(script_state *state, const char *input, char *buffer, size_t length);
+static int script_expand_macros_to_buffer(script_state *state, const char *input, script_buffer *buffer, int translate_newlines);
+static int script_emit_macro_replacement(script_state *state, const char *macro_name, script_buffer *buffer);
+static void script_translate_escapes(char *text);
+static void script_set_error(script_state *state, const char *fmt, ...);
+static void script_reset_input(script_state *state);
+static void script_write_output(script_state *state, const char *text);
+static void script_set_variable_value(script_state *state, const char *name, const char *value);
+static const char *script_get_variable_value(const script_state *state, const char *name);
+static int script_parse_backtick_string(const char *input, size_t *consumed, char **output);
+static char *script_trim(char *text);
+static int script_is_empty_or_comment(const char *line);
+static void script_free_instruction(script_instruction *instruction);
+static void script_free_label(script_label *label);
+static void script_free_variable(script_variable *variable);
+static clock_t script_calculate_sleep_deadline(unsigned int milliseconds);
+static int script_stringcasecmp(const char *lhs, const char *rhs);
+static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg);
+static void script_send_clear_screen(script_state *state);
+static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
+static void script_display_file(script_state *state, const char *source);
+static void script_buffer_init(script_buffer *buffer);
+static void script_buffer_free(script_buffer *buffer);
+static void script_buffer_clear(script_buffer *buffer);
+static int script_buffer_append_char(script_buffer *buffer, char ch);
+static int script_buffer_append_string(script_buffer *buffer, const char *text);
+static void script_buffer_trim_trailing_whitespace(script_buffer *buffer);
+static int script_buffer_has_embedded_blocks(const char *buffer, size_t length);
+static int script_parse_plain_lines(script_state *state, const char *buffer);
+static int script_append_print_literal(script_state *state, const char *text, size_t length);
+static int script_execute_inline_command(script_state *state, const char *command_text, int line_number);
+static int script_skip_comment(script_state *state, const char *buffer, size_t length, size_t *index, int *line_number, const char *source_name);
+static int script_process_embedded_block(script_state *state, const char *buffer, size_t length, size_t *index, int *line_number, const char *source_name, script_command_handler command_handler, void *context);
+static int script_process_embedded_content(script_state *state, const char *buffer, size_t length, const char *source_name, script_text_handler text_handler, script_command_handler command_handler, void *context);
+static int script_handle_embedded_text_as_instruction(script_state *state, const char *text, size_t length, int line_number, void *context);
+static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context);
+static int script_handle_embedded_text_as_output(script_state *state, const char *text, size_t length, int line_number, void *context);
+static int script_handle_embedded_command_as_output(script_state *state, const char *command_text, int line_number, void *context);
+
+void script_initialise(script_state *state, const script_host *host)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    memset(state, 0, sizeof(*state));
+
+    if (host != NULL)
+    {
+        state->host = *host;
+    }
+
+    state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+    state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+
+    state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
+    state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+
+    state->variable_capacity = SCRIPT_DEFAULT_VARIABLE_CAPACITY;
+    state->variables = (script_variable *)calloc(state->variable_capacity, sizeof(script_variable));
+
+    state->input_capacity = SCRIPT_INPUT_BUFFER_CHUNK;
+    state->input_buffer = (char *)malloc(state->input_capacity);
+    if (state->input_buffer != NULL)
+    {
+        state->input_buffer[0] = '\0';
+    }
+
+    state->status = SCRIPT_STATUS_IDLE;
+}
+
+void script_dispose(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    script_clear_program(state);
+    script_clear_variables(state);
+
+    free(state->instructions);
+    state->instructions = NULL;
+    state->instruction_count = 0;
+    state->instruction_capacity = 0;
+
+    for (size_t i = 0; i < state->label_count; ++i)
+    {
+        script_free_label(&state->labels[i]);
+    }
+    free(state->labels);
+    state->labels = NULL;
+    state->label_count = 0;
+    state->label_capacity = 0;
+
+    free(state->input_buffer);
+    state->input_buffer = NULL;
+    state->input_capacity = 0;
+    state->input_length = 0;
+
+    memset(state, 0, sizeof(*state));
+}
+
+int script_start(script_state *state, const char *path)
+{
+    if (state == NULL)
+    {
+        return 0;
+    }
+
+    script_stop(state);
+
+    if (path == NULL)
+    {
+        script_set_error(state, "No script path specified");
+        state->status = SCRIPT_STATUS_ERROR;
+        return 0;
+    }
+
+    if (!script_load_file(state, path))
+    {
+        state->status = SCRIPT_STATUS_ERROR;
+        return 0;
+    }
+
+    state->program_counter = 0;
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_reset_input(state);
+    return 1;
+}
+
+void script_stop(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    script_clear_program(state);
+    script_clear_variables(state);
+    state->program_counter = 0;
+    state->status = SCRIPT_STATUS_IDLE;
+    script_reset_input(state);
+}
+
+void script_process(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_SLEEP)
+    {
+        if ((clock_t)clock() >= state->sleep_deadline)
+        {
+            state->status = SCRIPT_STATUS_RUNNING;
+        }
+    }
+
+    while (state->status == SCRIPT_STATUS_RUNNING && state->program_counter < state->instruction_count)
+    {
+        script_instruction *instruction = &state->instructions[state->program_counter];
+        state->program_counter++;
+        script_execute_instruction(state, instruction);
+    }
+
+    if (state->status == SCRIPT_STATUS_RUNNING && state->program_counter >= state->instruction_count)
+    {
+        state->status = SCRIPT_STATUS_COMPLETED;
+    }
+}
+
+int script_handle_user_byte(script_state *state, unsigned char byte)
+{
+    if (state == NULL)
+    {
+        return 0;
+    }
+
+    if (state->status != SCRIPT_STATUS_WAIT_INPUT_CHAR && state->status != SCRIPT_STATUS_WAIT_INPUT_LINE)
+    {
+        return 0;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_INPUT_CHAR)
+    {
+        if (byte == '\r' || byte == '\n')
+        {
+            return 1;
+        }
+
+        state->input_buffer[0] = (char)byte;
+        state->input_buffer[1] = '\0';
+        state->input_length = 1;
+
+        if (state->input_echo && state->host.write_text != NULL)
+        {
+            char echo[4];
+            echo[0] = (char)byte;
+            echo[1] = '\r';
+            echo[2] = '\n';
+            echo[3] = '\0';
+            state->host.write_text(state->host.context, echo);
+        }
+
+        script_set_variable_value(state, state->input_target, state->input_buffer);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_INPUT_LINE)
+    {
+        if (byte == '\r')
+        {
+            return 1;
+        }
+
+        if (byte == '\n')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->input_echo && state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+            script_set_variable_value(state, state->input_target, state->input_buffer);
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        }
+
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        if (state->input_echo && state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+void script_notify_door_closed(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_DOOR)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+    }
+}
+
+script_status script_get_status(const script_state *state)
+{
+    if (state == NULL)
+    {
+        return SCRIPT_STATUS_ERROR;
+    }
+
+    return state->status;
+}
+
+static void script_clear_program(script_state *state)
+{
+    if (state->instructions != NULL)
+    {
+        for (size_t i = 0; i < state->instruction_count; ++i)
+        {
+            script_free_instruction(&state->instructions[i]);
+        }
+    }
+
+    state->instruction_count = 0;
+
+    if (state->labels != NULL)
+    {
+        for (size_t i = 0; i < state->label_count; ++i)
+        {
+            script_free_label(&state->labels[i]);
+        }
+    }
+    state->label_count = 0;
+}
+
+static void script_clear_variables(script_state *state)
+{
+    if (state->variables != NULL)
+    {
+        for (size_t i = 0; i < state->variable_count; ++i)
+        {
+            script_free_variable(&state->variables[i]);
+        }
+    }
+    state->variable_count = 0;
+}
+
+static int script_load_file(script_state *state, const char *path)
+{
+    FILE *fp;
+    long file_size;
+    size_t length;
+    char *buffer = NULL;
+    int result = 0;
+
+    script_clear_program(state);
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        script_set_error(state, "Unable to open %s", path);
+        return 0;
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0)
+    {
+        fclose(fp);
+        script_set_error(state, "Unable to seek %s", path);
+        return 0;
+    }
+
+    file_size = ftell(fp);
+    if (file_size < 0)
+    {
+        fclose(fp);
+        script_set_error(state, "Unable to determine size of %s", path);
+        return 0;
+    }
+
+    if (fseek(fp, 0, SEEK_SET) != 0)
+    {
+        fclose(fp);
+        script_set_error(state, "Unable to rewind %s", path);
+        return 0;
+    }
+
+    length = (size_t)file_size;
+    buffer = (char *)malloc(length + 1);
+    if (buffer == NULL)
+    {
+        fclose(fp);
+        script_set_error(state, "Out of memory loading %s", path);
+        return 0;
+    }
+
+    if (length > 0 && fread(buffer, 1, length, fp) != length)
+    {
+        free(buffer);
+        fclose(fp);
+        script_set_error(state, "Failed to read %s", path);
+        return 0;
+    }
+
+    buffer[length] = '\0';
+    fclose(fp);
+
+    if (script_buffer_has_embedded_blocks(buffer, length))
+    {
+        result = script_process_embedded_content(state, buffer, length, path, script_handle_embedded_text_as_instruction, script_handle_embedded_command_as_instruction, NULL);
+    }
+    else
+    {
+        result = script_parse_plain_lines(state, buffer);
+    }
+
+    free(buffer);
+
+    if (!result)
+    {
+        script_clear_program(state);
+    }
+
+    return result;
+}
+
+static int script_parse_line(script_state *state, const char *line, int line_number)
+{
+    char *line_copy;
+    char *trimmed;
+    size_t len;
+    script_instruction instruction;
+
+    if (line == NULL)
+    {
+        return 1;
+    }
+
+    line_copy = script_duplicate_string(line);
+    if (line_copy == NULL)
+    {
+        script_set_error(state, "Out of memory parsing line %d", line_number);
+        return 0;
+    }
+
+    trimmed = script_trim(line_copy);
+    if (*trimmed == '\0' || script_is_empty_or_comment(trimmed))
+    {
+        free(line_copy);
+        return 1;
+    }
+
+    len = strlen(trimmed);
+    if (len > 0 && trimmed[len - 1] == ':')
+    {
+        trimmed[len - 1] = '\0';
+        trimmed = script_trim(trimmed);
+        if (!script_register_label(state, trimmed))
+        {
+            script_set_error(state, "Unable to register label on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        free(line_copy);
+        return 1;
+    }
+
+    memset(&instruction, 0, sizeof(instruction));
+    if (!script_build_instruction(state, trimmed, line_number, &instruction))
+    {
+        free(line_copy);
+        return 0;
+    }
+
+    free(line_copy);
+
+    if (instruction.type == SCRIPT_CMD_NONE)
+    {
+        return 1;
+    }
+
+    if (!script_append_instruction(state, &instruction))
+    {
+        script_free_instruction(&instruction);
+        script_set_error(state, "Too many instructions (line %d)", line_number);
+        return 0;
+    }
+
+    return 1;
+}
+
+static int script_build_instruction(script_state *state, char *line, int line_number, script_instruction *instruction)
+{
+    char *token;
+
+    if (line == NULL || instruction == NULL)
+    {
+        return 0;
+    }
+
+    instruction->type = SCRIPT_CMD_NONE;
+
+    token = strtok(line, " \t");
+    if (token == NULL)
+    {
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "label") == 0)
+    {
+        char *label_name = strtok(NULL, " \t");
+        if (label_name == NULL)
+        {
+            script_set_error(state, "Missing label name on line %d", line_number);
+            return 0;
+        }
+        if (!script_register_label(state, script_trim(label_name)))
+        {
+            script_set_error(state, "Unable to register label on line %d", line_number);
+            return 0;
+        }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "print") == 0)
+    {
+        char *rest = strtok(NULL, "");
+        instruction->type = SCRIPT_CMD_PRINT;
+        if (rest == NULL)
+        {
+            instruction->arg1 = script_duplicate_string("\r\n");
+        }
+        else
+        {
+            size_t consumed = 0;
+            char *value = NULL;
+            if (script_parse_backtick_string(rest, &consumed, &value))
+            {
+                instruction->arg1 = value;
+            }
+            else
+            {
+                instruction->arg1 = script_duplicate_string(script_trim(rest));
+            }
+        }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "goto") == 0)
+    {
+        char *label = strtok(NULL, " \t");
+        if (label == NULL)
+        {
+            script_set_error(state, "Missing label for goto on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_GOTO;
+        instruction->arg1 = script_duplicate_string(label);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "prompt") == 0)
+    {
+        char *var = strtok(NULL, " \t");
+        char *mode = strtok(NULL, " \t");
+        char *echo = strtok(NULL, " \t");
+        instruction->type = SCRIPT_CMD_PROMPT;
+        instruction->arg1 = script_duplicate_string(var != NULL ? var : "selection");
+        instruction->arg2 = script_duplicate_string(mode != NULL ? mode : "char");
+        instruction->arg3 = script_duplicate_string(echo != NULL ? echo : "echo");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "if") == 0)
+    {
+        char *variable = strtok(NULL, " \t");
+        char *op = strtok(NULL, " \t");
+        char *value_part = strtok(NULL, "");
+        char *goto_keyword;
+        char *label_name;
+        char *value_string = NULL;
+
+        if (variable == NULL || op == NULL || value_part == NULL)
+        {
+            script_set_error(state, "Malformed if statement on line %d", line_number);
+            return 0;
+        }
+
+        value_part = script_trim(value_part);
+        goto_keyword = strstr(value_part, "goto");
+        if (goto_keyword == NULL)
+        {
+            script_set_error(state, "If without goto on line %d", line_number);
+            return 0;
+        }
+
+        *goto_keyword = '\0';
+        goto_keyword += 4;
+        goto_keyword = script_trim(goto_keyword);
+        label_name = goto_keyword;
+
+        {
+            size_t consumed = 0;
+            if (!script_parse_backtick_string(value_part, &consumed, &value_string))
+            {
+                value_string = script_duplicate_string(script_trim(value_part));
+            }
+        }
+
+        instruction->type = SCRIPT_CMD_IF;
+        instruction->arg1 = script_duplicate_string(variable);
+        instruction->arg2 = script_duplicate_string(op);
+        instruction->arg3 = value_string;
+        instruction->arg4 = script_duplicate_string(label_name);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "set") == 0)
+    {
+        char *var_name = strtok(NULL, " \t");
+        char *value_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+        if (var_name == NULL || value_text == NULL)
+        {
+            script_set_error(state, "Malformed set on line %d", line_number);
+            return 0;
+        }
+        if (!script_parse_backtick_string(value_text, &consumed, &value_string))
+        {
+            value_string = script_duplicate_string(script_trim(value_text));
+        }
+        instruction->type = SCRIPT_CMD_SET;
+        instruction->arg1 = script_duplicate_string(var_name);
+        instruction->arg2 = value_string;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "call") == 0)
+    {
+        char *action = strtok(NULL, " \t");
+        char *arg_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_CALL;
+        instruction->arg1 = script_duplicate_string(action != NULL ? action : "");
+
+        if (arg_text != NULL)
+        {
+            arg_text = script_trim(arg_text);
+            if (!script_parse_backtick_string(arg_text, &consumed, &value_string))
+            {
+                value_string = script_duplicate_string(arg_text);
+            }
+            instruction->arg2 = value_string;
+        }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "doing") == 0)
+    {
+        char *text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_DOING;
+
+        if (text != NULL)
+        {
+            text = script_trim(text);
+            if (!script_parse_backtick_string(text, &consumed, &value_string))
+            {
+                value_string = script_duplicate_string(text);
+            }
+            instruction->arg1 = value_string;
+        }
+        else
+        {
+            instruction->arg1 = script_duplicate_string("");
+        }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "return") == 0 || script_stringcasecmp(token, "stop") == 0)
+    {
+        instruction->type = SCRIPT_CMD_RETURN;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "pause") == 0 || script_stringcasecmp(token, "sleep") == 0)
+    {
+        char *duration = strtok(NULL, " \t");
+        instruction->type = SCRIPT_CMD_PAUSE;
+        instruction->arg1 = script_duplicate_string(duration != NULL ? duration : "0");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "type") == 0)
+    {
+        char *path_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        if (path_text == NULL)
+        {
+            script_set_error(state, "Missing filename for type on line %d", line_number);
+            return 0;
+        }
+
+        path_text = script_trim(path_text);
+        if (!script_parse_backtick_string(path_text, &consumed, &value_string))
+        {
+            value_string = script_duplicate_string(path_text);
+        }
+
+        instruction->type = SCRIPT_CMD_TYPE;
+        instruction->arg1 = value_string;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "anykey") == 0)
+    {
+        char *var = strtok(NULL, " \t");
+        instruction->type = SCRIPT_CMD_ANYKEY;
+        instruction->arg1 = script_duplicate_string(var != NULL ? var : "_key");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "fgbg") == 0)
+    {
+        char *fg = strtok(NULL, " \t");
+        char *bg = strtok(NULL, " \t");
+        if (fg == NULL || bg == NULL)
+        {
+            script_set_error(state, "Malformed fgbg on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_FGBG;
+        instruction->arg1 = script_duplicate_string(fg);
+        instruction->arg2 = script_duplicate_string(bg);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "fg") == 0)
+    {
+        char *fg = strtok(NULL, " \t");
+        if (fg == NULL)
+        {
+            script_set_error(state, "Missing colour for fg on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_FG;
+        instruction->arg1 = script_duplicate_string(fg);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "bg") == 0)
+    {
+        char *bg = strtok(NULL, " \t");
+        if (bg == NULL)
+        {
+            script_set_error(state, "Missing colour for bg on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_BG;
+        instruction->arg1 = script_duplicate_string(bg);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "cls") == 0)
+    {
+        instruction->type = SCRIPT_CMD_CLS;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "pos") == 0)
+    {
+        char *col = strtok(NULL, " \t");
+        char *row = strtok(NULL, " \t");
+        if (col == NULL || row == NULL)
+        {
+            script_set_error(state, "Malformed pos on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_POS;
+        instruction->arg1 = script_duplicate_string(row);
+        instruction->arg2 = script_duplicate_string(col);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "script") == 0)
+    {
+        char *path_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        if (path_text == NULL)
+        {
+            script_set_error(state, "Missing filename for script on line %d", line_number);
+            return 0;
+        }
+
+        path_text = script_trim(path_text);
+        if (!script_parse_backtick_string(path_text, &consumed, &value_string))
+        {
+            value_string = script_duplicate_string(path_text);
+        }
+
+        instruction->type = SCRIPT_CMD_SCRIPT;
+        instruction->arg1 = value_string;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "logoff") == 0)
+    {
+        instruction->type = SCRIPT_CMD_LOGOFF;
+        return 1;
+    }
+
+    script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
+    return 0;
+}
+
+static char *script_duplicate_string(const char *source)
+{
+    char *copy;
+    if (source == NULL)
+    {
+        return NULL;
+    }
+    copy = (char *)malloc(strlen(source) + 1);
+    if (copy != NULL)
+    {
+        strcpy(copy, source);
+    }
+    return copy;
+}
+
+static int script_append_instruction(script_state *state, script_instruction *instr)
+{
+    if (state->instruction_count >= state->instruction_capacity)
+    {
+        size_t new_capacity = state->instruction_capacity + SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+        script_instruction *resized = (script_instruction *)realloc(state->instructions, new_capacity * sizeof(script_instruction));
+        if (resized == NULL)
+        {
+            return 0;
+        }
+        state->instructions = resized;
+        state->instruction_capacity = new_capacity;
+    }
+
+    state->instructions[state->instruction_count] = *instr;
+    state->instruction_count++;
+    return 1;
+}
+
+static int script_register_label(script_state *state, const char *name)
+{
+    if (name == NULL || *name == '\0')
+    {
+        return 0;
+    }
+
+    if (state->label_count >= state->label_capacity)
+    {
+        size_t new_capacity = state->label_capacity + SCRIPT_DEFAULT_LABEL_CAPACITY;
+        script_label *resized = (script_label *)realloc(state->labels, new_capacity * sizeof(script_label));
+        if (resized == NULL)
+        {
+            return 0;
+        }
+        state->labels = resized;
+        state->label_capacity = new_capacity;
+    }
+
+    state->labels[state->label_count].name = script_duplicate_string(name);
+    state->labels[state->label_count].instruction_index = state->instruction_count;
+    state->label_count++;
+    return 1;
+}
+
+static size_t script_find_label(const script_state *state, const char *name, int *found)
+{
+    if (found != NULL)
+    {
+        *found = 0;
+    }
+
+    if (state == NULL || name == NULL)
+    {
+        return 0;
+    }
+
+    for (size_t i = 0; i < state->label_count; ++i)
+    {
+        if (state->labels[i].name != NULL && script_stringcasecmp(state->labels[i].name, name) == 0)
+        {
+            if (found != NULL)
+            {
+                *found = 1;
+            }
+            return state->labels[i].instruction_index;
+        }
+    }
+
+    return 0;
+}
+
+static script_variable *script_find_variable(script_state *state, const char *name, int create_if_missing)
+{
+    if (state == NULL || name == NULL)
+    {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < state->variable_count; ++i)
+    {
+        if (script_stringcasecmp(state->variables[i].name, name) == 0)
+        {
+            return &state->variables[i];
+        }
+    }
+
+    if (!create_if_missing)
+    {
+        return NULL;
+    }
+
+    if (state->variable_count >= state->variable_capacity)
+    {
+        size_t new_capacity = state->variable_capacity + SCRIPT_DEFAULT_VARIABLE_CAPACITY;
+        script_variable *resized = (script_variable *)realloc(state->variables, new_capacity * sizeof(script_variable));
+        if (resized == NULL)
+        {
+            return NULL;
+        }
+        state->variables = resized;
+        state->variable_capacity = new_capacity;
+    }
+
+    memset(&state->variables[state->variable_count], 0, sizeof(script_variable));
+    strncpy(state->variables[state->variable_count].name, name, sizeof(state->variables[state->variable_count].name) - 1);
+    state->variables[state->variable_count].value = script_duplicate_string("");
+    state->variable_count++;
+    return &state->variables[state->variable_count - 1];
+}
+
+static void script_execute_instruction(script_state *state, script_instruction *instruction)
+{
+    if (state == NULL || instruction == NULL)
+    {
+        return;
+    }
+
+    switch (instruction->type)
+    {
+        case SCRIPT_CMD_PRINT:
+        {
+            char buffer[512];
+            const char *text = instruction->arg1 != NULL ? instruction->arg1 : "";
+            script_expand_macros(state, text, buffer, sizeof(buffer));
+            script_translate_escapes(buffer);
+            script_write_output(state, buffer);
+        }
+        break;
+
+        case SCRIPT_CMD_GOTO:
+        {
+            int found = 0;
+            size_t pc = script_find_label(state, instruction->arg1, &found);
+            if (!found)
+            {
+                script_set_error(state, "Unknown label '%s'", instruction->arg1 != NULL ? instruction->arg1 : "");
+                state->status = SCRIPT_STATUS_ERROR;
+            }
+            else
+            {
+                state->program_counter = pc;
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_PROMPT:
+        {
+            const char *var = instruction->arg1 != NULL ? instruction->arg1 : "selection";
+            const char *mode = instruction->arg2 != NULL ? instruction->arg2 : "char";
+            const char *echo = instruction->arg3 != NULL ? instruction->arg3 : "echo";
+
+            strncpy(state->input_target, var, sizeof(state->input_target) - 1);
+            state->input_target[sizeof(state->input_target) - 1] = '\0';
+            state->input_mode = (script_stringcasecmp(mode, "line") == 0) ? SCRIPT_INPUT_LINE : SCRIPT_INPUT_CHAR;
+            state->input_echo = (script_stringcasecmp(echo, "noecho") != 0);
+            state->status = (state->input_mode == SCRIPT_INPUT_LINE) ? SCRIPT_STATUS_WAIT_INPUT_LINE : SCRIPT_STATUS_WAIT_INPUT_CHAR;
+            return;
+        }
+
+        case SCRIPT_CMD_IF:
+        {
+            const char *var_name = instruction->arg1;
+            const char *op = instruction->arg2;
+            const char *value = instruction->arg3;
+            const char *label = instruction->arg4;
+            const char *current = script_get_variable_value(state, var_name);
+            int condition = 0;
+
+            if (current == NULL)
+            {
+                current = "";
+            }
+
+            if (op != NULL && !strcmp(op, "=="))
+            {
+                condition = (script_stringcasecmp(current, value) == 0);
+            }
+            else if (op != NULL && !strcmp(op, "!="))
+            {
+                condition = (script_stringcasecmp(current, value) != 0);
+            }
+
+            if (condition)
+            {
+                int found = 0;
+                size_t pc = script_find_label(state, label, &found);
+                if (!found)
+                {
+                    script_set_error(state, "Unknown label '%s'", label != NULL ? label : "");
+                    state->status = SCRIPT_STATUS_ERROR;
+                }
+                else
+                {
+                    state->program_counter = pc;
+                }
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_SET:
+        {
+            if (instruction->arg1 != NULL)
+            {
+                char buffer[512];
+                const char *value_text = instruction->arg2 != NULL ? instruction->arg2 : "";
+                script_expand_macros(state, value_text, buffer, sizeof(buffer));
+                script_set_variable_value(state, instruction->arg1, buffer);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_CALL:
+        {
+            const char *action = instruction->arg1 != NULL ? instruction->arg1 : "";
+            if (script_stringcasecmp(action, "time") == 0)
+            {
+                if (state->host.report_time != NULL)
+                {
+                    state->host.report_time(state->host.context);
+                }
+            }
+            else if (script_stringcasecmp(action, "lineinfo") == 0)
+            {
+                if (state->host.report_line_info != NULL)
+                {
+                    state->host.report_line_info(state->host.context);
+                }
+            }
+            else if (script_stringcasecmp(action, "door") == 0)
+            {
+                if (state->host.launch_door != NULL)
+                {
+                    char buffer[256];
+                    const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
+                    script_expand_macros(state, command, buffer, sizeof(buffer));
+                    state->host.launch_door(state->host.context, buffer);
+                    state->status = SCRIPT_STATUS_WAIT_DOOR;
+                }
+            }
+            else if (script_stringcasecmp(action, "disconnect") == 0)
+            {
+                if (state->host.request_disconnect != NULL)
+                {
+                    state->host.request_disconnect(state->host.context);
+                }
+            }
+            else if (script_stringcasecmp(action, "message") == 0)
+            {
+                char buffer[512];
+                const char *text = instruction->arg2 != NULL ? instruction->arg2 : "";
+                script_expand_macros(state, text, buffer, sizeof(buffer));
+                script_write_output(state, buffer);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_DOING:
+        {
+            if (state->host.report_activity != NULL)
+            {
+                char buffer[256];
+                const char *text = instruction->arg1 != NULL ? instruction->arg1 : "";
+                script_expand_macros(state, text, buffer, sizeof(buffer));
+                script_translate_escapes(buffer);
+                state->host.report_activity(state->host.context, buffer);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_RETURN:
+            state->status = SCRIPT_STATUS_COMPLETED;
+            break;
+
+        case SCRIPT_CMD_PAUSE:
+        {
+            unsigned int duration = (unsigned int)strtoul(instruction->arg1 != NULL ? instruction->arg1 : "0", NULL, 10);
+            state->sleep_deadline = script_calculate_sleep_deadline(duration);
+            state->status = SCRIPT_STATUS_WAIT_SLEEP;
+            return;
+        }
+
+        case SCRIPT_CMD_TYPE:
+        {
+            script_display_file(state, instruction->arg1);
+        }
+        break;
+
+        case SCRIPT_CMD_ANYKEY:
+        {
+            const char *target = (instruction->arg1 != NULL && instruction->arg1[0] != '\0') ? instruction->arg1 : "_key";
+            strncpy(state->input_target, target, sizeof(state->input_target) - 1);
+            state->input_target[sizeof(state->input_target) - 1] = '\0';
+            state->input_mode = SCRIPT_INPUT_CHAR;
+            state->input_echo = 0;
+            state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+            return;
+        }
+
+        case SCRIPT_CMD_FG:
+        {
+            script_apply_colour_change(state, instruction->arg1, NULL, 1, 0);
+        }
+        break;
+
+        case SCRIPT_CMD_BG:
+        {
+            script_apply_colour_change(state, NULL, instruction->arg1, 0, 1);
+        }
+        break;
+
+        case SCRIPT_CMD_FGBG:
+        {
+            script_apply_colour_change(state, instruction->arg1, instruction->arg2, 1, 1);
+        }
+        break;
+
+        case SCRIPT_CMD_CLS:
+        {
+            script_send_clear_screen(state);
+        }
+        break;
+
+        case SCRIPT_CMD_POS:
+        {
+            script_move_cursor(state, instruction->arg2, instruction->arg1);
+        }
+        break;
+
+        case SCRIPT_CMD_SCRIPT:
+        {
+            char path[256];
+            const char *source = instruction->arg1 != NULL ? instruction->arg1 : "";
+
+            script_expand_macros(state, source, path, sizeof(path));
+            if (path[0] == '\0')
+            {
+                script_set_error(state, "Script command missing path");
+                state->status = SCRIPT_STATUS_ERROR;
+                break;
+            }
+
+            if (!script_start(state, path))
+            {
+                state->status = SCRIPT_STATUS_ERROR;
+            }
+            return;
+        }
+
+        case SCRIPT_CMD_LOGOFF:
+        {
+            if (state->host.force_disconnect != NULL)
+            {
+                state->host.force_disconnect(state->host.context);
+            }
+            state->status = SCRIPT_STATUS_COMPLETED;
+        }
+        break;
+
+        default:
+            break;
+    }
+}
+
+static int script_emit_macro_replacement(script_state *state, const char *macro_name, script_buffer *buffer)
+{
+    const char *replacement = NULL;
+    char temp[64];
+
+    if (macro_name == NULL || buffer == NULL)
+    {
+        return 1;
+    }
+
+    if (state != NULL)
+    {
+        replacement = script_get_variable_value(state, macro_name);
+    }
+
+    if (replacement == NULL)
+    {
+        if (state != NULL && script_stringcasecmp(macro_name, "line") == 0)
+        {
+            int line_id = state->host.get_line_id != NULL ? state->host.get_line_id(state->host.context) : 0;
+            snprintf(temp, sizeof(temp), "%d", line_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "t_handle") == 0)
+        {
+            int handle = state->host.get_task_handle != NULL ? state->host.get_task_handle(state->host.context) : 0;
+            snprintf(temp, sizeof(temp), "%d", handle);
+            replacement = temp;
+        }
+        else if (script_stringcasecmp(macro_name, "time") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                strftime(temp, sizeof(temp), "%H:%M:%S", local_tm);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "date") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                strftime(temp, sizeof(temp), "%Y-%m-%d", local_tm);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "";
+            }
+        }
+        else
+        {
+            replacement = "";
+        }
+    }
+
+    if (!script_buffer_append_string(buffer, replacement))
+    {
+        script_set_error(state, "Out of memory expanding text");
+        return 0;
+    }
+
+    return 1;
+}
+
+static int script_expand_macros_to_buffer(script_state *state, const char *input, script_buffer *buffer, int translate_newlines)
+{
+    if (buffer == NULL)
+    {
+        return 0;
+    }
+
+    if (input == NULL)
+    {
+        return 1;
+    }
+
+    for (size_t i = 0; input[i] != '\0'; ++i)
+    {
+        unsigned char current = (unsigned char)input[i];
+
+        if (current == 0xC2 && (unsigned char)input[i + 1] == 0xA7)
+        {
+            i++;
+            current = 0xA7;
+        }
+
+        if (current == 0xA7)
+        {
+            size_t start = i + 1;
+            size_t end = start;
+
+            while (input[end] != '\0' && (unsigned char)input[end] != 0xA7)
+            {
+                end++;
+            }
+
+            if ((unsigned char)input[end] == 0xA7)
+            {
+                size_t macro_len = end - start;
+                char macro_name[64];
+
+                if (macro_len >= sizeof(macro_name))
+                {
+                    macro_len = sizeof(macro_name) - 1;
+                }
+                memcpy(macro_name, &input[start], macro_len);
+                macro_name[macro_len] = '\0';
+
+                if (!script_emit_macro_replacement(state, macro_name, buffer))
+                {
+                    return 0;
+                }
+
+                i = end;
+                continue;
+            }
+        }
+
+        if (current == '%' && input[i + 1] == '{')
+        {
+            size_t start = i + 2;
+            size_t end = start;
+
+            while (input[end] != '\0' && input[end] != '}')
+            {
+                end++;
+            }
+
+            if (input[end] == '}')
+            {
+                size_t macro_len = end - start;
+                char macro_name[64];
+
+                if (macro_len >= sizeof(macro_name))
+                {
+                    macro_len = sizeof(macro_name) - 1;
+                }
+                memcpy(macro_name, &input[start], macro_len);
+                macro_name[macro_len] = '\0';
+
+                if (!script_emit_macro_replacement(state, macro_name, buffer))
+                {
+                    return 0;
+                }
+
+                i = end;
+                continue;
+            }
+        }
+
+        if (translate_newlines && current == '\n')
+        {
+            size_t previous_length = buffer->length;
+            if (previous_length > 0 && buffer->data[previous_length - 1] == '\r')
+            {
+                if (!script_buffer_append_char(buffer, '\n'))
+                {
+                    script_set_error(state, "Out of memory expanding text");
+                    return 0;
+                }
+            }
+            else
+            {
+                if (!script_buffer_append_char(buffer, '\r') || !script_buffer_append_char(buffer, '\n'))
+                {
+                    script_set_error(state, "Out of memory expanding text");
+                    return 0;
+                }
+            }
+        }
+        else
+        {
+            if (!script_buffer_append_char(buffer, (char)current))
+            {
+                script_set_error(state, "Out of memory expanding text");
+                return 0;
+            }
+        }
+    }
+
+    return 1;
+}
+
+static void script_expand_macros(script_state *state, const char *input, char *buffer, size_t length)
+{
+    script_buffer expanded;
+    size_t copy_len = 0;
+
+    if (buffer == NULL || length == 0)
+    {
+        return;
+    }
+
+    script_buffer_init(&expanded);
+    if (!script_expand_macros_to_buffer(state, input, &expanded, 0))
+    {
+        buffer[0] = '\0';
+        script_buffer_free(&expanded);
+        return;
+    }
+
+    if (expanded.length > 0 && expanded.data != NULL)
+    {
+        copy_len = expanded.length;
+        if (copy_len >= length)
+        {
+            copy_len = length - 1;
+        }
+        memcpy(buffer, expanded.data, copy_len);
+        buffer[copy_len] = '\0';
+    }
+    else
+    {
+        buffer[0] = '\0';
+    }
+
+    script_buffer_free(&expanded);
+}
+
+static void script_translate_escapes(char *text)
+{
+    size_t read_index = 0;
+    size_t write_index = 0;
+
+    if (text == NULL)
+    {
+        return;
+    }
+
+    while (text[read_index] != '\0')
+    {
+        if (text[read_index] == '\\' && text[read_index + 1] != '\0')
+        {
+            char next = text[read_index + 1];
+            switch (next)
+            {
+                    case 'n':
+                        text[write_index++] = '\r';
+                        text[write_index++] = '\n';
+                        break;
+                    case 'r':
+                        if (text[read_index + 2] == '\\' && text[read_index + 3] == 'n')
+                        {
+                            read_index += 2;
+                            continue;
+                        }
+                        text[write_index++] = '\r';
+                        break;
+                case 't': text[write_index++] = '\t'; break;
+                case '\\': text[write_index++] = '\\'; break;
+                default:
+                    text[write_index++] = next;
+                    break;
+            }
+            read_index += 2;
+        }
+        else
+        {
+            text[write_index++] = text[read_index++];
+        }
+    }
+
+    text[write_index] = '\0';
+}
+
+static void script_set_error(script_state *state, const char *fmt, ...)
+{
+    va_list args;
+    if (state == NULL)
+    {
+        return;
+    }
+
+    va_start(args, fmt);
+    vsnprintf(state->last_error, sizeof(state->last_error), fmt, args);
+    va_end(args);
+}
+
+static void script_reset_input(script_state *state)
+{
+    state->input_mode = SCRIPT_INPUT_NONE;
+    state->input_echo = 0;
+    state->input_length = 0;
+    if (state->input_buffer != NULL && state->input_capacity > 0)
+    {
+        state->input_buffer[0] = '\0';
+    }
+    state->input_target[0] = '\0';
+}
+
+static void script_write_output(script_state *state, const char *text)
+{
+    if (state != NULL && state->host.write_text != NULL && text != NULL)
+    {
+        state->host.write_text(state->host.context, text);
+    }
+}
+
+static void script_set_variable_value(script_state *state, const char *name, const char *value)
+{
+    script_variable *var = script_find_variable(state, name, 1);
+    if (var == NULL)
+    {
+        return;
+    }
+
+    free(var->value);
+    var->value = script_duplicate_string(value != NULL ? value : "");
+}
+
+static const char *script_get_variable_value(const script_state *state, const char *name)
+{
+    if (state == NULL || name == NULL)
+    {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < state->variable_count; ++i)
+    {
+        if (script_stringcasecmp(state->variables[i].name, name) == 0)
+        {
+            return state->variables[i].value;
+        }
+    }
+
+    return NULL;
+}
+
+static int script_parse_backtick_string(const char *input, size_t *consumed, char **output)
+{
+    const char *start;
+    const char *end;
+    if (input == NULL || *input != '`')
+    {
+        return 0;
+    }
+
+    start = input + 1;
+    end = strchr(start, '`');
+    if (end == NULL)
+    {
+        return 0;
+    }
+
+    if (consumed != NULL)
+    {
+        *consumed = (size_t)(end - input) + 1;
+    }
+
+    *output = (char *)malloc((size_t)(end - start) + 1);
+    if (*output == NULL)
+    {
+        return 0;
+    }
+    memcpy(*output, start, (size_t)(end - start));
+    (*output)[end - start] = '\0';
+    return 1;
+}
+
+static char *script_trim(char *text)
+{
+    char *start;
+    char *end;
+
+    if (text == NULL)
+    {
+        return NULL;
+    }
+
+    start = text;
+    while (*start && isspace((unsigned char)*start))
+    {
+        start++;
+    }
+
+    end = start + strlen(start);
+    while (end > start && isspace((unsigned char)*(end - 1)))
+    {
+        end--;
+    }
+    *end = '\0';
+    return start;
+}
+
+static int script_is_empty_or_comment(const char *line)
+{
+    if (line == NULL)
+    {
+        return 1;
+    }
+
+    while (*line != '\0')
+    {
+        if (*line == '#')
+        {
+            return 1;
+        }
+        if (!isspace((unsigned char)*line))
+        {
+            return 0;
+        }
+        line++;
+    }
+
+    return 1;
+}
+
+static void script_free_instruction(script_instruction *instruction)
+{
+    if (instruction == NULL)
+    {
+        return;
+    }
+
+    free(instruction->arg1);
+    free(instruction->arg2);
+    free(instruction->arg3);
+    free(instruction->arg4);
+    instruction->arg1 = instruction->arg2 = instruction->arg3 = instruction->arg4 = NULL;
+}
+
+static void script_free_label(script_label *label)
+{
+    if (label == NULL)
+    {
+        return;
+    }
+
+    free(label->name);
+    label->name = NULL;
+}
+
+static void script_free_variable(script_variable *variable)
+{
+    if (variable == NULL)
+    {
+        return;
+    }
+    free(variable->value);
+    variable->value = NULL;
+}
+
+static clock_t script_calculate_sleep_deadline(unsigned int milliseconds)
+{
+    clock_t ticks = (clock_t)(((double)milliseconds / 1000.0) * CLOCKS_PER_SEC);
+    if (ticks < 1)
+    {
+        ticks = 1;
+    }
+    return clock() + ticks;
+}
+
+static int script_stringcasecmp(const char *lhs, const char *rhs)
+{
+    unsigned char cl;
+    unsigned char cr;
+
+    if (lhs == NULL)
+    {
+        lhs = "";
+    }
+    if (rhs == NULL)
+    {
+        rhs = "";
+    }
+
+    while (*lhs != '\0' && *rhs != '\0')
+    {
+        cl = (unsigned char)tolower((unsigned char)*lhs);
+        cr = (unsigned char)tolower((unsigned char)*rhs);
+        if (cl != cr)
+        {
+            return (int)cl - (int)cr;
+        }
+        lhs++;
+        rhs++;
+    }
+
+    cl = (unsigned char)tolower((unsigned char)*lhs);
+    cr = (unsigned char)tolower((unsigned char)*rhs);
+    return (int)cl - (int)cr;
+}
+
+static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg)
+{
+    char sequence[32];
+    int length = 0;
+    int fg_value;
+    int bg_value;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (apply_fg && fg_text != NULL)
+    {
+        fg_value = atoi(fg_text);
+        if (fg_value < 0)
+        {
+            fg_value = 0;
+        }
+        if (fg_value > 7)
+        {
+            fg_value = 7;
+        }
+        length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%s%d", (length == 0) ? "\x1B[" : ";", 30 + fg_value);
+    }
+
+    if (apply_bg && bg_text != NULL)
+    {
+        bg_value = atoi(bg_text);
+        if (bg_value < 0)
+        {
+            bg_value = 0;
+        }
+        if (bg_value > 7)
+        {
+            bg_value = 7;
+        }
+        length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%s%d", (length == 0) ? "\x1B[" : ";", 40 + bg_value);
+    }
+
+    if (length > 0 && length < (int)sizeof(sequence))
+    {
+        sequence[length++] = 'm';
+        sequence[length] = '\0';
+        script_write_output(state, sequence);
+    }
+}
+
+static void script_send_clear_screen(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+    script_write_output(state, "\x1B[2J\x1B[H");
+}
+
+static void script_move_cursor(script_state *state, const char *col_text, const char *row_text)
+{
+    int column = (col_text != NULL) ? atoi(col_text) : 1;
+    int row = (row_text != NULL) ? atoi(row_text) : 1;
+    char sequence[32];
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (column < 1)
+    {
+        column = 1;
+    }
+    if (row < 1)
+    {
+        row = 1;
+    }
+
+    snprintf(sequence, sizeof(sequence), "\x1B[%d;%dH", row, column);
+    script_write_output(state, sequence);
+}
+
+static void script_display_file(script_state *state, const char *source)
+{
+    char path[256];
+    FILE *fp;
+    long file_size;
+    size_t length;
+    char *buffer = NULL;
+    int parsed;
+
+    if (state == NULL || source == NULL)
+    {
+        return;
+    }
+
+    script_expand_macros(state, source, path, sizeof(path));
+    if (path[0] == '\0')
+    {
+        script_write_output(state, "\r\n[Type: missing filename]\r\n");
+        return;
+    }
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        char message[256];
+        snprintf(message, sizeof(message), "\r\n[Type: cannot open %s]\r\n", path);
+        script_write_output(state, message);
+        return;
+    }
+
+    if (fseek(fp, 0, SEEK_END) != 0)
+    {
+        fclose(fp);
+        script_write_output(state, "\r\n[Type: unable to read file]\r\n");
+        return;
+    }
+
+    file_size = ftell(fp);
+    if (file_size < 0)
+    {
+        fclose(fp);
+        script_write_output(state, "\r\n[Type: unable to read file]\r\n");
+        return;
+    }
+
+    if (fseek(fp, 0, SEEK_SET) != 0)
+    {
+        fclose(fp);
+        script_write_output(state, "\r\n[Type: unable to read file]\r\n");
+        return;
+    }
+
+    length = (size_t)file_size;
+    buffer = (char *)malloc(length + 1);
+    if (buffer == NULL)
+    {
+        fclose(fp);
+        script_write_output(state, "\r\n[Type: out of memory]\r\n");
+        return;
+    }
+
+    if (length > 0 && fread(buffer, 1, length, fp) != length)
+    {
+        free(buffer);
+        fclose(fp);
+        script_write_output(state, "\r\n[Type: read error]\r\n");
+        return;
+    }
+
+    buffer[length] = '\0';
+    fclose(fp);
+
+    parsed = script_process_embedded_content(state, buffer, length, path, script_handle_embedded_text_as_output, script_handle_embedded_command_as_output, NULL);
+    if (!parsed)
+    {
+        char message[256];
+        if (state != NULL && state->last_error[0] != '\0')
+        {
+            snprintf(message, sizeof(message), "\r\n[Type: %s]\r\n", state->last_error);
+        }
+        else
+        {
+            snprintf(message, sizeof(message), "\r\n[Type: parse error]\r\n");
+        }
+        script_write_output(state, message);
+    }
+
+    free(buffer);
+}
+
+static char *script_duplicate_range(const char *source, size_t length)
+{
+    char *copy;
+
+    if (source == NULL)
+    {
+        return NULL;
+    }
+
+    copy = (char *)malloc(length + 1);
+    if (copy == NULL)
+    {
+        return NULL;
+    }
+
+    if (length > 0)
+    {
+        memcpy(copy, source, length);
+    }
+    copy[length] = '\0';
+    return copy;
+}
+
+static void script_buffer_init(script_buffer *buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+    buffer->data = NULL;
+    buffer->length = 0;
+    buffer->capacity = 0;
+}
+
+static void script_buffer_free(script_buffer *buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+    free(buffer->data);
+    buffer->data = NULL;
+    buffer->length = 0;
+    buffer->capacity = 0;
+}
+
+static void script_buffer_clear(script_buffer *buffer)
+{
+    if (buffer == NULL)
+    {
+        return;
+    }
+    buffer->length = 0;
+    if (buffer->data != NULL)
+    {
+        buffer->data[0] = '\0';
+    }
+}
+
+static int script_buffer_append_char(script_buffer *buffer, char ch)
+{
+    size_t required;
+    size_t new_capacity;
+    char *resized;
+
+    if (buffer == NULL)
+    {
+        return 0;
+    }
+
+    required = buffer->length + 2;
+    if (required > buffer->capacity)
+    {
+        new_capacity = buffer->capacity == 0 ? SCRIPT_LITERAL_BUFFER_CHUNK : buffer->capacity * 2;
+        while (new_capacity < required)
+        {
+            new_capacity *= 2;
+        }
+        resized = (char *)realloc(buffer->data, new_capacity);
+        if (resized == NULL)
+        {
+            return 0;
+        }
+        buffer->data = resized;
+        buffer->capacity = new_capacity;
+    }
+
+    buffer->data[buffer->length++] = ch;
+    buffer->data[buffer->length] = '\0';
+    return 1;
+}
+
+static int script_buffer_append_string(script_buffer *buffer, const char *text)
+{
+    if (buffer == NULL || text == NULL)
+    {
+        return 1;
+    }
+
+    while (*text != '\0')
+    {
+        if (!script_buffer_append_char(buffer, *text++))
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static void script_buffer_trim_trailing_whitespace(script_buffer *buffer)
+{
+    if (buffer == NULL || buffer->data == NULL)
+    {
+        return;
+    }
+
+    while (buffer->length > 0)
+    {
+        unsigned char ch = (unsigned char)buffer->data[buffer->length - 1];
+        if (!isspace(ch))
+        {
+            break;
+        }
+        buffer->length--;
+        buffer->data[buffer->length] = '\0';
+    }
+}
+
+static int script_buffer_has_embedded_blocks(const char *buffer, size_t length)
+{
+    size_t index = 0;
+
+    if (buffer == NULL)
+    {
+        return 0;
+    }
+
+    while (index < length)
+    {
+        char ch = buffer[index];
+
+        if (ch == '/' && index + 1 < length && buffer[index + 1] == '*')
+        {
+            index += 2;
+            while (index < length)
+            {
+                if (buffer[index] == '*' && index + 1 < length && buffer[index + 1] == '/')
+                {
+                    index += 2;
+                    break;
+                }
+                index++;
+            }
+            continue;
+        }
+
+        if (ch == '{')
+        {
+            if (index + 1 >= length || buffer[index + 1] != '{')
+            {
+                return 1;
+            }
+            index += 2;
+            continue;
+        }
+
+        index++;
+    }
+
+    return 0;
+}
+
+static int script_parse_plain_lines(script_state *state, const char *buffer)
+{
+    int line_number = 0;
+    const char *cursor = buffer;
+
+    if (buffer == NULL)
+    {
+        return 1;
+    }
+
+    while (*cursor != '\0')
+    {
+        const char *line_start = cursor;
+        size_t len;
+        char *line_copy;
+
+        while (*cursor != '\0' && *cursor != '\n')
+        {
+            cursor++;
+        }
+
+        len = (size_t)(cursor - line_start);
+        line_copy = (char *)malloc(len + 1);
+        if (line_copy == NULL)
+        {
+            script_set_error(state, "Out of memory parsing script");
+            return 0;
+        }
+
+        if (len > 0)
+        {
+            memcpy(line_copy, line_start, len);
+        }
+        line_copy[len] = '\0';
+        if (len > 0 && line_copy[len - 1] == '\r')
+        {
+            line_copy[len - 1] = '\0';
+        }
+
+        line_number++;
+        if (!script_parse_line(state, line_copy, line_number))
+        {
+            free(line_copy);
+            return 0;
+        }
+
+        free(line_copy);
+        if (*cursor == '\n')
+        {
+            cursor++;
+        }
+    }
+
+    return 1;
+}
+
+static int script_append_print_literal(script_state *state, const char *text, size_t length)
+{
+    script_instruction instruction;
+    script_buffer normalised;
+
+    if (text == NULL || length == 0)
+    {
+        return 1;
+    }
+
+    script_buffer_init(&normalised);
+    for (size_t i = 0; i < length; ++i)
+    {
+        char ch = text[i];
+
+        if (ch == '\n')
+        {
+            size_t prev_len = normalised.length;
+            if (prev_len > 0 && normalised.data[prev_len - 1] == '\r')
+            {
+                if (!script_buffer_append_char(&normalised, '\n'))
+                {
+                    script_buffer_free(&normalised);
+                    script_set_error(state, "Out of memory storing literal text");
+                    return 0;
+                }
+            }
+            else
+            {
+                if (!script_buffer_append_char(&normalised, '\r') || !script_buffer_append_char(&normalised, '\n'))
+                {
+                    script_buffer_free(&normalised);
+                    script_set_error(state, "Out of memory storing literal text");
+                    return 0;
+                }
+            }
+            continue;
+        }
+
+        if (!script_buffer_append_char(&normalised, ch))
+        {
+            script_buffer_free(&normalised);
+            script_set_error(state, "Out of memory storing literal text");
+            return 0;
+        }
+    }
+
+    if (normalised.length == 0)
+    {
+        script_buffer_free(&normalised);
+        return 1;
+    }
+
+    memset(&instruction, 0, sizeof(instruction));
+    instruction.type = SCRIPT_CMD_PRINT;
+    instruction.arg1 = script_duplicate_range(normalised.data, normalised.length);
+    script_buffer_free(&normalised);
+    if (instruction.arg1 == NULL)
+    {
+        script_set_error(state, "Out of memory storing literal text");
+        return 0;
+    }
+
+    if (!script_append_instruction(state, &instruction))
+    {
+        script_free_instruction(&instruction);
+        script_set_error(state, "Too many instructions while expanding text");
+        return 0;
+    }
+
+    return 1;
+}
+
+static int script_execute_inline_command(script_state *state, const char *command_text, int line_number)
+{
+    script_instruction instruction;
+    char *copy;
+    char *trimmed;
+
+    if (command_text == NULL)
+    {
+        return 1;
+    }
+
+    copy = script_duplicate_string(command_text);
+    if (copy == NULL)
+    {
+        script_set_error(state, "Out of memory parsing inline command");
+        return 0;
+    }
+
+    trimmed = script_trim(copy);
+    if (*trimmed == '\0' || script_is_empty_or_comment(trimmed))
+    {
+        free(copy);
+        return 1;
+    }
+
+    memset(&instruction, 0, sizeof(instruction));
+    if (!script_build_instruction(state, trimmed, line_number, &instruction))
+    {
+        free(copy);
+        return 0;
+    }
+
+    free(copy);
+
+    if (instruction.type != SCRIPT_CMD_NONE)
+    {
+        script_execute_instruction(state, &instruction);
+        script_free_instruction(&instruction);
+    }
+
+    return 1;
+}
+
+static int script_skip_comment(script_state *state, const char *buffer, size_t length, size_t *index, int *line_number, const char *source_name)
+{
+    size_t cursor;
+
+    if (buffer == NULL || index == NULL)
+    {
+        return 0;
+    }
+
+    cursor = *index + 2;
+    while (cursor < length)
+    {
+        if (buffer[cursor] == '\n' && line_number != NULL)
+        {
+            (*line_number)++;
+        }
+
+        if (buffer[cursor] == '*' && cursor + 1 < length && buffer[cursor + 1] == '/')
+        {
+            *index = cursor + 2;
+            return 1;
+        }
+        cursor++;
+    }
+
+    script_set_error(state, "Unterminated comment in %s", source_name != NULL ? source_name : "script");
+    *index = length;
+    return 0;
+}
+
+static int script_process_embedded_block(script_state *state, const char *buffer, size_t length, size_t *index, int *line_number, const char *source_name, script_command_handler command_handler, void *context)
+{
+    script_buffer command;
+    int result = 1;
+
+    if (command_handler == NULL)
+    {
+        return 0;
+    }
+
+    script_buffer_init(&command);
+
+    while (*index < length)
+    {
+        char ch;
+
+        while (*index < length)
+        {
+            ch = buffer[*index];
+            if (ch == '\r')
+            {
+                (*index)++;
+                continue;
+            }
+            if (ch == '\n')
+            {
+                if (line_number != NULL)
+                {
+                    (*line_number)++;
+                }
+                (*index)++;
+                continue;
+            }
+            if (ch == ' ' || ch == '\t' || ch == ',')
+            {
+                (*index)++;
+                continue;
+            }
+            if (ch == '/' && *index + 1 < length && buffer[*index + 1] == '*')
+            {
+                if (!script_skip_comment(state, buffer, length, index, line_number, source_name))
+                {
+                    result = 0;
+                    break;
+                }
+                continue;
+            }
+            break;
+        }
+
+        if (!result)
+        {
+            break;
+        }
+
+        if (*index >= length)
+        {
+            script_set_error(state, "Missing } in %s", source_name != NULL ? source_name : "script");
+            result = 0;
+            break;
+        }
+
+        if (buffer[*index] == '}')
+        {
+            (*index)++;
+            break;
+        }
+
+        script_buffer_clear(&command);
+        {
+            int in_quote = 0;
+            while (*index < length)
+            {
+                ch = buffer[*index];
+
+                if (ch == '\r')
+                {
+                    (*index)++;
+                    continue;
+                }
+
+                if (!in_quote && ch == '/' && *index + 1 < length && buffer[*index + 1] == '*')
+                {
+                    if (!script_skip_comment(state, buffer, length, index, line_number, source_name))
+                    {
+                        result = 0;
+                        break;
+                    }
+                    continue;
+                }
+
+                if (ch == '`')
+                {
+                    in_quote = !in_quote;
+                }
+                else if (ch == '\n')
+                {
+                    if (!in_quote)
+                    {
+                        break;
+                    }
+                    script_set_error(state, "Missing ` in %s", source_name != NULL ? source_name : "script");
+                    result = 0;
+                    break;
+                }
+                else if (!in_quote && (ch == ',' || ch == '}'))
+                {
+                    break;
+                }
+
+                if (!script_buffer_append_char(&command, ch))
+                {
+                    script_set_error(state, "Out of memory parsing %s", source_name != NULL ? source_name : "script");
+                    result = 0;
+                    break;
+                }
+
+                (*index)++;
+            }
+        }
+
+        if (!result)
+        {
+            break;
+        }
+
+        script_buffer_trim_trailing_whitespace(&command);
+        if (command.data != NULL && command.length > 0)
+        {
+            char *trimmed = script_trim(command.data);
+            if (*trimmed != '\0' && !script_is_empty_or_comment(trimmed))
+            {
+                if (!command_handler(state, trimmed, line_number != NULL ? *line_number : 0, context))
+                {
+                    result = 0;
+                    break;
+                }
+            }
+        }
+
+        if (*index < length)
+        {
+            ch = buffer[*index];
+            if (ch == ',')
+            {
+                (*index)++;
+            }
+            else if (ch == '\n')
+            {
+                if (line_number != NULL)
+                {
+                    (*line_number)++;
+                }
+                (*index)++;
+            }
+        }
+    }
+
+    script_buffer_free(&command);
+    return result;
+}
+
+static int script_process_embedded_content(script_state *state, const char *buffer, size_t length, const char *source_name, script_text_handler text_handler, script_command_handler command_handler, void *context)
+{
+    size_t index = 0;
+    int line_number = 1;
+    script_buffer literal;
+    int result = 1;
+
+    if (text_handler == NULL || command_handler == NULL)
+    {
+        return 0;
+    }
+
+    script_buffer_init(&literal);
+
+    while (index < length && result)
+    {
+        char ch = buffer[index];
+
+        if (ch == '\r')
+        {
+            index++;
+            continue;
+        }
+
+        if (ch == '/' && index + 1 < length && buffer[index + 1] == '*')
+        {
+            if (!script_skip_comment(state, buffer, length, &index, &line_number, source_name))
+            {
+                result = 0;
+            }
+            continue;
+        }
+
+        if (ch == '{')
+        {
+            if (index + 1 < length && buffer[index + 1] == '{')
+            {
+                index++;
+                ch = '{';
+            }
+            else
+            {
+                if (literal.length > 0)
+                {
+                    if (!text_handler(state, literal.data, literal.length, line_number, context))
+                    {
+                        result = 0;
+                        break;
+                    }
+                    script_buffer_clear(&literal);
+                }
+                index++;
+                if (!script_process_embedded_block(state, buffer, length, &index, &line_number, source_name, command_handler, context))
+                {
+                    result = 0;
+                }
+                continue;
+            }
+        }
+
+        if (ch == '\n')
+        {
+            line_number++;
+        }
+
+        if (!script_buffer_append_char(&literal, ch))
+        {
+            script_set_error(state, "Out of memory processing %s", source_name != NULL ? source_name : "script");
+            result = 0;
+            break;
+        }
+
+        index++;
+    }
+
+    if (result && literal.length > 0)
+    {
+        if (!text_handler(state, literal.data, literal.length, line_number, context))
+        {
+            result = 0;
+        }
+    }
+
+    script_buffer_free(&literal);
+    return result;
+}
+
+static int script_handle_embedded_text_as_instruction(script_state *state, const char *text, size_t length, int line_number, void *context)
+{
+    (void)line_number;
+    (void)context;
+    return script_append_print_literal(state, text, length);
+}
+
+static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context)
+{
+    (void)context;
+    return script_parse_line(state, command_text, line_number);
+}
+
+static int script_handle_embedded_text_as_output(script_state *state, const char *text, size_t length, int line_number, void *context)
+{
+    (void)line_number;
+    (void)context;
+    if (state == NULL || text == NULL || length == 0)
+    {
+        return 1;
+    }
+
+    {
+        char *literal = script_duplicate_range(text, length);
+        script_buffer expanded;
+
+        if (literal == NULL)
+        {
+            script_set_error(state, "Out of memory expanding text");
+            return 0;
+        }
+
+        script_buffer_init(&expanded);
+        if (!script_expand_macros_to_buffer(state, literal, &expanded, 1))
+        {
+            free(literal);
+            script_buffer_free(&expanded);
+            return 0;
+        }
+
+        if (expanded.length > 0 && expanded.data != NULL)
+        {
+            script_write_output(state, expanded.data);
+        }
+
+        script_buffer_free(&expanded);
+        free(literal);
+    }
+
+    return 1;
+}
+
+static int script_handle_embedded_command_as_output(script_state *state, const char *command_text, int line_number, void *context)
+{
+    (void)context;
+    return script_execute_inline_command(state, command_text, line_number);
+}

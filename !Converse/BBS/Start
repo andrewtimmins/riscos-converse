@@ -1,0 +1,28 @@
+{cls,fgbg 7 0,doing `Logging On...`,type `<Converse$Dir>.BBS.ANSI.Header`}
+
+{logon logonresult
+
+if logonresult == `0` goto logon_ok
+if logonresult == `1` goto unknown_user
+if logonresult == `2` goto bad_password
+if logonresult == `3` goto locked_account}
+
+{label logon_ok
+type `<Converse$Dir>.BBS.MainMenu`
+}
+
+{label unknown_user
+print `\r\nUnknown user.\r\n`
+logoff
+return}
+
+{label bad_password
+print `\r\nBad password.\r\n`
+logoff
+return}
+
+{label locked_account
+print `\r\nAccount Locked.\r\n`
+logoff
+return}
+

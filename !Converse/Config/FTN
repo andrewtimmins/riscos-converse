@@ -1,0 +1,19 @@
+;
+; FTN configuration file
+;
+
+start
+address  2:2500/622.0@Fidonet
+inbound  <Converse$Dir>.FTN.Inbound
+outbound <Converse$Dir>.FTN.Outbound
+type     5d
+route    * 2:2500/1.0 N
+end
+; ----------------------------------------------------------------------------
+start
+address  25:44/1.0@Converse
+inbound  <Converse$Dir>.FTN.Inbound
+outbound <Converse$Dir>.FTN.Outbound
+type     5d
+route    * 25:44/1.0 N
+end

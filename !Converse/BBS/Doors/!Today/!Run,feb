@@ -1,0 +1,8 @@
+| !Run file for !Today - The RiscBBS dates companion
+|
+| !Today written by Carl Declerck (c)1991
+| Original idea and dates by Mike Butler and Patrick Kincaid
+|
+Set Today$Dir <Obey$Dir>
+WimpSlot -Min 32k -Max 32k
+Run <Obey$Dir>.!RunImage %*0 %*1

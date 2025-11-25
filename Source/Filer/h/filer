@@ -1,0 +1,22 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FILER_H
+#define FILER_H
+
+#include <kernel.h>
+
+#ifndef UNUSED
+#define UNUSED(param) ((void)(param))
+#endif
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw);
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw);
+void module_service(int service_number, _kernel_swi_regs *r, void *pw);
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw);
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw);
+
+int debug_printf(char *cntrl_string, ...);
+
+#endif

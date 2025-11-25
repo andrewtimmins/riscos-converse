@@ -1,0 +1,77 @@
+#ifndef ANSI_H
+#define MAIANSI_HN_H
+
+    #define ANSI_escape_code            "\033"
+
+    #define ANSI_clear_screen           "\033[2J"
+
+    #define ANSI_40_25_mono             "\033[0h"
+    #define ANSI_40_25_colour           "\033[1h"
+    #define ANSI_80_25_mono             "\033[2h"
+    #define ANSI_80_25_colour           "\033[3h"
+
+    #define ANSI_cursor_invisible       "\033[?25l"
+    #define ANSI_cursor_visible         "\033[?25h"
+
+    #define ANSI_cursor_home            "\033[h"
+    #define ANSI_cursor_save            "\033[s"
+    #define ANSI_cursor_restore         "\033[u"
+
+    #define ANSI_reset                  "\033[22m"
+
+    #define ANSI_bold                   "\033[1m"
+    #define ANSI_faint                  "\033[2m"
+
+    #define ANSI_italic                 "\033[3m"
+    #define ANSI_italic_reset           "\033[23m"
+    #define ANSI_underline              "\033[4m"
+    #define ANSI_underline_reset        "\033[24m"
+    #define ANSI_blinking               "\033[5m"
+    #define ANSI_blinking_reset         "\033[25m"
+    #define ANSI_inverse                "\033[7m"
+    #define ANSI_inverse_reset          "\033[27m"
+    #define ANSI_hidden                 "\033[8m"
+    #define ANSI_hidden_reset           "\033[28m"
+    #define ANSI_strikethrough          "\033[9m"
+    #define ANSI_strikethrough_strike   "\033[29m"
+
+    #define ANSI_fg_black               "30"
+    #define ANSI_bg_black               "40"
+    #define ANSI_fg_red                 "31"
+    #define ANSI_bg_red                 "41"
+    #define ANSI_fg_green               "32"
+    #define ANSI_bg_green               "42"
+    #define ANSI_fg_yellow              "33"
+    #define ANSI_bg_yellow              "43"
+    #define ANSI_fg_blue                "34"
+    #define ANSI_bg_blue                "44"
+    #define ANSI_fg_magenta             "35"
+    #define ANSI_bg_magenta             "45"
+    #define ANSI_fg_cyan                "36"
+    #define ANSI_bg_cyan                "46"
+    #define ANSI_fg_white               "37"
+    #define ANSI_bg_white               "47"
+
+    #define ANSI_fg_black_bright        "90"
+    #define ANSI_bg_black_bright        "100"
+    #define ANSI_fg_red_bright          "91"
+    #define ANSI_bg_red_bright          "101"
+    #define ANSI_fg_green_bright        "92"
+    #define ANSI_bg_green_bright        "102"
+    #define ANSI_fg_yellow_bright       "93"
+    #define ANSI_bg_yellow_bright       "103"
+    #define ANSI_fg_blue_bright         "94"
+    #define ANSI_bg_blue_bright         "104"
+    #define ANSI_fg_magenta_bright      "95"
+    #define ANSI_bg_magenta_bright      "105"
+    #define ANSI_fg_cyan_bright         "96"
+    #define ANSI_bg_cyan_bright         "106"
+    #define ANSI_fg_white_bright        "97"
+    #define ANSI_bg_white_bright        "107"
+
+    #define ANSI_fg_default             "39"
+    #define ANSI_bg_default             "49"
+    #define ANSI_fg_reset               "0"
+    #define ANSI_bg_reset               "0"
+
+#endif

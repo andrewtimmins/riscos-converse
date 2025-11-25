@@ -1,0 +1,238 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "logging.h"
+#include "stats.h"
+#include "debug.h"
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Logging Routines                                                                                                                                                                       */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+void log_header(int log_type)
+{
+    FILE *log_file;
+
+    switch (log_type)
+    {
+        case 0:
+            log_file = fopen(SYSTEMLOG, "a+");
+            break;
+        case 1:
+            log_file = fopen(LINELOG, "a+");
+            break;
+        case 3:
+            log_file = fopen(FTNLOG, "a+");
+            break;
+        default:
+            log_file = fopen(SYSTEMLOG, "a+");
+        break;
+    }
+
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| LOG FILE STARTED      |\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| Date       | Time     | Log Entry\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fclose(log_file);
+}
+
+void log_footer(int log_type)
+{
+    FILE *log_file;
+
+    switch (log_type)
+    {
+        case 0:
+            log_file = fopen(SYSTEMLOG, "a+");
+            break;
+        case 1:
+            log_file = fopen(LINELOG, "a+");
+            break;
+        case 3:
+            log_file = fopen(FTNLOG, "a+");
+            break;
+        default:
+            log_file = fopen(SYSTEMLOG, "a+");
+        break;
+    }
+
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| LOG FILE STOPPED      |\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fclose(log_file);
+}
+
+void log_line_header(int line_id)
+{
+    char log_file_name[64];
+    FILE *log_file;
+
+    if (line_id < 0)
+    {
+        return;
+    }
+
+    sprintf(log_file_name, "%s%d", LINELOG, line_id);
+
+    log_file = fopen(log_file_name, "r");
+    if (log_file != NULL)
+    {
+        fclose(log_file);
+        return;
+    }
+
+    log_file = fopen(log_file_name, "a+");
+    if (log_file == NULL)
+    {
+        return;
+    }
+
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| LOG FILE STARTED      |\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| Date       | Time     | Log Entry\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fclose(log_file);
+}
+
+void log_line_footer(int line_id)
+{
+    char log_file_name[64];
+    FILE *log_file;
+
+    if (line_id < 0)
+    {
+        return;
+    }
+
+    sprintf(log_file_name, "%s%d", LINELOG, line_id);
+
+    log_file = fopen(log_file_name, "r");
+    if (log_file == NULL)
+    {
+        return;
+    }
+    fclose(log_file);
+
+    log_file = fopen(log_file_name, "a+");
+    if (log_file == NULL)
+    {
+        return;
+    }
+
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| LOG FILE STOPPED      |\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fclose(log_file);
+}
+
+void log_system(char *log_entry)
+{
+    FILE *log_file;
+
+    char timestamp[50];
+    char timestamped_log_entry[500];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
+    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+     
+    log_file = fopen(SYSTEMLOG, "a+");
+    fprintf(log_file, timestamped_log_entry);
+    fclose(log_file);
+}
+
+void log_line(int line_id, char *log_entry)
+{
+    FILE *log_file;
+
+    char timestamp[50];
+    char timestamped_log_entry[500];
+    char log_file_name[50];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    log_line_header(line_id);
+
+    strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
+    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+     
+    sprintf(log_file_name, "%s%d", LINELOG, line_id);
+    log_file = fopen(log_file_name, "a+");
+    fprintf(log_file, timestamped_log_entry);
+    fclose(log_file);
+}
+void log_call(int line_id, int user_id, int status_id)
+{
+    FILE *log_file;
+
+    char log_entry[500];
+    char timestamp[50];
+    char timestamped_log_entry[500];
+    char status[10];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    if ((log_file = fopen(CALLLOG, "r")) != NULL)
+    {
+        fclose(log_file);
+    }
+    else
+    {
+        log_file = fopen(CALLLOG, "a+");
+        strcpy(log_entry, "Date,Time,Line,User,Status\n");
+        fprintf(log_file, log_entry);
+        fclose(log_file);
+    }
+
+    switch (status_id) {
+        case 0:
+            strcpy(status, "Answered");
+            break;
+        case 1:
+            strcpy(status, "Hungup");
+            break;
+        case 2:
+            strcpy(status, "Aborted");
+            break;
+        case 3:
+            strcpy(status, "Rejected");
+            break;
+    }
+
+    strftime(timestamp, sizeof(timestamp)-1, "%d/%m/%Y,%H:%M:%S", t);
+    sprintf(timestamped_log_entry, "%s,%d,%d,%s\n", timestamp, line_id, user_id, status);
+    
+    log_file = fopen(CALLLOG, "a+");
+    fprintf(log_file, timestamped_log_entry);
+    fclose(log_file);
+
+    (void)stats_increment_call_totals();
+}
+
+void log_ftn(char *log_entry)
+{
+    FILE *log_file;
+
+    char timestamp[50];
+    char timestamped_log_entry[500];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
+    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+     
+    log_file = fopen(FTNLOG, "a+");
+    fprintf(log_file, timestamped_log_entry);
+    fclose(log_file);
+}

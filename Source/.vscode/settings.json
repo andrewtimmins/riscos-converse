@@ -1,0 +1,23 @@
+{
+    "files.associations": {
+        "logging": "cpp",
+        "stdarg.h": "c",
+        "filer": "c",
+        "pipes": "c",
+        "structs": "c",
+        "main": "cpp",
+        "server": "c",
+        "stats": "cpp",
+        "debug": "c",
+        "stdio.h": "c",
+        "stdlib.h": "c",
+        "timer": "cpp",
+        "eventmsg": "cpp",
+        "wimpswis": "cpp",
+        "wimp": "cpp",
+        "event": "cpp",
+        "bbs": "cpp",
+        "script": "cpp",
+        "userdb": "cpp"
+    }
+}

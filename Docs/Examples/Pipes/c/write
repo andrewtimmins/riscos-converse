@@ -1,0 +1,189 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#include "kernel.h"
+
+#define CONVERSE_PIPES_BASE             0x5A580
+#define SWI_CONVERSE_READ_STATUS       (CONVERSE_PIPES_BASE + 0)
+#define SWI_CONVERSE_INPUT_STATUS      (CONVERSE_PIPES_BASE + 2)
+#define SWI_CONVERSE_INPUT_WRITE_BLOCK (CONVERSE_PIPES_BASE + 13)
+#define SWI_OS_BYTE                    0x00000006
+
+#define CONVERSE_PIPES_STATUS_INPUT_HIGH 0x80
+#define CONVERSE_PIPES_STATUS_OUTPUT_LOW 0x40
+
+/* Queues argv text into a line's host->slave buffer using the block SWI. */
+
+static void wait_tick(void)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 1;
+  _kernel_swi(SWI_OS_BYTE, &regs, &regs);
+}
+
+static _kernel_oserror *converse_input_status(int line, int *bytes_waiting)
+{
+  /* Mirrors the queue depth for the post-write summary. */
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_INPUT_STATUS, &regs, &regs);
+  if (!error && bytes_waiting)
+  {
+    *bytes_waiting = regs.r[0];
+  }
+
+  return error;
+}
+
+static _kernel_oserror *converse_read_status(int line, unsigned int *status)
+{
+  /* Reads back the shared status byte (watermarks + caller bits). */
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_READ_STATUS, &regs, &regs);
+  if (!error && status)
+  {
+    *status = (unsigned int)(regs.r[0] & 0xFF);
+  }
+
+  return error;
+}
+
+static _kernel_oserror *converse_input_write_block(int line, const uint8_t *data, size_t length, int *written)
+{
+  /* Copies as many bytes as will fit and reports the short-write count. */
+  _kernel_swi_regs regs;
+  size_t request = length;
+
+  if (request > (size_t)INT32_MAX)
+  {
+    request = (size_t)INT32_MAX;
+  }
+
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+  regs.r[1] = (int)(uintptr_t)data;
+  regs.r[2] = (int)request;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_INPUT_WRITE_BLOCK, &regs, &regs);
+  if (!error && written)
+  {
+    *written = regs.r[0];
+  }
+
+  return error;
+}
+
+static void print_status_summary(int line)
+{
+  int queued = 0;
+  unsigned int status = 0;
+
+  if (converse_input_status(line, &queued) == NULL && converse_read_status(line, &status) == NULL)
+  {
+    printf("Line %d: queued=%d status=0x%02X [%c%c]\n",
+           line,
+           queued,
+           status & 0xFF,
+           (status & CONVERSE_PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
+           (status & CONVERSE_PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
+  }
+}
+
+static char *build_payload(int argc, char **argv, size_t *length)
+{
+  /* Collapses argv[2..] into one newline-terminated string. */
+  size_t total = 0;
+  int i;
+
+  for (i = 2; i < argc; ++i)
+  {
+    total += strlen(argv[i]);
+    if (i + 1 < argc)
+    {
+      total += 1; /* space between arguments */
+    }
+  }
+
+  char *payload = (char *)malloc(total + 2);
+  if (payload == NULL)
+  {
+    return NULL;
+  }
+
+  payload[0] = '\0';
+  for (i = 2; i < argc; ++i)
+  {
+    strcat(payload, argv[i]);
+    if (i + 1 < argc)
+    {
+      strcat(payload, " ");
+    }
+  }
+
+  strcat(payload, "\n");
+  if (length)
+  {
+    *length = strlen(payload);
+  }
+
+  return payload;
+}
+
+int main(int argc, char **argv)
+{
+  if (argc < 3)
+  {
+    fprintf(stderr, "Usage: %s <line> <text...>\n", argv[0]);
+    return 1;
+  }
+
+  const int line = atoi(argv[1]);
+  size_t payload_length = 0;
+  char *payload = build_payload(argc, argv, &payload_length);
+  size_t offset = 0;
+
+  if (payload == NULL)
+  {
+    fprintf(stderr, "Unable to allocate payload buffer.\n");
+    return 1;
+  }
+
+  printf("Writing %zu bytes to line %d...\n", payload_length, line);
+
+  while (offset < payload_length)
+  {
+    int transferred = 0;
+    _kernel_oserror *error = converse_input_write_block(line,
+                                                        (const uint8_t *)payload + offset,
+                                                        payload_length - offset,
+                                                        &transferred);
+    if (error)
+    {
+      fprintf(stderr, "ConversePipes_InputWriteBlock failed: %s\n", error->errmess);
+      free(payload);
+      return error->errnum ? error->errnum : 1;
+    }
+
+    if (transferred > 0)
+    {
+      /* Consume any bytes accepted this pass before retrying the remainder. */
+      offset += (size_t)transferred;
+      continue;
+    }
+
+    /* Pipe is full: sleep briefly so we do not spin. */
+    wait_tick();
+  }
+
+  free(payload);
+  print_status_summary(line);
+  return 0;
+}

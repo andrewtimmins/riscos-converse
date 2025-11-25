@@ -1,0 +1,47 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+
+#include "debug.h"
+
+#include "misc.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Misc Routines                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+char* pad_with_spaces(const char *str, int length) {
+  int str_length = strlen(str);
+  char *padded_str = (char*)malloc((length + 1) * sizeof(char));
+
+  if (!padded_str) {
+  }
+
+  strcpy(padded_str, str);
+
+  if (str_length < length) {
+      for (int i = str_length; i < length; i++) {
+          padded_str[i] = ' ';
+      }
+      padded_str[length] = '\0';
+  }
+
+  return padded_str;
+}
+
+void null_terminate_string(char *str, size_t max_length) {
+    str[max_length - 1] = '\0';
+    for (size_t i = 0; i < max_length; i++) {
+        if (str[i] == '\0') break;
+        if (str[i] == '\r' || str[i] == '\n') {
+            str[i] = '\0';
+            break;
+        }
+    }
+}

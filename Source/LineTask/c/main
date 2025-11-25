@@ -1,0 +1,866 @@
+/* LineTask Wimp helper that proxies Pipes traffic on a specific line. */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <kernel.h>
+#include <swis.h>
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.WimpSWIs.h"
+#include "script.h"
+
+#define PIPES_SWI_BASE 0x5A580
+
+#define SWI_CONVERSE_PIPES_INPUT_READ   (PIPES_SWI_BASE + 3)
+#define SWI_CONVERSE_PIPES_OUTPUT_WRITE (PIPES_SWI_BASE + 5)
+#define SWI_OS_BYTE                     0x00000006
+
+#define PIPE_TRANSFER_CHUNK 256
+#define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
+#define PIPE_CONTROL_CONNECT    'C'
+#define PIPE_CONTROL_DISCONNECT 'D'
+
+#define RISC_BBS_MESSAGE_START   0x00C0900
+#define RISC_BBS_MESSAGE_END     0x00C0901
+#define RISC_BBS_MESSAGE_OUTPUT  0x00C0902
+#define RISC_BBS_MESSAGE_ACK     0x00C0903
+#define RISC_BBS_MESSAGE_INPUT   0x00C0904
+#define LINE_ACTIVITY_MESSAGE    0x5A581
+#define LINE_CONTROL_MESSAGE     0x5A582
+#define LINE_CONTROL_REASON_LOGOFF 1
+
+#define LINE_ACTIVITY_MAX_TEXT   96
+
+#define CONVERSE_FILER_BASE          0x16F00
+#define FILER_SWI_LOGGING            0
+#define FILER_LOG_REASON_LINE        1
+#define SWI_CONVERSE_FILER_LOGGING   (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
+
+#if CLOCKS_PER_SEC < 4
+#define DOOR_ACK_INTERVAL_TICKS 1
+#else
+#define DOOR_ACK_INTERVAL_TICKS (CLOCKS_PER_SEC / 4)
+#endif
+
+#define DOOR_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
+#define SCRIPT_ENTRY_PATH "<Converse$Dir>.BBS.Start"
+
+typedef struct
+{
+    int line_id;
+    int session_active;
+    int control_stage;
+    unsigned char control_code;
+    Desk_bool quit_requested;
+    Desk_bool door_launch_pending;
+    Desk_bool door_active;
+    int door_task_handle;
+    char *door_output_buffer;
+    clock_t door_next_ack_tick;
+    clock_t door_launch_deadline;
+    script_state script;
+} line_task_state;
+
+static line_task_state task_state;
+
+static char app_compiled[]=__DATE__" at "__TIME__;
+
+static int pipes_input_read_block(int line_id, char *buffer, int length);
+static int pipes_output_write_block(int line_id, const char *buffer, int length);
+static void pipes_output_write_string(int line_id, const char *string);
+static void pipes_send_welcome(line_task_state *state);
+static void handle_server_stream(line_task_state *state, const char *buffer, int length);
+static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref);
+static void process_server_stream(line_task_state *state);
+static void initialise_task_state(line_task_state *state, int argc, char **argv);
+static void wait_for_pipe_space(void);
+static void menu_handle_user_byte(line_task_state *state, unsigned char byte);
+static void script_start_session(line_task_state *state);
+static void script_stop_session(line_task_state *state);
+static void script_print_time(line_task_state *state);
+static void script_print_line_info(line_task_state *state);
+static void door_reset_state(line_task_state *state);
+static void door_process(line_task_state *state);
+static void door_send_acknowledgement(line_task_state *state);
+static void door_queue_output(line_task_state *state, const char *text, size_t length);
+static void door_flush_output(line_task_state *state);
+static void door_close_session(line_task_state *state, const char *message);
+static void script_host_write(void *context, const char *text);
+static void script_host_launch_door(void *context, const char *command_line);
+static void script_host_report_time(void *context);
+static void script_host_report_line_info(void *context);
+static void script_host_request_disconnect(void *context);
+static void script_host_force_disconnect(void *context);
+static void script_host_report_activity(void *context, const char *text);
+static int script_host_get_line_id(void *context);
+static int script_host_get_task_handle(void *context);
+static void log_line_event(int line_id, const char *message);
+
+int main(int argc, char **argv)
+{
+    initialise_task_state(&task_state, argc, argv);
+
+    {
+        char task_name[32];
+        snprintf(task_name, sizeof(task_name), "Converse Line [%d]", task_state.line_id);
+        Desk_Event_Initialise(task_name);
+    }
+    Desk_EventMsg_Initialise();
+    Desk_Screen_CacheModeInfo();
+    Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY, handle_null_poll, &task_state);
+    Desk_Event_Claim(Desk_event_USERMESSAGE, Desk_event_ANY, Desk_event_ANY, handle_message_event, &task_state);
+    Desk_Event_Claim(Desk_event_USERMESSAGERECORDED, Desk_event_ANY, Desk_event_ANY, handle_message_event, &task_state);
+
+    while (task_state.quit_requested == Desk_bool_FALSE)
+    {
+        Desk_Event_Poll();
+    }
+
+    log_line_event(task_state.line_id, "LineTask shutting down");
+
+    script_dispose(&task_state.script);
+    Desk_Event_CloseDown();
+    return 0;
+}
+
+static void initialise_task_state(line_task_state *state, int argc, char **argv)
+{
+    int line_id = 0;
+
+    if (argc > 1 && argv[1] != NULL)
+    {
+        line_id = atoi(argv[1]);
+    }
+
+    if (line_id < 0)
+    {
+        line_id = 0;
+    }
+    if (line_id > 31)
+    {
+        line_id = 31;
+    }
+
+    state->line_id = line_id;
+    state->session_active = 0;
+    state->control_stage = 0;
+    state->control_code = 0;
+    state->quit_requested = Desk_bool_FALSE;
+    door_reset_state(state);
+
+    {
+        script_host host;
+        memset(&host, 0, sizeof(host));
+        host.context = state;
+        host.write_text = script_host_write;
+        host.launch_door = script_host_launch_door;
+        host.report_time = script_host_report_time;
+        host.report_line_info = script_host_report_line_info;
+        host.request_disconnect = script_host_request_disconnect;
+        host.force_disconnect = script_host_force_disconnect;
+        host.report_activity = script_host_report_activity;
+        host.get_line_id = script_host_get_line_id;
+        host.get_task_handle = script_host_get_task_handle;
+        script_initialise(&state->script, &host);
+    }
+}
+
+static void door_reset_state(line_task_state *state)
+{
+    if (state->door_output_buffer != NULL)
+    {
+        free(state->door_output_buffer);
+        state->door_output_buffer = NULL;
+    }
+
+    state->door_launch_pending = Desk_bool_FALSE;
+    state->door_active = Desk_bool_FALSE;
+    state->door_task_handle = 0;
+    state->door_next_ack_tick = 0;
+    state->door_launch_deadline = 0;
+
+    log_line_event(state->line_id, "LineTask started");
+}
+
+static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    Desk_UNUSED(event);
+
+    process_server_stream(state);
+    door_process(state);
+    script_process(&state->script);
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    unsigned int action = event->data.message.header.action;
+
+    if (action == Desk_message_QUIT)
+    {
+        state->quit_requested = Desk_bool_TRUE;
+        return Desk_bool_TRUE;
+    }
+
+    if (action == 0x5A580)
+    {
+        int reason = event->data.message.data.words[0];
+        if (reason == 0)
+        {
+            state->quit_requested = Desk_bool_TRUE;
+            return Desk_bool_TRUE;
+        }
+        return Desk_bool_FALSE;
+    }
+
+    if (action == RISC_BBS_MESSAGE_START)
+    {
+        if (state->door_launch_pending == Desk_bool_FALSE || state->door_active != Desk_bool_FALSE)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        state->door_task_handle = event->data.message.header.sender;
+        state->door_active = Desk_bool_TRUE;
+        state->door_launch_pending = Desk_bool_FALSE;
+        state->door_launch_deadline = 0;
+        state->door_next_ack_tick = 0;
+        pipes_output_write_string(state->line_id, "\r\n[Tetris door connected]\r\n");
+        door_send_acknowledgement(state);
+        state->door_next_ack_tick = clock() + DOOR_ACK_INTERVAL_TICKS;
+        return Desk_bool_TRUE;
+    }
+
+    if (action == RISC_BBS_MESSAGE_END)
+    {
+        if (state->door_active == Desk_bool_FALSE || event->data.message.header.sender != state->door_task_handle)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        door_close_session(state, "\r\n[Tetris door closed]\r\n");
+        return Desk_bool_TRUE;
+    }
+
+    if (action == RISC_BBS_MESSAGE_OUTPUT)
+    {
+        int payload_length;
+
+        if (state->door_active == Desk_bool_FALSE || event->data.message.header.sender != state->door_task_handle)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        payload_length = event->data.message.header.size - 20;
+        if (payload_length < 0)
+        {
+            payload_length = 0;
+        }
+        door_queue_output(state, (const char *)event->data.message.data.bytes, (size_t)payload_length);
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
+static void process_server_stream(line_task_state *state)
+{
+    int iteration = 0;
+
+    while (iteration < 4)
+    {
+        char buffer[PIPE_TRANSFER_CHUNK];
+        int copied = pipes_input_read_block(state->line_id, buffer, sizeof(buffer));
+
+        if (copied <= 0)
+        {
+            break;
+        }
+
+        handle_server_stream(state, buffer, copied);
+        iteration++;
+    }
+}
+
+static void handle_plain_server_byte(line_task_state *state, unsigned char byte)
+{
+    if (state->session_active != 0)
+    {
+        menu_handle_user_byte(state, byte);
+    }
+}
+
+static void handle_server_stream(line_task_state *state, const char *buffer, int length)
+{
+    int index = 0;
+
+    while (index < length)
+    {
+        unsigned char byte = (unsigned char)buffer[index++];
+
+        if (state->control_stage == 0)
+        {
+            if (byte == PIPE_CONTROL_TOKEN)
+            {
+                state->control_stage = 1;
+                continue;
+            }
+
+            handle_plain_server_byte(state, byte);
+            continue;
+        }
+
+        if (state->control_stage == 1)
+        {
+            state->control_code = byte;
+            state->control_stage = 2;
+            continue;
+        }
+
+        /* control_stage == 2: expecting trailing token */
+        if (byte != PIPE_CONTROL_TOKEN)
+        {
+            handle_plain_server_byte(state, PIPE_CONTROL_TOKEN);
+            handle_plain_server_byte(state, state->control_code);
+            handle_plain_server_byte(state, byte);
+            state->control_stage = 0;
+            continue;
+        }
+
+        state->control_stage = 0;
+
+        if (state->control_code == PIPE_CONTROL_CONNECT)
+        {
+            state->session_active = 1;
+            log_line_event(state->line_id, "Session connected");
+            pipes_send_welcome(state);
+            script_start_session(state);
+            continue;
+        }
+
+        if (state->control_code == PIPE_CONTROL_DISCONNECT)
+        {
+            if (state->session_active != 0)
+            {
+                pipes_output_write_string(state->line_id, "\r\n[LINETASK CLOSED]\r\n");
+            }
+            state->session_active = 0;
+            if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
+            {
+                door_close_session(state, "\r\n[Tetris door session ended]\r\n");
+            }
+            log_line_event(state->line_id, "Session disconnected");
+            script_stop_session(state);
+            continue;
+        }
+
+        handle_plain_server_byte(state, PIPE_CONTROL_TOKEN);
+        handle_plain_server_byte(state, state->control_code);
+        handle_plain_server_byte(state, PIPE_CONTROL_TOKEN);
+    }
+}
+
+static int pipes_input_read_block(int line_id, char *buffer, int length)
+{
+    int copied = 0;
+
+    while (copied < length)
+    {
+        _kernel_swi_regs regs;
+
+        regs.r[0] = line_id;
+        if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_READ, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] < 0)
+        {
+            break;
+        }
+
+        buffer[copied++] = (char)regs.r[0];
+    }
+
+    return copied;
+}
+
+static int pipes_output_write_block(int line_id, const char *buffer, int length)
+{
+    int copied = 0;
+
+    while (copied < length)
+    {
+        _kernel_swi_regs regs;
+
+        regs.r[0] = line_id;
+        regs.r[1] = (unsigned int)(unsigned char)buffer[copied];
+        if (_kernel_swi(SWI_CONVERSE_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] != 0)
+        {
+            break;
+        }
+
+        copied++;
+    }
+
+    return copied;
+}
+
+static void pipes_output_write_string(int line_id, const char *string)
+{
+    while (*string != '\0')
+    {
+        int chunk = (int)strlen(string);
+        int written;
+
+        if (chunk > PIPE_TRANSFER_CHUNK)
+        {
+            chunk = PIPE_TRANSFER_CHUNK;
+        }
+
+        written = pipes_output_write_block(line_id, string, chunk);
+        if (written <= 0)
+        {
+            wait_for_pipe_space();
+            continue;
+        }
+
+        string += written;
+    }
+}
+
+static void pipes_send_welcome(line_task_state *state)
+{
+    char banner[128];
+    char connected[128];
+
+    snprintf(banner, sizeof(banner), "Converse/RISC OS (v0.01) - Compiled on %s\r\n", app_compiled);
+    pipes_output_write_string(state->line_id, banner);
+    snprintf(connected, sizeof(connected), "Connection established on Line #%d\r\n", state->line_id);
+    pipes_output_write_string(state->line_id, connected);
+}
+
+static void wait_for_pipe_space(void)
+{
+    _kernel_swi_regs regs;
+
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = 1; /* reason 1: wait for key/period to yield time slice */
+    _kernel_swi(SWI_OS_BYTE, &regs, &regs);
+}
+
+/*
+ * RiscBBS door glue
+ * ------------------
+ * The line task now owns the RiscBBS door handshake so we can prototype door launches without involving the server.
+ * Once a door starts it posts 0xC0900, we latch the task handle, stream user keystrokes via 0xC0904, and drip-feed
+ * acknowledgements (0xC0903) so the door keeps pumping output (0xC0902).  Future work: make the door path configurable
+ * instead of hard-coding Tetris and plumb in per-door state from the server’s configuration data.
+ */
+static void door_process(line_task_state *state)
+{
+    clock_t now;
+
+    door_flush_output(state);
+
+    now = clock();
+
+    if (state->door_launch_pending != Desk_bool_FALSE && state->door_launch_deadline != 0)
+    {
+        if (now >= state->door_launch_deadline)
+        {
+            pipes_output_write_string(state->line_id, "\r\n[Tetris door did not respond]\r\n");
+            door_reset_state(state);
+            script_notify_door_closed(&state->script);
+            return;
+        }
+    }
+
+    if (state->door_active == Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    if (state->door_next_ack_tick == 0 || now >= state->door_next_ack_tick)
+    {
+        door_send_acknowledgement(state);
+        state->door_next_ack_tick = now + DOOR_ACK_INTERVAL_TICKS;
+    }
+}
+
+static void door_send_acknowledgement(line_task_state *state)
+{
+    Desk_message_block message;
+
+    if (state->door_task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 20;
+    message.header.action = (Desk_message_action)RISC_BBS_MESSAGE_ACK;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->door_task_handle, NULL);
+}
+
+static void door_queue_output(line_task_state *state, const char *text, size_t length)
+{
+    if (state->door_active == Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    if (text == NULL || length == 0)
+    {
+        return;
+    }
+
+    if (state->door_output_buffer == NULL)
+    {
+        state->door_output_buffer = (char *)malloc(length + 1);
+        if (state->door_output_buffer == NULL)
+        {
+            return;
+        }
+
+        memcpy(state->door_output_buffer, text, length);
+        state->door_output_buffer[length] = '\0';
+        return;
+    }
+
+    {
+        size_t existing = strlen(state->door_output_buffer);
+        char *extended = (char *)realloc(state->door_output_buffer, existing + length + 1);
+        if (extended == NULL)
+        {
+            return;
+        }
+
+        memcpy(extended + existing, text, length);
+        extended[existing + length] = '\0';
+        state->door_output_buffer = extended;
+    }
+}
+
+static void door_flush_output(line_task_state *state)
+{
+    if (state->door_output_buffer == NULL)
+    {
+        return;
+    }
+
+    pipes_output_write_string(state->line_id, state->door_output_buffer);
+    free(state->door_output_buffer);
+    state->door_output_buffer = NULL;
+}
+
+static void door_send_user_byte(line_task_state *state, unsigned char byte)
+{
+    Desk_message_block message;
+
+    if (state->door_active == Desk_bool_FALSE || state->door_task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 24;
+    message.header.action = (Desk_message_action)RISC_BBS_MESSAGE_INPUT;
+    message.data.bytes[0] = (char)byte;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->door_task_handle, NULL);
+}
+
+static void door_close_session(line_task_state *state, const char *message)
+{
+    if (message != NULL)
+    {
+        pipes_output_write_string(state->line_id, message);
+    }
+
+    door_flush_output(state);
+    door_reset_state(state);
+    script_notify_door_closed(&state->script);
+}
+
+static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
+{
+    if (state->door_active != Desk_bool_FALSE)
+    {
+        door_send_user_byte(state, byte);
+        return;
+    }
+
+    if (state->door_launch_pending != Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    (void)script_handle_user_byte(&state->script, byte);
+}
+
+static void script_start_session(line_task_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (!script_start(&state->script, SCRIPT_ENTRY_PATH))
+    {
+        const char *error = state->script.last_error[0] != '\0' ? state->script.last_error : "Script failed";
+        char message[192];
+        snprintf(message, sizeof(message), "\r\n[Unable to start script: %s]\r\n", error);
+        pipes_output_write_string(state->line_id, message);
+        return;
+    }
+
+    script_process(&state->script);
+}
+
+static void script_stop_session(line_task_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    script_stop(&state->script);
+}
+
+static void script_print_time(line_task_state *state)
+{
+    time_t now;
+    struct tm *local_tm;
+    char formatted[64];
+    char message[160];
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    now = time(NULL);
+    local_tm = localtime(&now);
+    if (local_tm == NULL || strftime(formatted, sizeof(formatted), "%Y-%m-%d %H:%M:%S", local_tm) == 0)
+    {
+        pipes_output_write_string(state->line_id, "Unable to read system time.\r\n");
+        return;
+    }
+
+    snprintf(message, sizeof(message), "Current time: %s\r\n", formatted);
+    pipes_output_write_string(state->line_id, message);
+}
+
+static void script_print_line_info(line_task_state *state)
+{
+    char message[192];
+    const char *session = (state != NULL && state->session_active != 0) ? "connected" : "idle";
+    const char *door_state;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->door_active != Desk_bool_FALSE)
+    {
+        door_state = "door running";
+    }
+    else if (state->door_launch_pending != Desk_bool_FALSE)
+    {
+        door_state = "door starting";
+    }
+    else
+    {
+        door_state = "no door";
+    }
+
+    snprintf(message,
+             sizeof(message),
+             "Line %d: %s, %s\r\n",
+             state->line_id,
+             session,
+             door_state);
+    pipes_output_write_string(state->line_id, message);
+}
+
+static void script_host_write(void *context, const char *text)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL || text == NULL)
+    {
+        return;
+    }
+
+    pipes_output_write_string(state->line_id, text);
+}
+
+static void script_host_launch_door(void *context, const char *command_line)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->session_active == 0)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Door unavailable until connected]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->door_active != Desk_bool_FALSE)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[A door is already running]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->door_launch_pending != Desk_bool_FALSE)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[A door launch is already pending]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (command_line == NULL || *command_line == '\0')
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Door command missing]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    Desk_Wimp_StartTask(command_line);
+    state->door_launch_pending = Desk_bool_TRUE;
+    state->door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
+    pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
+}
+
+static void script_host_report_time(void *context)
+{
+    script_print_time((line_task_state *)context);
+}
+
+static void script_host_report_line_info(void *context)
+{
+    script_print_line_info((line_task_state *)context);
+}
+
+static void script_host_request_disconnect(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    pipes_output_write_string(state->line_id, "\r\n[Please hang up to disconnect]\r\n");
+}
+
+static void script_host_force_disconnect(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    Desk_message_block message;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->session_active == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 32;
+    message.header.action = (Desk_message_action)LINE_CONTROL_MESSAGE;
+    message.data.words[0] = state->line_id;
+    message.data.words[1] = LINE_CONTROL_REASON_LOGOFF;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
+
+    pipes_output_write_string(state->line_id, "\r\n[Disconnecting...]\r\n");
+}
+
+static void script_host_report_activity(void *context, const char *text)
+{
+    line_task_state *state = (line_task_state *)context;
+    Desk_message_block message;
+    size_t payload_len;
+    size_t padded_len;
+    char payload[LINE_ACTIVITY_MAX_TEXT];
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (text == NULL)
+    {
+        text = "";
+    }
+
+    strncpy(payload, text, sizeof(payload) - 1);
+    payload[sizeof(payload) - 1] = '\0';
+    payload_len = strlen(payload);
+
+    memset(&message, 0, sizeof(message));
+    message.header.action = (Desk_message_action)LINE_ACTIVITY_MESSAGE;
+    message.data.words[0] = state->line_id;
+    memcpy(&message.data.bytes[4], payload, payload_len + 1);
+
+    padded_len = (payload_len + 1 + 3) & ~3U;
+    message.header.size = 24 + (int)padded_len;
+
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
+
+    if (payload_len > 0)
+    {
+        log_line_event(state->line_id, payload);
+    }
+}
+
+static int script_host_get_line_id(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    return (state != NULL) ? state->line_id : -1;
+}
+
+static int script_host_get_task_handle(void *context)
+{
+    Desk_UNUSED(context);
+    return Desk_Event_taskhandle;
+}
+
+static void log_line_event(int line_id, const char *message)
+{
+    _kernel_swi_regs regs;
+
+    if (line_id < 0 || message == NULL || *message == '\0')
+    {
+        return;
+    }
+
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = FILER_LOG_REASON_LINE;
+    regs.r[1] = line_id;
+    regs.r[2] = (int)message;
+    _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &regs, &regs);
+}

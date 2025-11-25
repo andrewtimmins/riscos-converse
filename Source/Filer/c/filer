@@ -1,0 +1,1667 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+
+#include "filerhdr.h"
+#include "structs.h"
+#include "filer.h"
+#include "logging.h"
+#include "userdb.h"
+#include "filebase.h"
+#include "messagebase.h"
+#include "stats.h"
+
+#define FILER_LOG_ENTRY_LENGTH 256
+#define FILER_MAX_TOKENS 16
+#define FILER_MAX_TOKEN_LENGTH 256
+#define FILER_MAX_COMMAND_LENGTH 256
+#define FILER_MAX_LINE_LOGS 32
+
+/* Static helpers  ******************************************************************************************************************************************/
+static void filer_swi_logging(_kernel_swi_regs *r);
+static void filer_swi_userdb(_kernel_swi_regs *r);
+static void filer_swi_messagebase(_kernel_swi_regs *r);
+static void filer_swi_filebase(_kernel_swi_regs *r);
+static void filer_swi_statistics(_kernel_swi_regs *r);
+static void filer_command_show_files(void);
+static void filer_command_show_stats(void);
+static void filer_command_filerbases(const char *arg_string, int argc);
+static void filer_command_messagebases(const char *arg_string, int argc);
+static void filer_command_fileareas(const char *arg_string, int argc);
+static void filer_command_messageareas(const char *arg_string, int argc);
+static int filer_file_info(const char *path, long *size_out);
+static void filer_print_file_row(const char *label, const char *path);
+static int filer_count_user_records(int *record_count, long *db_size_out);
+static int filer_read_next_user_id(int *next_id_out);
+static void filer_log_copy(char *buffer, size_t length, const char *source);
+static int filer_parse_int_arg(const char *text, int *value_out);
+static int filer_text_equals(const char *lhs, const char *rhs);
+static void filer_filerbases_print_usage(void);
+static void filer_filerbases_list_bases(void);
+static void filer_filerbases_list_files(int base_id, int area_id);
+static void filer_filerbases_upload(int base_id, int area_id, const char *source_path, const char *name, const char *description);
+static void filer_filerbases_delete(int base_id, int file_id);
+static void filer_filerbases_edit(int base_id, int file_id, const char *field, const char *value);
+static void filer_messagebases_print_usage(void);
+static void filer_messagebases_list_bases(void);
+static void filer_messagebases_list_messages(int base_id, int area_id);
+static void filer_messagebases_import(int base_id, int area_id, const char *source_path, const char *subject, int type);
+static void filer_messagebases_delete(int base_id, int message_id);
+static const char *filer_messagebase_type_name(int type);
+static void filer_fileareas_print_usage(void);
+static void filer_fileareas_list(int base_id);
+static int filer_fileareas_base_cb(const FILEBASE_RECORD *record, void *context);
+static int filer_fileareas_area_cb(const FILEBASE_AREA_RECORD *record, void *context);
+static void filer_messageareas_print_usage(void);
+static void filer_messageareas_list(int base_id);
+static int filer_messageareas_base_cb(const MESSAGEBASE_RECORD *record, void *context);
+static int filer_messageareas_area_cb(const MESSAGEBASE_AREA *record, void *context);
+static const char *filer_messagearea_type_name(int type);
+static void filer_fileareas_print_usage(void);
+static void filer_fileareas_list(int base_id);
+static void filer_messageareas_print_usage(void);
+static void filer_messageareas_list(int base_id);
+static const char *filer_messagearea_type_name(int type);
+static int filer_messagebases_list_base_cb(const MESSAGEBASE_RECORD *record, void *context);
+static int filer_messagebases_list_messages_cb(const MESSAGE_RECORD *record, void *context);
+static size_t filer_copy_command_tail(const char *arg_string, char *buffer, size_t length);
+static int filer_split_arguments(const char *tail, char args[][FILER_MAX_TOKEN_LENGTH], int offsets[], int max_args);
+static const char *filer_tail_after_index(const char *tail,
+                                          char args[][FILER_MAX_TOKEN_LENGTH],
+                                          const int offsets[],
+                                          int count,
+                                          int index);
+
+/* ******************************************************************************************************************************************************** */
+/* Module Routines                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+  char log_entry[FILER_LOG_ENTRY_LENGTH];
+
+  UNUSED(cmd_tail);
+  UNUSED(podule_base);
+  UNUSED(pw);
+
+  stats_initialise();
+
+  log_header(0);
+  log_header(3);
+
+  (void)filebase_initialise();
+  (void)messagebase_initialise();
+
+  snprintf(log_entry, sizeof(log_entry), "Converse Filer Started...");
+  log_system(log_entry);
+  return NULL;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+  char log_entry[FILER_LOG_ENTRY_LENGTH];
+
+  UNUSED(fatal);
+  UNUSED(podule);
+  UNUSED(pw);
+
+  snprintf(log_entry, sizeof(log_entry), "Converse Filer Stopped...");
+  log_system(log_entry);
+
+  messagebase_finalise();
+  filebase_finalise();
+  stats_finalise();
+
+  log_footer(0);
+  log_footer(3);
+
+  {
+    int line_id;
+    for (line_id = 0; line_id < FILER_MAX_LINE_LOGS; ++line_id)
+    {
+      log_line_footer(line_id);
+    }
+  }
+  return NULL;
+}
+
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+  UNUSED(service_number);
+  UNUSED(r);
+  UNUSED(pw);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handling Routines                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *private_word)
+{
+  if (r == NULL)
+  {
+    return NULL;
+  }
+
+  UNUSED(private_word);
+
+  switch ((FILER_SWI_GROUP)swi_no)
+  {
+    case FILER_SWI_LOGGING:
+      filer_swi_logging(r);
+      break;
+    case FILER_SWI_USERDB:
+      filer_swi_userdb(r);
+      break;
+    case FILER_SWI_MESSAGEBASE:
+      filer_swi_messagebase(r);
+      break;
+    case FILER_SWI_FILEBASE:
+      filer_swi_filebase(r);
+      break;
+    case FILER_SWI_STATISTICS:
+      filer_swi_statistics(r);
+      break;
+    default:
+      r->r[0] = -1;
+      break;
+  }
+
+  return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* CLI Handling Routines                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *private_word)
+{
+  UNUSED(private_word);
+
+  switch ((FILER_COMMAND)cmd_no)
+  {
+    case FILER_COMMAND_STATUS:
+      filer_command_show_files();
+      break;
+    case FILER_COMMAND_STATS:
+      filer_command_show_stats();
+      break;
+    case FILER_COMMAND_FILERBASES:
+      filer_command_filerbases(arg_string, argc);
+      break;
+    case FILER_COMMAND_MESSAGEBASES:
+      filer_command_messagebases(arg_string, argc);
+      break;
+    case FILER_COMMAND_FILEAREAS:
+      filer_command_fileareas(arg_string, argc);
+      break;
+    case FILER_COMMAND_MESSAGEAREAS:
+      filer_command_messageareas(arg_string, argc);
+      break;
+    default:
+      break;
+  }
+
+  return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int main(int argc, char *argv[])
+{
+  UNUSED(argc);
+  UNUSED(argv);
+  return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Helper Implementations                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+static void filer_swi_logging(_kernel_swi_regs *r)
+{
+  char log_entry[FILER_LOG_ENTRY_LENGTH];
+
+  if (r == NULL)
+  {
+    return;
+  }
+
+  switch ((FILER_LOG_COMMAND)r->r[0])
+  {
+    case FILER_LOG_CMD_SYSTEM:
+      filer_log_copy(log_entry, sizeof(log_entry), (const char *)r->r[1]);
+      log_system(log_entry);
+      r->r[0] = 0;
+      break;
+    case FILER_LOG_CMD_LINE:
+      filer_log_copy(log_entry, sizeof(log_entry), (const char *)r->r[2]);
+      log_line((int)r->r[1], log_entry);
+      r->r[0] = 0;
+      break;
+    case FILER_LOG_CMD_CALL:
+      log_call((int)r->r[1], (int)r->r[2], (int)r->r[3]);
+      r->r[0] = 0;
+      break;
+    case FILER_LOG_CMD_FTN:
+      filer_log_copy(log_entry, sizeof(log_entry), (const char *)r->r[1]);
+      log_ftn(log_entry);
+      r->r[0] = 0;
+      break;
+    default:
+      r->r[0] = -1;
+      break;
+  }
+}
+
+static void filer_swi_userdb(_kernel_swi_regs *r)
+{
+  USER_RECORD *record;
+
+  if (r == NULL)
+  {
+    return;
+  }
+
+
+  switch ((FILER_USERDB_COMMAND)r->r[0])
+  {
+    case FILER_USERDB_CMD_ADD:
+      record = (USER_RECORD *)r->r[1];
+      if (record == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+      r->r[0] = userdb_add_record(record);
+      break;
+    case FILER_USERDB_CMD_UPDATE:
+      record = (USER_RECORD *)r->r[2];
+      if (record == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+      r->r[0] = userdb_update_record((int)r->r[1], record);
+      break;
+    case FILER_USERDB_CMD_DELETE:
+      r->r[0] = userdb_delete_record((int)r->r[1]);
+      break;
+    case FILER_USERDB_CMD_SEARCH:
+      record = userdb_search_record((int)r->r[1]);
+      r->r[0] = (int)record;
+      break;
+    case FILER_USERDB_CMD_AUTHENTICATE:
+    {
+      FILER_USERDB_AUTH_RESULT auth_result = FILER_USERDB_AUTH_NO_USER;
+      record = userdb_authenticate((const char *)r->r[1], (const char *)r->r[2], &auth_result);
+      r->r[0] = auth_result;
+      r->r[1] = (int)record;
+      break;
+    }
+    default:
+      r->r[0] = -1;
+      break;
+  }
+}
+
+static void filer_swi_messagebase(_kernel_swi_regs *r)
+{
+  if (r == NULL)
+  {
+    return;
+  }
+
+  messagebase_swi_handler(r);
+}
+
+static void filer_swi_filebase(_kernel_swi_regs *r)
+{
+  if (r == NULL)
+  {
+    return;
+  }
+
+  filebase_swi_handler(r);
+}
+
+static void filer_swi_statistics(_kernel_swi_regs *r)
+{
+  int total = 0;
+
+  if (r == NULL)
+  {
+    return;
+  }
+
+  switch (r->r[0])
+  {
+    case 0:
+      (void)stats_get_call_totals(&total);
+      r->r[0] = total;
+      break;
+    case 1:
+      if (stats_set_call_totals((int)r->r[1]))
+      {
+        r->r[0] = 0;
+      }
+      else
+      {
+        r->r[0] = -1;
+      }
+      break;
+    default:
+      r->r[0] = -1;
+      break;
+  }
+}
+
+static void filer_command_show_files(void)
+{
+  static const struct
+  {
+    const char *label;
+    const char *path;
+  } entries[] = {
+      {"System Log", SYSTEMLOG},
+      {"Call Log", CALLLOG},
+      {"FTN Log", FTNLOG},
+      {"User DB", USERDB},
+      {"User Index", USERIDX},
+      {"User DB Temp", TEMPUSERDB},
+      {"Filebase DB", FILEBASE_DB_PATH},
+      {"Filebase DB Temp", FILEBASE_DB_TEMP_PATH},
+      {"Filebase Index", FILEBASE_IDX_PATH}};
+  size_t index;
+
+  puts("Converse Filer file status:\n");
+  puts("------------------------------+--------+--------------+-------------------------------------------");
+  puts("Name                          | Exists | Size (bytes) | Path");
+  puts("------------------------------+--------+--------------+-------------------------------------------");
+
+  for (index = 0; index < (sizeof(entries) / sizeof(entries[0])); ++index)
+  {
+    filer_print_file_row(entries[index].label, entries[index].path);
+  }
+
+  puts("------------------------------+--------+--------------+-------------------------------------------\n");
+}
+
+static void filer_command_show_stats(void)
+{
+  int record_count = 0;
+  long db_size = 0;
+  int next_id = 0;
+  const int has_db = filer_count_user_records(&record_count, &db_size);
+  const int has_idx = filer_read_next_user_id(&next_id);
+  long user_idx_size = 0;
+  const int has_user_idx_file = filer_file_info(USERIDX, &user_idx_size);
+  int base_count = 0;
+  long base_db_size = 0;
+  int next_base_id = 0;
+  long base_idx_size = 0;
+  int file_count = 0;
+  long file_bytes = 0;
+  int message_base_count = 0;
+  long message_base_db_size = 0;
+  int next_message_base_id = 0;
+  long message_idx_size = 0;
+  int message_count = 0;
+  long message_bytes = 0;
+  const int has_base_db = filebase_count_bases(&base_count, &base_db_size);
+  const int has_base_idx = filebase_peek_next_base_id(&next_base_id, &base_idx_size);
+  const int has_file_stats = filebase_collect_file_stats(&file_count, &file_bytes);
+  const int has_message_db = messagebase_count_bases(&message_base_count, &message_base_db_size);
+  const int has_message_idx = messagebase_peek_next_base_id(&next_message_base_id, &message_idx_size);
+  const int has_message_stats = messagebase_collect_message_stats(&message_count, &message_bytes);
+
+  puts("Converse Filer statistics:\n");
+
+  puts("User database:");
+  if (has_db)
+  {
+    printf("  UserDB path   : %s\n", USERDB);
+    printf("  UserDB size   : %ld bytes\n", db_size);
+    printf("  User records  : %d\n", record_count);
+  }
+  else
+  {
+    printf("  UserDB path   : %s\n", USERDB);
+    puts("  UserDB size   : unavailable (file not found)");
+    puts("  User records  : unavailable");
+  }
+
+  printf("  UserIDX path  : %s\n", USERIDX);
+  if (has_user_idx_file)
+  {
+    printf("  UserIDX size  : %ld bytes\n", user_idx_size);
+  }
+  else
+  {
+    puts("  UserIDX size  : unavailable (file not found)");
+  }
+
+  if (has_idx)
+  {
+    printf("  Next user ID  : %d\n", next_id);
+  }
+  else
+  {
+    puts("  Next user ID  : unavailable (index missing)");
+  }
+
+  puts("");
+
+  puts("Filebase registry:");
+  if (has_base_db)
+  {
+    printf("  FileDB path   : %s\n", FILEBASE_DB_PATH);
+    printf("  FileDB size   : %ld bytes\n", base_db_size);
+    printf("  Filebases     : %d\n", base_count);
+  }
+  else
+  {
+    printf("  FileDB path   : %s\n", FILEBASE_DB_PATH);
+    puts("  FileDB size   : unavailable (file not found)");
+    puts("  Filebases     : unavailable");
+  }
+
+  printf("  FileIDX path  : %s\n", FILEBASE_IDX_PATH);
+  if (has_base_idx)
+  {
+    printf("  FileIDX size  : %ld bytes\n", base_idx_size);
+    printf("  Next base ID  : %d\n", next_base_id);
+  }
+  else
+  {
+    puts("  FileIDX size  : unavailable (file not found)");
+    puts("  Next base ID  : unavailable (index missing)");
+  }
+
+  if (has_file_stats)
+  {
+    printf("  Stored files  : %d\n", file_count);
+    printf("  Stored bytes  : %ld bytes\n", file_bytes);
+  }
+  else
+  {
+    puts("  Stored files  : unavailable (metadata missing)");
+  }
+
+  puts("");
+
+  puts("Messagebase registry:");
+  if (has_message_db)
+  {
+    printf("  MsgDB path    : %s\n", MESSAGEBASE_DB_PATH);
+    printf("  MsgDB size    : %ld bytes\n", message_base_db_size);
+    printf("  Messagebases  : %d\n", message_base_count);
+  }
+  else
+  {
+    printf("  MsgDB path    : %s\n", MESSAGEBASE_DB_PATH);
+    puts("  MsgDB size    : unavailable (file not found)");
+    puts("  Messagebases  : unavailable");
+  }
+
+  printf("  MsgIDX path   : %s\n", MESSAGEBASE_IDX_PATH);
+  if (has_message_idx)
+  {
+    printf("  MsgIDX size   : %ld bytes\n", message_idx_size);
+    printf("  Next base ID  : %d\n", next_message_base_id);
+  }
+  else
+  {
+    puts("  MsgIDX size   : unavailable (file not found)");
+    puts("  Next base ID  : unavailable (index missing)");
+  }
+
+  if (has_message_stats)
+  {
+    printf("  Stored msgs   : %d\n", message_count);
+    printf("  Stored bytes  : %ld bytes\n", message_bytes);
+  }
+  else
+  {
+    puts("  Stored msgs   : unavailable (metadata missing)");
+  }
+
+  puts("");
+}
+
+static int filer_file_info(const char *path, long *size_out)
+{
+  FILE *file;
+  long size = 0;
+
+  if (path == NULL)
+  {
+    if (size_out != NULL)
+    {
+      *size_out = 0;
+    }
+    return 0;
+  }
+
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    if (size_out != NULL)
+    {
+      *size_out = 0;
+    }
+    return 0;
+  }
+
+  if (fseek(file, 0, SEEK_END) == 0)
+  {
+    long position = ftell(file);
+    if (position >= 0)
+    {
+      size = position;
+    }
+  }
+
+  fclose(file);
+
+  if (size_out != NULL)
+  {
+    *size_out = size;
+  }
+
+  return 1;
+}
+
+static void filer_print_file_row(const char *label, const char *path)
+{
+  long size = 0;
+  const int exists = filer_file_info(path, &size);
+
+  if (exists)
+  {
+    printf("%-30s | %-6s | %12ld | %s\n", label, "Yes", size, path);
+  }
+  else
+  {
+    printf("%-30s | %-6s | %12s | %s\n", label, "No", "-", path);
+  }
+}
+
+static int filer_count_user_records(int *record_count, long *db_size_out)
+{
+  long db_size = 0;
+
+  if (!filer_file_info(USERDB, &db_size))
+  {
+    if (record_count != NULL)
+    {
+      *record_count = 0;
+    }
+    if (db_size_out != NULL)
+    {
+      *db_size_out = 0;
+    }
+    return 0;
+  }
+
+  if (db_size_out != NULL)
+  {
+    *db_size_out = db_size;
+  }
+
+  if (record_count != NULL)
+  {
+    const long entry_size = (long)sizeof(USER_RECORD);
+    *record_count = (entry_size > 0) ? (int)(db_size / entry_size) : 0;
+  }
+
+  return 1;
+}
+
+static int filer_read_next_user_id(int *next_id_out)
+{
+  FILE *file = fopen(USERIDX, "rb");
+  int value = 0;
+
+  if (file == NULL)
+  {
+    if (next_id_out != NULL)
+    {
+      *next_id_out = 0;
+    }
+    return 0;
+  }
+
+  if (fread(&value, sizeof(value), 1, file) != 1)
+  {
+    fclose(file);
+    if (next_id_out != NULL)
+    {
+      *next_id_out = 0;
+    }
+    return 0;
+  }
+
+  fclose(file);
+
+  if (next_id_out != NULL)
+  {
+    *next_id_out = value;
+  }
+
+  return 1;
+}
+
+static void filer_command_filerbases(const char *arg_string, int argc)
+{
+  char tail[FILER_MAX_COMMAND_LENGTH];
+  char args[FILER_MAX_TOKENS][FILER_MAX_TOKEN_LENGTH];
+  int offsets[FILER_MAX_TOKENS];
+  int arg_count;
+
+  UNUSED(argc);
+
+
+  filer_copy_command_tail(arg_string, tail, sizeof(tail));
+  arg_count = filer_split_arguments(tail, args, offsets, FILER_MAX_TOKENS);
+
+  if (arg_count <= 0)
+  {
+    filer_filerbases_print_usage();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "LIST"))
+  {
+    filer_filerbases_list_bases();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "FILES"))
+  {
+    int base_id = 0;
+    int area_id = -1;
+
+    if (arg_count < 2 || !filer_parse_int_arg(args[1], &base_id))
+    {
+      puts("Usage: *Filer_FileBases files <base id> [area id]");
+      return;
+    }
+
+    if (arg_count >= 3)
+    {
+      if (!filer_parse_int_arg(args[2], &area_id))
+      {
+        puts("Area id must be numeric.");
+        return;
+      }
+    }
+
+    filer_filerbases_list_files(base_id, area_id);
+    return;
+  }
+
+  if (filer_text_equals(args[0], "UPLOAD"))
+  {
+    int base_id = 0;
+    int area_id = 0;
+    const char *description = NULL;
+
+    if (arg_count < 5 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &area_id))
+    {
+      puts("Usage: *Filer_FileBases upload <base id> <area id> <source path> <name> [description]");
+      return;
+    }
+
+    description = filer_tail_after_index(tail, args, offsets, arg_count, 4);
+    filer_filerbases_upload(base_id, area_id, args[3], args[4], description);
+    return;
+  }
+
+  if (filer_text_equals(args[0], "DELETE"))
+  {
+    int base_id = 0;
+    int file_id = 0;
+
+
+    if (arg_count < 3 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &file_id))
+    {
+      puts("Usage: *Filer_FileBases delete <base id> <file id>");
+      return;
+    }
+    filer_filerbases_delete(base_id, file_id);
+    return;
+  }
+
+  if (filer_text_equals(args[0], "EDIT"))
+  {
+    int base_id = 0;
+    int file_id = 0;
+    const char *value = NULL;
+
+
+    if (arg_count < 4 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &file_id))
+    {
+      puts("Usage: *Filer_FileBases edit <base id> <file id> <field> <value>");
+      return;
+    }
+
+    value = filer_tail_after_index(tail, args, offsets, arg_count, 3);
+    filer_filerbases_edit(base_id, file_id, args[3], value);
+    return;
+  }
+
+}
+
+static void filer_command_messagebases(const char *arg_string, int argc)
+{
+  char tail[FILER_MAX_COMMAND_LENGTH];
+  char args[FILER_MAX_TOKENS][FILER_MAX_TOKEN_LENGTH];
+  int offsets[FILER_MAX_TOKENS];
+  int arg_count;
+
+  UNUSED(argc);
+
+
+  filer_copy_command_tail(arg_string, tail, sizeof(tail));
+  arg_count = filer_split_arguments(tail, args, offsets, FILER_MAX_TOKENS);
+
+  if (arg_count <= 0)
+  {
+    filer_messagebases_print_usage();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "LIST"))
+  {
+    filer_messagebases_list_bases();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "MESSAGES"))
+  {
+    int base_id = 0;
+    int area_id = -1;
+    if (arg_count < 2 || !filer_parse_int_arg(args[1], &base_id))
+    {
+      puts("Usage: *Filer_MessageBases messages <base id> [area id]");
+      return;
+    }
+
+    if (arg_count >= 3)
+    {
+      if (!filer_parse_int_arg(args[2], &area_id))
+      {
+        puts("Area id must be numeric.");
+        return;
+      }
+    }
+
+    filer_messagebases_list_messages(base_id, area_id);
+    return;
+  }
+
+  if (filer_text_equals(args[0], "IMPORT"))
+  {
+    int base_id = 0;
+    int area_id = 0;
+    int type = 0;
+    const char *subject = NULL;
+
+    if (arg_count < 5 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &area_id))
+    {
+      puts("Usage: *Filer_MessageBases import <base id> <area id> <host path> <type> <subject>");
+      return;
+    }
+
+    if (!filer_parse_int_arg(args[4], &type))
+    {
+      puts("Message type must be numeric.");
+      return;
+    }
+
+    subject = filer_tail_after_index(tail, args, offsets, arg_count, 4);
+    if (subject == NULL)
+    {
+      puts("Subject text required.");
+      return;
+    }
+
+    filer_messagebases_import(base_id, area_id, args[3], subject, type);
+    return;
+  }
+
+  if (filer_text_equals(args[0], "DELETE"))
+  {
+    int base_id = 0;
+    int message_id = 0;
+
+    if (arg_count < 3 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &message_id))
+    {
+      puts("Usage: *Filer_MessageBases delete <base id> <message id>");
+      return;
+    }
+
+    filer_messagebases_delete(base_id, message_id);
+    return;
+  }
+
+  filer_messagebases_print_usage();
+}
+
+static void filer_command_fileareas(const char *arg_string, int argc)
+{
+  char tail[FILER_MAX_COMMAND_LENGTH];
+  char args[FILER_MAX_TOKENS][FILER_MAX_TOKEN_LENGTH];
+  int offsets[FILER_MAX_TOKENS];
+  int arg_count;
+
+  UNUSED(argc);
+
+
+  filer_copy_command_tail(arg_string, tail, sizeof(tail));
+  arg_count = filer_split_arguments(tail, args, offsets, FILER_MAX_TOKENS);
+
+  if (arg_count <= 0)
+  {
+    filer_fileareas_print_usage();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "LIST"))
+  {
+    int base_id = 0;
+    if (arg_count >= 2 && !filer_parse_int_arg(args[1], &base_id))
+    {
+      puts("Base id must be numeric.");
+      return;
+    }
+
+    filer_fileareas_list(base_id);
+    return;
+  }
+
+  filer_fileareas_print_usage();
+}
+
+static void filer_command_messageareas(const char *arg_string, int argc)
+{
+  char tail[FILER_MAX_COMMAND_LENGTH];
+  char args[FILER_MAX_TOKENS][FILER_MAX_TOKEN_LENGTH];
+  int offsets[FILER_MAX_TOKENS];
+  int arg_count;
+
+  UNUSED(argc);
+
+
+  filer_copy_command_tail(arg_string, tail, sizeof(tail));
+  arg_count = filer_split_arguments(tail, args, offsets, FILER_MAX_TOKENS);
+
+  if (arg_count <= 0)
+  {
+    filer_messageareas_print_usage();
+    return;
+  }
+
+  if (filer_text_equals(args[0], "LIST"))
+  {
+    int base_id = 0;
+    if (arg_count >= 2 && !filer_parse_int_arg(args[1], &base_id))
+    {
+      puts("Base id must be numeric.");
+      return;
+    }
+
+    filer_messageareas_list(base_id);
+    return;
+  }
+
+  filer_messageareas_print_usage();
+}
+
+static size_t filer_copy_command_tail(const char *arg_string, char *buffer, size_t length)
+{
+  size_t copy = 0;
+  const char *source;
+
+  if (buffer == NULL || length == 0)
+  {
+    return 0;
+  }
+
+  buffer[0] = '\0';
+
+  if (arg_string == NULL)
+  {
+    return 0;
+  }
+
+  while (*arg_string != '\0' && isspace((unsigned char)*arg_string))
+  {
+    arg_string++;
+  }
+
+  if (*arg_string == '\0')
+  {
+    return 0;
+  }
+
+  if (!isprint((unsigned char)*arg_string))
+  {
+    size_t declared = (size_t)(unsigned char)*arg_string;
+    const char *body = arg_string + 1;
+
+    if (declared == 0)
+    {
+      return 0;
+    }
+
+    copy = (declared < (length - 1)) ? declared : (length - 1);
+    memcpy(buffer, body, copy);
+    buffer[copy] = '\0';
+    return copy;
+  }
+
+  source = arg_string;
+  copy = strlen(source);
+  if (copy >= length)
+  {
+    copy = length - 1;
+  }
+
+  memcpy(buffer, source, copy);
+  buffer[copy] = '\0';
+  return copy;
+}
+
+static void filer_log_copy(char *buffer, size_t length, const char *source)
+{
+  if (buffer == NULL || length == 0)
+  {
+    return;
+  }
+
+  if (source == NULL)
+  {
+    buffer[0] = '\0';
+    return;
+  }
+
+  snprintf(buffer, length, "%s", source);
+}
+
+static int filer_split_arguments(const char *tail, char args[][FILER_MAX_TOKEN_LENGTH], int offsets[], int max_args)
+{
+  const char *cursor = tail;
+  int count = 0;
+
+  if (tail == NULL)
+  {
+    return 0;
+  }
+
+  while (*cursor != '\0' && count < max_args)
+  {
+    size_t token_length = 0;
+
+    while (*cursor != '\0' && isspace((unsigned char)*cursor))
+    {
+      cursor++;
+    }
+
+    if (*cursor == '\0')
+    {
+      break;
+    }
+
+    offsets[count] = (int)(cursor - tail);
+
+    while (*cursor != '\0' && !isspace((unsigned char)*cursor))
+    {
+      if (token_length + 1 < FILER_MAX_TOKEN_LENGTH)
+      {
+        args[count][token_length++] = *cursor;
+      }
+      cursor++;
+    }
+
+    args[count][token_length] = '\0';
+    count++;
+  }
+
+  return count;
+}
+
+static const char *filer_tail_after_index(const char *tail,
+                                          char args[][FILER_MAX_TOKEN_LENGTH],
+                                          const int offsets[],
+                                          int count,
+                                          int index)
+{
+  const char *cursor;
+  size_t token_length;
+
+  if (tail == NULL || offsets == NULL || args == NULL)
+  {
+    return NULL;
+  }
+
+  if (index < 0 || index >= count)
+  {
+    return NULL;
+  }
+
+  cursor = tail + offsets[index];
+  token_length = strlen(args[index]);
+  cursor += token_length;
+
+  while (*cursor != '\0' && isspace((unsigned char)*cursor))
+  {
+    cursor++;
+  }
+
+  return (*cursor != '\0') ? cursor : NULL;
+}
+
+static int filer_text_equals(const char *lhs, const char *rhs)
+{
+  unsigned char ca;
+  unsigned char cb;
+
+  if (lhs == NULL || rhs == NULL)
+  {
+    return 0;
+  }
+
+  while (*lhs != '\0' && *rhs != '\0')
+  {
+    ca = (unsigned char)*lhs++;
+    cb = (unsigned char)*rhs++;
+    if (tolower(ca) != tolower(cb))
+    {
+      return 0;
+    }
+  }
+
+  return (*lhs == '\0' && *rhs == '\0');
+}
+
+static int filer_parse_int_arg(const char *text, int *value_out)
+{
+  char *end = NULL;
+  long value;
+
+  if (text == NULL || *text == '\0')
+  {
+    return 0;
+  }
+
+  value = strtol(text, &end, 10);
+  if (end == NULL || *end != '\0')
+  {
+    return 0;
+  }
+
+  if (value_out != NULL)
+  {
+    *value_out = (int)value;
+  }
+
+  return 1;
+}
+
+static void filer_filerbases_print_usage(void)
+{
+  puts("*Filer_FileBases list                                                 - List all filebases");
+  puts("*Filer_FileBases files <base id> [area id]                           - List files in a base/area");
+  puts("*Filer_FileBases upload <base id> <area id> <host path> <name> [description] - Upload a file");
+  puts("*Filer_FileBases delete <base id> <file id>                           - Delete a file");
+  puts("*Filer_FileBases edit <base id> <file id> <field> <value>             - Edit file metadata");
+}
+
+static int filer_filerbases_list_base_cb(const FILEBASE_RECORD *record, void *context)
+{
+  int *printed = (int *)context;
+
+  printf("%4d | %-8s | %-3d | %-10s | %-20s | %s\n",
+         record->id,
+         (record->type == 0) ? "normal" : (record->type == 1) ? "free" : "user",
+         record->accesslevel,
+         record->keys,
+         record->name,
+         record->filebasedir);
+
+  if (printed != NULL)
+  {
+    *printed = 1;
+  }
+
+  return 1;
+}
+
+static void filer_filerbases_list_bases(void)
+{
+  int printed = 0;
+
+  puts("ID   | Type     | Acc | Keys        | Name                 | Directory");
+  puts("-----+----------+-----+-------------+----------------------+------------------------------");
+
+  filebase_iterate_bases(filer_filerbases_list_base_cb, &printed);
+
+  if (!printed)
+  {
+    puts("Sorry, no filebases have been configured yet.");
+  }
+
+  puts("");
+}
+
+typedef struct
+{
+  int include_deleted;
+  int filter_area_id;
+} FILER_FILE_LIST_CTX;
+
+static int filer_filerbases_list_files_cb(const FILE_RECORD *record, void *context)
+{
+  FILER_FILE_LIST_CTX *ctx = (FILER_FILE_LIST_CTX *)context;
+
+  if (!ctx->include_deleted && record->deleted)
+  {
+    return 1;
+  }
+
+  if (ctx->filter_area_id >= 0 && record->filebaseareaid != ctx->filter_area_id)
+  {
+    return 1;
+  }
+
+  printf("%4d | %4d | %c | %-20s | %-6ld | %-10s | %s\n",
+         record->id,
+         record->filebaseareaid,
+         record->deleted ? 'D' : 'A',
+         record->name,
+         record->filesize,
+         record->keys,
+         record->description);
+  return 1;
+}
+
+static void filer_filerbases_list_files(int base_id, int area_id)
+{
+  FILER_FILE_LIST_CTX ctx;
+  ctx.include_deleted = 0;
+  ctx.filter_area_id = area_id;
+
+  if (area_id >= 0)
+  {
+    printf("Listing files for base %d (area %d):\n", base_id, area_id);
+  }
+  else
+  {
+    printf("Listing files for base %d:\n", base_id);
+  }
+  puts("ID   | Area | S | Name                 | Bytes  | Keys       | Description");
+  puts("-----+------+---+----------------------+--------+------------+------------------------------");
+
+  if (!filebase_iterate_files(base_id, filer_filerbases_list_files_cb, &ctx))
+  {
+    puts("  Unable to read file metadata.");
+  }
+
+  puts("");
+}
+
+static void filer_filerbases_upload(int base_id, int area_id, const char *source_path, const char *name, const char *description)
+{
+  int file_id;
+
+  if (source_path == NULL || name == NULL)
+  {
+    puts("Upload requires a host path and a target name.");
+    return;
+  }
+
+  file_id = filebase_upload_from_host(base_id, area_id, source_path, name, description, 0);
+  if (file_id < 0)
+  {
+    puts("Upload failed.");
+  }
+  else
+  {
+    printf("Uploaded as file %d in base %d (area %d).\n", file_id, base_id, area_id);
+  }
+}
+
+static void filer_filerbases_delete(int base_id, int file_id)
+{
+  if (!filebase_delete_file(base_id, file_id, 1))
+  {
+    puts("Delete failed (file not found?).");
+  }
+  else
+  {
+    printf("File %d removed from base %d.\n", file_id, base_id);
+  }
+}
+
+static void filer_filerbases_edit(int base_id, int file_id, const char *field, const char *value)
+{
+  FILE_RECORD record;
+
+  if (field == NULL || value == NULL || *value == '\0')
+  {
+    puts("Edit requires a field and value.");
+    return;
+  }
+
+  if (!filebase_get_file_record(base_id, file_id, &record))
+  {
+    puts("File not found.");
+    return;
+  }
+
+  if (filer_text_equals(field, "name"))
+  {
+    snprintf(record.name, sizeof(record.name), "%s", value);
+  }
+  else if (filer_text_equals(field, "description") || filer_text_equals(field, "desc"))
+  {
+    snprintf(record.description, sizeof(record.description), "%s", value);
+  }
+  else if (filer_text_equals(field, "keys"))
+  {
+    snprintf(record.keys, sizeof(record.keys), "%s", value);
+  }
+  else if (filer_text_equals(field, "access") || filer_text_equals(field, "accesslevel"))
+  {
+    int level = 0;
+    if (!filer_parse_int_arg(value, &level))
+    {
+      puts("Access level must be numeric.");
+      return;
+    }
+    record.accesslevel = level;
+  }
+  else
+  {
+    puts("Unknown field. Valid fields: name, description, keys, access.");
+    return;
+  }
+
+  if (!filebase_save_file_record(base_id, &record))
+  {
+    puts("Unable to update record.");
+  }
+  else
+  {
+    puts("Record updated.");
+  }
+}
+
+static void filer_messagebases_print_usage(void)
+{
+  puts("*Filer_MessageBases list                                           - List all messagebases");
+  puts("*Filer_MessageBases messages <base id> [area id]                    - List messages in a base/area");
+  puts("*Filer_MessageBases import <base id> <area id> <host path> <type> <subject> - Import a message payload");
+  puts("*Filer_MessageBases delete <base id> <message id>                   - Delete a message");
+}
+
+static const char *filer_messagebase_type_name(int type)
+{
+  switch (type)
+  {
+    case 1:
+      return "ftn";
+    case 2:
+      return "private";
+    default:
+      return "local";
+  }
+}
+
+static int filer_messagebases_list_base_cb(const MESSAGEBASE_RECORD *record, void *context)
+{
+  int *printed = (int *)context;
+
+  printf("%4d | %-8s | %-3d | %-10s | %-20s | %s\n",
+         record->id,
+         filer_messagebase_type_name(record->type),
+         record->accesslevel,
+         record->keys,
+         record->name,
+         record->messagebasedir);
+
+  if (printed != NULL)
+  {
+    *printed = 1;
+  }
+
+  return 1;
+}
+
+static void filer_messagebases_list_bases(void)
+{
+  int printed = 0;
+
+  puts("ID   | Type     | Acc | Keys        | Name                 | Directory");
+  puts("-----+----------+-----+-------------+----------------------+------------------------------");
+
+  messagebase_iterate_bases(filer_messagebases_list_base_cb, &printed);
+
+  if (!printed)
+  {
+    puts("Sorry, no messagebases have been configured yet.");
+  }
+
+  puts("");
+}
+
+typedef struct
+{
+  int include_deleted;
+  int filter_area_id;
+} FILER_MESSAGE_LIST_CTX;
+
+static int filer_messagebases_list_messages_cb(const MESSAGE_RECORD *record, void *context)
+{
+  FILER_MESSAGE_LIST_CTX *ctx = (FILER_MESSAGE_LIST_CTX *)context;
+
+  if (!ctx->include_deleted && record->deleted)
+  {
+    return 1;
+  }
+
+  if (ctx->filter_area_id >= 0 && record->messagebaseareaid != ctx->filter_area_id)
+  {
+    return 1;
+  }
+
+  printf("%4d | %4d | %c | %-6s | %-8ld | %s\n",
+         record->id,
+         record->messagebaseareaid,
+         record->deleted ? 'D' : 'A',
+         filer_messagebase_type_name(record->type),
+         record->bodysize,
+         record->subject);
+  return 1;
+}
+
+static void filer_messagebases_list_messages(int base_id, int area_id)
+{
+  FILER_MESSAGE_LIST_CTX ctx;
+  ctx.include_deleted = 0;
+  ctx.filter_area_id = area_id;
+
+  if (area_id >= 0)
+  {
+    printf("Listing messages for base %d (area %d):\n", base_id, area_id);
+  }
+  else
+  {
+    printf("Listing messages for base %d:\n", base_id);
+  }
+  puts("ID   | Area | S | Type   | Bytes    | Subject");
+  puts("-----+------+---+--------+----------+------------------------------");
+
+  if (!messagebase_iterate_messages(base_id, filer_messagebases_list_messages_cb, &ctx))
+  {
+    puts("  Unable to read message metadata.");
+  }
+
+  puts("");
+}
+
+static void filer_messagebases_import(int base_id, int area_id, const char *source_path, const char *subject, int type)
+{
+  MESSAGE_RECORD record;
+  int message_id;
+
+  if (source_path == NULL || subject == NULL || *subject == '\0')
+  {
+    puts("Import requires a host path and subject text.");
+    return;
+  }
+
+  memset(&record, 0, sizeof(record));
+  record.type = type;
+  record.messagebaseareaid = area_id;
+  snprintf(record.subject, sizeof(record.subject), "%s", subject);
+
+  message_id = messagebase_store_from_host(base_id, source_path, &record);
+  if (message_id < 0)
+  {
+    puts("Import failed.");
+  }
+  else
+  {
+    printf("Stored as message %d in base %d (area %d).\n", message_id, base_id, area_id);
+  }
+}
+
+static void filer_messagebases_delete(int base_id, int message_id)
+{
+  if (!messagebase_delete_message(base_id, message_id, 1))
+  {
+    puts("Delete failed (message not found?).");
+  }
+  else
+  {
+    printf("Message %d removed from base %d.\n", message_id, base_id);
+  }
+}
+
+static void filer_fileareas_print_usage(void)
+{
+  puts("*Filer_FileAreas list [base id]   - List file areas for all or one base");
+}
+
+typedef struct
+{
+  int filter_base_id;
+  int printed_rows;
+} FILER_FILEAREA_LIST_CTX;
+
+typedef struct
+{
+  const FILEBASE_RECORD *base;
+  FILER_FILEAREA_LIST_CTX *parent;
+} FILER_FILEAREA_ROW_CTX;
+
+static void filer_fileareas_list(int base_id)
+{
+  FILER_FILEAREA_LIST_CTX ctx;
+  ctx.filter_base_id = base_id;
+  ctx.printed_rows = 0;
+
+  puts("Base | Base Name           | Area | Acc | Keys        | Area Name");
+  puts("-----+---------------------+------+-----+-------------+------------------------------");
+
+  if (!filebase_iterate_bases(filer_fileareas_base_cb, &ctx))
+  {
+    puts("Unable to read filebase metadata.");
+    return;
+  }
+
+  if (!ctx.printed_rows)
+  {
+    puts("No file areas found.");
+  }
+
+  puts("");
+}
+
+static int filer_fileareas_base_cb(const FILEBASE_RECORD *record, void *context)
+{
+  FILER_FILEAREA_LIST_CTX *ctx = (FILER_FILEAREA_LIST_CTX *)context;
+
+  if (ctx->filter_base_id > 0 && record->id != ctx->filter_base_id)
+  {
+    return 1;
+  }
+
+  {
+    FILER_FILEAREA_ROW_CTX row_ctx;
+    row_ctx.base = record;
+    row_ctx.parent = ctx;
+
+    if (!filebase_iterate_areas(record->id, filer_fileareas_area_cb, &row_ctx))
+    {
+      if (ctx->filter_base_id > 0)
+      {
+        puts("Unable to read area metadata for the selected filebase.");
+      }
+    }
+  }
+
+  if (ctx->filter_base_id > 0 && record->id == ctx->filter_base_id)
+  {
+    return 0;
+  }
+
+  return 1;
+}
+
+static int filer_fileareas_area_cb(const FILEBASE_AREA_RECORD *record, void *context)
+{
+  FILER_FILEAREA_ROW_CTX *row = (FILER_FILEAREA_ROW_CTX *)context;
+
+  printf("%4d | %-21s | %4d | %-3d | %-11s | %s\n",
+         row->base->id,
+         row->base->name,
+         record->id,
+         record->accesslevel,
+         record->keys,
+         record->name);
+
+  if (row->parent != NULL)
+  {
+    row->parent->printed_rows = 1;
+  }
+
+  return 1;
+}
+
+static void filer_messageareas_print_usage(void)
+{
+  puts("*Filer_MessageAreas list [base id] - List message areas for all or one base");
+}
+
+typedef struct
+{
+  int filter_base_id;
+  int printed_rows;
+} FILER_MESSAGEAREA_LIST_CTX;
+
+typedef struct
+{
+  const MESSAGEBASE_RECORD *base;
+  FILER_MESSAGEAREA_LIST_CTX *parent;
+} FILER_MESSAGEAREA_ROW_CTX;
+
+static void filer_messageareas_list(int base_id)
+{
+  FILER_MESSAGEAREA_LIST_CTX ctx;
+  ctx.filter_base_id = base_id;
+  ctx.printed_rows = 0;
+
+  puts("Base | Base Name           | Area | Type  | Days | AKA | Tag        | Area Name");
+  puts("-----+---------------------+------+-------+------+-----+------------+------------------------------");
+
+  if (!messagebase_iterate_bases(filer_messageareas_base_cb, &ctx))
+  {
+    puts("Unable to read messagebase metadata.");
+    return;
+  }
+
+  if (!ctx.printed_rows)
+  {
+    puts("No message areas found.");
+  }
+
+  puts("");
+}
+
+static int filer_messageareas_base_cb(const MESSAGEBASE_RECORD *record, void *context)
+{
+  FILER_MESSAGEAREA_LIST_CTX *ctx = (FILER_MESSAGEAREA_LIST_CTX *)context;
+
+  if (ctx->filter_base_id > 0 && record->id != ctx->filter_base_id)
+  {
+    return 1;
+  }
+
+  {
+    FILER_MESSAGEAREA_ROW_CTX row_ctx;
+    row_ctx.base = record;
+    row_ctx.parent = ctx;
+
+    if (!messagebase_iterate_areas(record->id, filer_messageareas_area_cb, &row_ctx))
+    {
+      if (ctx->filter_base_id > 0)
+      {
+        puts("Unable to read area metadata for the selected messagebase.");
+      }
+    }
+  }
+
+  if (ctx->filter_base_id > 0 && record->id == ctx->filter_base_id)
+  {
+    return 0;
+  }
+
+  return 1;
+}
+
+static int filer_messageareas_area_cb(const MESSAGEBASE_AREA *record, void *context)
+{
+  FILER_MESSAGEAREA_ROW_CTX *row = (FILER_MESSAGEAREA_ROW_CTX *)context;
+
+  printf("%4d | %-21s | %4d | %-5s | %4d | %3d | %-10s | %s\n",
+         row->base->id,
+         row->base->name,
+         record->id,
+         filer_messagearea_type_name(record->areatype),
+         record->daystokeep,
+         record->akause,
+         record->tag,
+         record->name);
+
+  if (row->parent != NULL)
+  {
+    row->parent->printed_rows = 1;
+  }
+
+  return 1;
+}
+
+static const char *filer_messagearea_type_name(int type)
+{
+  switch (type)
+  {
+    case 1:
+      return "ECHO";
+    case 2:
+      return "NET";
+    case 3:
+      return "JUNK";
+    case 4:
+      return "OTHER";
+    case 5:
+      return "FILE";
+    case 6:
+      return "TICK";
+    default:
+      return "LOCAL";
+  }
+}

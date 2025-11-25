@@ -1,0 +1,10 @@
+| !NxChat[R] !Run File
+|
+| © The NAIX 1993
+|
+IconSprites <Obey$Dir>.!Sprites
+Set NxChat[R]$Dir <Obey$Dir>
+Set NaixSChat$Dir <Obey$Dir>
+RMEnsure UtilityModule 3.10 RMEnsure InterfaceManager 2.00 RMLoad System:modules.Interface
+WimpSlot -min 64K -max 64K
+Run <NaixSChat$Dir>.!RunImage -door HANDLE ANSI

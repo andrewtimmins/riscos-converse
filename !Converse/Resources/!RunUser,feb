@@ -1,0 +1,2 @@
+WimpSlot -Min 128k -Max 128k
+Run <Converse$Dir>.Resources.UserEd %*0

@@ -1,0 +1,14 @@
+date-string:            22 Nov 2025
+title-string:           ConversePipes
+help-string:            ConversePipes 0.02 (c) Andrew Timmins
+initialisation-code:    module_initialise
+finalisation-code:      module_finalise
+module-is-runnable:
+service-call-handler:   module_service 17
+
+swi-chunk-base-number:  0x5A580
+swi-handler-code:       module_swi_handler
+swi-decoding-table:     ConversePipes, ReadStatus, WriteStatus, InputStatus, InputRead, OutputStatus, OutputWrite, ClearInput, ClearOutput, InputWrite, OutputRead, ResetState, InputPeek, OutputPeek, InputWriteBlock, OutputReadBlock
+
+command-keyword-table:  module_command_handler
+                        Pipes_Status(invalid-syntax: "Syntax: *Pipes_Status\n", help-text: "*Pipes_Status displays input/output usage for all pipes.\n", min-args:0, max-args:0)

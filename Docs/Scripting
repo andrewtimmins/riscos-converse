@@ -1,0 +1,151 @@
+Converse LineTask Script Language
+================================
+
+Overview
+--------
+LineTask now drives caller interaction via lightweight scripts stored in
+`<Converse$Dir>.BBS`. Each line runs `<Converse$Dir>.BBS.Start` when a
+session connects. Scripts are plain text, one instruction per line. 
+Labels end with `:` and serve as jump targets.
+
+General Rules
+-------------
+- Leading/trailing whitespace is ignored.
+- Lines beginning with `#` are comments.
+- Commands and labels are case-insensitive.
+- Multi-word arguments can be wrapped in backticks (`` `like this` ``) to
+  preserve spacing; otherwise tokens are split on whitespace.
+- Unknown commands produce an error and halt the script.
+
+Instructions
+------------
+`PRINT <text>`
+    Sends text to the caller. Text supports macros (see below) and escape
+    sequences (`\r`, `\n`, `\t`, `\\`). Example:
+        print `Welcome to Converse, line %{line}!\r\n`
+
+`GOTO <label>`
+    Moves execution to the instruction following `<label>:`. Example:
+        goto main_menu
+
+`PROMPT <variable> <mode> <echo>`
+    Requests input from the caller. `mode` is `char` or `line`. `echo` is
+    `echo` or `noecho`. The captured value is stored in the named
+    variable and execution pauses until the user responds. Example:
+        prompt selection char echo
+
+`IF <variable> <op> <value> GOTO <label>`
+    Compares a variable with a literal value using `==` or `!=` (case
+    insensitive). On success, execution jumps to `<label>`. Values can be
+    wrapped in backticks to include spaces. Example:
+        if selection == `1` goto launch_door
+
+`SET <variable> <value>`
+    Assigns a literal string (with macro expansion) to a variable.
+    Example:
+        set greeting `Hello %{line}`
+
+`CALL <action> [argument]`
+    Invokes a host callback. Supported actions:
+    - `time` — prints the current timestamp.
+    - `lineinfo` — prints session/door status.
+    - `door <command>` — launches a RiscBBS door; waits until it exits.
+    - `disconnect` — reminds the caller to hang up.
+    - `message <text>` — prints text (after macro expansion).
+
+`DOING <text>`
+    Updates the server status window's activity column for the current
+    line so the sysop can see what the caller is doing. Text supports
+    macros and escape sequences; use an empty string to reset to the
+    default "no activity" message.
+
+`LOGOFF`
+    Ends the script and asks the server to drop the current connection.
+    Use this instead of `call disconnect` when you want an immediate
+    hangup once any farewell text has been sent.
+
+`RETURN` or `STOP`
+    Ends the script immediately.
+
+`PAUSE <milliseconds>`
+    Sleeps for the specified duration (minimum 1 tick) before continuing.
+
+`TYPE <filename>`
+    Streams a text/ANSI file to the caller. The filename may use macros and
+    backtick quoting. Example: `type `<Converse$Dir>.BBS.Art.Welcome``.
+
+`ANYKEY [variable]`
+    Waits for a single keypress. The character is stored in `variable`
+    (default `_key`) but the usual use-case is simply to pause until the
+    user presses a key.
+
+`FG <colour>` / `BG <colour>` / `FGBG <fg> <bg>`
+    Emits ANSI colour sequences. Colours are numbered 0-7 (standard ANSI
+    palette) and values outside the range are clamped. `FGBG` changes both
+    at once.
+
+`CLS`
+    Clears the terminal (`ESC[2J`) and moves the cursor to the home
+    position (`ESC[H`).
+
+`POS <column> <row>`
+    Moves the cursor to the specified 1-based column/row pair using
+    `ESC[row;colH]`.
+
+`SCRIPT <filename>`
+    Loads and immediately runs another script file. The current script is
+    torn down, so use this to chain menus together (e.g. `script
+    `<Converse$Dir>.BBS.SubMenu``). The new script can later return to the
+    original by running `script <Converse$Dir>.BBS.Start`.
+
+Macros
+------
+Macros substitute runtime values inside `PRINT`, `SET`, and `CALL`
+arguments. Use either `§name§` (legacy section sign) or `%{name}` (ASCII).
+Built-in macros:
+- `line` — current line number.
+- `t_handle` — Wimp task handle of LineTask (needed by doors).
+- `time` — `HH:MM:SS` local time when expanded.
+- `date` — `YYYY-MM-DD` local date when expanded.
+Macros also read user-defined variables (e.g. `%{selection}`) for later
+reuse.
+
+Example Script
+--------------
+```
+print `\r\nWelcome to Converse!\r\n`
+label menu
+print `Choose: 1) Door 2) Time 3) Hangup\r\n`
+prompt choice char echo
+if choice == `1` goto door
+if choice == `2` goto clock
+if choice == `3` goto bye
+print `Unknown choice.\r\n`
+pause 500
+goto menu
+
+label door
+call message `Launching Tetris...\r\n`
+call door `<Converse$Dir>.BBS.Doors.!Tetris %{t_handle}`
+goto menu
+
+label clock
+call time
+pause 750
+goto menu
+
+label bye
+call message `Please hang up.\r\n`
+call disconnect
+return
+```
+
+Tips
+----
+- Always `prompt` before reading `%{choice}` or similar variables.
+- After `call door`, the interpreter waits until the door disconnects or
+  times out; make sure the script resumes at a logical label.
+- Keep command lines under ~255 characters for Risc OS CLI limits.
+- Use `pause` sparingly to avoid sluggish UI.
+- Call `logoff` after farewell text when you want LineTask to terminate
+    the connection immediately.

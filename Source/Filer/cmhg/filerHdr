@@ -1,0 +1,31 @@
+date-string:            23 Nov 2025
+title-string:           ConverseFiler
+help-string:            ConverseFiler 0.02 (c) Andrew Timmins
+initialisation-code:    module_initialise
+finalisation-code:      module_finalise
+module-is-runnable:
+service-call-handler:   module_service 17
+
+swi-chunk-base-number:  0x16F00
+swi-handler-code:       module_swi_handler
+swi-decoding-table:     ConverseFiler, Logging, Userbase, Messagebase, Filebase, Statistics
+
+command-keyword-table:  module_command_handler
+  Filer_Status(invalid-syntax: "Syntax: *Filer_Status\n",
+    help-text: "*Filer_Status will display a list of files currently in use by Converse Filer.\n",
+    min-args:0, max-args:0),
+    Filer_Stats(invalid-syntax: "Syntax: *Filer_Stats\n",
+    help-text: "*Filer_Stats will display a list of basic system statistics for Converse Filer.\n",
+    min-args:0, max-args:0),
+    Filer_FileBases(invalid-syntax: "Syntax: *Filer_FileBases [list|files|upload|delete|edit]\n",
+    help-text: "*Filer_FileBases provides administrative helpers for Converse filebases.\n",
+    min-args:1, max-args:255),
+    Filer_MessageBases(invalid-syntax: "Syntax: *Filer_MessageBases [list|messages|import|delete]\n",
+    help-text: "*Filer_MessageBases provides administrative helpers for Converse messagebases.\n",
+    min-args:1, max-args:255),
+    Filer_FileAreas(invalid-syntax: "Syntax: *Filer_FileAreas list [base id]\n",
+    help-text: "*Filer_FileAreas lists area metadata for one or all filebases.\n",
+    min-args:1, max-args:255),
+    Filer_MessageAreas(invalid-syntax: "Syntax: *Filer_MessageAreas list [base id]\n",
+    help-text: "*Filer_MessageAreas lists area metadata for one or all messagebases.\n",
+    min-args:1, max-args:255)

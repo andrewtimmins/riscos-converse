@@ -1,0 +1,33 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef MESSAGEBASE_H
+#define MESSAGEBASE_H
+
+#include "kernel.h"
+
+#include "structs.h"
+
+#define MESSAGEBASE_RESOURCE_DIR "<Converse$Dir>.Resources"
+#define MESSAGEBASE_DB_PATH "<Converse$Dir>.Resources.Data.MsgDB"
+#define MESSAGEBASE_DB_TEMP_PATH "<Converse$Dir>.Resources.Data.MsgDBTmp"
+#define MESSAGEBASE_IDX_PATH "<Converse$Dir>.Resources.Data.MsgIDX"
+#define MESSAGEBASE_ROOT_DIR "<Converse$Dir>.MsgBases"
+
+int messagebase_initialise(void);
+void messagebase_finalise(void);
+void messagebase_swi_handler(_kernel_swi_regs *r);
+
+int messagebase_count_bases(int *count_out, long *db_size_out);
+int messagebase_peek_next_base_id(int *next_id_out, long *idx_size_out);
+int messagebase_collect_message_stats(int *message_count_out, long *bytes_out);
+int messagebase_iterate_bases(int (*callback)(const MESSAGEBASE_RECORD *record, void *context), void *context);
+int messagebase_iterate_areas(int base_id, int (*callback)(const MESSAGEBASE_AREA *record, void *context), void *context);
+int messagebase_iterate_messages(int base_id, int (*callback)(const MESSAGE_RECORD *record, void *context), void *context);
+int messagebase_get_message_record(int base_id, int message_id, MESSAGE_RECORD *record_out);
+int messagebase_save_message_record(int base_id, const MESSAGE_RECORD *record);
+int messagebase_delete_message(int base_id, int message_id, int remove_payload);
+int messagebase_store_from_host(int base_id, const char *host_path, MESSAGE_RECORD *record_template);
+
+#endif

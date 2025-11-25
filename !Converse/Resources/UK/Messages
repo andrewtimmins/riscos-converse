@@ -1,0 +1,45 @@
+# Server Messages
+server.ibmt: Converse
+server.ibm: >Info,>System Info,User Editor,Quit
+server.mmt:Misc
+server.mm:Reload
+server.swmt: Converse
+server.swm: Line Info, User Info, Disconnect
+
+server.wait:Waiting for user...
+server.nact:-----
+server.host:-----
+server.time:--:--
+server.disc:D
+server.snop:S
+server.logn:L
+
+server.bind:Unable to bind to interface, is Converse already running?
+server.list:Unable to listen on socket, is Converse already running?
+server.busy:Sorry, the server is busy... Please try again later.
+server.badip:Bad IP Address:
+server.nores:Resolver not loaded:
+server.uatr:Unable to resolve:
+
+# User Editor Messages
+usered.ibmt: Converse
+usered.ibm: Info,Quit
+usered.nouf: User file not found, creating new.
+
+# Error Messages
+error.1: Unable to bind to socket.
+error.2: Unable to listen for connections.
+error.3: Sorry, the server is busy and cannot complete this connection.
+error.4: Cannot open system configuration file.
+error.5: Cannot open line configuration file.
+error.6: Cannot open door configuration file.
+error.7: Sorry, you cannot have more than 32 lines configured.
+error.8: Unable to find Aemulor, please check your system configuration.
+error.9: Sorry, you cannot have more than 64 doors configured.
+error.10: Cannot open the users file.
+error.11: You need to define at least 1 line in the line configuration file.
+error.12: You need to define at least 1 door in the door configuration file.
+
+# Door Messages
+door.1: Unable to find door, please check path.
+door.2: Door is not responding.

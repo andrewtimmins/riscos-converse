@@ -1,0 +1,74 @@
+;
+; Doors configuration file
+;
+; You can have upto 32 BBS.Doors defined.
+;
+; You can run RiscBBS, ArmBBS and ARCbbs BBS.Doors by specifying the door type.
+; RiscBBS/ArmBBS BBS.Doors do not need a door number, this is used by ARCbbs only.
+;
+
+start
+menuoption  A
+name        Breakout
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!Breakout
+parameters
+doornumber  0
+aemulor     no
+enabled     yes
+end
+; ----------------------------------------------------------------------------
+start
+menuoption  B
+name        Tetris
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!Tetris
+parameters
+doornumber  0
+aemulor     no
+enabled     yes
+end
+; ----------------------------------------------------------------------------
+start
+menuoption  C
+name        Today
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!Today
+parameters
+doornumber  0
+aemulor     yes
+enabled     yes
+end
+; ----------------------------------------------------------------------------
+start
+menuoption  D
+name        Cookie
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!Cookie
+parameters
+doornumber  0
+aemulor     yes
+enabled     yes
+end
+; ----------------------------------------------------------------------------
+start
+menuoption  E
+name        Spray Wall
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!Wall
+parameters
+doornumber  0
+aemulor     no
+enabled     yes
+end
+; ----------------------------------------------------------------------------
+start
+menuoption  F
+name        NaixSChat
+type        RiscBBS
+path        <Converse$Dir>.BBS.Doors.RiscBBS.!NxChat[R]
+parameters
+doornumber  0
+aemulor     yes
+enabled     yes
+end

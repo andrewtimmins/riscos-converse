@@ -1,0 +1,172 @@
+/*
+ * Telnet BBS Door Server
+ * Copyright (c) Andrew Timmins, 2023. All rights reserved.
+ *
+*/
+
+#ifndef MAIN_H
+#define MAIN_H
+
+    #include <time.h>
+
+    /* Desk Includes */
+    #include "C:Desk.Core.h"
+    #include "C:Desk.Menu.h"
+    #include "C:Desk.Dialog.h"
+    #include "C:Desk.Dialog2.h"
+
+    /* Defines */
+    #define iconbar_menu_proginfo    0
+    #define iconbar_menu_systeminfo  1
+    #define iconbar_menu_usereditor  2
+    #define iconbar_menu_quit        3
+
+    #define Telnet_EOF               236
+    #define Telnet_SUSP              237
+    #define Telnet_ABORT             238
+    #define Telnet_EOR               239
+    #define Telnet_SE                240
+    #define Telnet_NOP               241
+    #define Telnet_DM                242
+    #define Telnet_BRK               243
+    #define Telnet_IP                244
+    #define Telnet_AO                245
+    #define Telnet_AYT               246
+    #define Telnet_EC                247
+    #define Telnet_EL                248
+    #define Telnet_GA                249
+    #define Telnet_SB                250
+    #define Telnet_WILL              251
+    #define Telnet_WONT              252
+    #define Telnet_DO                253
+    #define Telnet_DONT              254
+    #define Telnet_IAC               255
+
+    #define Option_BINARY            0
+    #define Option_ECHO              1
+    #define Option_SUPRESS           3
+    #define Option_STATUS            5
+    #define Option_TIMING            6
+    #define Option_TERMTYPE          24
+    #define Option_WINDOWSIZE        31
+    #define Option_TERMSPEED         32
+    #define Option_LFLOW             33
+    #define Option_LINEMODE          34
+    #define Option_ENVIRON           36
+
+    #define Resolver_GetHost         0x66001
+
+    #define RiscBBS_DoorStart        0xC0900
+    #define RiscBBS_DoorEnd          0xC0901
+    #define RiscBBS_IncomingBytes    0xC0902
+    #define RiscBBS_Acknowledge      0xC0903
+    #define RiscBBS_OutgoingBytes    0xC0904
+
+    #define ArmBBS_DoorRXCount       0xa2795
+    #define ArmBBS_PBTD              0xa278e
+    #define ArmBBS_GBFD              0xa278d
+
+    #define ARCbbsDoors_ReadStatus   0x61040
+    #define ARCbbsDoors_WriteStatus  0x61041
+    #define ARCbbsDoors_SendRequest  0x61042
+    #define ARCbbsDoors_GetReply     0x61043
+    #define ARCbbsDoors_GetRequest   0x61044
+    #define ARCbbsDoors_SendReply    0x61045
+    #define ARCbbsDoors_InputStatus  0x61046
+    #define ARCbbsDoors_InputRead    0x61047
+    #define ARCbbsDoors_OutputStatus 0x61048
+    #define ARCbbsDoors_OutputWrite  0x61049
+    #define ARCbbsDoors_ClearInput   0x6104a
+    #define ARCbbsDoors_ClearOutput  0x6104b
+    #define ARCbbsDoors_InputWrite   0x6104c
+    #define ARCbbsDoors_OutputRead   0x6104d
+    #define ARCbbsDoors_ResetState   0x6104e
+
+    /* Variables */
+    struct wimp_components
+    {
+        Desk_bool quit;
+        Desk_icon_handle iconbar_icon_handle;
+        Desk_menu_ptr iconbar_menu_handle;
+    };
+
+    typedef struct
+    {
+        char name[256];
+        char sysop[256];
+        char contact[256];
+        char hostname[256];
+        char needlogin[3];
+        char usersfile[256];
+        char anykey[256];
+        char connect[256];
+        char menu[256];
+        char logoff[256];
+    } system_components;
+
+    typedef struct
+    {
+        char line[3];
+        char enabled[3];
+        char hello[256];
+        int socket;
+        struct sockaddr to;
+        int connectedtime;
+        clock_t last_activity;
+        long timer;
+        int resolved;
+        char remote[128];
+    } line_components;
+
+    typedef struct
+    {
+        char menuoption[3];
+        char name[50];
+        char type[10];
+        char path[120];
+        char doornumber[3];
+        char aemulor[3];
+        char enabled[3];
+    } door_components;
+
+    static Desk_dialog2_block *proginfo_window;
+    static Desk_dialog2_block *systeminfo_window;
+    static Desk_window_handle main_window;
+    static Desk_window_handle doors_window;
+    
+    static char app_compiled[]=__DATE__" at "__TIME__;
+
+    static char waiting_user[100];
+    static char user_activity[100];
+
+    static char error_bind[100];
+    static char error_listen[100];
+    static char error_busy[100];
+    
+    static char error_cantfindsystemconfig[100];
+    static char error_cantfindlineconfig[100];
+    static char error_cantfinddoorconfig[100];
+    static char error_toomanylines[100];
+    static char error_cantfindaemulor[100];
+    static char error_toomanydoors[100];
+    static char error_cantfindusersfile[100];
+    static char error_nolinesdefined[100];
+    static char error_nodoorsdefined[100];
+
+    static char door_notfound[100];
+    static char door_notresponding[100];
+
+    static system_components system_configuration[1];
+
+    static line_components line_configuration[32];
+    static int line_configurations=0;
+
+    static door_components door_configuration[32];
+    static int door_configurations=0;
+
+    static int listening_socket = 0;
+    static int active_sockets = 0;
+    static fd_set is_socket_ready;
+    static struct timeval socket_timeout;
+    static char socket_buffer[256] = "";
+#endif

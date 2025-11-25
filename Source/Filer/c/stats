@@ -1,0 +1,108 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+
+#include "stats.h"
+#include "debug.h"
+
+#define STATS_CALLCOUNT_PATH "<Converse$Dir>.Resources.Data.CallCount"
+
+static int stats_call_totals;
+
+static int stats_load_from_file(int *value_out)
+{
+    FILE *file;
+    int value;
+
+    file = fopen(STATS_CALLCOUNT_PATH, "r");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    if (fscanf(file, "%d", &value) != 1)
+    {
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+
+    if (value_out != NULL)
+    {
+        *value_out = value;
+    }
+
+    return 1;
+}
+
+static int stats_write_to_file(int value)
+{
+    FILE *file = fopen(STATS_CALLCOUNT_PATH, "w");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    fprintf(file, "%d\n", value);
+    fclose(file);
+    return 1;
+}
+
+void stats_initialise(void)
+{
+    if (!stats_load_from_file(&stats_call_totals))
+    {
+        stats_call_totals = 0;
+        (void)stats_write_to_file(stats_call_totals);
+    }
+}
+
+void stats_finalise(void)
+{
+    (void)stats_write_to_file(stats_call_totals);
+}
+
+int stats_get_call_totals(int *total_out)
+{
+    if (stats_load_from_file(&stats_call_totals))
+    {
+        if (total_out != NULL)
+        {
+            *total_out = stats_call_totals;
+        }
+        return 1;
+    }
+
+    if (total_out != NULL)
+    {
+        *total_out = stats_call_totals;
+    }
+
+    return 0;
+}
+
+int stats_set_call_totals(int total)
+{
+    stats_call_totals = total;
+    if (!stats_write_to_file(stats_call_totals))
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+int stats_increment_call_totals(void)
+{
+    stats_get_call_totals(NULL);
+    stats_call_totals++;
+    if (!stats_write_to_file(stats_call_totals))
+    {
+        return 0;
+    }
+
+    return 1;
+}

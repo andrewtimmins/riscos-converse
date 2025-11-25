@@ -1,0 +1,1656 @@
+/* ******************************************************************************************************************************************************** */
+/* Server                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/* Standard ANSI Includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <time.h>
+
+/* OS Includes */
+#include "kernel.h"
+#include "swis.h"
+
+/* Desk Includes */
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Resource.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.File.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Dialog.h"
+#include "C:Desk.Dialog2.h"
+#include "C:Desk.Sound.h"
+
+/* TCPIP Includes */
+#define COMPAT_INET4 1
+#include "sys/types.h" 
+#include "sys/socket.h"
+#include "socklib.h"
+#include "inetlib.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "sys/errno.h"
+#include "netdb.h"
+
+/* Our Includes */
+#include "main.h"
+#include "iconnames.h"
+#include "ansi.h"
+#include "debug.h"
+
+/* Function Prototypes */
+Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_window_close(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_open_proginfo_window(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_open_systeminfo_window(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *ref);
+
+void display_error_dialog(int isFatal, const char *stringFormat, ...);
+
+void load_system_config(void);
+void load_line_config(void);
+void load_door_config(void);
+
+int create_line_icons(void);
+int create_door_icons(void);
+
+void create_listener(void);
+void destroy_listener(void);
+void check_listener(void);
+void check_socket(int line_id, int socket);
+void resolve_address(int line_id);
+
+void send_byte_to_socket(int socket_address, int first_byte, int second_byte);
+void send_string_to_socket(int socket_address, char *string_to_send);
+
+extern long timer_monotonictime(void);
+extern long timer_set(unsigned int delay);
+extern int timer_action(long timer);
+
+static void telnet_advertise_capabilities(int socket);
+static void telnet_handle_option(int socket, unsigned char command, unsigned char option);
+static int telnet_filter_input(int socket, char *buffer, int length);
+static void launch_line_tasks(void);
+static void pipes_reset_line(int line_id);
+static int pipes_input_status(int line_id);
+static int pipes_input_write_block(int line_id, const char *buffer, int length);
+static int pipes_output_read_block(int line_id, char *buffer, int length);
+static void pipes_send_control_command(int line_id, char command);
+static void pump_socket_to_pipe(int line_id, int socket);
+static void pump_pipe_to_socket(int line_id, int socket);
+static void close_line_connection(int line_id);
+static void notify_line_tasks_shutdown(void);
+
+#define MAIN_WINDOW_ICON_BASE 13
+#define MAIN_WINDOW_ICONS_PER_LINE 6
+#define MAIN_WINDOW_ICON_HEIGHT 64
+#define MAIN_WINDOW_TOP_STATIC_ROWS 2
+#define MAIN_WINDOW_BOTTOM_STATIC_ROWS 0
+#define MAIN_WINDOW_STATIC_ICON_COUNT (MAIN_WINDOW_TOP_STATIC_ROWS + MAIN_WINDOW_BOTTOM_STATIC_ROWS)
+#define MAIN_WINDOW_PADDING 10
+
+#define MAIN_WINDOW_COLUMN_START 5
+#define MAIN_WINDOW_COLUMN_GAP 8
+#define MAIN_WINDOW_LINE_COLUMN_WIDTH 88
+#define MAIN_WINDOW_USER_COLUMN_WIDTH 300
+#define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 390
+#define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 390
+#define MAIN_WINDOW_TIMER_COLUMN_WIDTH 200
+#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 300
+
+#define DOOR_WINDOW_ICON_HEIGHT 64
+#define DOOR_WINDOW_STATIC_ICON_COUNT 2
+#define DOOR_WINDOW_PADDING 10
+
+#define PIPES_SWI_BASE 0x5A580
+#define PIPES_BUFFER_CAPACITY 4096
+#define PIPE_TRANSFER_CHUNK 256
+#define LINE_IDLE_TIMEOUT_TICKS ((clock_t)(30 * CLOCKS_PER_SEC))
+
+#define MAIN_WINDOW_HOSTNAME_TEXT_LEN 256
+
+#define SWI_CONVERSE_PIPES_INPUT_STATUS      (PIPES_SWI_BASE + 2)
+#define SWI_CONVERSE_PIPES_CLEAR_INPUT       (PIPES_SWI_BASE + 6)
+#define SWI_CONVERSE_PIPES_CLEAR_OUTPUT      (PIPES_SWI_BASE + 7)
+#define SWI_CONVERSE_PIPES_INPUT_WRITE_BLOCK (PIPES_SWI_BASE + 13)
+#define SWI_CONVERSE_PIPES_OUTPUT_READ_BLOCK (PIPES_SWI_BASE + 14)
+#define SWI_CONVERSE_PIPES_RESET_STATE       (PIPES_SWI_BASE + 10)
+
+#define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
+#define PIPE_CONTROL_CONNECT    'C'
+#define PIPE_CONTROL_DISCONNECT 'D'
+#define MESSAGE_LINE_ACTIVITY   0x5A581
+#define MESSAGE_LINE_CONTROL    0x5A582
+#define LINE_CONTROL_REASON_LOGOFF 1
+
+
+
+enum
+{
+	MAIN_WINDOW_COLUMN_LINE = 0,
+	MAIN_WINDOW_COLUMN_USER,
+	MAIN_WINDOW_COLUMN_ACTIVITY,
+	MAIN_WINDOW_COLUMN_HOSTNAME,
+	MAIN_WINDOW_COLUMN_TIMER,
+	MAIN_WINDOW_COLUMN_ACTION
+};
+
+static int main_window_icon_index(int line_id, int column)
+{
+	return MAIN_WINDOW_ICON_BASE + (line_id * MAIN_WINDOW_ICONS_PER_LINE) + column;
+}
+
+static int main_window_visible_lines(void)
+{
+	if (line_configurations <= 1)
+	{
+		return 0;
+	}
+
+	return line_configurations - 1;
+}
+
+static int door_window_visible_rows(void)
+{
+	if (door_configurations <= 1)
+	{
+		return 0;
+	}
+
+	return door_configurations - 1;
+}
+
+static void launch_line_tasks(void)
+{
+	int line_index = 0;
+	char command[128];
+
+	while (line_index < line_configurations - 1)
+	{
+		snprintf(command, sizeof(command), "<Converse$Dir>.Resources.!RunLine %d", line_index);
+		Desk_Wimp_StartTask(command);
+		pipes_reset_line(line_index);
+		line_index++;
+	}
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Wimp Functions                                                                                                                                                                      */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref)
+{
+	struct wimp_components *wimp;
+	wimp = (struct wimp_components *)ref;
+
+	if(event->data.selection[0] == iconbar_menu_quit)
+  	{
+		notify_line_tasks_shutdown();
+		Desk_Event_CloseDown();
+		wimp->quit = Desk_bool_TRUE;
+	}
+
+	return(Desk_bool_TRUE);  
+}
+
+Desk_bool wimp_handle_window_close(Desk_event_pollblock *event, void *ref)
+{
+	Desk_UNUSED(ref);
+
+	Desk_Window_Hide(event->data.openblock.window);
+
+	return(Desk_bool_TRUE);
+}
+
+Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
+{
+	struct wimp_components *wimp;
+	wimp = (struct wimp_components *)ref;
+
+	Desk_window_redrawblock window_extent;
+
+ 	if(event->data.mouse.button.data.select)
+    {
+		int visible_lines;
+		int total_height;
+		
+		window_extent.window=main_window;
+		window_extent.rect.min.x=0;
+		window_extent.rect.max.x=1728;
+		window_extent.rect.max.y=0;
+
+		visible_lines = main_window_visible_lines();
+		total_height = ((visible_lines + MAIN_WINDOW_STATIC_ICON_COUNT) * MAIN_WINDOW_ICON_HEIGHT) + (2 * MAIN_WINDOW_PADDING);
+
+		/* Include top/bottom icon rows plus a small buffer. */
+		window_extent.rect.min.y = -total_height;
+
+		Desk_Wimp_SetExtent(main_window, &(window_extent.rect));
+		Desk_Window_Show(main_window, Desk_open_CENTERED);
+	}
+
+	if(event->data.mouse.button.data.menu)
+  	{
+    	Desk_Menu_Show(wimp->iconbar_menu_handle, event->data.mouse.pos.x, -1);
+		Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY, wimp_handle_iconbar_menu_choice, ref); 
+  	}
+
+ 	if(event->data.mouse.button.data.adjust)
+    {
+		int visible_rows;
+		int total_height;
+		window_extent.window=doors_window;
+		window_extent.rect.min.x=0;
+		window_extent.rect.max.x=1344;
+		window_extent.rect.max.y=0;
+
+		visible_rows = door_window_visible_rows();
+		total_height = ((visible_rows + DOOR_WINDOW_STATIC_ICON_COUNT) * DOOR_WINDOW_ICON_HEIGHT) + (2 * DOOR_WINDOW_PADDING);
+
+		window_extent.rect.min.y = -total_height;
+
+		Desk_Wimp_SetExtent(doors_window, &(window_extent.rect));
+
+		Desk_Window_Show(doors_window, Desk_open_CENTERED);
+	}
+
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref)
+{
+	Desk_UNUSED(event);
+Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref);
+	Desk_UNUSED(ref);
+
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_open_proginfo_window(Desk_event_pollblock *event, void *ref)
+{
+	if((event->data.message.data.menuwarn.selection[0] != iconbar_menu_proginfo))
+	{
+    	return Desk_bool_FALSE;
+	}
+
+  	Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+
+  	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_open_systeminfo_window(Desk_event_pollblock *event, void *ref)
+{
+	if((event->data.message.data.menuwarn.selection[0] != iconbar_menu_systeminfo))
+	{
+    	return Desk_bool_FALSE;
+	}
+
+  	Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+	Desk_Icon_SetText(systeminfo_window->window, SYSINFO_NAME, (char *)system_configuration[0].name);
+	Desk_Icon_SetText(systeminfo_window->window, SYSINFO_SYSOP, (char *)system_configuration[0].sysop);
+	Desk_Icon_SetText(systeminfo_window->window, SYSINFO_CONTACT, (char *)system_configuration[0].contact);
+	Desk_Icon_SetText(systeminfo_window->window, SYSINFO_HOST, (char *)system_configuration[0].hostname);
+
+  	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
+{
+	int socket_poll = 0;
+
+	Desk_UNUSED(event);
+	Desk_UNUSED(ref);
+
+	check_listener();
+
+	while (socket_poll < line_configurations - 1)
+	{
+		if (line_configuration[socket_poll].socket != 0 )
+		{
+			check_socket(socket_poll, line_configuration[socket_poll].socket);
+			if (line_configuration[socket_poll].resolved<3)
+			{
+        		resolve_address(socket_poll);
+			}
+		}
+
+		socket_poll++;
+	}
+	
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+	const char *activity;
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	if (line_configurations <= 1)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	if (line_id < 0 || line_id >= (line_configurations - 1))
+	{
+		return Desk_bool_FALSE;
+	}
+
+	activity = (const char *)&event->data.message.data.bytes[4];
+	if (activity == NULL || *activity == '\0')
+	{
+		activity = user_activity;
+	}
+
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
+		(char *)activity);
+
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+	int reason;
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	if (line_configurations <= 1)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	reason = event->data.message.data.words[1];
+
+	if (line_id < 0 || line_id >= (line_configurations - 1))
+	{
+		return Desk_bool_FALSE;
+	}
+
+	if (reason == LINE_CONTROL_REASON_LOGOFF)
+	{
+		Desk_Icon_SetText(main_window,
+			main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
+			user_activity);
+		close_line_connection(line_id);
+		return Desk_bool_TRUE;
+	}
+
+	return Desk_bool_FALSE;
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Error Handling Functions                                                                                                                                                            */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+void display_error_dialog(int exit_code, const char *error_message, ...)
+{
+	va_list arguments_passed;
+
+	va_start(arguments_passed, error_message);
+	Desk_Error_Report(exit_code, (char *)error_message, arguments_passed);
+	va_end(arguments_passed);
+	
+
+	switch (exit_code) {
+	case 0:
+		return;
+	case 1:
+		exit(EXIT_FAILURE);
+	default:
+		exit(exit_code);
+	}
+}
+
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Dynamic Icon Functions                                                                                                                                                              */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+int create_line_icons(void) 
+{
+	int current_line_configuration = 0;
+	int y_base;
+	char *text_buffer;
+	int column_x;
+
+	Desk_icon_createblock icon_create_block;
+	Desk_icon_handle icon_handle;
+
+	icon_create_block.window=main_window;
+	y_base = -((MAIN_WINDOW_TOP_STATIC_ROWS * MAIN_WINDOW_ICON_HEIGHT) + MAIN_WINDOW_PADDING);
+		
+	do
+	{
+		icon_create_block.icondata.workarearect.max.y = y_base - (MAIN_WINDOW_ICON_HEIGHT * current_line_configuration);
+		icon_create_block.icondata.workarearect.min.y = icon_create_block.icondata.workarearect.max.y - MAIN_WINDOW_ICON_HEIGHT;
+
+		column_x = MAIN_WINDOW_COLUMN_START;
+
+		text_buffer=malloc(25);
+		sprintf(text_buffer, "%d", current_line_configuration);
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_LINE_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=line_configuration[current_line_configuration].line;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_USER_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		text_buffer=malloc(sizeof(waiting_user));
+		if (text_buffer == NULL)
+		{
+			display_error_dialog(1, "Unable to allocate user icon buffer");
+			return Desk_bool_FALSE;
+		}
+		strncpy(text_buffer, waiting_user, sizeof(waiting_user) - 1);
+		text_buffer[sizeof(waiting_user) - 1] = '\0';
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=sizeof(waiting_user);
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+											Desk_icon_VCENTRE |
+											Desk_icon_HCENTRE |
+											Desk_icon_INDIRECTED |
+											Desk_icon_BORDER |
+											Desk_icon_FILLED |
+											(Desk_icon_FORECOLOUR*7) |
+											(Desk_icon_BACKCOLOUR*1) |
+											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		text_buffer=malloc(sizeof(user_activity));
+		if (text_buffer == NULL)
+		{
+			display_error_dialog(1, "Unable to allocate activity icon buffer");
+			return Desk_bool_FALSE;
+		}
+		strncpy(text_buffer, user_activity, sizeof(user_activity) - 1);
+		text_buffer[sizeof(user_activity) - 1] = '\0';
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=sizeof(user_activity);
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		text_buffer=malloc(MAIN_WINDOW_HOSTNAME_TEXT_LEN);
+		if (text_buffer == NULL)
+		{
+			display_error_dialog(1, "Unable to allocate hostname icon buffer");
+			return Desk_bool_FALSE;
+		}
+		text_buffer[0] = '\0';
+		strncpy(text_buffer, "-----", MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1);
+		text_buffer[MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1] = '\0';
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=MAIN_WINDOW_HOSTNAME_TEXT_LEN;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		text_buffer=malloc(25);
+		strcpy(text_buffer, "00:00");
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_TIMER_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		text_buffer=malloc(25);
+		strcpy(text_buffer, "Disconnect");
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTION_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		current_line_configuration++;
+	} while (current_line_configuration < line_configurations - 1);
+
+	return Desk_bool_TRUE;
+}
+
+int create_door_icons(void) 
+{
+	int current_door_configuration = 0;
+	char *text_buffer;
+
+	Desk_icon_createblock icon_create_block;
+	Desk_icon_handle icon_handle;
+
+	icon_create_block.window=doors_window;
+		
+	do
+	{
+		icon_create_block.icondata.workarearect.max.y = -68+(-64*current_door_configuration);
+		icon_create_block.icondata.workarearect.min.y = icon_create_block.icondata.workarearect.max.y-64;
+
+		text_buffer=malloc(25);
+		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].menuoption);
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=5;
+		icon_create_block.icondata.workarearect.max.x=5+199;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		text_buffer=malloc(25);
+		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].name);
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=5+202;
+		icon_create_block.icondata.workarearect.max.x=5+202+549;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		text_buffer=malloc(120);
+		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].type);
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=5+749;
+		icon_create_block.icondata.workarearect.max.x=5+749+297;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=120;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		text_buffer=malloc(120);
+		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].doornumber);
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=5+1045;
+		icon_create_block.icondata.workarearect.max.x=5+1045+290;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=120;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		current_door_configuration++;
+	} while (current_door_configuration < door_configurations-1);
+
+	return Desk_bool_TRUE;
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Networking Functions                                                                                                                                                                */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+ 
+void create_listener(void)
+{
+	int  args[2];
+  	struct sockaddr_in saddr;
+
+	// Create the socket
+	listening_socket = socket(AF_INET, SOCK_STREAM, PF_UNSPEC);
+
+	// Allow address reuse - *very* *important*. If you don't do this, then you'll need to
+	// wait for the socket to "expire" in between running this program, and running it again.
+	args[0] = 1; // non-zero = enable
+	setsockopt(listening_socket, SOL_SOCKET, SO_REUSEADDR, &args, sizeof(int));
+
+	// Set linger time to 10 seconds maximum
+	args[0] = 1;  // wait for data to drain
+	args[1] = 10; // 10 seconds manimum
+	setsockopt(listening_socket, SOL_SOCKET, SO_LINGER, &args, (sizeof(int) * 2));
+
+	// Bind to port 23
+	memset(&saddr, 0, sizeof(saddr));   // zero everything before use
+	saddr.sin_family = AF_INET;         // accept internet connection...
+	saddr.sin_port = htons(23);        // ...on port 123...
+	saddr.sin_addr.s_addr = INADDR_ANY; // ...from anybody.
+	if ( bind(listening_socket, (struct sockaddr *)&saddr, sizeof(saddr)) != 0 )
+	{
+		socketclose(listening_socket);
+			display_error_dialog(1, error_bind);
+	}
+
+	// Make it non-blocking; so the machine won't hang up waiting for something to happen.
+	args[0] = 1;
+	socketioctl(listening_socket, FIONBIO, &args[0]);
+
+	// Now place an ear against the wire
+	if ( listen(listening_socket, 1) != 0 )
+	{
+		socketclose(listening_socket);
+		display_error_dialog(1, error_listen);
+	}
+
+}
+
+void check_listener(void)
+{
+   // Check to see if there's an incoming connection
+   struct sockaddr_in saddr;
+	int namelen = sizeof(saddr);
+	int socket_poll = 0;
+
+	memset(&saddr, 0, sizeof(saddr));
+
+   FD_ZERO(&is_socket_ready);
+   FD_SET(listening_socket, &is_socket_ready);
+   
+   socket_timeout.tv_sec = 0;
+   socket_timeout.tv_usec = 0;
+   select((listening_socket + 1), &is_socket_ready, 0, 0, &socket_timeout);
+
+   if (FD_ISSET(listening_socket, &is_socket_ready))
+   {
+      // There is a connection pending.
+		if (active_sockets >= line_configurations - 1)
+      	{
+         int orphaned_socket;
+
+         orphaned_socket = accept(listening_socket, (struct sockaddr *)0, (int *)0);
+         if (orphaned_socket != -1)
+         {
+			strcpy(socket_buffer, error_busy);
+			socketwrite(orphaned_socket, socket_buffer, strlen(socket_buffer));
+            shutdown(orphaned_socket, 0);
+            socketclose(orphaned_socket);
+         }
+      	}
+
+		while (socket_poll < line_configurations && line_configuration[socket_poll].socket != 0)
+		{
+			socket_poll++;
+		}
+
+		if (line_configuration[socket_poll].socket == 0)
+		{
+			// We are not connected, so accept this connection.
+			line_configuration[socket_poll].socket = accept(listening_socket, (struct sockaddr *)&saddr, &namelen);
+			active_sockets++;
+
+			if (line_configuration[socket_poll].socket == -1)
+			{
+				line_configuration[socket_poll].socket = 0;
+				active_sockets--;
+				// Something went wrong. Just get out of here, the listener is still active...
+				return;
+			}
+		}
+
+		line_configuration[socket_poll].connectedtime = clock();
+		line_configuration[socket_poll].last_activity = line_configuration[socket_poll].connectedtime;
+		line_configuration[socket_poll].timer = timer_set(100);
+		pipes_reset_line(socket_poll);
+		pipes_send_control_command(socket_poll, PIPE_CONTROL_CONNECT);
+
+		// The IP address of the remote user is saddr.sin_addr.s_addr, if you need it.
+
+		char ip[30];
+		strcpy(ip, (char*)inet_ntoa((struct in_addr)saddr.sin_addr));
+	  	strncpy(line_configuration[socket_poll].remote, ip, 128);
+
+		// At this point, "mysock" will be != -1 so it will be treated as a live socket and any
+		// other connections will result in busy message followed by a disconnect.
+
+		telnet_advertise_capabilities(line_configuration[socket_poll].socket);
+
+		send_string_to_socket(line_configuration[socket_poll].socket, ANSI_clear_screen);
+	}
+
+   return;
+}
+
+void check_socket(int line_id, int socket)
+{
+	int change_length = 0;
+
+	change_length = recv(socket, socket_buffer, 1, MSG_PEEK);
+	if (change_length == 0)
+	{
+		close_line_connection(line_id);
+		return;
+	}
+
+	if(timer_action(line_configuration[line_id].timer)) /* update timer */
+	{
+		int d;
+		char tmp[16]={0};
+
+		d=(clock()-line_configuration[line_id].connectedtime)/100;  // seconds
+		sprintf(tmp,"%d:%02d",d/60,d%60);
+
+		Desk_Icon_SetText(main_window,
+			main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+			tmp);
+
+		line_configuration[line_id].timer=timer_set(100);
+	}
+
+	pump_socket_to_pipe(line_id, socket);
+	pump_pipe_to_socket(line_id, socket);
+
+	if (line_configuration[line_id].last_activity != 0)
+	{
+		clock_t now = clock();
+		if ((now - line_configuration[line_id].last_activity) > LINE_IDLE_TIMEOUT_TICKS)
+		{
+			close_line_connection(line_id);
+			return;
+		}
+	}
+
+	return;
+}
+
+void destroy_listener(void)
+{
+	int socket_poll = 0;
+
+	while (socket_poll < line_configurations)
+	{
+		if (line_configuration[socket_poll].socket != -1 )
+		{
+			shutdown(line_configuration[socket_poll].socket, 0);
+      		socketclose(line_configuration[socket_poll].socket);
+		}
+
+		socket_poll++;
+	}
+
+	if (listening_socket >= 0)
+	{
+		socketclose(listening_socket);
+	}
+}
+
+void send_byte_to_socket(int socket_address, int first_byte, int second_byte)
+{
+	unsigned char buffer[3];
+
+	buffer[0] = (unsigned char)Telnet_IAC;
+	buffer[1] = (unsigned char)first_byte;
+	buffer[2] = (unsigned char)second_byte;
+	socketwrite(socket_address, (char *)buffer, sizeof(buffer));
+}
+
+void send_string_to_socket(int socket_address, char *string_to_send)
+{
+	char buffer[256];
+	
+	strcpy(buffer, string_to_send);
+	socketwrite(socket_address, buffer, strlen(buffer));
+}
+
+static int pipes_input_status(int line_id)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = line_id;
+	if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_STATUS, &regs, &regs) != NULL)
+	{
+		return -1;
+	}
+
+	return regs.r[0];
+}
+
+static int pipes_input_write_block(int line_id, const char *buffer, int length)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = line_id;
+	regs.r[1] = (int)buffer;
+	regs.r[2] = length;
+	if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_WRITE_BLOCK, &regs, &regs) != NULL)
+	{
+		return -1;
+	}
+
+	return regs.r[0];
+}
+
+static int pipes_output_read_block(int line_id, char *buffer, int length)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = line_id;
+	regs.r[1] = (int)buffer;
+	regs.r[2] = length;
+	if (_kernel_swi(SWI_CONVERSE_PIPES_OUTPUT_READ_BLOCK, &regs, &regs) != NULL)
+	{
+		return -1;
+	}
+
+	return regs.r[0];
+}
+
+static void pipes_reset_line(int line_id)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = line_id;
+	_kernel_swi(SWI_CONVERSE_PIPES_RESET_STATE, &regs, &regs);
+	regs.r[0] = line_id;
+	_kernel_swi(SWI_CONVERSE_PIPES_CLEAR_INPUT, &regs, &regs);
+	regs.r[0] = line_id;
+	_kernel_swi(SWI_CONVERSE_PIPES_CLEAR_OUTPUT, &regs, &regs);
+}
+
+static void pipes_send_control_command(int line_id, char command)
+{
+	unsigned char frame[3];
+
+	frame[0] = PIPE_CONTROL_TOKEN;
+	frame[1] = (unsigned char)command;
+	frame[2] = PIPE_CONTROL_TOKEN;
+	pipes_input_write_block(line_id, (const char *)frame, sizeof(frame));
+}
+
+static void pump_socket_to_pipe(int line_id, int socket)
+{
+	int iteration = 0;
+
+	while (iteration < 4)
+	{
+		int used_bytes = pipes_input_status(line_id);
+		int free_bytes;
+		int read_bytes;
+		char buffer[PIPE_TRANSFER_CHUNK];
+
+		if (used_bytes < 0)
+		{
+			return;
+		}
+
+		if (used_bytes >= PIPES_BUFFER_CAPACITY)
+		{
+			return;
+		}
+
+		free_bytes = PIPES_BUFFER_CAPACITY - used_bytes;
+		if (free_bytes > PIPE_TRANSFER_CHUNK)
+		{
+			free_bytes = PIPE_TRANSFER_CHUNK;
+		}
+
+		read_bytes = socketread(socket, buffer, free_bytes);
+		if (read_bytes <= 0)
+		{
+			return;
+		}
+
+		read_bytes = telnet_filter_input(socket, buffer, read_bytes);
+		if (read_bytes <= 0)
+		{
+			iteration++;
+			continue;
+		}
+
+		int offset = 0;
+		while (offset < read_bytes)
+		{
+			int copied = pipes_input_write_block(line_id, buffer + offset, read_bytes - offset);
+			if (copied <= 0)
+			{
+				return;
+			}
+			offset += copied;
+			line_configuration[line_id].last_activity = clock();
+		}
+
+		if (read_bytes < free_bytes)
+		{
+			break;
+		}
+
+		iteration++;
+	}
+}
+
+static void pump_pipe_to_socket(int line_id, int socket)
+{
+	int loops = 0;
+
+	while (loops < 4)
+	{
+		char buffer[PIPE_TRANSFER_CHUNK];
+		int copied = pipes_output_read_block(line_id, buffer, PIPE_TRANSFER_CHUNK);
+		int offset = 0;
+
+		if (copied <= 0)
+		{
+			return;
+		}
+
+		while (offset < copied)
+		{
+			int written = socketwrite(socket, buffer + offset, copied - offset);
+			if (written <= 0)
+			{
+				return;
+			}
+			offset += written;
+		}
+
+		line_configuration[line_id].last_activity = clock();
+
+		if (copied < PIPE_TRANSFER_CHUNK)
+		{
+			break;
+		}
+
+		loops++;
+	}
+}
+
+static void close_line_connection(int line_id)
+{
+	int socket = line_configuration[line_id].socket;
+
+	if (socket > 0)
+	{
+		pipes_send_control_command(line_id, PIPE_CONTROL_DISCONNECT);
+		shutdown(socket, 0);
+		socketclose(socket);
+		line_configuration[line_id].socket = 0;
+		if (active_sockets > 0)
+		{
+			active_sockets--;
+		}
+	}
+
+	line_configuration[line_id].resolved = 0;
+	line_configuration[line_id].last_activity = 0;
+	line_configuration[line_id].timer = 0;
+	strcpy(line_configuration[line_id].remote, "");
+
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
+		"----");
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
+		user_activity);
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+		"00:00");
+
+	Desk_Event_PollIdle();
+}
+
+static void notify_line_tasks_shutdown(void)
+{
+	Desk_message_block wimp_message;
+
+	memset(&wimp_message, 0, sizeof(wimp_message));
+	wimp_message.header.size = 28;
+	wimp_message.header.action = (Desk_message_action)0x5A580;
+	wimp_message.data.words[0] = 0; /* reason 0 => quit */
+	Desk_Wimp_SendMessage(Desk_event_SEND, &wimp_message, 0, NULL);
+}
+
+static void telnet_advertise_capabilities(int socket)
+{
+	send_byte_to_socket(socket, Telnet_WILL, Option_ECHO);
+	send_byte_to_socket(socket, Telnet_DONT, Option_ECHO);
+	send_byte_to_socket(socket, Telnet_WILL, Option_SUPRESS);
+}
+
+static void telnet_handle_option(int socket, unsigned char command, unsigned char option)
+{
+	switch (command)
+	{
+		case Telnet_DO:
+			if (option == Option_ECHO || option == Option_SUPRESS)
+			{
+				send_byte_to_socket(socket, Telnet_WILL, option);
+			}
+			else
+			{
+				send_byte_to_socket(socket, Telnet_WONT, option);
+			}
+			break;
+
+		case Telnet_DONT:
+			send_byte_to_socket(socket, Telnet_WONT, option);
+			break;
+
+		case Telnet_WILL:
+			if (option == Option_ECHO)
+			{
+				send_byte_to_socket(socket, Telnet_DO, option);
+			}
+			else
+			{
+				send_byte_to_socket(socket, Telnet_DONT, option);
+			}
+			break;
+
+		case Telnet_WONT:
+			send_byte_to_socket(socket, Telnet_DONT, option);
+			break;
+
+		default:
+			break;
+	}
+}
+
+static int telnet_filter_input(int socket, char *buffer, int length)
+{
+	int read_index = 0;
+	int write_index = 0;
+
+	while (read_index < length)
+	{
+		unsigned char byte = (unsigned char)buffer[read_index++];
+
+		if (byte == Telnet_IAC)
+		{
+			if (read_index >= length)
+			{
+				break;
+			}
+
+			unsigned char command = (unsigned char)buffer[read_index++];
+
+			if (command == Telnet_IAC)
+			{
+				buffer[write_index++] = (char)Telnet_IAC;
+				continue;
+			}
+
+			if (command == Telnet_SB)
+			{
+				while (read_index < length)
+				{
+					if ((unsigned char)buffer[read_index] == Telnet_IAC)
+					{
+						if ((read_index + 1) < length && (unsigned char)buffer[read_index + 1] == Telnet_SE)
+						{
+							read_index += 2;
+							break;
+						}
+					}
+					read_index++;
+				}
+				continue;
+			}
+
+			switch (command)
+			{
+				case Telnet_DO:
+				case Telnet_DONT:
+				case Telnet_WILL:
+				case Telnet_WONT:
+					if (read_index < length)
+					{
+						unsigned char option = (unsigned char)buffer[read_index++];
+						telnet_handle_option(socket, command, option);
+					}
+					else
+					{
+						read_index = length;
+					}
+					break;
+
+				case Telnet_NOP:
+				case Telnet_DM:
+				case Telnet_BRK:
+				case Telnet_IP:
+				case Telnet_AO:
+				case Telnet_AYT:
+				case Telnet_EC:
+				case Telnet_EL:
+				case Telnet_GA:
+					/* Command without option byte; ignore. */
+					break;
+
+				default:
+					break;
+			}
+
+			continue;
+		}
+
+		buffer[write_index++] = (char)byte;
+	}
+
+	return write_index;
+}
+
+
+void resolve_address(int line_id)
+{
+  int result;
+  _kernel_swi_regs r;
+  _kernel_oserror *er;
+  struct hostent *host;
+  char buffer[128];        // from 64
+
+if (line_configuration[line_id].socket != 0)
+{
+
+  /* First call? */
+  if (line_configuration[line_id].resolved == 0)
+  {
+    sprintf(buffer,"Resolving: %s",line_configuration[line_id].remote);
+    Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
+        buffer);
+   line_configuration[line_id].resolved++;
+  }
+
+  /* Find an address */
+  r.r[0]=(int)line_configuration[line_id].remote;
+  r.r[1]=0;
+  er=_kernel_swi(Resolver_GetHost,&r,&r);
+  result=r.r[0];
+  host=(struct hostent *)r.r[1];
+
+  if (er!=NULL)
+  {
+    /* No ANT resolver */
+    sprintf(buffer,"Resolver not loaded: %s",line_configuration[line_id].remote);
+    line_configuration[line_id].resolved=3;
+  }
+  else
+  {
+    switch(result)
+    {
+      case 0:
+        /* Got name */
+        sprintf(buffer,"%s",host->h_name);
+        line_configuration[line_id].resolved=3;
+        break;
+
+      case EINPROGRESS:
+        /* It's working */
+        break;
+
+      case -1:
+        /* Not found: update info */
+        sprintf(buffer,"Unable to resolve: %s",line_configuration[line_id].remote);
+        line_configuration[line_id].resolved=3;
+        break;
+
+      case -2:
+        /* Not found (remote error) */
+        sprintf(buffer,"Resolver error: %s",line_configuration[line_id].remote);
+        line_configuration[line_id].resolved=3;
+        break;
+    }
+  }
+
+  Desk_Icon_SetText(main_window,
+	  main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
+      buffer);
+}
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Config File Handling                                                                                                                                                                */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+void load_system_config(void)
+{
+	FILE *system_config;
+
+	char config_line[250];
+	char *temporary_line;
+
+	if ((system_config=fopen("<Converse$Dir>.Config.System","r"))==NULL)
+	{
+		display_error_dialog(1, error_cantfindsystemconfig);
+	}
+
+ 	do
+  	{
+    	config_line[0]=0;
+    	fgets(config_line, 120, system_config);
+		do
+		{
+			fgets(config_line, 120, system_config);
+			if (config_line[strlen(config_line)-1]<32)
+			{
+          		config_line[strlen(config_line)-1]=0;
+			}
+        	while(config_line[strlen(config_line)-1]==32)
+			{
+				config_line[strlen(config_line)-1]=0;
+			}
+          	if ((temporary_line=strchr(config_line,' '))!=NULL)
+			{
+          		*temporary_line++=0; 
+			} 
+			else
+			{
+          		temporary_line="";
+			}
+        	while(*temporary_line==' ')
+			{
+				temporary_line++;
+			}
+
+			if (strcmp(config_line,"name")==0)
+			{
+				strcpy(system_configuration[0].name, temporary_line);
+			}
+			if (strcmp(config_line,"sysop")==0)
+			{
+				strcpy(system_configuration[0].sysop, temporary_line);
+			}
+			if (strcmp(config_line,"contact")==0)
+			{
+				strcpy(system_configuration[0].contact, temporary_line);
+			}
+			if (strcmp(config_line,"hostname")==0)
+			{
+				strcpy(system_configuration[0].hostname, temporary_line);
+			}
+			if (strcmp(config_line,"needlogin")==0)
+			{
+				strcpy(system_configuration[0].needlogin, temporary_line);
+			}
+			if (strcmp(config_line,"usersfile")==0)
+			{
+				strcpy(system_configuration[0].usersfile, temporary_line);
+			}
+			if (strcmp(config_line,"anykey")==0)
+			{
+				strcpy(system_configuration[0].anykey, temporary_line);
+			}
+			if (strcmp(config_line,"connect")==0)
+			{
+				strcpy(system_configuration[0].connect, temporary_line);
+			}
+			if (strcmp(config_line,"menu")==0)
+			{
+				strcpy(system_configuration[0].menu, temporary_line);
+			}
+			if (strcmp(config_line,"logoff")==0)
+			{
+				strcpy(system_configuration[0].logoff, temporary_line);
+			}
+		} while(feof(system_config)==0 && strcmp(config_line,"end")!=0);
+	} while(feof(system_config)==0);
+
+	fclose(system_config);
+}
+
+void load_line_config(void)
+{
+	FILE *line_config;
+
+	char config_line[250];
+	char *temporary_line;
+
+	if ((line_config=fopen("<Converse$Dir>.Config.Lines","r"))==NULL)
+	{
+		display_error_dialog(1, error_cantfindlineconfig);
+	}
+
+	do
+  	{
+		if(line_configurations>32)
+    	{
+      		display_error_dialog(1, error_toomanylines);
+    	}
+
+    	config_line[0]=0;
+    	fgets(config_line, 120, line_config);
+
+		do
+		{
+			fgets(config_line, 120, line_config);
+			if (config_line[strlen(config_line)-1]<32)
+			{
+          		config_line[strlen(config_line)-1]=0;
+			}
+        	while(config_line[strlen(config_line)-1]==32)
+			{
+				config_line[strlen(config_line)-1]=0;
+			}
+          	if ((temporary_line=strchr(config_line,' '))!=NULL)
+			{
+          		*temporary_line++=0; 
+			} 
+			else
+			{
+          		temporary_line="";
+			}
+        	while(*temporary_line==' ')
+			{
+				temporary_line++;
+			}
+
+			if (strcmp(config_line,"line")==0)
+			{
+				strcpy(line_configuration[line_configurations].line, temporary_line);
+			}
+			if (strcmp(config_line,"enabled")==0)
+			{
+				strcpy(line_configuration[line_configurations].enabled, temporary_line);
+			}
+			if (strcmp(config_line,"hello")==0)
+			{
+				strcpy(line_configuration[line_configurations].hello, temporary_line);
+			}
+		} while(feof(line_config)==0 && strcmp(config_line,"end")!=0);
+		line_configurations++;
+	} while(feof(line_config)==0);
+
+	fclose(line_config);
+
+	if (line_configurations == 0) {
+		display_error_dialog(1, error_nolinesdefined);
+	}
+}
+
+void load_door_config(void)
+{
+	FILE *door_config;
+
+	char config_line[250];
+	char *temporary_line;
+
+	if ((door_config=fopen("<Converse$Dir>.Config.Doors","r"))==NULL)
+	{
+		display_error_dialog(1, error_cantfinddoorconfig);
+	}
+
+	do
+  	{
+		if(door_configurations>32)
+    	{
+      		display_error_dialog(1, error_toomanydoors);
+    	}
+
+    	config_line[0]=0;
+    	fgets(config_line, 120, door_config);
+		do
+		{
+			fgets(config_line, 120, door_config);
+			if (config_line[strlen(config_line)-1]<32)
+			{
+          		config_line[strlen(config_line)-1]=0;
+			}
+        	while(config_line[strlen(config_line)-1]==32)
+			{
+				config_line[strlen(config_line)-1]=0;
+			}
+          	if ((temporary_line=strchr(config_line,' '))!=NULL)
+			{
+          		*temporary_line++=0; 
+			} 
+			else
+			{
+          		temporary_line="";
+			}
+        	while(*temporary_line==' ')
+			{
+				temporary_line++;
+			}
+
+			if (strcmp(config_line,"menuoption")==0)
+			{
+				strcpy(door_configuration[door_configurations].menuoption, temporary_line);
+			}
+			if (strcmp(config_line,"name")==0)
+			{
+				strcpy(door_configuration[door_configurations].name, temporary_line);
+			}
+			if (strcmp(config_line,"type")==0)
+			{
+				strcpy(door_configuration[door_configurations].type, temporary_line);
+			}
+			if (strcmp(config_line,"path")==0)
+			{
+				strcpy(door_configuration[door_configurations].path, temporary_line);
+			}
+			if (strcmp(config_line,"doornumber")==0)
+			{
+				strcpy(door_configuration[door_configurations].doornumber, temporary_line);
+			}
+			if (strcmp(config_line,"aemulor")==0)
+			{
+				strcpy(door_configuration[door_configurations].aemulor, temporary_line);
+			}
+			if (strcmp(config_line,"enabled")==0)
+			{
+				strcpy(door_configuration[door_configurations].enabled, temporary_line);
+			}
+		} while(feof(door_config)==0 && strcmp(config_line,"end")!=0);
+		door_configurations++;
+	} while(feof(door_config)==0);
+
+	fclose(door_config);
+
+	if (door_configurations == 0) {
+		display_error_dialog(1, error_nodoorsdefined);
+	}
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* Main Entry Point                                                                                                                                                                    */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+int main(void) {
+	struct wimp_components wimp;
+
+	char iconbar_menu[100];
+	char iconbar_menu_title[30];
+
+	wimp.quit = Desk_bool_FALSE;
+
+	Desk_Resource_Initialise("ConverseRes");
+
+	Desk_Msgs_LoadFile("Messages");
+
+	Desk_Msgs_Lookup("server.wait", waiting_user, 100);
+	Desk_Msgs_Lookup("server.nact", user_activity, 100);
+
+	Desk_Msgs_Lookup("error.1", error_bind, 100);
+	Desk_Msgs_Lookup("error.2", error_listen, 100);
+	Desk_Msgs_Lookup("error.3", error_busy, 100);
+	Desk_Msgs_Lookup("error.4", error_cantfindsystemconfig, 100);
+	Desk_Msgs_Lookup("error.5", error_cantfindlineconfig, 100);
+	Desk_Msgs_Lookup("error.6", error_cantfinddoorconfig, 100);
+	Desk_Msgs_Lookup("error.7", error_toomanylines, 100);
+	Desk_Msgs_Lookup("error.8", error_cantfindaemulor, 100);
+	Desk_Msgs_Lookup("error.9", error_toomanydoors, 100);
+	Desk_Msgs_Lookup("error.10", error_cantfindusersfile, 100);
+	Desk_Msgs_Lookup("error.11", error_nolinesdefined, 100);
+	Desk_Msgs_Lookup("error.12", error_nodoorsdefined, 100);
+
+	Desk_Msgs_Lookup("door.1", door_notfound, 100);
+	Desk_Msgs_Lookup("door.2", door_notresponding, 100);
+
+	Desk_Event_Initialise("Converse");
+	Desk_EventMsg_Initialise();
+	Desk_Screen_CacheModeInfo();
+
+	Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, Desk_Handler_ModeChange, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_ACTIVITY, Desk_event_ANY, wimp_handle_line_activity_message, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_CONTROL, Desk_event_ANY, wimp_handle_line_control_message, NULL);
+	Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
+	Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
+  	Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, wimp_handle_window_close, NULL);
+	Desk_Event_Claim(Desk_event_CLICK, Desk_event_ANY, Desk_event_ANY, wimp_handle_button_click, NULL);
+
+	Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY, wimp_handle_poll, NULL);
+
+
+	wimp.iconbar_icon_handle = Desk_Icon_BarIcon("!Converse", Desk_iconbar_RIGHT);
+	Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon_handle, wimp_handle_iconbar_click, (void *)&wimp);
+	Desk_Msgs_Lookup("server.ibmt", iconbar_menu_title, 30);
+	Desk_Msgs_Lookup("server.ibm", iconbar_menu, 100);
+  	wimp.iconbar_menu_handle = Desk_Menu_New(iconbar_menu_title, iconbar_menu);
+
+	Desk_Template_Initialise();
+  	Desk_Template_UseOutlineFonts();
+  	Desk_Template_LoadFile("Templates");
+
+  	proginfo_window=Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
+	systeminfo_window=Desk_Dialog2_CreateDialogBlock("sysinfo", -1, -1, NULL, NULL, NULL);
+  	main_window=Desk_Window_Create("status", NULL);
+	doors_window=Desk_Window_Create("doors", NULL);
+
+  	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_proginfo, Desk_bool_TRUE, wimp_open_proginfo_window, (void *)proginfo_window);
+	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_systeminfo, Desk_bool_TRUE, wimp_open_systeminfo_window, (void *)systeminfo_window);
+
+	load_system_config();
+	load_line_config();
+	load_door_config();
+	launch_line_tasks();
+
+	create_line_icons();
+	create_door_icons();
+	create_listener();
+	atexit(destroy_listener);
+
+	while(wimp.quit == Desk_bool_FALSE) Desk_Event_Poll();
+
+ 	Desk_Template_ClearAll();
+	return(0);
+}

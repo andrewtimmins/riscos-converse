@@ -1,0 +1,6 @@
+| >!Run
+|
+Set Wall$Dir <Obey$Dir>
+IconSprites <Obey$Dir>.!Sprites
+WimpSlot -min 32k -max 32k
+Run <Wall$Dir>.!RunImage %*0

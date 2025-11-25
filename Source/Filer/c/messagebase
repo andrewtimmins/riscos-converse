@@ -1,0 +1,1603 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <errno.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "debug.h"
+#include "logging.h"
+#include "misc.h"
+
+#include "messagebase.h"
+
+#define MESSAGEBASE_BASE_WIDTH 4
+#define MESSAGEBASE_AREA_WIDTH 4
+#define MESSAGEBASE_FILE_WIDTH 6
+#define MESSAGEBASE_COPY_BUFFER 4096
+#define MESSAGEBASE_MAX_DIR_OBJECTS 77
+#define MESSAGEBASE_FILES_PER_GROUP 60
+#define MESSAGEBASE_MAX_FILE_GROUPS (MESSAGEBASE_MAX_DIR_OBJECTS - 1)
+
+static int messagebase_next_id = 0;
+static MESSAGEBASE_RECORD messagebase_info_cache;
+static MESSAGEBASE_AREA messagebase_area_cache;
+static MESSAGE_RECORD messagebase_message_cache;
+
+static void messagebase_create_directory(const char *path);
+static void messagebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id);
+static int messagebase_format_message_path(char *buffer, size_t length, int base_id, int area_id, int file_id);
+static int messagebase_ensure_group_directory(int base_id, int area_id, int file_id);
+static void messagebase_assign_directory(MESSAGEBASE_RECORD *record);
+static void messagebase_normalise_record(MESSAGEBASE_RECORD *record);
+static void messagebase_normalise_area_record(MESSAGEBASE_AREA *record);
+static void messagebase_normalise_message_record(MESSAGE_RECORD *record);
+static void messagebase_ensure_base_structure(int base_id);
+static int messagebase_allocate_base_id(int *new_id);
+static int messagebase_append_base_record(const MESSAGEBASE_RECORD *record);
+static int messagebase_update_base_record(const MESSAGEBASE_RECORD *record);
+static int messagebase_find_base_record(int id, MESSAGEBASE_RECORD *record_out);
+static int messagebase_allocate_message_id(int base_id, int *new_id);
+static int messagebase_append_message_record(int base_id, const MESSAGE_RECORD *record);
+static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_RECORD *record_out);
+static int messagebase_update_messagesize(int base_id, int file_id, size_t delta);
+static int messagebase_allocate_area_id(int base_id, int *new_id);
+static int messagebase_store_area_record(int base_id, const MESSAGEBASE_AREA *record);
+static int messagebase_find_area_record(int base_id, int area_id, MESSAGEBASE_AREA *record_out);
+static void messagebase_log(const char *format, ...);
+
+int messagebase_initialise(void)
+{
+  FILE *file;
+
+  messagebase_create_directory(MESSAGEBASE_RESOURCE_DIR);
+  messagebase_create_directory(MESSAGEBASE_ROOT_DIR);
+
+  file = fopen(MESSAGEBASE_DB_PATH, "ab+");
+  if (file == NULL)
+  {
+    return 0;
+  }
+  fclose(file);
+
+  file = fopen(MESSAGEBASE_IDX_PATH, "r+b");
+  if (file == NULL)
+  {
+    int initial = 0;
+    file = fopen(MESSAGEBASE_IDX_PATH, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+    fwrite(&initial, sizeof(initial), 1, file);
+    messagebase_next_id = 0;
+  }
+  else
+  {
+    if (fread(&messagebase_next_id, sizeof(messagebase_next_id), 1, file) != 1)
+    {
+      messagebase_next_id = 0;
+    }
+  }
+  fclose(file);
+
+  return 1;
+}
+
+void messagebase_finalise(void)
+{
+  messagebase_next_id = 0;
+}
+
+void messagebase_swi_handler(_kernel_swi_regs *r)
+{
+  FILER_MESSAGEBASE_COMMAND command;
+
+  if (r == NULL)
+  {
+    return;
+  }
+
+  command = (FILER_MESSAGEBASE_COMMAND)r->r[0];
+
+  switch (command)
+  {
+    case FILER_MESSAGEBASE_CMD_CREATE:
+    {
+      MESSAGEBASE_RECORD *input = (MESSAGEBASE_RECORD *)r->r[1];
+      MESSAGEBASE_RECORD record;
+      int new_id;
+
+      if (input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      messagebase_normalise_record(&record);
+
+      if (!messagebase_allocate_base_id(&new_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record.id = new_id;
+      messagebase_assign_directory(&record);
+      messagebase_ensure_base_structure(new_id);
+
+      if (!messagebase_append_base_record(&record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_log("Messagebase %d created", new_id);
+      r->r[0] = new_id;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_UPDATE:
+    {
+      int base_id = r->r[1];
+      MESSAGEBASE_RECORD *input = (MESSAGEBASE_RECORD *)r->r[2];
+      MESSAGEBASE_RECORD record;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      record.id = base_id;
+      messagebase_normalise_record(&record);
+      messagebase_assign_directory(&record);
+      messagebase_ensure_base_structure(base_id);
+
+      if (!messagebase_update_base_record(&record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_log("Messagebase %d updated", base_id);
+      r->r[0] = 0;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_INFO:
+    {
+      int base_id = r->r[1];
+
+      if (base_id <= 0 || !messagebase_find_base_record(base_id, &messagebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)(uintptr_t)&messagebase_info_cache;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD:
+    {
+      int base_id = r->r[1];
+      MESSAGE_RECORD *input = (MESSAGE_RECORD *)r->r[2];
+      MESSAGE_RECORD record;
+      int message_id;
+      char path[300];
+      FILE *file;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_base_record(base_id, &messagebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      record.messagebaseid = base_id;
+      record.messagebaseareaid = (record.messagebaseareaid > 0) ? record.messagebaseareaid : 0;
+      record.deleted = 0;
+      if (record.accesslevel < messagebase_info_cache.accesslevel)
+      {
+        record.accesslevel = messagebase_info_cache.accesslevel;
+      }
+      if (record.keys[0] == '\0')
+      {
+        snprintf(record.keys, sizeof(record.keys), "%s", messagebase_info_cache.keys);
+      }
+      record.imported = time(NULL);
+      if (record.sent == 0)
+      {
+        record.sent = record.imported;
+      }
+      record.read = 0;
+      record.timesread = 0;
+      record.bodysize = 0;
+      messagebase_normalise_message_record(&record);
+
+      messagebase_ensure_base_structure(base_id);
+
+      if (!messagebase_allocate_message_id(base_id, &message_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record.id = message_id;
+
+      if (!messagebase_ensure_group_directory(base_id, record.messagebaseareaid, message_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_format_message_path(path, sizeof(path), base_id, record.messagebaseareaid, message_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      file = fopen(path, "wb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+      fclose(file);
+
+      if (!messagebase_append_message_record(base_id, &record))
+      {
+        remove(path);
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_log("Messagebase %d new message %d", base_id, message_id);
+      r->r[0] = message_id;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK:
+    {
+      int base_id = r->r[1];
+      int message_id = r->r[2];
+      const void *data = (const void *)r->r[3];
+      size_t length = (size_t)r->r[4];
+      char path[300];
+      MESSAGE_RECORD record;
+      FILE *file;
+
+      if (base_id <= 0 || message_id <= 0 || data == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (length == 0)
+      {
+        r->r[0] = 0;
+        return;
+      }
+
+      if (!messagebase_find_message_record(base_id, message_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_format_message_path(path, sizeof(path), base_id, record.messagebaseareaid, message_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+      file = fopen(path, "ab");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (fwrite(data, 1, length, file) != length)
+      {
+        fclose(file);
+        r->r[0] = -1;
+        return;
+      }
+
+      fclose(file);
+
+      if (!messagebase_update_messagesize(base_id, message_id, length))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)length;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK:
+    {
+      int base_id = r->r[1];
+      int message_id = r->r[2];
+      void *target = (void *)r->r[3];
+      long offset = r->r[4];
+      size_t request = (size_t)r->r[5];
+      char path[300];
+      MESSAGE_RECORD record;
+      FILE *file;
+      size_t transferred;
+
+      if (base_id <= 0 || message_id <= 0 || target == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_message_record(base_id, message_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_format_message_path(path, sizeof(path), base_id, record.messagebaseareaid, message_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (offset < 0)
+      {
+        offset = 0;
+      }
+
+      if (offset > 0 && fseek(file, offset, SEEK_SET) != 0)
+      {
+        fclose(file);
+        r->r[0] = -1;
+        return;
+      }
+
+      if (request == 0)
+      {
+        fclose(file);
+        r->r[0] = 0;
+        return;
+      }
+
+      transferred = fread(target, 1, request, file);
+      fclose(file);
+      r->r[0] = (int)transferred;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_STORE_AREA:
+    {
+      int base_id = r->r[1];
+      MESSAGEBASE_AREA *input = (MESSAGEBASE_AREA *)r->r[2];
+      MESSAGEBASE_AREA record;
+      char area_dir[300];
+      int area_id = 0;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_base_record(base_id, &messagebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      messagebase_normalise_area_record(&record);
+
+      if (record.name[0] == '\0')
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (record.id <= 0)
+      {
+        if (!messagebase_allocate_area_id(base_id, &area_id))
+        {
+          r->r[0] = -1;
+          return;
+        }
+        record.id = area_id;
+      }
+      else
+      {
+        area_id = record.id;
+      }
+
+      messagebase_ensure_base_structure(base_id);
+      messagebase_format_area_dir(area_dir, sizeof(area_dir), base_id, record.id);
+      messagebase_create_directory(area_dir);
+
+      if (!messagebase_store_area_record(base_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_log("Messagebase %d area %d stored", base_id, record.id);
+      r->r[0] = record.id;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_AREA_INFO:
+    {
+      int base_id = r->r[1];
+      int area_id = r->r[2];
+
+      if (base_id <= 0 || area_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_base_record(base_id, &messagebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_area_record(base_id, area_id, &messagebase_area_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
+      break;
+    }
+
+    default:
+      r->r[0] = -1;
+      break;
+  }
+}
+
+static void messagebase_create_directory(const char *path)
+{
+  _kernel_swi_regs regs;
+
+  if (path == NULL || *path == '\0')
+  {
+    return;
+  }
+
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 8; /* OS_File reason code: create directory */
+  regs.r[1] = (int)(uintptr_t)path;
+
+  /* Ignore errors (directory may already exist). */
+  _kernel_swi(OS_File, &regs, &regs);
+}
+
+static const char *messagebase_path_leaf(const char *path)
+{
+  const char *leaf = path;
+  const char *scan = path;
+
+  if (path == NULL)
+  {
+    return "";
+  }
+
+  while (*scan != '\0')
+  {
+    if (*scan == '.' || *scan == '/' || *scan == '\\' || *scan == ':')
+    {
+      leaf = scan + 1;
+    }
+    ++scan;
+  }
+
+  return (*leaf != '\0') ? leaf : path;
+}
+
+static void messagebase_format_base_path(char *buffer, size_t length, int base_id)
+{
+  snprintf(buffer, length, "%s.%0*d", MESSAGEBASE_ROOT_DIR, MESSAGEBASE_BASE_WIDTH, base_id);
+}
+
+static void messagebase_format_message_db_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.MsgDB", base);
+}
+
+static void messagebase_format_message_idx_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.MsgIDX", base);
+}
+
+static void messagebase_format_messages_dir(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.Messages", base);
+}
+
+static void messagebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id)
+{
+  if (buffer == NULL)
+  {
+    return;
+  }
+
+  if (area_id <= 0)
+  {
+    messagebase_format_messages_dir(buffer, length, base_id);
+    return;
+  }
+
+  {
+    char messages_dir[300];
+    messagebase_format_messages_dir(messages_dir, sizeof(messages_dir), base_id);
+    snprintf(buffer, length, "%s.A%0*d", messages_dir, MESSAGEBASE_AREA_WIDTH, area_id);
+  }
+}
+
+static void messagebase_format_area_db_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaDB", base);
+}
+
+static void messagebase_format_area_temp_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaTMP", base);
+}
+
+static void messagebase_format_area_idx_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  messagebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaIDX", base);
+}
+
+static int messagebase_message_group_index(int file_id)
+{
+  if (file_id <= 0)
+  {
+    return -1;
+  }
+
+  return (file_id - 1) / MESSAGEBASE_FILES_PER_GROUP;
+}
+
+static int messagebase_format_group_dir(char *buffer, size_t length, int base_id, int area_id, int file_id)
+{
+  char area_dir[300];
+  int group = messagebase_message_group_index(file_id);
+
+  if (group < 0 || group >= MESSAGEBASE_MAX_FILE_GROUPS)
+  {
+    return 0;
+  }
+
+  messagebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
+  snprintf(buffer, length, "%s.G%02d", area_dir, group);
+  return 1;
+}
+
+static int messagebase_ensure_group_directory(int base_id, int area_id, int file_id)
+{
+  char group_dir[300];
+  char area_dir[300];
+
+  if (!messagebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  {
+    return 0;
+  }
+
+  messagebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
+  messagebase_create_directory(area_dir);
+  messagebase_create_directory(group_dir);
+  return 1;
+}
+
+static int messagebase_format_message_path(char *buffer, size_t length, int base_id, int area_id, int file_id)
+{
+  char group_dir[300];
+
+  if (!messagebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  {
+    return 0;
+  }
+
+  snprintf(buffer, length, "%s.%0*d", group_dir, MESSAGEBASE_FILE_WIDTH, file_id);
+  return 1;
+}
+
+static void messagebase_assign_directory(MESSAGEBASE_RECORD *record)
+{
+  char base_path[300];
+
+  if (record == NULL || record->id <= 0)
+  {
+    return;
+  }
+
+  messagebase_format_base_path(base_path, sizeof(base_path), record->id);
+  snprintf(record->messagebasedir, sizeof(record->messagebasedir), "%s", base_path);
+  null_terminate_string(record->messagebasedir, sizeof(record->messagebasedir));
+}
+
+static void messagebase_normalise_record(MESSAGEBASE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->keys, sizeof(record->keys));
+  null_terminate_string(record->name, sizeof(record->name));
+  null_terminate_string(record->messagebasedir, sizeof(record->messagebasedir));
+}
+
+static void messagebase_normalise_area_record(MESSAGEBASE_AREA *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->name, sizeof(record->name));
+  null_terminate_string(record->tag, sizeof(record->tag));
+}
+
+static void messagebase_normalise_message_record(MESSAGE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->keys, sizeof(record->keys));
+  null_terminate_string(record->subject, sizeof(record->subject));
+  null_terminate_string(record->orgaddr.domain, sizeof(record->orgaddr.domain));
+  null_terminate_string(record->dstaddr.domain, sizeof(record->dstaddr.domain));
+}
+
+static void messagebase_touch_file(const char *path)
+{
+  FILE *file;
+
+  if (path == NULL)
+  {
+    return;
+  }
+
+  file = fopen(path, "ab+");
+  if (file != NULL)
+  {
+    fclose(file);
+  }
+}
+
+static void messagebase_ensure_base_structure(int base_id)
+{
+  char path[300];
+
+  messagebase_format_base_path(path, sizeof(path), base_id);
+  messagebase_create_directory(path);
+
+  messagebase_format_messages_dir(path, sizeof(path), base_id);
+  messagebase_create_directory(path);
+
+  messagebase_format_message_db_path(path, sizeof(path), base_id);
+  messagebase_touch_file(path);
+
+  messagebase_format_message_idx_path(path, sizeof(path), base_id);
+  messagebase_touch_file(path);
+
+  messagebase_format_area_db_path(path, sizeof(path), base_id);
+  messagebase_touch_file(path);
+
+  messagebase_format_area_idx_path(path, sizeof(path), base_id);
+  messagebase_touch_file(path);
+}
+
+static int messagebase_store_next_id(void)
+{
+  FILE *file = fopen(MESSAGEBASE_IDX_PATH, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(MESSAGEBASE_IDX_PATH, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  rewind(file);
+  if (fwrite(&messagebase_next_id, sizeof(messagebase_next_id), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  return 1;
+}
+
+static int messagebase_allocate_base_id(int *new_id)
+{
+  if (new_id == NULL)
+  {
+    return 0;
+  }
+
+  messagebase_next_id++;
+  if (!messagebase_store_next_id())
+  {
+    messagebase_next_id--;
+    return 0;
+  }
+
+  *new_id = messagebase_next_id;
+
+  /* Ensure directory structure exists for the new base */
+  messagebase_ensure_base_structure(*new_id);
+
+  return 1;
+}
+
+static int messagebase_append_base_record(const MESSAGEBASE_RECORD *record)
+{
+  FILE *file = fopen(MESSAGEBASE_DB_PATH, "ab");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(MESSAGEBASE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
+static int messagebase_update_base_record(const MESSAGEBASE_RECORD *record)
+{
+  FILE *source;
+  FILE *temp;
+  int updated = 0;
+
+  source = fopen(MESSAGEBASE_DB_PATH, "rb");
+  if (source == NULL)
+  {
+    return 0;
+  }
+
+  temp = fopen(MESSAGEBASE_DB_TEMP_PATH, "wb");
+  if (temp == NULL)
+  {
+    fclose(source);
+    return 0;
+  }
+
+  while (fread(&messagebase_info_cache, sizeof(MESSAGEBASE_RECORD), 1, source) == 1)
+  {
+    if (messagebase_info_cache.id == record->id)
+    {
+      if (fwrite(record, sizeof(MESSAGEBASE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+      updated = 1;
+    }
+    else
+    {
+      if (fwrite(&messagebase_info_cache, sizeof(MESSAGEBASE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+    }
+  }
+
+  fclose(source);
+  fclose(temp);
+
+  if (!updated)
+  {
+    remove(MESSAGEBASE_DB_TEMP_PATH);
+    return 0;
+  }
+
+  remove(MESSAGEBASE_DB_PATH);
+  rename(MESSAGEBASE_DB_TEMP_PATH, MESSAGEBASE_DB_PATH);
+  return 1;
+}
+
+static int messagebase_find_base_record(int id, MESSAGEBASE_RECORD *record_out)
+{
+  FILE *file = fopen(MESSAGEBASE_DB_PATH, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_info_cache, sizeof(MESSAGEBASE_RECORD), 1, file) == 1)
+  {
+    if (messagebase_info_cache.id == id)
+    {
+      char previous_dir[MAX_DIR];
+      memcpy(previous_dir, messagebase_info_cache.messagebasedir, sizeof(previous_dir));
+      messagebase_assign_directory(&messagebase_info_cache);
+      if (record_out != NULL)
+      {
+        *record_out = messagebase_info_cache;
+      }
+      fclose(file);
+      if (strncmp(previous_dir, messagebase_info_cache.messagebasedir, sizeof(previous_dir)) != 0)
+      {
+        messagebase_update_base_record(&messagebase_info_cache);
+      }
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int messagebase_allocate_area_id(int base_id, int *new_id)
+{
+  char path[300];
+  FILE *file;
+  int value = 0;
+
+  if (base_id <= 0 || new_id == NULL)
+  {
+    return 0;
+  }
+
+  messagebase_format_area_idx_path(path, sizeof(path), base_id);
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(path, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  if (fread(&value, sizeof(value), 1, file) != 1)
+  {
+    value = 0;
+  }
+
+  value++;
+
+  rewind(file);
+  if (fwrite(&value, sizeof(value), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  *new_id = value;
+  return 1;
+}
+
+static int messagebase_store_area_record(int base_id, const MESSAGEBASE_AREA *record)
+{
+  char source_path[300];
+  char temp_path[300];
+  FILE *source;
+  FILE *temp;
+  int replaced = 0;
+
+  if (base_id <= 0 || record == NULL || record->id <= 0)
+  {
+    return 0;
+  }
+
+  messagebase_format_area_db_path(source_path, sizeof(source_path), base_id);
+  messagebase_format_area_temp_path(temp_path, sizeof(temp_path), base_id);
+
+  source = fopen(source_path, "rb");
+  temp = fopen(temp_path, "wb");
+  if (temp == NULL)
+  {
+    if (source != NULL)
+    {
+      fclose(source);
+    }
+    return 0;
+  }
+
+  if (source != NULL)
+  {
+    while (fread(&messagebase_area_cache, sizeof(messagebase_area_cache), 1, source) == 1)
+    {
+      const MESSAGEBASE_AREA *to_write = &messagebase_area_cache;
+      if (messagebase_area_cache.id == record->id)
+      {
+        to_write = record;
+        replaced = 1;
+      }
+
+      if (fwrite(to_write, sizeof(MESSAGEBASE_AREA), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        remove(temp_path);
+        return 0;
+      }
+    }
+
+    fclose(source);
+  }
+
+  if (!replaced)
+  {
+    if (fwrite(record, sizeof(MESSAGEBASE_AREA), 1, temp) != 1)
+    {
+      fclose(temp);
+      remove(temp_path);
+      return 0;
+    }
+  }
+
+  fclose(temp);
+
+  remove(source_path);
+  if (rename(temp_path, source_path) != 0)
+  {
+    remove(temp_path);
+    return 0;
+  }
+
+  return 1;
+}
+
+static int messagebase_find_area_record(int base_id, int area_id, MESSAGEBASE_AREA *record_out)
+{
+  char path[300];
+  FILE *file;
+
+  if (base_id <= 0 || area_id <= 0)
+  {
+    return 0;
+  }
+
+  messagebase_format_area_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_area_cache, sizeof(messagebase_area_cache), 1, file) == 1)
+  {
+    if (messagebase_area_cache.id == area_id)
+    {
+      if (record_out != NULL)
+      {
+        *record_out = messagebase_area_cache;
+      }
+      fclose(file);
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int messagebase_allocate_message_id(int base_id, int *new_id)
+{
+  char path[300];
+  FILE *file;
+  int value = 0;
+
+  if (new_id == NULL)
+  {
+    return 0;
+  }
+
+  messagebase_format_message_idx_path(path, sizeof(path), base_id);
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(path, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  if (fread(&value, sizeof(value), 1, file) != 1)
+  {
+    value = 0;
+  }
+
+  value++;
+
+  {
+    int group = messagebase_message_group_index(value);
+    if (group < 0 || group >= MESSAGEBASE_MAX_FILE_GROUPS)
+    {
+      fclose(file);
+      return 0;
+    }
+  }
+
+  rewind(file);
+  if (fwrite(&value, sizeof(value), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  *new_id = value;
+  return 1;
+}
+
+static int messagebase_append_message_record(int base_id, const MESSAGE_RECORD *record)
+{
+  char path[300];
+  FILE *file;
+  messagebase_format_message_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "ab");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(MESSAGE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
+static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *record)
+{
+  char source_path[300];
+  char temp_path[300];
+  FILE *source;
+  FILE *temp;
+  int updated = 0;
+
+  messagebase_format_message_db_path(source_path, sizeof(source_path), base_id);
+  messagebase_format_base_path(temp_path, sizeof(temp_path), base_id);
+  strncat(temp_path, ".Temp", sizeof(temp_path) - strlen(temp_path) - 1);
+
+  source = fopen(source_path, "rb");
+  if (source == NULL)
+  {
+    return 0;
+  }
+
+  temp = fopen(temp_path, "wb");
+  if (temp == NULL)
+  {
+    fclose(source);
+    return 0;
+  }
+
+  while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, source) == 1)
+  {
+    if (messagebase_message_cache.id == record->id)
+    {
+      if (fwrite(record, sizeof(MESSAGE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+      updated = 1;
+    }
+    else
+    {
+      if (fwrite(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+    }
+  }
+
+  fclose(source);
+  fclose(temp);
+
+  if (!updated)
+  {
+    remove(temp_path);
+    return 0;
+  }
+
+  remove(source_path);
+  rename(temp_path, source_path);
+  return 1;
+}
+
+static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_RECORD *record_out)
+{
+  char path[300];
+  FILE *file;
+
+  messagebase_format_message_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1)
+  {
+    if (messagebase_message_cache.id == file_id)
+    {
+      if (record_out != NULL)
+      {
+        *record_out = messagebase_message_cache;
+      }
+      fclose(file);
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int messagebase_update_messagesize(int base_id, int message_id, size_t delta)
+{
+  if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
+  {
+    return 0;
+  }
+
+  messagebase_message_cache.bodysize += (long)delta;
+  return messagebase_update_message_record(base_id, &messagebase_message_cache);
+}
+
+static void messagebase_log(const char *format, ...)
+{
+  va_list args;
+  char message[128];
+
+  va_start(args, format);
+  vsnprintf(message, sizeof(message), format, args);
+  va_end(args);
+
+  log_system(message);
+}
+
+static long messagebase_file_length(FILE *file)
+{
+  long size = 0;
+
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fseek(file, 0, SEEK_END) == 0)
+  {
+    size = ftell(file);
+  }
+
+  rewind(file);
+  return size > 0 ? size : 0;
+}
+
+int messagebase_count_bases(int *count_out, long *db_size_out)
+{
+  FILE *file = fopen(MESSAGEBASE_DB_PATH, "rb");
+  long bytes = 0;
+  int count = 0;
+
+  if (file != NULL)
+  {
+    bytes = messagebase_file_length(file);
+    fclose(file);
+    if (bytes > 0)
+    {
+      count = (int)(bytes / (long)sizeof(MESSAGEBASE_RECORD));
+    }
+  }
+
+  if (count_out != NULL)
+  {
+    *count_out = count;
+  }
+  if (db_size_out != NULL)
+  {
+    *db_size_out = bytes;
+  }
+
+  return (file != NULL);
+}
+
+int messagebase_peek_next_base_id(int *next_id_out, long *idx_size_out)
+{
+  FILE *file = fopen(MESSAGEBASE_IDX_PATH, "rb");
+  long bytes = 0;
+  int value = 0;
+
+  if (file != NULL)
+  {
+    bytes = messagebase_file_length(file);
+    if (fread(&value, sizeof(value), 1, file) != 1)
+    {
+      value = 0;
+    }
+    fclose(file);
+  }
+
+  if (next_id_out != NULL)
+  {
+    *next_id_out = value;
+  }
+  if (idx_size_out != NULL)
+  {
+    *idx_size_out = bytes;
+  }
+
+  return (file != NULL);
+}
+
+int messagebase_collect_message_stats(int *message_count_out, long *bytes_out)
+{
+  FILE *db = fopen(MESSAGEBASE_DB_PATH, "rb");
+  MESSAGEBASE_RECORD record;
+  int total_messages = 0;
+  long total_bytes = 0;
+
+  if (db == NULL)
+  {
+    if (message_count_out != NULL)
+    {
+      *message_count_out = 0;
+    }
+    if (bytes_out != NULL)
+    {
+      *bytes_out = 0;
+    }
+    return 0;
+  }
+
+  while (fread(&record, sizeof(record), 1, db) == 1)
+  {
+    char meta_path[300];
+    FILE *meta;
+
+    messagebase_format_message_db_path(meta_path, sizeof(meta_path), record.id);
+    meta = fopen(meta_path, "rb");
+    if (meta == NULL)
+    {
+      continue;
+    }
+
+    while (fread(&messagebase_message_cache, sizeof(messagebase_message_cache), 1, meta) == 1)
+    {
+      if (!messagebase_message_cache.deleted)
+      {
+        total_messages++;
+        total_bytes += messagebase_message_cache.bodysize;
+      }
+    }
+
+    fclose(meta);
+  }
+
+  fclose(db);
+
+  if (message_count_out != NULL)
+  {
+    *message_count_out = total_messages;
+  }
+  if (bytes_out != NULL)
+  {
+    *bytes_out = total_bytes;
+  }
+
+  return 1;
+}
+
+int messagebase_iterate_bases(int (*callback)(const MESSAGEBASE_RECORD *record, void *context), void *context)
+{
+  FILE *file = fopen(MESSAGEBASE_DB_PATH, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_info_cache, sizeof(messagebase_info_cache), 1, file) == 1)
+  {
+    messagebase_assign_directory(&messagebase_info_cache);
+    if (callback != NULL)
+    {
+      if (!callback(&messagebase_info_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(file);
+  return 1;
+}
+
+int messagebase_iterate_areas(int base_id, int (*callback)(const MESSAGEBASE_AREA *record, void *context), void *context)
+{
+  char path[300];
+  FILE *file;
+
+  if (base_id <= 0)
+  {
+    return 0;
+  }
+
+  messagebase_format_area_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_area_cache, sizeof(messagebase_area_cache), 1, file) == 1)
+  {
+    if (callback != NULL)
+    {
+      if (!callback(&messagebase_area_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(file);
+  return 1;
+}
+
+int messagebase_iterate_messages(int base_id, int (*callback)(const MESSAGE_RECORD *record, void *context), void *context)
+{
+  char meta_path[300];
+  FILE *meta;
+
+  messagebase_format_message_db_path(meta_path, sizeof(meta_path), base_id);
+  meta = fopen(meta_path, "rb");
+  if (meta == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&messagebase_message_cache, sizeof(messagebase_message_cache), 1, meta) == 1)
+  {
+    if (callback != NULL)
+    {
+      if (!callback(&messagebase_message_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(meta);
+  return 1;
+}
+
+int messagebase_get_message_record(int base_id, int file_id, MESSAGE_RECORD *record_out)
+{
+  return messagebase_find_message_record(base_id, file_id, record_out);
+}
+
+int messagebase_save_message_record(int base_id, const MESSAGE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return 0;
+  }
+  return messagebase_update_message_record(base_id, record);
+}
+
+int messagebase_delete_message(int base_id, int file_id, int remove_payload)
+{
+  MESSAGE_RECORD record;
+  char payload_path[300];
+
+  if (!messagebase_find_message_record(base_id, file_id, &record))
+  {
+    return 0;
+  }
+
+  record.deleted = 1;
+  if (!messagebase_update_message_record(base_id, &record))
+  {
+    return 0;
+  }
+
+  if (remove_payload)
+  {
+    if (messagebase_format_message_path(payload_path, sizeof(payload_path), base_id, record.messagebaseareaid, file_id))
+    {
+      remove(payload_path);
+    }
+  }
+
+  messagebase_log("Messagebase %d message %d deleted", base_id, file_id);
+  return 1;
+}
+
+int messagebase_store_from_host(int base_id, const char *host_path, MESSAGE_RECORD *record_template)
+{
+  FILE *source;
+  FILE *dest;
+  MESSAGEBASE_RECORD base_record;
+  MESSAGE_RECORD record;
+  char payload_path[300];
+  unsigned char buffer[MESSAGEBASE_COPY_BUFFER];
+  size_t bytes_read;
+  size_t total = 0;
+  int message_id;
+
+  if (base_id <= 0 || host_path == NULL || *host_path == '\0')
+  {
+    return -1;
+  }
+
+  source = fopen(host_path, "rb");
+  if (source == NULL)
+  {
+    return -1;
+  }
+
+  if (!messagebase_find_base_record(base_id, &base_record))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  messagebase_ensure_base_structure(base_id);
+
+  if (!messagebase_allocate_message_id(base_id, &message_id))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  if (record_template != NULL)
+  {
+    record = *record_template;
+  }
+  else
+  {
+    memset(&record, 0, sizeof(record));
+  }
+
+  record.messagebaseareaid = (record.messagebaseareaid > 0) ? record.messagebaseareaid : 0;
+
+  if (!messagebase_ensure_group_directory(base_id, record.messagebaseareaid, message_id))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  if (!messagebase_format_message_path(payload_path, sizeof(payload_path), base_id, record.messagebaseareaid, message_id))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  dest = fopen(payload_path, "wb");
+  if (dest == NULL)
+  {
+    fclose(source);
+    return -1;
+  }
+
+  while ((bytes_read = fread(buffer, 1, sizeof(buffer), source)) > 0)
+  {
+    if (fwrite(buffer, 1, bytes_read, dest) != bytes_read)
+    {
+      fclose(source);
+      fclose(dest);
+      remove(payload_path);
+      return -1;
+    }
+    total += bytes_read;
+  }
+
+  if (ferror(source))
+  {
+    fclose(source);
+    fclose(dest);
+    remove(payload_path);
+    return -1;
+  }
+
+  fclose(source);
+  fclose(dest);
+
+  record.id = message_id;
+  record.messagebaseid = base_id;
+  record.deleted = 0;
+  if (record.accesslevel < base_record.accesslevel)
+  {
+    record.accesslevel = base_record.accesslevel;
+  }
+  if (record.keys[0] == '\0')
+  {
+    snprintf(record.keys, sizeof(record.keys), "%s", base_record.keys);
+  }
+  if (record.subject[0] == '\0')
+  {
+    snprintf(record.subject, sizeof(record.subject), "%s", messagebase_path_leaf(host_path));
+  }
+  record.imported = time(NULL);
+  if (record.sent == 0)
+  {
+    record.sent = record.imported;
+  }
+  record.read = 0;
+  record.timesread = 0;
+  record.bodysize = (long)total;
+  messagebase_normalise_message_record(&record);
+
+  if (!messagebase_append_message_record(base_id, &record))
+  {
+    remove(payload_path);
+    return -1;
+  }
+
+  messagebase_log("Messagebase %d stored message %d (%s)", base_id, record.id, record.subject);
+  return record.id;
+}

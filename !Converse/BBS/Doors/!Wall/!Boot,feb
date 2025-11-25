@@ -1,0 +1,4 @@
+| >!Boot
+|
+Set Wall$Dir <Obey$Dir>
+IconSprites <Obey$Dir>.!Sprites

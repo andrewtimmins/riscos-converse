@@ -1,0 +1,48 @@
+/* ******************************************************************************************************************************************************** */
+/* Pipes Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef PIPES_STRUCTS_H
+#define PIPES_STRUCTS_H
+
+#include <stdint.h>
+
+typedef struct
+{
+  uint8_t reserved0;      /* Was used for flags in the assembler build; keep for padding. */
+  uint8_t status;         /* Single status byte exposed via ConversePipes_{Read,Write}Status. */
+  uint8_t reserved1[2];   /* Maintains alignment of the 32-bit counters below. */
+  uint32_t input_used;    /* Number of bytes queued in the host->slave buffer. */
+  uint32_t input_head;    /* Write cursor for host->slave data. */
+  uint32_t input_tail;    /* Read cursor for host->slave data. */
+  uint32_t output_free;   /* Free space remaining in the slave->host buffer. */
+  uint32_t output_head;   /* Write cursor for slave->host data. */
+  uint32_t output_tail;   /* Read cursor for slave->host data. */
+  uint32_t reserved2;     /* Spare for future use; keeps total struct size at 32 bytes. */
+} converse_pipe_line;
+
+#define PIPES_STATUS_INPUT_HIGH 0x80
+#define PIPES_STATUS_OUTPUT_LOW 0x40
+
+/* SWI ordinals are shared between cmhg/pipesHdr and the dispatcher in c/pipes; do not reorder. */
+enum
+{
+  SWI_CONVERSE_READ_STATUS = 0,
+  SWI_CONVERSE_WRITE_STATUS,
+  SWI_CONVERSE_INPUT_STATUS,
+  SWI_CONVERSE_INPUT_READ,
+  SWI_CONVERSE_OUTPUT_STATUS,
+  SWI_CONVERSE_OUTPUT_WRITE,
+  SWI_CONVERSE_CLEAR_INPUT,
+  SWI_CONVERSE_CLEAR_OUTPUT,
+  SWI_CONVERSE_INPUT_WRITE,
+  SWI_CONVERSE_OUTPUT_READ,
+  SWI_CONVERSE_RESET_STATE,
+  SWI_CONVERSE_INPUT_PEEK,
+  SWI_CONVERSE_OUTPUT_PEEK,
+  SWI_CONVERSE_INPUT_WRITE_BLOCK,
+  SWI_CONVERSE_OUTPUT_READ_BLOCK
+};
+
+#endif /* PIPES_STRUCTS_H */
+

@@ -1,0 +1,346 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "structs.h"
+#include "userdb.h"
+#include "logging.h"
+#include "misc.h"
+#include "encrypt.h"
+
+#define USERDB_LOG_ENTRY_LENGTH 256
+
+static USER_RECORD userdb_cached_record;
+
+static void userdb_encrypt_payload(USER_RECORD *record);
+static void userdb_decrypt_payload(USER_RECORD *record);
+static void userdb_normalise_strings(USER_RECORD *record);
+static void userdb_log_event(const char *message, int user_id);
+static USER_RECORD *userdb_find_record_by_username(const char *username);
+
+/* ******************************************************************************************************************************************************** */
+/* User Database Routines                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+int userdb_get_next_id(void)
+{
+    FILE *file = fopen(USERIDX, "r+b");
+    int last_id = 0;
+    
+    if (file == NULL) {
+        file = fopen(USERIDX, "w+b");
+        if (file == NULL) {
+            return 0;
+        }
+    } else {
+        if (fread(&last_id, sizeof(int), 1, file) != 1) {
+            last_id = 0;
+            fseek(file, 0, SEEK_SET);
+        }
+    }
+    
+    last_id++;
+    (void)(fseek(file, 0, SEEK_SET));
+    fwrite(&last_id, sizeof(int), 1, file);
+
+    fclose(file);
+    return last_id;
+}
+
+int userdb_add_record(USER_RECORD *user_record)
+{
+    USER_RECORD stored_record;
+    FILE *file;
+
+    if (user_record == NULL) {
+        return 0;
+    }
+    file = fopen(USERDB, "ab");
+    if (file == NULL) {
+        return 0;
+    }
+
+    stored_record = *user_record;
+    stored_record.id = userdb_get_next_id();
+    userdb_normalise_strings(&stored_record);
+
+    userdb_log_event("Created new user: #%d", stored_record.id);
+
+    userdb_encrypt_payload(&stored_record);
+
+    if (fwrite(&stored_record, sizeof(USER_RECORD), 1, file) != 1) {
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+    return stored_record.id;
+}
+
+int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
+{
+    USER_RECORD stored_record = {0};
+    FILE *file;
+
+    if (updated_user_record == NULL) {
+        return 0;
+    }
+    file = fopen(USERDB, "r+b");
+    if (file == NULL) {
+        return 0;
+    }
+
+    while (fread(&stored_record, sizeof(USER_RECORD), 1, file) == 1) {
+        if (stored_record.id == user_id) {
+            USER_RECORD working = *updated_user_record;
+            working.id = user_id;
+            userdb_normalise_strings(&working);
+            userdb_encrypt_payload(&working);
+
+            if (fseek(file, -(long)sizeof(USER_RECORD), SEEK_CUR) != 0 ||
+                fwrite(&working, sizeof(USER_RECORD), 1, file) != 1) {
+                fclose(file);
+                return 0;
+            }
+
+            fclose(file);
+            userdb_log_event("Updated user: #%d", user_id);
+            return 1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+ 
+USER_RECORD *userdb_search_record(int user_id)
+{
+    FILE *file = fopen(USERDB, "rb");
+    USER_RECORD record;
+
+    if (file == NULL) {
+        return 0;
+    }
+
+    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1) {
+        if (record.id == user_id) {
+            fclose(file);
+
+            userdb_cached_record = record;
+            userdb_decrypt_payload(&userdb_cached_record);
+            userdb_normalise_strings(&userdb_cached_record);
+            userdb_log_event("Found user: #%d", user_id);
+
+            return &userdb_cached_record;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
+
+USER_RECORD *userdb_find_username(const char *username)
+{
+    return userdb_find_record_by_username(username);
+}
+
+int userdb_delete_record(int user_id)
+{
+    FILE *file = fopen(USERDB, "rb");
+    FILE *temp = fopen(TEMPUSERDB, "wb");
+    USER_RECORD record;
+    int found = 0;
+
+    if (file == NULL || temp == NULL) {
+        if (file != NULL) fclose(file);
+        if (temp != NULL) fclose(temp);
+        return 0;
+    }
+
+    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1) {
+        if (record.id != user_id) {
+            if (fwrite(&record, sizeof(USER_RECORD), 1, temp) != 1) {
+                fclose(file);
+                fclose(temp);
+                return 0;
+            }
+        } else {
+            found = 1;
+        }
+    }
+
+    fclose(file);
+    fclose(temp);
+
+    if (remove(USERDB) != 0 || rename(TEMPUSERDB, USERDB) != 0) {
+        return 0;
+    }
+
+    if (found) {
+        userdb_log_event("Deleted user: #%d", user_id);
+        return 1;
+    }
+
+    return 0;
+}
+
+USER_RECORD *userdb_authenticate(const char *username, const char *password, FILER_USERDB_AUTH_RESULT *result)
+{
+    USER_RECORD *record;
+
+    if (result != NULL)
+    {
+        *result = FILER_USERDB_AUTH_NO_USER;
+    }
+
+    if (username == NULL || password == NULL)
+    {
+        return NULL;
+    }
+
+    record = userdb_find_record_by_username(username);
+    if (record == NULL)
+    {
+        return NULL;
+    }
+
+    if (record->user_flags.deleted != 0)
+    {
+        return NULL;
+    }
+
+    if (record->user_flags.lockedout != 0)
+    {
+        if (result != NULL)
+        {
+            *result = FILER_USERDB_AUTH_LOCKED;
+        }
+        return NULL;
+    }
+
+    if (strcmp(record->password, password) != 0)
+    {
+        if (result != NULL)
+        {
+            *result = FILER_USERDB_AUTH_BAD_PASSWORD;
+        }
+        return NULL;
+    }
+
+    if (result != NULL)
+    {
+        *result = FILER_USERDB_AUTH_SUCCESS;
+    }
+
+    userdb_log_event("Authenticated user: #%d", record->id);
+    return record;
+}
+
+static void userdb_encrypt_payload(USER_RECORD *record)
+{
+    if (record == NULL) {
+        return;
+    }
+
+    encrypt_decrypt((char *)record + offsetof(USER_RECORD, username), sizeof(USER_RECORD) - offsetof(USER_RECORD, username));
+}
+
+static void userdb_decrypt_payload(USER_RECORD *record)
+{
+    userdb_encrypt_payload(record);
+}
+
+static void userdb_normalise_strings(USER_RECORD *record)
+{
+    if (record == NULL) {
+        return;
+    }
+
+    null_terminate_string(record->username, sizeof(record->username));
+    null_terminate_string(record->realname, sizeof(record->realname));
+    null_terminate_string(record->email, sizeof(record->email));
+    null_terminate_string(record->password, sizeof(record->password));
+    null_terminate_string(record->keys, sizeof(record->keys));
+    null_terminate_string(record->userdir, sizeof(record->userdir));
+}
+
+static void userdb_log_event(const char *message, int user_id)
+{
+    char log_entry[USERDB_LOG_ENTRY_LENGTH];
+
+    if (message == NULL) {
+        return;
+    }
+
+    snprintf(log_entry, sizeof(log_entry), message, user_id);
+    log_system(log_entry);
+}
+
+static int userdb_string_casecmp(const char *lhs, const char *rhs)
+{
+    unsigned char a;
+    unsigned char b;
+
+    if (lhs == NULL || rhs == NULL)
+    {
+        return (lhs == rhs) ? 0 : (lhs == NULL ? -1 : 1);
+    }
+
+    do
+    {
+        a = (unsigned char)tolower((unsigned char)*lhs++);
+        b = (unsigned char)tolower((unsigned char)*rhs++);
+        if (a != b)
+        {
+            return (int)a - (int)b;
+        }
+    } while (a != '\0' && b != '\0');
+
+    return (int)a - (int)b;
+}
+
+static USER_RECORD *userdb_find_record_by_username(const char *username)
+{
+    FILE *file;
+    USER_RECORD record;
+
+    if (username == NULL || *username == '\0')
+    {
+        return NULL;
+    }
+
+    file = fopen(USERDB, "rb");
+    if (file == NULL)
+    {
+        return NULL;
+    }
+
+    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
+    {
+        userdb_decrypt_payload(&record);
+        userdb_normalise_strings(&record);
+
+        if (record.user_flags.deleted != 0)
+        {
+            continue;
+        }
+
+        if (userdb_string_casecmp(record.username, username) == 0)
+        {
+            fclose(file);
+            userdb_cached_record = record;
+            userdb_log_event("Found user: #%d", record.id);
+            return &userdb_cached_record;
+        }
+    }
+
+    fclose(file);
+    return NULL;
+}

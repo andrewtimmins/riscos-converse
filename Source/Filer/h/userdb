@@ -1,0 +1,32 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef USERDB_H
+#define USERDB_H
+
+#include <stdlib.h>
+
+#include "structs.h"
+
+#define USERDB "<Converse$Dir>.Resources.Data.UserDB"
+#define USERIDX "<Converse$Dir>.Resources.Data.UserIDX"
+#define TEMPUSERDB "<Converse$Dir>.Resources.Data.TempDB"
+
+typedef enum
+{
+	FILER_USERDB_AUTH_SUCCESS = 0,
+	FILER_USERDB_AUTH_NO_USER,
+	FILER_USERDB_AUTH_BAD_PASSWORD,
+	FILER_USERDB_AUTH_LOCKED
+} FILER_USERDB_AUTH_RESULT;
+
+int userdb_get_next_id(void);
+int userdb_add_record(USER_RECORD *user_record);
+int userdb_update_record(int user_id, USER_RECORD *user_record);
+USER_RECORD *userdb_search_record(int user_id);
+int userdb_delete_record(int user_id);
+USER_RECORD *userdb_find_username(const char *username);
+USER_RECORD *userdb_authenticate(const char *username, const char *password, FILER_USERDB_AUTH_RESULT *result);
+
+#endif

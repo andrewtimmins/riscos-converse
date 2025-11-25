@@ -1,0 +1,30 @@
+;
+; System configuration file
+;
+
+start
+
+name        Converse BBS
+sysop       Andrew Timmins
+contact     2:2500/622.0
+hostname    telnet.conversebbs.co.uk
+port        23
+
+botstopper  yes
+needlogin   yes
+pager       yes
+
+anykey      <Converse$Dir>.BBS.AnyKey
+chatstart   <Converse$Dir>.BBS.ChatStart
+chatend     <Converse$Dir>.BBS.ChatEnd
+
+prelogon    <Converse$Dir>.BBS.PreLogon
+postlogon   <Converse$Dir>.BBS.PostLogon
+logoff      <Converse$Dir>.BBS.Logoff
+
+timeup      <Converse$Dir>.BBS.TimeUp
+lockedout   <Converse$Dir>.BBS.Lockedout
+closedsys   <Converse$Dir>.BBS.ClosedSys
+aftermail   <Converse$Dir>.BBS.AferMail
+
+end

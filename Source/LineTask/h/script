@@ -1,0 +1,117 @@
+#ifndef LINE_TASK_SCRIPT_H
+#define LINE_TASK_SCRIPT_H
+
+#include <stddef.h>
+#include <time.h>
+
+typedef struct script_host
+{
+    void *context;
+    void (*write_text)(void *context, const char *text);
+    void (*launch_door)(void *context, const char *command_line);
+    void (*report_time)(void *context);
+    void (*report_line_info)(void *context);
+    void (*request_disconnect)(void *context);
+    void (*force_disconnect)(void *context);
+    void (*report_activity)(void *context, const char *text);
+    int (*get_line_id)(void *context);
+    int (*get_task_handle)(void *context);
+} script_host;
+
+typedef enum
+{
+    SCRIPT_STATUS_IDLE = 0,
+    SCRIPT_STATUS_RUNNING,
+    SCRIPT_STATUS_WAIT_INPUT_CHAR,
+    SCRIPT_STATUS_WAIT_INPUT_LINE,
+    SCRIPT_STATUS_WAIT_DOOR,
+    SCRIPT_STATUS_WAIT_SLEEP,
+    SCRIPT_STATUS_COMPLETED,
+    SCRIPT_STATUS_ERROR
+} script_status;
+
+typedef enum
+{
+    SCRIPT_CMD_NONE = 0,
+    SCRIPT_CMD_PRINT,
+    SCRIPT_CMD_GOTO,
+    SCRIPT_CMD_PROMPT,
+    SCRIPT_CMD_IF,
+    SCRIPT_CMD_SET,
+    SCRIPT_CMD_CALL,
+    SCRIPT_CMD_RETURN,
+    SCRIPT_CMD_PAUSE,
+    SCRIPT_CMD_TYPE,
+    SCRIPT_CMD_ANYKEY,
+    SCRIPT_CMD_FG,
+    SCRIPT_CMD_BG,
+    SCRIPT_CMD_FGBG,
+    SCRIPT_CMD_CLS,
+    SCRIPT_CMD_POS,
+    SCRIPT_CMD_SCRIPT,
+    SCRIPT_CMD_DOING,
+    SCRIPT_CMD_LOGOFF
+} script_command_type;
+
+typedef enum
+{
+    SCRIPT_INPUT_NONE = 0,
+    SCRIPT_INPUT_CHAR,
+    SCRIPT_INPUT_LINE
+} script_input_mode;
+
+typedef struct script_instruction
+{
+    script_command_type type;
+    char *arg1;
+    char *arg2;
+    char *arg3;
+    char *arg4;
+} script_instruction;
+
+typedef struct script_label
+{
+    char *name;
+    size_t instruction_index;
+} script_label;
+
+typedef struct script_variable
+{
+    char name[32];
+    char *value;
+} script_variable;
+
+typedef struct script_state
+{
+    script_host host;
+    script_instruction *instructions;
+    size_t instruction_count;
+    size_t instruction_capacity;
+    script_label *labels;
+    size_t label_count;
+    size_t label_capacity;
+    script_variable *variables;
+    size_t variable_count;
+    size_t variable_capacity;
+    size_t program_counter;
+    script_status status;
+    script_input_mode input_mode;
+    int input_echo;
+    char input_target[32];
+    char *input_buffer;
+    size_t input_length;
+    size_t input_capacity;
+    clock_t sleep_deadline;
+    char last_error[128];
+} script_state;
+
+void script_initialise(script_state *state, const script_host *host);
+void script_dispose(script_state *state);
+int script_start(script_state *state, const char *path);
+void script_stop(script_state *state);
+void script_process(script_state *state);
+int script_handle_user_byte(script_state *state, unsigned char byte);
+void script_notify_door_closed(script_state *state);
+script_status script_get_status(const script_state *state);
+
+#endif

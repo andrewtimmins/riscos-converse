@@ -1,0 +1,879 @@
+/* ******************************************************************************************************************************************************** */
+/* Pipes Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "kernel.h"
+
+#include "pipes.h"
+#include "structs.h"
+
+#ifndef XOS_Bit
+#define XOS_Bit 0x20000
+#endif
+
+#define OS_Module 0x1E
+#define XOS_Module (OS_Module | XOS_Bit)
+
+/* Buffer geometry is fixed because the assembler clients hard-code record sizes and 4 KB buffers. */
+#define PIPES_MAX_LINES 32
+#define PIPES_BUFFER_SIZE 4096
+#define PIPES_LINE_BYTES 32
+#define PIPES_INPUT_HIGH_MARK (PIPES_BUFFER_SIZE * 3 / 4)
+#define PIPES_INPUT_LOW_MARK (PIPES_BUFFER_SIZE / 2)
+#define PIPES_OUTPUT_LOW_MARK (PIPES_BUFFER_SIZE / 4)
+#define PIPES_OUTPUT_RECOVER_MARK (PIPES_BUFFER_SIZE / 2)
+#ifndef PIPES_STATUS_INPUT_HIGH
+#error "PIPES_STATUS_INPUT_HIGH must be defined in structs.h"
+#endif
+#ifndef PIPES_STATUS_OUTPUT_LOW
+#error "PIPES_STATUS_OUTPUT_LOW must be defined in structs.h"
+#endif
+#define PIPES_STATUS_RESERVED_MASK (PIPES_STATUS_INPUT_HIGH | PIPES_STATUS_OUTPUT_LOW)
+
+#define UNUSED(param) ((void)(param))
+
+/* Guard at compile time against struct drift because the CMHG header and assembler clients expect 32 bytes. */
+typedef char pipes_line_size_check[(sizeof(converse_pipe_line) == PIPES_LINE_BYTES) ? 1 : -1];
+
+/* Three OS_Module allocations back the record table, input buffers, and output buffers respectively. */
+static converse_pipe_line *pipes_lines;
+static uint8_t *pipes_input_buffers;
+static uint8_t *pipes_output_buffers;
+
+static _kernel_oserror *pipes_initialise_memory(void);
+static void pipes_release_memory(void);
+static _kernel_oserror *pipes_allocate_block(size_t bytes, void **target);
+static void pipes_release_block(void **target);
+static void pipes_update_watermarks(int line);
+
+static void pipes_swi_read_status(_kernel_swi_regs *r);
+static void pipes_swi_write_status(_kernel_swi_regs *r);
+static void pipes_swi_input_status(_kernel_swi_regs *r);
+static void pipes_swi_input_read(_kernel_swi_regs *r);
+static void pipes_swi_output_status(_kernel_swi_regs *r);
+static void pipes_swi_output_write(_kernel_swi_regs *r);
+static void pipes_swi_clear_input(_kernel_swi_regs *r);
+static void pipes_swi_clear_output(_kernel_swi_regs *r);
+static void pipes_swi_input_write(_kernel_swi_regs *r);
+static void pipes_swi_output_read(_kernel_swi_regs *r);
+static void pipes_swi_reset_state(_kernel_swi_regs *r);
+static void pipes_swi_input_peek(_kernel_swi_regs *r);
+static void pipes_swi_output_peek(_kernel_swi_regs *r);
+static void pipes_swi_input_write_block(_kernel_swi_regs *r);
+static void pipes_swi_output_read_block(_kernel_swi_regs *r);
+static void pipes_dump_buffer_status(void);
+
+/* Internal helpers *************************************************************************************************/
+/* Small helpers for pointer math and circular buffer operations; SWIs call them heavily so keep them simple. */
+/* Each helper assumes the caller already validated the line number so we can keep hot paths branch-light.    */
+
+static converse_pipe_line *pipes_line(int line)
+{
+  /* Metadata records live in a packed array so an index lookup is just pointer arithmetic. */
+  return &pipes_lines[line];
+}
+
+static uint8_t *pipes_input_base(int line)
+{
+  /* Host->slave bytes live in the input arena; stride through in fixed 4 KB hops. */
+  return pipes_input_buffers + (line * PIPES_BUFFER_SIZE);
+}
+
+static uint8_t *pipes_output_base(int line)
+{
+  /* Slave->host bytes live in the output arena; shares the same 4 KB geometry as the input buffers. */
+  return pipes_output_buffers + (line * PIPES_BUFFER_SIZE);
+}
+
+static void pipes_clear_input(int line)
+{
+  /* Reset read/write cursors so the consumer sees an empty pipe. */
+  converse_pipe_line *record = pipes_line(line);
+  record->input_used = 0;
+  record->input_head = 0;
+  record->input_tail = 0;
+  pipes_update_watermarks(line);
+}
+
+static void pipes_clear_output(int line)
+{
+  /* Output tracks free space instead of used bytes so that writes only test a single zero compare. */
+  converse_pipe_line *record = pipes_line(line);
+  record->output_free = PIPES_BUFFER_SIZE;
+  record->output_head = 0;
+  record->output_tail = 0;
+  pipes_update_watermarks(line);
+}
+
+static int pipes_is_valid_line(int line)
+{
+  /* Bounds check plus null checks so SWIs can exit early without touching uninitialised memory. */
+  if (line < 0 || line >= PIPES_MAX_LINES)
+  {
+    return 0;
+  }
+
+  if (pipes_lines == NULL || pipes_input_buffers == NULL || pipes_output_buffers == NULL)
+  {
+    return 0;
+  }
+
+  return 1;
+}
+
+static int pipes_next_index(int index)
+{
+  /* Wrap buffer cursors manually instead of using modulus to keep Norcroft's code generation small. */
+  ++index;
+  if (index >= PIPES_BUFFER_SIZE)
+  {
+    index = 0;
+  }
+  return index;
+}
+
+static void pipes_update_watermarks(int line)
+{
+  converse_pipe_line *record;
+  uint8_t status;
+  uint8_t updated;
+
+  record = pipes_line(line);
+  status = record->status;
+  updated = status;
+
+  if (record->input_used >= PIPES_INPUT_HIGH_MARK)
+  {
+    updated |= PIPES_STATUS_INPUT_HIGH;
+  }
+  else if (record->input_used <= PIPES_INPUT_LOW_MARK)
+  {
+    updated &= (uint8_t)(~PIPES_STATUS_INPUT_HIGH);
+  }
+
+  if (record->output_free <= PIPES_OUTPUT_LOW_MARK)
+  {
+    updated |= PIPES_STATUS_OUTPUT_LOW;
+  }
+  else if (record->output_free >= PIPES_OUTPUT_RECOVER_MARK)
+  {
+    updated &= (uint8_t)(~PIPES_STATUS_OUTPUT_LOW);
+  }
+
+  if (updated != status)
+  {
+    record->status = updated;
+  }
+}
+
+/* Provide a harmless main so RMRun does not complain about "No main program". */
+int main(int argc, char **argv)
+{
+  UNUSED(argc);
+  UNUSED(argv);
+  return 0;
+}
+
+/* CMHG entry points forward to the testable helpers below; pw/podule data is unused for this module. */
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+  UNUSED(cmd_tail);
+  UNUSED(podule_base);
+  UNUSED(pw);
+
+  return pipes_initialise_memory();
+}
+
+/* Finalisation tears down the three heaps so the module can be reloaded cleanly. */
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+  UNUSED(fatal);
+  UNUSED(podule);
+  UNUSED(pw);
+
+  pipes_release_memory();
+  return NULL;
+}
+
+/* Module does not subscribe to any OS_Service reason codes today. */
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+  UNUSED(service_number);
+  UNUSED(r);
+  UNUSED(pw);
+}
+
+/* SWI chunk order mirrors cmhg/pipesHdr; each handler only touches R0/R1 per the documented contract. */
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+  UNUSED(pw);
+
+  switch (swi_no)
+  {
+    case SWI_CONVERSE_READ_STATUS:
+      pipes_swi_read_status(r);
+      break;
+    case SWI_CONVERSE_WRITE_STATUS:
+      pipes_swi_write_status(r);
+      break;
+    case SWI_CONVERSE_INPUT_STATUS:
+      pipes_swi_input_status(r);
+      break;
+    case SWI_CONVERSE_INPUT_READ:
+      pipes_swi_input_read(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_STATUS:
+      pipes_swi_output_status(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_WRITE:
+      pipes_swi_output_write(r);
+      break;
+    case SWI_CONVERSE_CLEAR_INPUT:
+      pipes_swi_clear_input(r);
+      break;
+    case SWI_CONVERSE_CLEAR_OUTPUT:
+      pipes_swi_clear_output(r);
+      break;
+    case SWI_CONVERSE_INPUT_WRITE:
+      pipes_swi_input_write(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_READ:
+      pipes_swi_output_read(r);
+      break;
+    case SWI_CONVERSE_RESET_STATE:
+      pipes_swi_reset_state(r);
+      break;
+    case SWI_CONVERSE_INPUT_PEEK:
+      pipes_swi_input_peek(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_PEEK:
+      pipes_swi_output_peek(r);
+      break;
+    case SWI_CONVERSE_INPUT_WRITE_BLOCK:
+      pipes_swi_input_write_block(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_READ_BLOCK:
+      pipes_swi_output_read_block(r);
+      break;
+    default:
+      break;
+  }
+
+  return NULL;
+}
+
+/* Only *Pipes_Status is exposed today, but keep the signature ready for future subcommands. */
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+  UNUSED(arg_string);
+  UNUSED(argc);
+  UNUSED(pw);
+
+  switch (cmd_no)
+  {
+    case 0:
+      pipes_dump_buffer_status();
+      break;
+    default:
+      break;
+  }
+
+  return NULL;
+}
+
+/* Allocate the line records plus the two buffer arenas, then reset every record.                     */
+/* Ordering matters: if any allocation fails we immediately unwind via pipes_release_memory().    */
+/* This matches the assembler module's behaviour so repeated *RMEnsure / UNPLUG cycles stay robust.  */
+static _kernel_oserror *pipes_initialise_memory(void)
+{
+  _kernel_oserror *error;
+  int line;
+
+  error = pipes_allocate_block(PIPES_LINE_BYTES * PIPES_MAX_LINES, (void **)&pipes_lines);
+  if (error != NULL)
+  {
+    pipes_release_memory();
+    return error;
+  }
+
+  error = pipes_allocate_block(PIPES_BUFFER_SIZE * PIPES_MAX_LINES, (void **)&pipes_input_buffers);
+  if (error != NULL)
+  {
+    pipes_release_memory();
+    return error;
+  }
+
+  error = pipes_allocate_block(PIPES_BUFFER_SIZE * PIPES_MAX_LINES, (void **)&pipes_output_buffers);
+  if (error != NULL)
+  {
+    pipes_release_memory();
+    return error;
+  }
+
+  memset(pipes_lines, 0, PIPES_LINE_BYTES * PIPES_MAX_LINES);
+
+  for (line = 0; line < PIPES_MAX_LINES; ++line)
+  {
+    pipes_clear_input(line);
+    pipes_clear_output(line);
+  }
+
+  return NULL;
+}
+
+/* Free the three heaps in reverse order of allocation; NULL checks live inside pipes_release_block(). */
+static void pipes_release_memory(void)
+{
+  pipes_release_block((void **)&pipes_output_buffers);
+  pipes_release_block((void **)&pipes_input_buffers);
+  pipes_release_block((void **)&pipes_lines);
+}
+
+/* Wrapper around OS_Module 6 so allocation and error paths stay consistent.                          */
+/* Norcroft lacks malloc/new in module builds, so we go straight to the OS for relocatable chunks.   */
+static _kernel_oserror *pipes_allocate_block(size_t bytes, void **target)
+{
+  _kernel_swi_regs regs;
+  _kernel_oserror *error;
+
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 6;
+  regs.r[3] = (int)bytes;
+
+  error = _kernel_swi(XOS_Module, &regs, &regs);
+  if (error != NULL)
+  {
+    *target = NULL;
+    return error;
+  }
+
+  *target = (void *)regs.r[2];
+  return NULL;
+}
+
+/* Matching OS_Module 7 release helper tolerates NULL for simpler cleanup. */
+static void pipes_release_block(void **target)
+{
+  _kernel_swi_regs regs;
+
+  if (*target == NULL)
+  {
+    return;
+  }
+
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 7;
+  regs.r[2] = (int)(*target);
+  _kernel_swi(XOS_Module, &regs, &regs);
+  *target = NULL;
+}
+
+/* ConversePipes_ReadStatus
+ *  In : R0 = line number
+ * Out : R0 = opaque status byte (unchanged if line invalid)
+ */
+static void pipes_swi_read_status(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  r->r[0] = pipes_line(line)->status;
+}
+
+/* ConversePipes_WriteStatus
+ *  In : R0 = line, R1 byte = new status
+ * Out : R0 = 0 on success, unchanged if line invalid
+ * Notes: Bits 7 and 6 are reserved for module-managed watermarks and are preserved.
+ */
+static void pipes_swi_write_status(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  uint8_t requested;
+  converse_pipe_line *record;
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  requested = (uint8_t)(r->r[1] & 0xFF);
+  record = pipes_line(line);
+  record->status &= PIPES_STATUS_RESERVED_MASK;
+  record->status |= (uint8_t)(requested & (uint8_t)(~PIPES_STATUS_RESERVED_MASK));
+  r->r[0] = 0;
+}
+
+/* Each SWI handler validates the line number and returns -1 in R0 for empty/full cases to mirror legacy behaviour. */
+/* ConversePipes_InputStatus
+ *  In : R0 = line
+ * Out : R0 = bytes currently buffered in the host->slave pipe
+ */
+static void pipes_swi_input_status(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  r->r[0] = (int)pipes_line(line)->input_used;
+}
+
+/* ConversePipes_InputRead
+ *  In : R0 = line
+ * Out : R0 = next byte (0-255) or -1 if the pipe is empty
+ * Notes: Advances tail and decrements input_used to match the assembler semantics. */
+static void pipes_swi_input_read(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int tail;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->input_used == 0)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_input_base(line);
+  tail = (int)record->input_tail;
+  r->r[0] = buffer[tail];
+  record->input_tail = (uint32_t)pipes_next_index(tail);
+  record->input_used--;
+  pipes_update_watermarks(line);
+}
+
+/* ConversePipes_OutputStatus
+ *  In : R0 = line
+ * Out : R0 = remaining free bytes in the slave->host pipe
+ */
+static void pipes_swi_output_status(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  r->r[0] = (int)pipes_line(line)->output_free;
+}
+
+/* ConversePipes_OutputWrite
+ *  In : R0 = line, R1 byte = value to push to the slave->host pipe
+ * Out : R0 = 0 on success or -1 if no free space remained
+ */
+static void pipes_swi_output_write(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int head;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->output_free == 0)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_output_base(line);
+  head = (int)record->output_head;
+  buffer[head] = (uint8_t)(r->r[1] & 0xFF);
+  record->output_head = (uint32_t)pipes_next_index(head);
+  record->output_free--;
+  pipes_update_watermarks(line);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_ClearInput
+ *  In : R0 = line
+ * Out : R0 = 0; resets host->slave cursors to an empty state
+ */
+static void pipes_swi_clear_input(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  pipes_clear_input(line);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_ClearOutput
+ *  In : R0 = line
+ * Out : R0 = 0; resets slave->host cursors and marks the pipe as fully empty
+ */
+static void pipes_swi_clear_output(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  pipes_clear_output(line);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_InputWrite
+ *  In : R0 = line, R1 byte = value to push to the host->slave pipe
+ * Out : R0 = 0 on success or -1 if the pipe was full
+ */
+static void pipes_swi_input_write(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int head;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->input_used >= PIPES_BUFFER_SIZE)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_input_base(line);
+  head = (int)record->input_head;
+  buffer[head] = (uint8_t)(r->r[1] & 0xFF);
+  record->input_head = (uint32_t)pipes_next_index(head);
+  record->input_used++;
+  pipes_update_watermarks(line);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_OutputRead
+ *  In : R0 = line
+ * Out : R0 = next byte (0-255) or -1 if no data is buffered
+ * Notes: output_free counts empty slots, so empty == PIPES_BUFFER_SIZE. */
+static void pipes_swi_output_read(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int tail;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->output_free == PIPES_BUFFER_SIZE)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_output_base(line);
+  tail = (int)record->output_tail;
+  r->r[0] = buffer[tail];
+  record->output_tail = (uint32_t)pipes_next_index(tail);
+  record->output_free++;
+  pipes_update_watermarks(line);
+}
+
+/* ConversePipes_ResetState
+ *  In : R0 = line
+ * Out : R0 = 0; clears the status byte without touching buffered data
+ */
+static void pipes_swi_reset_state(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  record->status &= PIPES_STATUS_RESERVED_MASK;
+  pipes_update_watermarks(line);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_InputPeek
+ *  In : R0 = line
+ * Out : R0 = next byte or -1 if empty; does not advance the tail pointer
+ */
+static void pipes_swi_input_peek(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int tail;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->input_used == 0)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_input_base(line);
+  tail = (int)record->input_tail;
+  r->r[0] = buffer[tail];
+}
+
+/* ConversePipes_OutputPeek
+ *  In : R0 = line
+ * Out : R0 = next byte or -1 if empty; tail/head stay untouched so callers can poll
+ */
+static void pipes_swi_output_peek(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  int tail;
+
+  if (!pipes_is_valid_line(line))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  if (record->output_free == PIPES_BUFFER_SIZE)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  buffer = pipes_output_base(line);
+  tail = (int)record->output_tail;
+  r->r[0] = buffer[tail];
+}
+
+/* ConversePipes_InputWriteBlock
+ *  In : R0 = line, R1 = pointer to source bytes, R2 = requested count
+ * Out : R0 = bytes written (0..R2) or -1 for invalid line/pointer
+ * Notes: Copies contiguous chunks to minimise wraparound overhead and emits debug telemetry.
+ */
+static void pipes_swi_input_write_block(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  const uint8_t *source = (const uint8_t *)r->r[1];
+  int request = r->r[2];
+  size_t requested;
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  size_t free_space;
+  size_t chunk;
+  size_t first;
+  size_t head;
+
+  if (!pipes_is_valid_line(line) || source == NULL)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  if (request <= 0)
+  {
+    r->r[0] = (request == 0) ? 0 : -1;
+    return;
+  }
+
+  requested = (size_t)request;
+
+  record = pipes_line(line);
+  buffer = pipes_input_base(line);
+  free_space = (size_t)(PIPES_BUFFER_SIZE - record->input_used);
+
+  if (free_space == 0)
+  {
+    r->r[0] = 0;
+    return;
+  }
+
+  if (requested > free_space)
+  {
+    requested = free_space;
+  }
+
+  head = (size_t)record->input_head;
+  first = PIPES_BUFFER_SIZE - head;
+  if (first > requested)
+  {
+    first = requested;
+  }
+
+  memcpy(buffer + head, source, first);
+  chunk = requested - first;
+  if (chunk > 0)
+  {
+    memcpy(buffer, source + first, chunk);
+  }
+
+  record->input_head = (uint32_t)((head + requested) % PIPES_BUFFER_SIZE);
+  record->input_used += (uint32_t)requested;
+  pipes_update_watermarks(line);
+  r->r[0] = (int)requested;
+}
+
+/* ConversePipes_OutputReadBlock
+ *  In : R0 = line, R1 = pointer to destination buffer, R2 = requested count
+ * Out : R0 = bytes read (0..R2) or -1 when the line/pointer is invalid
+ * Notes: Returns immediately when no bytes are buffered so callers can poll efficiently.
+ */
+static void pipes_swi_output_read_block(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  uint8_t *target = (uint8_t *)r->r[1];
+  int request = r->r[2];
+  size_t requested;
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  size_t available;
+  size_t first;
+  size_t tail;
+  size_t chunk;
+
+  if (!pipes_is_valid_line(line) || target == NULL)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  if (request <= 0)
+  {
+    r->r[0] = (request == 0) ? 0 : -1;
+    return;
+  }
+
+  requested = (size_t)request;
+
+  record = pipes_line(line);
+  buffer = pipes_output_base(line);
+  available = (size_t)(PIPES_BUFFER_SIZE - record->output_free);
+
+  if (available == 0)
+  {
+    r->r[0] = 0;
+    return;
+  }
+
+  if (requested > available)
+  {
+    requested = available;
+  }
+
+  tail = (size_t)record->output_tail;
+  first = PIPES_BUFFER_SIZE - tail;
+  if (first > requested)
+  {
+    first = requested;
+  }
+
+  memcpy(target, buffer + tail, first);
+  chunk = requested - first;
+  if (chunk > 0)
+  {
+    memcpy(target + first, buffer, chunk);
+  }
+
+  record->output_tail = (uint32_t)((tail + requested) % PIPES_BUFFER_SIZE);
+  record->output_free += (uint32_t)requested;
+  pipes_update_watermarks(line);
+  r->r[0] = (int)requested;
+}
+
+/* Text-mode diagnostic used by *ConversePipes_Status to inspect head/tail counters at runtime. */
+static void pipes_dump_buffer_status(void)
+{
+  unsigned int line;
+  unsigned int max_input = 0;
+  unsigned int max_output = 0;
+
+  if (pipes_lines == NULL)
+  {
+    printf("ConversePipes is not initialised.\n");
+    return;
+  }
+
+  printf("Line  InUsed InFree  InHead InTail  OutUsed OutFree OutHead OutTail  Status Flags\n");
+
+  for (line = 0; line < PIPES_MAX_LINES; ++line)
+  {
+    const converse_pipe_line *record = pipes_line((int)line);
+    unsigned int input_used = (unsigned int)record->input_used;
+    unsigned int input_free = (unsigned int)(PIPES_BUFFER_SIZE - record->input_used);
+    unsigned int output_free = (unsigned int)record->output_free;
+    unsigned int output_used = (unsigned int)(PIPES_BUFFER_SIZE - record->output_free);
+    unsigned int status = record->status;
+    unsigned int input_head = (unsigned int)record->input_head;
+    unsigned int input_tail = (unsigned int)record->input_tail;
+    unsigned int output_head = (unsigned int)record->output_head;
+    unsigned int output_tail = (unsigned int)record->output_tail;
+    char flags[3];
+
+    flags[0] = (char)((status & PIPES_STATUS_INPUT_HIGH) ? 'I' : '-');
+    flags[1] = (char)((status & PIPES_STATUS_OUTPUT_LOW) ? 'O' : '-');
+    flags[2] = '\0';
+
+    if (input_used > max_input)
+    {
+      max_input = input_used;
+    }
+    if (output_used > max_output)
+    {
+      max_output = output_used;
+    }
+
+    printf("%4u  %5u %6u  %6u %6u  %7u %7u %7u %7u  0x%02X %s\n",
+           line,
+           input_used,
+           input_free,
+           input_head,
+           input_tail,
+           output_used,
+           output_free,
+           output_head,
+           output_tail,
+           status,
+           flags);
+  }
+
+}

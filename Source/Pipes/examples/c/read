@@ -1,0 +1,136 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+#include "kernel.h"
+
+#define CONVERSE_PIPES_BASE        0x5A580
+#define SWI_CONVERSE_READ_STATUS  (CONVERSE_PIPES_BASE + 0)
+#define SWI_CONVERSE_INPUT_STATUS (CONVERSE_PIPES_BASE + 2)
+#define SWI_CONVERSE_INPUT_READ   (CONVERSE_PIPES_BASE + 3)
+#define SWI_OS_BYTE               0x00000006
+
+#define PIPES_STATUS_INPUT_HIGH 0x80
+#define PIPES_STATUS_OUTPUT_LOW 0x40
+
+/* Simple tail follower that prints bytes as they arrive in a line's input buffer. */
+
+static void wait_tick(void)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 1;
+  _kernel_swi(SWI_OS_BYTE, &regs, &regs);
+}
+
+static _kernel_oserror *converse_input_status(int line, int *bytes_waiting)
+{
+  /* Poll the input queue depth so we can show idle diagnostics. */
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_INPUT_STATUS, &regs, &regs);
+  if (!error && bytes_waiting)
+  {
+    *bytes_waiting = regs.r[0];
+  }
+
+  return error;
+}
+
+static _kernel_oserror *converse_read_status(int line, unsigned int *status)
+{
+  /* Reads the user-visible status byte (watermarks + custom flags). */
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_READ_STATUS, &regs, &regs);
+  if (!error && status)
+  {
+    *status = (unsigned int)(regs.r[0] & 0xFF);
+  }
+
+  return error;
+}
+
+static int converse_input_read_byte(int line, unsigned char *value)
+{
+  /* Removes a single byte from the host->slave buffer, returning 1 when empty. */
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = line;
+
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_INPUT_READ, &regs, &regs);
+  if (error)
+  {
+    fprintf(stderr, "ConversePipes_InputRead failed: %s\n", error->errmess);
+    return -1;
+  }
+
+  if (regs.r[0] == -1)
+  {
+    return 1;
+  }
+
+  if (value)
+  {
+    *value = (unsigned char)(regs.r[0] & 0xFF);
+  }
+
+  return 0;
+}
+
+static void report_idle_status(int line)
+{
+  int waiting = 0;
+  unsigned int status = 0;
+
+  if (converse_input_status(line, &waiting) == NULL && converse_read_status(line, &status) == NULL)
+  {
+    printf("\rLine %d idle (queued=%d status=0x%02X [%c%c])   ",
+           line,
+           waiting,
+           status & 0xFF,
+           (status & PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
+           (status & PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
+    fflush(stdout);
+  }
+}
+
+int main(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    fprintf(stderr, "Usage: %s <line>\n", argv[0]);
+    return 1;
+  }
+
+  const int line = atoi(argv[1]);
+  printf("Monitoring line %d. Press Ctrl+C to stop.\n", line);
+
+  for (;;)
+  {
+    unsigned char value = 0;
+    int state = converse_input_read_byte(line, &value);
+
+    if (state == 0)
+    {
+      /* Immediately print freshly drained bytes so we mirror the stream. */
+      putchar(value);
+      fflush(stdout);
+      continue;
+    }
+
+    if (state == -1)
+    {
+      return 1;
+    }
+
+    /* Nothing buffered; show queued/status info so the user sees progress. */
+    report_idle_status(line);
+    wait_tick();
+  }
+}

@@ -1,0 +1,1535 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <errno.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "debug.h"
+#include "logging.h"
+#include "misc.h"
+
+#include "filebase.h"
+
+#define FILEBASE_BASE_WIDTH 4
+#define FILEBASE_AREA_WIDTH 4
+#define FILEBASE_FILE_WIDTH 6
+#define FILEBASE_COPY_BUFFER 4096
+#define FILEBASE_MAX_DIR_OBJECTS 77
+#define FILEBASE_FILES_PER_GROUP 60
+#define FILEBASE_MAX_FILE_GROUPS (FILEBASE_MAX_DIR_OBJECTS - 1)
+
+static int filebase_next_id = 0;
+static FILEBASE_RECORD filebase_info_cache;
+static FILEBASE_AREA_RECORD filebase_area_cache;
+static FILE_RECORD filebase_file_cache;
+
+static void filebase_create_directory(const char *path);
+static void filebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id);
+static int filebase_format_file_path(char *buffer, size_t length, int base_id, int area_id, int file_id);
+static int filebase_ensure_group_directory(int base_id, int area_id, int file_id);
+static void filebase_assign_directory(FILEBASE_RECORD *record);
+static void filebase_normalise_record(FILEBASE_RECORD *record);
+static void filebase_normalise_area_record(FILEBASE_AREA_RECORD *record);
+static void filebase_normalise_file_record(FILE_RECORD *record);
+static void filebase_ensure_base_structure(int base_id);
+static int filebase_allocate_base_id(int *new_id);
+static int filebase_append_base_record(const FILEBASE_RECORD *record);
+static int filebase_update_base_record(const FILEBASE_RECORD *record);
+static int filebase_find_base_record(int id, FILEBASE_RECORD *record_out);
+static int filebase_allocate_file_id(int base_id, int *new_id);
+static int filebase_append_file_record(int base_id, const FILE_RECORD *record);
+static int filebase_find_file_record(int base_id, int file_id, FILE_RECORD *record_out);
+static int filebase_update_filesize(int base_id, int file_id, size_t delta);
+static int filebase_allocate_area_id(int base_id, int *new_id);
+static int filebase_store_area_record(int base_id, const FILEBASE_AREA_RECORD *record);
+static int filebase_find_area_record(int base_id, int area_id, FILEBASE_AREA_RECORD *record_out);
+static void filebase_log(const char *format, ...);
+
+int filebase_initialise(void)
+{
+  FILE *file;
+
+  filebase_create_directory(FILEBASE_RESOURCE_DIR);
+  filebase_create_directory(FILEBASE_ROOT_DIR);
+
+  file = fopen(FILEBASE_DB_PATH, "ab+");
+  if (file == NULL)
+  {
+    return 0;
+  }
+  fclose(file);
+
+  file = fopen(FILEBASE_IDX_PATH, "r+b");
+  if (file == NULL)
+  {
+    int initial = 0;
+    file = fopen(FILEBASE_IDX_PATH, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+    fwrite(&initial, sizeof(initial), 1, file);
+    filebase_next_id = 0;
+  }
+  else
+  {
+    if (fread(&filebase_next_id, sizeof(filebase_next_id), 1, file) != 1)
+    {
+      filebase_next_id = 0;
+    }
+  }
+  fclose(file);
+
+  return 1;
+}
+
+void filebase_finalise(void)
+{
+  filebase_next_id = 0;
+}
+
+void filebase_swi_handler(_kernel_swi_regs *r)
+{
+  FILER_FILEBASE_COMMAND command;
+
+  if (r == NULL)
+  {
+    return;
+  }
+
+  command = (FILER_FILEBASE_COMMAND)r->r[0];
+
+  switch (command)
+  {
+    case FILER_FILEBASE_CMD_CREATE:
+    {
+      FILEBASE_RECORD *input = (FILEBASE_RECORD *)r->r[1];
+      FILEBASE_RECORD record;
+      int new_id;
+
+      if (input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      filebase_normalise_record(&record);
+
+      if (!filebase_allocate_base_id(&new_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record.id = new_id;
+      filebase_assign_directory(&record);
+      filebase_ensure_base_structure(new_id);
+
+      if (!filebase_append_base_record(&record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_log("Filebase %d created", new_id);
+      r->r[0] = new_id;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_UPDATE:
+    {
+      int base_id = r->r[1];
+      FILEBASE_RECORD *input = (FILEBASE_RECORD *)r->r[2];
+      FILEBASE_RECORD record;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      record.id = base_id;
+      filebase_normalise_record(&record);
+      filebase_assign_directory(&record);
+      filebase_ensure_base_structure(base_id);
+
+      if (!filebase_update_base_record(&record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_log("Filebase %d updated", base_id);
+      r->r[0] = 0;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_INFO:
+    {
+      int base_id = r->r[1];
+
+      if (base_id <= 0 || !filebase_find_base_record(base_id, &filebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)(uintptr_t)&filebase_info_cache;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_BEGIN_UPLOAD:
+    {
+      int base_id = r->r[1];
+      FILE_RECORD *input = (FILE_RECORD *)r->r[2];
+      FILE_RECORD record;
+      int file_id;
+      char path[300];
+      FILE *file;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_find_base_record(base_id, &filebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      record.filebaseid = base_id;
+      record.filebaseareaid = (record.filebaseareaid > 0) ? record.filebaseareaid : 0;
+      record.deleted = 0;
+      record.filesize = 0;
+      record.downloads = 0;
+      record.uploaddate = time(NULL);
+      filebase_normalise_file_record(&record);
+
+      filebase_ensure_base_structure(base_id);
+
+      if (!filebase_allocate_file_id(base_id, &file_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record.id = file_id;
+
+      if (!filebase_ensure_group_directory(base_id, record.filebaseareaid, file_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_append_file_record(base_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_format_file_path(path, sizeof(path), base_id, record.filebaseareaid, file_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+      file = fopen(path, "wb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+      fclose(file);
+
+      filebase_log("Filebase %d new file %d", base_id, file_id);
+      r->r[0] = file_id;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_UPLOAD_BLOCK:
+    {
+      int base_id = r->r[1];
+      int file_id = r->r[2];
+      const void *data = (const void *)r->r[3];
+      size_t length = (size_t)r->r[4];
+      char path[300];
+      FILE_RECORD record;
+      FILE *file;
+
+      if (base_id <= 0 || file_id <= 0 || data == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (length == 0)
+      {
+        r->r[0] = 0;
+        return;
+      }
+
+      if (!filebase_find_file_record(base_id, file_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_format_file_path(path, sizeof(path), base_id, record.filebaseareaid, file_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+      file = fopen(path, "ab");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (fwrite(data, 1, length, file) != length)
+      {
+        fclose(file);
+        r->r[0] = -1;
+        return;
+      }
+
+      fclose(file);
+
+      if (!filebase_update_filesize(base_id, file_id, length))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)length;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_DOWNLOAD_BLOCK:
+    {
+      int base_id = r->r[1];
+      int file_id = r->r[2];
+      void *target = (void *)r->r[3];
+      long offset = r->r[4];
+      size_t request = (size_t)r->r[5];
+      char path[300];
+      FILE_RECORD record;
+      FILE *file;
+      size_t transferred;
+
+      if (base_id <= 0 || file_id <= 0 || target == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_find_file_record(base_id, file_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_format_file_path(path, sizeof(path), base_id, record.filebaseareaid, file_id))
+      {
+        r->r[0] = -1;
+        return;
+      }
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (offset < 0)
+      {
+        offset = 0;
+      }
+
+      if (offset > 0 && fseek(file, offset, SEEK_SET) != 0)
+      {
+        fclose(file);
+        r->r[0] = -1;
+        return;
+      }
+
+      if (request == 0)
+      {
+        fclose(file);
+        r->r[0] = 0;
+        return;
+      }
+
+      transferred = fread(target, 1, request, file);
+      fclose(file);
+      r->r[0] = (int)transferred;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_STORE_AREA:
+    {
+      int base_id = r->r[1];
+      FILEBASE_AREA_RECORD *input = (FILEBASE_AREA_RECORD *)r->r[2];
+      FILEBASE_AREA_RECORD record;
+      char area_dir[300];
+      int area_id = 0;
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_find_base_record(base_id, &filebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      record = *input;
+      record.filebaseid = base_id;
+      filebase_normalise_area_record(&record);
+
+      if (record.name[0] == '\0')
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (record.id <= 0)
+      {
+        if (!filebase_allocate_area_id(base_id, &area_id))
+        {
+          r->r[0] = -1;
+          return;
+        }
+        record.id = area_id;
+      }
+      else
+      {
+        area_id = record.id;
+      }
+
+      filebase_ensure_base_structure(base_id);
+      filebase_format_area_dir(area_dir, sizeof(area_dir), base_id, record.id);
+      filebase_create_directory(area_dir);
+
+      if (!filebase_store_area_record(base_id, &record))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_log("Filebase %d area %d stored", base_id, record.id);
+      r->r[0] = record.id;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_AREA_INFO:
+    {
+      int base_id = r->r[1];
+      int area_id = r->r[2];
+
+      if (base_id <= 0 || area_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_find_base_record(base_id, &filebase_info_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!filebase_find_area_record(base_id, area_id, &filebase_area_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)(uintptr_t)&filebase_area_cache;
+      break;
+    }
+
+    default:
+      r->r[0] = -1;
+      break;
+  }
+}
+
+static void filebase_create_directory(const char *path)
+{
+  _kernel_swi_regs regs;
+
+  if (path == NULL || *path == '\0')
+  {
+    return;
+  }
+
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = 8; /* OS_File reason code: create directory */
+  regs.r[1] = (int)(uintptr_t)path;
+
+  /* Ignore errors (directory may already exist). */
+  _kernel_swi(OS_File, &regs, &regs);
+}
+
+static void filebase_format_base_path(char *buffer, size_t length, int base_id)
+{
+  snprintf(buffer, length, "%s.%0*d", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
+}
+
+static void filebase_format_file_db_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.FileDB", base);
+}
+
+static void filebase_format_file_idx_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.FileIDX", base);
+}
+
+static void filebase_format_files_dir(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.Files", base);
+}
+
+static void filebase_format_area_db_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaDB", base);
+}
+
+static void filebase_format_area_temp_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaTMP", base);
+}
+
+static void filebase_format_area_idx_path(char *buffer, size_t length, int base_id)
+{
+  char base[300];
+  filebase_format_base_path(base, sizeof(base), base_id);
+  snprintf(buffer, length, "%s.AreaIDX", base);
+}
+
+static void filebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id)
+{
+  if (buffer == NULL)
+  {
+    return;
+  }
+
+  if (area_id <= 0)
+  {
+    filebase_format_files_dir(buffer, length, base_id);
+    return;
+  }
+
+  {
+    char files_dir[300];
+    filebase_format_files_dir(files_dir, sizeof(files_dir), base_id);
+    snprintf(buffer, length, "%s.A%0*d", files_dir, FILEBASE_AREA_WIDTH, area_id);
+  }
+}
+
+static int filebase_file_group_index(int file_id)
+{
+  if (file_id <= 0)
+  {
+    return -1;
+  }
+
+  return (file_id - 1) / FILEBASE_FILES_PER_GROUP;
+}
+
+static int filebase_format_group_dir(char *buffer, size_t length, int base_id, int area_id, int file_id)
+{
+  char area_dir[300];
+  int group = filebase_file_group_index(file_id);
+
+  if (group < 0 || group >= FILEBASE_MAX_FILE_GROUPS)
+  {
+    return 0;
+  }
+
+  filebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
+  snprintf(buffer, length, "%s.G%02d", area_dir, group);
+  return 1;
+}
+
+static int filebase_ensure_group_directory(int base_id, int area_id, int file_id)
+{
+  char group_dir[300];
+  char area_dir[300];
+
+  if (!filebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  {
+    return 0;
+  }
+
+  filebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
+  filebase_create_directory(area_dir);
+  filebase_create_directory(group_dir);
+  return 1;
+}
+
+static int filebase_format_file_path(char *buffer, size_t length, int base_id, int area_id, int file_id)
+{
+  char group_dir[300];
+
+  if (!filebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  {
+    return 0;
+  }
+
+  snprintf(buffer, length, "%s.%0*d", group_dir, FILEBASE_FILE_WIDTH, file_id);
+  return 1;
+}
+
+static void filebase_assign_directory(FILEBASE_RECORD *record)
+{
+  char base_path[300];
+
+  if (record == NULL || record->id <= 0)
+  {
+    return;
+  }
+
+  filebase_format_base_path(base_path, sizeof(base_path), record->id);
+  snprintf(record->filebasedir, sizeof(record->filebasedir), "%s", base_path);
+  null_terminate_string(record->filebasedir, sizeof(record->filebasedir));
+}
+
+static void filebase_normalise_record(FILEBASE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->keys, sizeof(record->keys));
+  null_terminate_string(record->name, sizeof(record->name));
+  null_terminate_string(record->filebasedir, sizeof(record->filebasedir));
+}
+
+static void filebase_normalise_area_record(FILEBASE_AREA_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->keys, sizeof(record->keys));
+  null_terminate_string(record->name, sizeof(record->name));
+}
+
+static void filebase_normalise_file_record(FILE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return;
+  }
+
+  null_terminate_string(record->keys, sizeof(record->keys));
+  null_terminate_string(record->name, sizeof(record->name));
+  null_terminate_string(record->description, sizeof(record->description));
+}
+
+static void filebase_touch_file(const char *path)
+{
+  FILE *file;
+
+  if (path == NULL)
+  {
+    return;
+  }
+
+  file = fopen(path, "ab+");
+  if (file != NULL)
+  {
+    fclose(file);
+  }
+}
+
+static void filebase_ensure_base_structure(int base_id)
+{
+  char path[300];
+
+  filebase_format_base_path(path, sizeof(path), base_id);
+  filebase_create_directory(path);
+
+  filebase_format_files_dir(path, sizeof(path), base_id);
+  filebase_create_directory(path);
+
+  filebase_format_file_db_path(path, sizeof(path), base_id);
+  filebase_touch_file(path);
+
+  filebase_format_file_idx_path(path, sizeof(path), base_id);
+  filebase_touch_file(path);
+
+  filebase_format_area_db_path(path, sizeof(path), base_id);
+  filebase_touch_file(path);
+
+  filebase_format_area_idx_path(path, sizeof(path), base_id);
+  filebase_touch_file(path);
+}
+
+static int filebase_store_next_id(void)
+{
+  FILE *file = fopen(FILEBASE_IDX_PATH, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(FILEBASE_IDX_PATH, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  rewind(file);
+  if (fwrite(&filebase_next_id, sizeof(filebase_next_id), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  return 1;
+}
+
+static int filebase_allocate_base_id(int *new_id)
+{
+  if (new_id == NULL)
+  {
+    return 0;
+  }
+
+  filebase_next_id++;
+  if (!filebase_store_next_id())
+  {
+    filebase_next_id--;
+    return 0;
+  }
+
+  *new_id = filebase_next_id;
+
+  /* Ensure directory structure exists for the new base */
+  filebase_ensure_base_structure(*new_id);
+
+  return 1;
+}
+
+static int filebase_append_base_record(const FILEBASE_RECORD *record)
+{
+  FILE *file = fopen(FILEBASE_DB_PATH, "ab");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(FILEBASE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
+static int filebase_update_base_record(const FILEBASE_RECORD *record)
+{
+  FILE *source;
+  FILE *temp;
+  int updated = 0;
+
+  source = fopen(FILEBASE_DB_PATH, "rb");
+  if (source == NULL)
+  {
+    return 0;
+  }
+
+  temp = fopen(FILEBASE_DB_TEMP_PATH, "wb");
+  if (temp == NULL)
+  {
+    fclose(source);
+    return 0;
+  }
+
+  while (fread(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, source) == 1)
+  {
+    if (filebase_info_cache.id == record->id)
+    {
+      if (fwrite(record, sizeof(FILEBASE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+      updated = 1;
+    }
+    else
+    {
+      if (fwrite(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+    }
+  }
+
+  fclose(source);
+  fclose(temp);
+
+  if (!updated)
+  {
+    remove(FILEBASE_DB_TEMP_PATH);
+    return 0;
+  }
+
+  remove(FILEBASE_DB_PATH);
+  rename(FILEBASE_DB_TEMP_PATH, FILEBASE_DB_PATH);
+  return 1;
+}
+
+static int filebase_find_base_record(int id, FILEBASE_RECORD *record_out)
+{
+  FILE *file = fopen(FILEBASE_DB_PATH, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, file) == 1)
+  {
+    if (filebase_info_cache.id == id)
+    {
+      char previous_dir[MAX_DIR];
+      memcpy(previous_dir, filebase_info_cache.filebasedir, sizeof(previous_dir));
+      filebase_assign_directory(&filebase_info_cache);
+      if (record_out != NULL)
+      {
+        *record_out = filebase_info_cache;
+      }
+      fclose(file);
+      if (strncmp(previous_dir, filebase_info_cache.filebasedir, sizeof(previous_dir)) != 0)
+      {
+        filebase_update_base_record(&filebase_info_cache);
+      }
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int filebase_store_area_record(int base_id, const FILEBASE_AREA_RECORD *record)
+{
+  char source_path[300];
+  char temp_path[300];
+  FILE *source;
+  FILE *temp;
+  int replaced = 0;
+
+  if (base_id <= 0 || record == NULL)
+  {
+    return 0;
+  }
+
+  filebase_format_area_db_path(source_path, sizeof(source_path), base_id);
+  filebase_format_area_temp_path(temp_path, sizeof(temp_path), base_id);
+
+  source = fopen(source_path, "rb");
+  temp = fopen(temp_path, "wb");
+  if (temp == NULL)
+  {
+    if (source != NULL)
+    {
+      fclose(source);
+    }
+    return 0;
+  }
+
+  if (source != NULL)
+  {
+    while (fread(&filebase_area_cache, sizeof(filebase_area_cache), 1, source) == 1)
+    {
+      const FILEBASE_AREA_RECORD *to_write = &filebase_area_cache;
+      if (filebase_area_cache.id == record->id)
+      {
+        to_write = record;
+        replaced = 1;
+      }
+
+      if (fwrite(to_write, sizeof(FILEBASE_AREA_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        remove(temp_path);
+        return 0;
+      }
+    }
+
+    fclose(source);
+  }
+
+  if (!replaced)
+  {
+    if (fwrite(record, sizeof(FILEBASE_AREA_RECORD), 1, temp) != 1)
+    {
+      fclose(temp);
+      remove(temp_path);
+      return 0;
+    }
+  }
+
+  fclose(temp);
+
+  remove(source_path);
+  if (rename(temp_path, source_path) != 0)
+  {
+    remove(temp_path);
+    return 0;
+  }
+
+  return 1;
+}
+
+static int filebase_find_area_record(int base_id, int area_id, FILEBASE_AREA_RECORD *record_out)
+{
+  char path[300];
+  FILE *file;
+
+  if (base_id <= 0 || area_id <= 0)
+  {
+    return 0;
+  }
+
+  filebase_format_area_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_area_cache, sizeof(filebase_area_cache), 1, file) == 1)
+  {
+    if (filebase_area_cache.id == area_id)
+    {
+      if (record_out != NULL)
+      {
+        *record_out = filebase_area_cache;
+      }
+      fclose(file);
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int filebase_allocate_area_id(int base_id, int *new_id)
+{
+  char path[300];
+  FILE *file;
+  int value = 0;
+
+  if (base_id <= 0 || new_id == NULL)
+  {
+    return 0;
+  }
+
+  filebase_format_area_idx_path(path, sizeof(path), base_id);
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(path, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  if (fread(&value, sizeof(value), 1, file) != 1)
+  {
+    value = 0;
+  }
+
+  value++;
+
+  rewind(file);
+  if (fwrite(&value, sizeof(value), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  *new_id = value;
+  return 1;
+}
+
+static int filebase_allocate_file_id(int base_id, int *new_id)
+{
+  char path[300];
+  FILE *file;
+  int value = 0;
+
+  if (new_id == NULL)
+  {
+    return 0;
+  }
+
+  filebase_format_file_idx_path(path, sizeof(path), base_id);
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    file = fopen(path, "w+b");
+    if (file == NULL)
+    {
+      return 0;
+    }
+  }
+
+  if (fread(&value, sizeof(value), 1, file) != 1)
+  {
+    value = 0;
+  }
+
+  value++;
+
+  {
+    int group = filebase_file_group_index(value);
+    if (group < 0 || group >= FILEBASE_MAX_FILE_GROUPS)
+    {
+      fclose(file);
+      return 0;
+    }
+  }
+
+  rewind(file);
+  if (fwrite(&value, sizeof(value), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fflush(file);
+  fclose(file);
+  *new_id = value;
+  return 1;
+}
+
+static int filebase_append_file_record(int base_id, const FILE_RECORD *record)
+{
+  char path[300];
+  FILE *file;
+  filebase_format_file_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "ab");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(FILE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
+static int filebase_update_file_record(int base_id, const FILE_RECORD *record)
+{
+  char source_path[300];
+  char temp_path[300];
+  FILE *source;
+  FILE *temp;
+  int updated = 0;
+
+  filebase_format_file_db_path(source_path, sizeof(source_path), base_id);
+  filebase_format_base_path(temp_path, sizeof(temp_path), base_id);
+  strncat(temp_path, ".Temp", sizeof(temp_path) - strlen(temp_path) - 1);
+
+  source = fopen(source_path, "rb");
+  if (source == NULL)
+  {
+    return 0;
+  }
+
+  temp = fopen(temp_path, "wb");
+  if (temp == NULL)
+  {
+    fclose(source);
+    return 0;
+  }
+
+  while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, source) == 1)
+  {
+    if (filebase_file_cache.id == record->id)
+    {
+      if (fwrite(record, sizeof(FILE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+      updated = 1;
+    }
+    else
+    {
+      if (fwrite(&filebase_file_cache, sizeof(FILE_RECORD), 1, temp) != 1)
+      {
+        fclose(source);
+        fclose(temp);
+        return 0;
+      }
+    }
+  }
+
+  fclose(source);
+  fclose(temp);
+
+  if (!updated)
+  {
+    remove(temp_path);
+    return 0;
+  }
+
+  remove(source_path);
+  rename(temp_path, source_path);
+  return 1;
+}
+
+static int filebase_find_file_record(int base_id, int file_id, FILE_RECORD *record_out)
+{
+  char path[300];
+  FILE *file;
+
+  filebase_format_file_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
+  {
+    if (filebase_file_cache.id == file_id)
+    {
+      if (record_out != NULL)
+      {
+        *record_out = filebase_file_cache;
+      }
+      fclose(file);
+      return 1;
+    }
+  }
+
+  fclose(file);
+  return 0;
+}
+
+static int filebase_update_filesize(int base_id, int file_id, size_t delta)
+{
+  if (!filebase_find_file_record(base_id, file_id, &filebase_file_cache))
+  {
+    return 0;
+  }
+
+  filebase_file_cache.filesize += (long)delta;
+  return filebase_update_file_record(base_id, &filebase_file_cache);
+}
+
+static void filebase_log(const char *format, ...)
+{
+  va_list args;
+  char message[128];
+
+  va_start(args, format);
+  vsnprintf(message, sizeof(message), format, args);
+  va_end(args);
+
+  log_system(message);
+}
+
+static long filebase_file_length(FILE *file)
+{
+  long size = 0;
+
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  if (fseek(file, 0, SEEK_END) == 0)
+  {
+    size = ftell(file);
+  }
+
+  rewind(file);
+  return size > 0 ? size : 0;
+}
+
+int filebase_count_bases(int *count_out, long *db_size_out)
+{
+  FILE *file = fopen(FILEBASE_DB_PATH, "rb");
+  long bytes = 0;
+  int count = 0;
+
+  if (file != NULL)
+  {
+    bytes = filebase_file_length(file);
+    fclose(file);
+    if (bytes > 0)
+    {
+      count = (int)(bytes / (long)sizeof(FILEBASE_RECORD));
+    }
+  }
+
+  if (count_out != NULL)
+  {
+    *count_out = count;
+  }
+  if (db_size_out != NULL)
+  {
+    *db_size_out = bytes;
+  }
+
+  return (file != NULL);
+}
+
+int filebase_peek_next_base_id(int *next_id_out, long *idx_size_out)
+{
+  FILE *file = fopen(FILEBASE_IDX_PATH, "rb");
+  long bytes = 0;
+  int value = 0;
+
+  if (file != NULL)
+  {
+    bytes = filebase_file_length(file);
+    if (fread(&value, sizeof(value), 1, file) != 1)
+    {
+      value = 0;
+    }
+    fclose(file);
+  }
+
+  if (next_id_out != NULL)
+  {
+    *next_id_out = value;
+  }
+  if (idx_size_out != NULL)
+  {
+    *idx_size_out = bytes;
+  }
+
+  return (file != NULL);
+}
+
+int filebase_collect_file_stats(int *file_count_out, long *bytes_out)
+{
+  FILE *db = fopen(FILEBASE_DB_PATH, "rb");
+  FILEBASE_RECORD record;
+  int total_files = 0;
+  long total_bytes = 0;
+
+  if (db == NULL)
+  {
+    if (file_count_out != NULL)
+    {
+      *file_count_out = 0;
+    }
+    if (bytes_out != NULL)
+    {
+      *bytes_out = 0;
+    }
+    return 0;
+  }
+
+  while (fread(&record, sizeof(record), 1, db) == 1)
+  {
+    char meta_path[300];
+    FILE *meta;
+
+    filebase_format_file_db_path(meta_path, sizeof(meta_path), record.id);
+    meta = fopen(meta_path, "rb");
+    if (meta == NULL)
+    {
+      continue;
+    }
+
+    while (fread(&filebase_file_cache, sizeof(filebase_file_cache), 1, meta) == 1)
+    {
+      if (!filebase_file_cache.deleted)
+      {
+        total_files++;
+        total_bytes += filebase_file_cache.filesize;
+      }
+    }
+
+    fclose(meta);
+  }
+
+  fclose(db);
+
+  if (file_count_out != NULL)
+  {
+    *file_count_out = total_files;
+  }
+  if (bytes_out != NULL)
+  {
+    *bytes_out = total_bytes;
+  }
+
+  return 1;
+}
+
+int filebase_iterate_bases(int (*callback)(const FILEBASE_RECORD *record, void *context), void *context)
+{
+  FILE *file = fopen(FILEBASE_DB_PATH, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_info_cache, sizeof(filebase_info_cache), 1, file) == 1)
+  {
+    filebase_assign_directory(&filebase_info_cache);
+    if (callback != NULL)
+    {
+      if (!callback(&filebase_info_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(file);
+  return 1;
+}
+
+int filebase_iterate_areas(int base_id, int (*callback)(const FILEBASE_AREA_RECORD *record, void *context), void *context)
+{
+  char path[300];
+  FILE *file;
+
+  if (base_id <= 0)
+  {
+    return 0;
+  }
+
+  filebase_format_area_db_path(path, sizeof(path), base_id);
+  file = fopen(path, "rb");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_area_cache, sizeof(filebase_area_cache), 1, file) == 1)
+  {
+    if (callback != NULL)
+    {
+      if (!callback(&filebase_area_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(file);
+  return 1;
+}
+
+int filebase_iterate_files(int base_id, int (*callback)(const FILE_RECORD *record, void *context), void *context)
+{
+  char meta_path[300];
+  FILE *meta;
+
+  filebase_format_file_db_path(meta_path, sizeof(meta_path), base_id);
+  meta = fopen(meta_path, "rb");
+  if (meta == NULL)
+  {
+    return 0;
+  }
+
+  while (fread(&filebase_file_cache, sizeof(filebase_file_cache), 1, meta) == 1)
+  {
+    if (callback != NULL)
+    {
+      if (!callback(&filebase_file_cache, context))
+      {
+        break;
+      }
+    }
+  }
+
+  fclose(meta);
+  return 1;
+}
+
+int filebase_get_file_record(int base_id, int file_id, FILE_RECORD *record_out)
+{
+  return filebase_find_file_record(base_id, file_id, record_out);
+}
+
+int filebase_save_file_record(int base_id, const FILE_RECORD *record)
+{
+  if (record == NULL)
+  {
+    return 0;
+  }
+  return filebase_update_file_record(base_id, record);
+}
+
+int filebase_delete_file(int base_id, int file_id, int remove_payload)
+{
+  FILE_RECORD record;
+  char payload_path[300];
+
+  if (!filebase_find_file_record(base_id, file_id, &record))
+  {
+    return 0;
+  }
+
+  record.deleted = 1;
+  if (!filebase_update_file_record(base_id, &record))
+  {
+    return 0;
+  }
+
+  if (remove_payload)
+  {
+    if (filebase_format_file_path(payload_path, sizeof(payload_path), base_id, record.filebaseareaid, file_id))
+    {
+      remove(payload_path);
+    }
+  }
+
+  filebase_log("Filebase %d file %d deleted", base_id, file_id);
+  return 1;
+}
+
+int filebase_upload_from_host(int base_id, int area_id, const char *host_path, const char *name, const char *description, int uploaded_by)
+{
+  FILE *source;
+  FILE *dest;
+  FILEBASE_RECORD base_record;
+  FILE_RECORD record;
+  char payload_path[300];
+  unsigned char buffer[FILEBASE_COPY_BUFFER];
+  size_t bytes_read;
+  size_t total = 0;
+
+  if (host_path == NULL || name == NULL || *host_path == '\0' || *name == '\0')
+  {
+    return -1;
+  }
+
+  source = fopen(host_path, "rb");
+  if (source == NULL)
+  {
+    return -1;
+  }
+
+  if (!filebase_find_base_record(base_id, &base_record))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  filebase_ensure_base_structure(base_id);
+
+  if (!filebase_allocate_file_id(base_id, &record.id))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  record.filebaseareaid = (area_id > 0) ? area_id : 0;
+
+  if (!filebase_ensure_group_directory(base_id, record.filebaseareaid, record.id))
+  {
+    fclose(source);
+    return -1;
+  }
+
+  if (!filebase_format_file_path(payload_path, sizeof(payload_path), base_id, record.filebaseareaid, record.id))
+  {
+    fclose(source);
+    return -1;
+  }
+  dest = fopen(payload_path, "wb");
+  if (dest == NULL)
+  {
+    fclose(source);
+    return -1;
+  }
+
+  while ((bytes_read = fread(buffer, 1, sizeof(buffer), source)) > 0)
+  {
+    if (fwrite(buffer, 1, bytes_read, dest) != bytes_read)
+    {
+      fclose(source);
+      fclose(dest);
+      remove(payload_path);
+      return -1;
+    }
+    total += bytes_read;
+  }
+
+  fclose(source);
+  fclose(dest);
+
+  record.filebaseid = base_id;
+  record.deleted = 0;
+  record.accesslevel = base_record.accesslevel;
+  snprintf(record.keys, sizeof(record.keys), "%s", base_record.keys);
+  snprintf(record.name, sizeof(record.name), "%s", name);
+  snprintf(record.description, sizeof(record.description), "%s", (description != NULL) ? description : "");
+  record.uploadedby = uploaded_by;
+  record.uploaddate = time(NULL);
+  record.filesize = (long)total;
+  record.downloads = 0;
+
+  filebase_normalise_file_record(&record);
+
+  if (!filebase_append_file_record(base_id, &record))
+  {
+    remove(payload_path);
+    return -1;
+  }
+
+  filebase_log("Filebase %d uploaded %d (%s)", base_id, record.id, record.name);
+  return record.id;
+}
