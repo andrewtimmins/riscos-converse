@@ -10,7 +10,12 @@
 #include "C:Desk.Core.h"
 #include "C:Desk.Event.h"
 #include "C:Desk.EventMsg.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Resource.h"
 #include "C:Desk.Screen.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Window.h"
 #include "C:Desk.WimpSWIs.h"
 #include "script.h"
 
@@ -32,6 +37,8 @@
 #define RISC_BBS_MESSAGE_INPUT   0x00C0904
 #define LINE_ACTIVITY_MESSAGE    0x5A581
 #define LINE_CONTROL_MESSAGE     0x5A582
+#define LINE_TASK_OPEN_WINDOW_MESSAGE 0x5A583
+#define LINE_TASK_REGISTER_MESSAGE 0x5A584
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 #define LINE_ACTIVITY_MAX_TEXT   96
@@ -53,6 +60,7 @@
 typedef struct
 {
     int line_id;
+    char line_label[8];
     int session_active;
     int control_stage;
     unsigned char control_code;
@@ -67,6 +75,7 @@ typedef struct
 } line_task_state;
 
 static line_task_state task_state;
+static Desk_window_handle main_window_handle;
 
 static char app_compiled[]=__DATE__" at "__TIME__;
 
@@ -79,7 +88,13 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref);
 static void process_server_stream(line_task_state *state);
 static void initialise_task_state(line_task_state *state, int argc, char **argv);
+static void initialise_resources(void);
+static void shutdown_resources(void);
+static void show_main_window(void);
+static void notify_server_ready(const line_task_state *state);
+static void update_main_window_title(line_task_state *state);
 static void wait_for_pipe_space(void);
+static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref);
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte);
 static void script_start_session(line_task_state *state);
 static void script_stop_session(line_task_state *state);
@@ -113,9 +128,15 @@ int main(int argc, char **argv)
     }
     Desk_EventMsg_Initialise();
     Desk_Screen_CacheModeInfo();
+    Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
+    Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
+    Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, handle_window_close, NULL);
     Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY, handle_null_poll, &task_state);
     Desk_Event_Claim(Desk_event_USERMESSAGE, Desk_event_ANY, Desk_event_ANY, handle_message_event, &task_state);
     Desk_Event_Claim(Desk_event_USERMESSAGERECORDED, Desk_event_ANY, Desk_event_ANY, handle_message_event, &task_state);
+
+    initialise_resources();
+    notify_server_ready(&task_state);
 
     while (task_state.quit_requested == Desk_bool_FALSE)
     {
@@ -125,6 +146,7 @@ int main(int argc, char **argv)
     log_line_event(task_state.line_id, "LineTask shutting down");
 
     script_dispose(&task_state.script);
+    shutdown_resources();
     Desk_Event_CloseDown();
     return 0;
 }
@@ -132,9 +154,11 @@ int main(int argc, char **argv)
 static void initialise_task_state(line_task_state *state, int argc, char **argv)
 {
     int line_id = 0;
+    const char *line_arg = "0";
 
     if (argc > 1 && argv[1] != NULL)
     {
+        line_arg = argv[1];
         line_id = atoi(argv[1]);
     }
 
@@ -148,6 +172,8 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     }
 
     state->line_id = line_id;
+    strncpy(state->line_label, line_arg, sizeof(state->line_label) - 1);
+    state->line_label[sizeof(state->line_label) - 1] = '\0';
     state->session_active = 0;
     state->control_stage = 0;
     state->control_code = 0;
@@ -169,6 +195,83 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_task_handle = script_host_get_task_handle;
         script_initialise(&state->script, &host);
     }
+}
+
+static void initialise_resources(void)
+{
+    Desk_Resource_Initialise("ConverseRes");
+    Desk_Msgs_LoadFile("Messages");
+    Desk_Template_Initialise();
+    Desk_Template_UseOutlineFonts();
+    Desk_Template_LoadFile("Templates");
+    main_window_handle = Desk_Window_Create("main", NULL);
+    update_main_window_title(&task_state);
+}
+
+static void shutdown_resources(void)
+{
+    Desk_Template_ClearAll();
+    main_window_handle = 0;
+}
+
+static void show_main_window(void)
+{
+    if (main_window_handle != 0)
+    {
+        Desk_Window_Show(main_window_handle, Desk_open_CENTERED);
+    }
+}
+
+static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+
+    if (event != NULL)
+    {
+        Desk_Window_Hide(event->data.openblock.window);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static void notify_server_ready(const line_task_state *state)
+{
+    Desk_message_block message;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 24;
+    message.header.action = (Desk_message_action)LINE_TASK_REGISTER_MESSAGE;
+    message.data.words[0] = state->line_id;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
+}
+
+static void update_main_window_title(line_task_state *state)
+{
+    char title[32];
+    const char *label = "000";
+
+    if (state == NULL || main_window_handle == 0)
+    {
+        return;
+    }
+
+    if (state->line_label[0] != '\0')
+    {
+        label = state->line_label;
+    }
+    else
+    {
+        snprintf(state->line_label, sizeof(state->line_label), "%d", state->line_id);
+        label = state->line_label;
+    }
+
+    snprintf(title, sizeof(title), "Converse Line #%s", label);
+    Desk_Window_SetTitle(main_window_handle, title);
 }
 
 static void door_reset_state(line_task_state *state)
@@ -216,6 +319,17 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
         if (reason == 0)
         {
             state->quit_requested = Desk_bool_TRUE;
+            return Desk_bool_TRUE;
+        }
+        return Desk_bool_FALSE;
+    }
+
+    if (action == LINE_TASK_OPEN_WINDOW_MESSAGE)
+    {
+        int target_line = event->data.message.data.words[0];
+        if (target_line == state->line_id)
+        {
+            show_main_window();
             return Desk_bool_TRUE;
         }
         return Desk_bool_FALSE;

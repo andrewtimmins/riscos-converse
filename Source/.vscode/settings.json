@@ -18,6 +18,7 @@
         "event": "cpp",
         "bbs": "cpp",
         "script": "cpp",
-        "userdb": "cpp"
+        "userdb": "cpp",
+        "window": "cpp"
     }
 }

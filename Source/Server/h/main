@@ -160,6 +160,7 @@
 
     static line_components line_configuration[32];
     static int line_configurations=0;
+    static int line_task_handles[32];
 
     static door_components door_configuration[32];
     static int door_configurations=0;

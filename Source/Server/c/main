@@ -56,6 +56,8 @@ Desk_bool wimp_open_systeminfo_window(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_line_register_message(Desk_event_pollblock *event, void *ref);
 
 void display_error_dialog(int isFatal, const char *stringFormat, ...);
 
@@ -92,9 +94,11 @@ static void pump_socket_to_pipe(int line_id, int socket);
 static void pump_pipe_to_socket(int line_id, int socket);
 static void close_line_connection(int line_id);
 static void notify_line_tasks_shutdown(void);
+static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column);
+static void send_line_task_view_request(int line_id);
 
 #define MAIN_WINDOW_ICON_BASE 13
-#define MAIN_WINDOW_ICONS_PER_LINE 6
+#define MAIN_WINDOW_ICONS_PER_LINE 7
 #define MAIN_WINDOW_ICON_HEIGHT 64
 #define MAIN_WINDOW_TOP_STATIC_ROWS 2
 #define MAIN_WINDOW_BOTTOM_STATIC_ROWS 0
@@ -108,7 +112,8 @@ static void notify_line_tasks_shutdown(void);
 #define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 390
 #define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 390
 #define MAIN_WINDOW_TIMER_COLUMN_WIDTH 200
-#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 300
+#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 80
+#define MAIN_WINDOW_VIEW_COLUMN_WIDTH 80
 
 #define DOOR_WINDOW_ICON_HEIGHT 64
 #define DOOR_WINDOW_STATIC_ICON_COUNT 2
@@ -133,6 +138,8 @@ static void notify_line_tasks_shutdown(void);
 #define PIPE_CONTROL_DISCONNECT 'D'
 #define MESSAGE_LINE_ACTIVITY   0x5A581
 #define MESSAGE_LINE_CONTROL    0x5A582
+#define MESSAGE_LINE_VIEW_WINDOW 0x5A583
+#define MESSAGE_LINE_REGISTER   0x5A584
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 
@@ -144,7 +151,8 @@ enum
 	MAIN_WINDOW_COLUMN_ACTIVITY,
 	MAIN_WINDOW_COLUMN_HOSTNAME,
 	MAIN_WINDOW_COLUMN_TIMER,
-	MAIN_WINDOW_COLUMN_ACTION
+	MAIN_WINDOW_COLUMN_ACTION,
+	MAIN_WINDOW_COLUMN_VIEW
 };
 
 static int main_window_icon_index(int line_id, int column)
@@ -182,8 +190,57 @@ static void launch_line_tasks(void)
 		snprintf(command, sizeof(command), "<Converse$Dir>.Resources.!RunLine %d", line_index);
 		Desk_Wimp_StartTask(command);
 		pipes_reset_line(line_index);
+		line_task_handles[line_index] = 0;
 		line_index++;
 	}
+}
+
+static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column)
+{
+	int relative;
+	int total_lines;
+
+	total_lines = line_configurations - 1;
+	if (icon < MAIN_WINDOW_ICON_BASE || total_lines <= 0)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	relative = icon - MAIN_WINDOW_ICON_BASE;
+	if (relative < 0 || relative >= (total_lines * MAIN_WINDOW_ICONS_PER_LINE))
+	{
+		return Desk_bool_FALSE;
+	}
+
+	if (line_id != NULL)
+	{
+		*line_id = relative / MAIN_WINDOW_ICONS_PER_LINE;
+	}
+
+	if (column != NULL)
+	{
+		*column = relative % MAIN_WINDOW_ICONS_PER_LINE;
+	}
+
+	return Desk_bool_TRUE;
+}
+
+static void send_line_task_view_request(int line_id)
+{
+	Desk_message_block message;
+	int total_lines;
+
+	total_lines = line_configurations - 1;
+	if (line_id < 0 || line_id >= total_lines)
+	{
+		return;
+	}
+
+	memset(&message, 0, sizeof(message));
+	message.header.size = 24;
+	message.header.action = (Desk_message_action)MESSAGE_LINE_VIEW_WINDOW;
+	message.data.words[0] = line_id;
+	Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
 }
 
 /* *********************************************************************************************************************************************************************************** */
@@ -230,7 +287,7 @@ Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 		
 		window_extent.window=main_window;
 		window_extent.rect.min.x=0;
-		window_extent.rect.max.x=1728;
+		window_extent.rect.max.x=1960;
 		window_extent.rect.max.y=0;
 
 		visible_lines = main_window_visible_lines();
@@ -273,9 +330,24 @@ Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 
 Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref)
 {
-	Desk_UNUSED(event);
-Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref);
 	Desk_UNUSED(ref);
+
+	if (event != NULL)
+	{
+		Desk_mouse_block *mouse = &event->data.mouse;
+		if (mouse->window == main_window && mouse->button.data.select)
+		{
+			int line_id;
+			int column;
+			if (main_window_icon_to_line(mouse->icon, &line_id, &column) != Desk_bool_FALSE)
+			{
+				if (column == MAIN_WINDOW_COLUMN_VIEW)
+				{
+					send_line_task_view_request(line_id);
+				}
+			}
+		}
+	}
 
 	return Desk_bool_TRUE;
 }
@@ -367,6 +439,8 @@ Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *r
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
 		(char *)activity);
 
+	line_task_handles[line_id] = event->data.message.header.sender;
+
 	return Desk_bool_TRUE;
 }
 
@@ -395,6 +469,8 @@ Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *re
 		return Desk_bool_FALSE;
 	}
 
+	line_task_handles[line_id] = event->data.message.header.sender;
+
 	if (reason == LINE_CONTROL_REASON_LOGOFF)
 	{
 		Desk_Icon_SetText(main_window,
@@ -405,6 +481,27 @@ Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *re
 	}
 
 	return Desk_bool_FALSE;
+}
+
+Desk_bool wimp_handle_line_register_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	if (line_id < 0 || line_id >= 32)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_task_handles[line_id] = event->data.message.header.sender;
+	return Desk_bool_TRUE;
 }
 
 /* *********************************************************************************************************************************************************************************** */
@@ -587,8 +684,8 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(25);
-		strcpy(text_buffer, "Disconnect");
+		text_buffer=malloc(4);
+		strcpy(text_buffer, "D");
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTION_COLUMN_WIDTH;
@@ -603,7 +700,29 @@ int create_line_icons(void)
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
 		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
 		icon_create_block.icondata.data.indirecttext.validstring="R5";
-		icon_create_block.icondata.data.indirecttext.bufflen=25;
+		icon_create_block.icondata.data.indirecttext.bufflen=4;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		text_buffer=malloc(4);
+		strcpy(text_buffer, "V");
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_VIEW_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+											Desk_icon_VCENTRE |
+											Desk_icon_HCENTRE |
+											Desk_icon_INDIRECTED |
+											Desk_icon_BORDER |
+											Desk_icon_FILLED |
+											(Desk_icon_FORECOLOUR*7) |
+											(Desk_icon_BACKCOLOUR*1) |
+											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=4;
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
@@ -1101,6 +1220,7 @@ static void close_line_connection(int line_id)
 	line_configuration[line_id].last_activity = 0;
 	line_configuration[line_id].timer = 0;
 	strcpy(line_configuration[line_id].remote, "");
+	line_task_handles[line_id] = 0;
 
 	Desk_Icon_SetText(main_window,
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
@@ -1613,6 +1733,7 @@ int main(void) {
 	Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, Desk_Handler_ModeChange, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_ACTIVITY, Desk_event_ANY, wimp_handle_line_activity_message, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_CONTROL, Desk_event_ANY, wimp_handle_line_control_message, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_REGISTER, Desk_event_ANY, wimp_handle_line_register_message, NULL);
 	Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
 	Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
   	Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, wimp_handle_window_close, NULL);
