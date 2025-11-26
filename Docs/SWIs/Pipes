@@ -5,7 +5,7 @@ Converse Pipes Technical Summary
 
 --------------------------------------------------------------------------------
 
-* SWI chunk base: 0x5A580 (registered as ConversePipes_). The module exposes a
+* SWI chunk base: 0x5AA00 (registered as ConversePipes_). The module exposes a
   compact set of helpers for status polling plus byte and block transfers.
 * Thirty-two logical lines are available (0..31). Each line owns two 4096-byte
   circular buffers: input (producer to consumer) and output (consumer to
@@ -49,7 +49,7 @@ SWI USAGE GUIDELINES
 
 --------------------------------------------------------------------------------
 
-0x5A580 - ConversePipes_ReadStatus
+0x5AA00 - ConversePipes_ReadStatus
 
 On Entry:
             R0: Line index (0..31).
@@ -62,7 +62,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x5A581 - ConversePipes_WriteStatus
+0x5AA01 - ConversePipes_WriteStatus
 
 On Entry:
             R0: Line index (0..31).
@@ -73,7 +73,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A582 - ConversePipes_InputStatus
+0x5AA02 - ConversePipes_InputStatus
 
 On Entry:
             R0: Line index (0..31).
@@ -83,7 +83,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A583 - ConversePipes_InputRead
+0x5AA03 - ConversePipes_InputRead
 
 On Entry:
             R0: Line index (0..31).
@@ -93,7 +93,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A584 - ConversePipes_OutputStatus
+0x5AA04 - ConversePipes_OutputStatus
 
 On Entry:
             R0: Line index (0..31).
@@ -103,7 +103,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A585 - ConversePipes_OutputWrite
+0x5AA05 - ConversePipes_OutputWrite
 
 On Entry:
             R0: Line index (0..31).
@@ -114,7 +114,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A586 - ConversePipes_ClearInput
+0x5AA06 - ConversePipes_ClearInput
 
 On Entry:
             R0: Line index (0..31).
@@ -124,7 +124,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A587 - ConversePipes_ClearOutput
+0x5AA07 - ConversePipes_ClearOutput
 
 On Entry:
             R0: Line index (0..31).
@@ -134,7 +134,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A588 - ConversePipes_InputWrite
+0x5AA08 - ConversePipes_InputWrite
 
 On Entry:
             R0: Line index (0..31).
@@ -145,7 +145,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A589 - ConversePipes_OutputRead
+0x5AA09 - ConversePipes_OutputRead
 
 On Entry:
             R0: Line index (0..31).
@@ -155,7 +155,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A58A - ConversePipes_ResetState
+0x5AA0A - ConversePipes_ResetState
 
 On Entry:
             R0: Line index (0..31).
@@ -165,7 +165,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A58B - ConversePipes_InputPeek
+0x5AA0B - ConversePipes_InputPeek
 
 On Entry:
             R0: Line index (0..31).
@@ -175,7 +175,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A58C - ConversePipes_OutputPeek
+0x5AA0C - ConversePipes_OutputPeek
 
 On Entry:
             R0: Line index (0..31).
@@ -185,7 +185,7 @@ On Exit:
 
 --------------------------------------------------------------------------------
 
-0x5A58D - ConversePipes_InputWriteBlock
+0x5AA0D - ConversePipes_InputWriteBlock
 
 On Entry:
             R0: Line index (0..31).
@@ -201,7 +201,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x5A58E - ConversePipes_OutputReadBlock
+0x5AA0E - ConversePipes_OutputReadBlock
 
 On Entry:
             R0: Line index (0..31).

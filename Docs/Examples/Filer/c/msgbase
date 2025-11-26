@@ -11,7 +11,7 @@
 
 /* Simple command-line utility that exercises the ConverseFiler messagebase SWIs. */
 
-#define CONVERSE_FILER_BASE 0x16F00
+#define CONVERSE_FILER_BASE 0x5AA40
 #define SWI_CONVERSE_FILER_MESSAGEBASE (CONVERSE_FILER_BASE + FILER_SWI_MESSAGEBASE)
 #define TRANSFER_BUFFER 4096
 

@@ -5,14 +5,14 @@
 
 #include "kernel.h"
 
-#define CONVERSE_PIPES_BASE             0x5A580
+#define CONVERSE_PIPES_BASE             0x5AA00
 #define SWI_CONVERSE_READ_STATUS       (CONVERSE_PIPES_BASE + 0)
 #define SWI_CONVERSE_INPUT_STATUS      (CONVERSE_PIPES_BASE + 2)
 #define SWI_CONVERSE_INPUT_WRITE_BLOCK (CONVERSE_PIPES_BASE + 13)
 #define SWI_OS_BYTE                    0x00000006
 
-#define CONVERSE_PIPES_STATUS_INPUT_HIGH 0x80
-#define CONVERSE_PIPES_STATUS_OUTPUT_LOW 0x40
+#define PIPES_STATUS_INPUT_HIGH 0x80
+#define PIPES_STATUS_OUTPUT_LOW 0x40
 
 /* Queues argv text into a line's host->slave buffer using the block SWI. */
 
@@ -92,8 +92,8 @@ static void print_status_summary(int line)
            line,
            queued,
            status & 0xFF,
-           (status & CONVERSE_PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
-           (status & CONVERSE_PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
+           (status & PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
+           (status & PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
   }
 }
 

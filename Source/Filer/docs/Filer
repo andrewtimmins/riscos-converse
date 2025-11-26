@@ -5,7 +5,7 @@ Converse Filer Technical Summary
 
 --------------------------------------------------------------------------------
 
-* SWI chunk base: 0x16F00 (registered as ConverseFiler_). Current groups are
+* SWI chunk base: 0x5AA40 (registered as ConverseFiler_). Current groups are
   Logging, Userbase, Messagebase, Filebase, and Statistics (reason codes for
   Statistics focus on call totals).
 * Persistent data is stored beneath <Converse$Dir>, using USERDB/USERIDX for
@@ -29,7 +29,7 @@ SWI USAGE GUIDELINES
 
 --------------------------------------------------------------------------------
 
-0x16F00 - ConverseFiler_Logging
+0x5AA40 - ConverseFiler_Logging
 
 On Entry:
             R0: Reason code (0-3).
@@ -63,7 +63,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x16F01 - ConverseFiler_Userbase
+0x5AA41 - ConverseFiler_Userbase
 
 On Entry:
             R0: Reason code (0-4).
@@ -107,7 +107,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x16F02 - ConverseFiler_Messagebase
+0x5AA42 - ConverseFiler_Messagebase
 
 On Entry:
             R0: Reason code (0-7).
@@ -168,7 +168,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x16F03 - ConverseFiler_Filebase
+0x5AA43 - ConverseFiler_Filebase
 
 On Entry:
             R0: Reason code (0-7).
@@ -227,7 +227,7 @@ Notes:
 
 --------------------------------------------------------------------------------
 
-0x16F04 - ConverseFiler_Statistics
+0x5AA44 - ConverseFiler_Statistics
 
 On Entry:
             R0: Reason code (0-7).

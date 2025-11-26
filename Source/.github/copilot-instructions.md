@@ -54,15 +54,15 @@ The workspace includes `SharedLibs` containing:
   - Each main-window row consumes 64 pixels of height, and the window reserves two 64-pixel header rows plus a 10-pixel padding margin. Update `MAIN_WINDOW_TOP_STATIC_ROWS`, `MAIN_WINDOW_PADDING`, or related helpers when adjusting layout.
   - Door window rows follow the same 64-pixel stepping with helper functions for calculating visible rows and extents. Always adjust both extent calculations and icon creation if the geometry changes.
   - Timers use `timer_set`/`timer_action` handles stored as `long`. When refreshing UI state (e.g., connection timelines or resolver text), respect the column assignments noted above so user text and hostname text do not overwrite each other.
-  - The server listens for Wimp message `0x5A581` (line activity updates) from LineTask. The first word is the line number; the payload is a null-terminated string copied into the activity column. Reject updates for invalid line IDs.
+  - The server listens for Wimp message `0x5AA01` (line activity updates) from LineTask. The first word is the line number; the payload is a null-terminated string copied into the activity column. Reject updates for invalid line IDs.
 
 - **LineTask / Script Engine**:
   - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
-  - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5A581` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
+  - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
 
 ## Converse SWI Reference
 
-### Pipes Module (Base 0x5A580)
+### Pipes Module (Base 0x5AA00)
 *Validates line (0-31). Returns -1 on failure/empty/full.*
 - **Status/Control**:
   - `ReadStatus` (0): R0=Line -> R0=Status
@@ -82,19 +82,19 @@ The workspace includes `SharedLibs` containing:
   - `OutputPeek` (C): R0=Line -> R0=Byte/-1
   - `OutputReadBlock` (E): R0=Line, R1=Ptr, R2=Count -> R0=Copied
 
-### Filer Module (Base 0x16F00)
+### Filer Module (Base 0x5AA40)
 *R0 = Reason Code. Returns 0 on success, -1 on failure.*
-- **Logging (0x16F00)**:
+- **Logging (0x5AA40)**:
   - 0 (System): R1=String
   - 1 (Line): R1=Line, R2=String
   - 2 (Call): R1=Line, R2=User, R3=Status
   - 3 (FTN): R1=String
-- **Userbase (0x16F01)**:
+- **Userbase (0x5AA41)**:
   - 0 (Add): R1=Record -> R0=ID
   - 1 (Update): R1=ID, R2=Record
   - 2 (Delete): R1=ID
   - 3 (Search): R1=ID -> R0=RecordPtr
-- **Messagebase (0x16F02) & Filebase (0x16F03)**:
+- **Messagebase (0x5AA42) & Filebase (0x5AA43)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord
   - 2 (Info): R1=ID -> R0=RecordPtr
@@ -103,6 +103,6 @@ The workspace includes `SharedLibs` containing:
   - 5 (DownloadBlock): R1=ID, R2=ItemID, R3=Buf, R4=Off, R5=Len
   - 6 (StoreArea): R1=ID, R2=AreaRecord -> R0=AreaID
   - 7 (AreaInfo): R1=ID, R2=AreaID -> R0=AreaRecordPtr
-- **Statistics (0x16F04)**:
+- **Statistics (0x5AA44)**:
   - 0 (ReadCallTotals): Returns the persisted system call count in R0. The value lives in `<Converse$Dir>.Resources.CallCount`; the module auto-creates this file with `0` if it is missing.
   - 1 (WriteCallTotals): R1=New total. Persists the value back to `CallCount` and returns 0 on success, -1 on failure. Logging SWI reason 2 automatically increments this total after each call entry.

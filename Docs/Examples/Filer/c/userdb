@@ -84,7 +84,7 @@ typedef struct
   USER_STATS user_stats;
 } USER_RECORD;
 
-#define CONVERSE_FILER_BASE 0x16F00
+#define CONVERSE_FILER_BASE 0x5AA40
 #define SWI_CONVERSE_FILER_USERBASE (CONVERSE_FILER_BASE + FILER_SWI_USERDB)
 
 static const char *program_leaf(const char *path)

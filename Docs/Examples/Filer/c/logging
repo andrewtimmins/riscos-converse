@@ -18,7 +18,7 @@ enum
   FILER_LOG_CMD_FTN
 };
 
-#define CONVERSE_FILER_BASE 0x16F00
+#define CONVERSE_FILER_BASE 0x5AA40
 #define SWI_CONVERSE_FILER_LOGGING (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
 
 /* Thin wrappers over the ConverseFiler_Logging SWI **************************************/

@@ -40,7 +40,8 @@
         FILER_USERDB_CMD_ADD = 0,
         FILER_USERDB_CMD_UPDATE,
         FILER_USERDB_CMD_DELETE,
-        FILER_USERDB_CMD_SEARCH
+        FILER_USERDB_CMD_SEARCH,
+        FILER_USERDB_CMD_AUTHENTICATE
     } FILER_USERDB_COMMAND;
 
     typedef enum
@@ -72,7 +73,9 @@
         FILER_COMMAND_STATUS = 0,
         FILER_COMMAND_STATS,
         FILER_COMMAND_FILERBASES,
-        FILER_COMMAND_MESSAGEBASES
+        FILER_COMMAND_MESSAGEBASES,
+        FILER_COMMAND_FILEAREAS,
+        FILER_COMMAND_MESSAGEAREAS
     } FILER_COMMAND;
 
     /* ******************************************************************************************************************************************************** */

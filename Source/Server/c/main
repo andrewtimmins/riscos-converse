@@ -119,7 +119,7 @@ static void send_line_task_view_request(int line_id);
 #define DOOR_WINDOW_STATIC_ICON_COUNT 2
 #define DOOR_WINDOW_PADDING 10
 
-#define PIPES_SWI_BASE 0x5A580
+#define PIPES_SWI_BASE 0x5AA00
 #define PIPES_BUFFER_CAPACITY 4096
 #define PIPE_TRANSFER_CHUNK 256
 #define LINE_IDLE_TIMEOUT_TICKS ((clock_t)(30 * CLOCKS_PER_SEC))
@@ -136,10 +136,12 @@ static void send_line_task_view_request(int line_id);
 #define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
 #define PIPE_CONTROL_CONNECT    'C'
 #define PIPE_CONTROL_DISCONNECT 'D'
-#define MESSAGE_LINE_ACTIVITY   0x5A581
-#define MESSAGE_LINE_CONTROL    0x5A582
-#define MESSAGE_LINE_VIEW_WINDOW 0x5A583
-#define MESSAGE_LINE_REGISTER   0x5A584
+#define MESSAGE_LINE_BASE       0x5AA00
+#define MESSAGE_LINE_BROADCAST  (MESSAGE_LINE_BASE + 0)
+#define MESSAGE_LINE_ACTIVITY   (MESSAGE_LINE_BASE + 1)
+#define MESSAGE_LINE_CONTROL    (MESSAGE_LINE_BASE + 2)
+#define MESSAGE_LINE_VIEW_WINDOW (MESSAGE_LINE_BASE + 3)
+#define MESSAGE_LINE_REGISTER   (MESSAGE_LINE_BASE + 4)
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 
@@ -1241,7 +1243,7 @@ static void notify_line_tasks_shutdown(void)
 
 	memset(&wimp_message, 0, sizeof(wimp_message));
 	wimp_message.header.size = 28;
-	wimp_message.header.action = (Desk_message_action)0x5A580;
+	wimp_message.header.action = (Desk_message_action)MESSAGE_LINE_BROADCAST;
 	wimp_message.data.words[0] = 0; /* reason 0 => quit */
 	Desk_Wimp_SendMessage(Desk_event_SEND, &wimp_message, 0, NULL);
 }

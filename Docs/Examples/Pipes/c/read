@@ -5,14 +5,14 @@
 
 #include "kernel.h"
 
-#define CONVERSE_PIPES_BASE        0x5A580
+#define CONVERSE_PIPES_BASE        0x5AA00
 #define SWI_CONVERSE_READ_STATUS  (CONVERSE_PIPES_BASE + 0)
 #define SWI_CONVERSE_INPUT_STATUS (CONVERSE_PIPES_BASE + 2)
 #define SWI_CONVERSE_INPUT_READ   (CONVERSE_PIPES_BASE + 3)
 #define SWI_OS_BYTE               0x00000006
 
-#define CONVERSE_PIPES_STATUS_INPUT_HIGH 0x80
-#define CONVERSE_PIPES_STATUS_OUTPUT_LOW 0x40
+#define PIPES_STATUS_INPUT_HIGH 0x80
+#define PIPES_STATUS_OUTPUT_LOW 0x40
 
 /* Simple tail follower that prints bytes as they arrive in a line's input buffer. */
 
@@ -94,8 +94,8 @@ static void report_idle_status(int line)
            line,
            waiting,
            status & 0xFF,
-           (status & CONVERSE_PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
-           (status & CONVERSE_PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
+           (status & PIPES_STATUS_INPUT_HIGH) ? 'H' : '-',
+           (status & PIPES_STATUS_OUTPUT_LOW) ? 'L' : '-');
     fflush(stdout);
   }
 }

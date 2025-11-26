@@ -6,7 +6,7 @@
 
 #include "kernel.h"
 
-#define CONVERSE_PIPES_BASE             0x5A580
+#define CONVERSE_PIPES_BASE             0x5AA00
 #define SWI_CONVERSE_INPUT_WRITE_BLOCK (CONVERSE_PIPES_BASE + 13)
 #define SWI_CONVERSE_OUTPUT_READ_BLOCK (CONVERSE_PIPES_BASE + 14)
 #define SWI_OS_BYTE                    0x00000006

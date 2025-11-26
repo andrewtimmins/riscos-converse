@@ -11,7 +11,7 @@
 
 /* Simple command-line utility that exercises the ConverseFiler filebase SWIs. */
 
-#define CONVERSE_FILER_BASE 0x16F00
+#define CONVERSE_FILER_BASE 0x5AA40
 #define SWI_CONVERSE_FILER_FILEBASE (CONVERSE_FILER_BASE + FILER_SWI_FILEBASE)
 #define FILEBASE_AREA_WIDTH 4
 

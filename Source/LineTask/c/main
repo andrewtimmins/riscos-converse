@@ -19,7 +19,7 @@
 #include "C:Desk.WimpSWIs.h"
 #include "script.h"
 
-#define PIPES_SWI_BASE 0x5A580
+#define PIPES_SWI_BASE 0x5AA00
 
 #define SWI_CONVERSE_PIPES_INPUT_READ   (PIPES_SWI_BASE + 3)
 #define SWI_CONVERSE_PIPES_OUTPUT_WRITE (PIPES_SWI_BASE + 5)
@@ -35,15 +35,17 @@
 #define RISC_BBS_MESSAGE_OUTPUT  0x00C0902
 #define RISC_BBS_MESSAGE_ACK     0x00C0903
 #define RISC_BBS_MESSAGE_INPUT   0x00C0904
-#define LINE_ACTIVITY_MESSAGE    0x5A581
-#define LINE_CONTROL_MESSAGE     0x5A582
-#define LINE_TASK_OPEN_WINDOW_MESSAGE 0x5A583
-#define LINE_TASK_REGISTER_MESSAGE 0x5A584
+#define LINE_MESSAGE_BASE        0x5AA00
+#define LINE_SHUTDOWN_MESSAGE    (LINE_MESSAGE_BASE + 0)
+#define LINE_ACTIVITY_MESSAGE    (LINE_MESSAGE_BASE + 1)
+#define LINE_CONTROL_MESSAGE     (LINE_MESSAGE_BASE + 2)
+#define LINE_TASK_OPEN_WINDOW_MESSAGE (LINE_MESSAGE_BASE + 3)
+#define LINE_TASK_REGISTER_MESSAGE (LINE_MESSAGE_BASE + 4)
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 #define LINE_ACTIVITY_MAX_TEXT   96
 
-#define CONVERSE_FILER_BASE          0x16F00
+#define CONVERSE_FILER_BASE          0x5AA40
 #define FILER_SWI_LOGGING            0
 #define FILER_LOG_REASON_LINE        1
 #define SWI_CONVERSE_FILER_LOGGING   (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
@@ -313,7 +315,7 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
         return Desk_bool_TRUE;
     }
 
-    if (action == 0x5A580)
+    if (action == LINE_SHUTDOWN_MESSAGE)
     {
         int reason = event->data.message.data.words[0];
         if (reason == 0)
