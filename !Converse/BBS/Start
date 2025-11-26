@@ -1,28 +1,60 @@
-{cls,fgbg 7 0,doing `Logging On...`,type `<Converse$Dir>.BBS.ANSI.Header`}
+{cls,fgbg 7 0,doing `Main Menu`,type `<Converse$Dir>.BBS.ANSI.Header`}
+Main Menu
 
-{logon logonresult
+ [1] Replay banner
+ [2] Show live status
+ [3] Display inline message
+ [4] Launch sample door
+ [5] Quit demo
 
-if logonresult == `0` goto logon_ok
-if logonresult == `1` goto unknown_user
-if logonresult == `2` goto bad_password
-if logonresult == `3` goto locked_account}
+{label demo_menu
+print `\r\nEnter choice (1-5): `
+prompt choice char echo
 
-{label logon_ok
-type `<Converse$Dir>.BBS.MainMenu`
-}
+if choice == `1` goto demo_banner
+if choice == `2` goto demo_status
+if choice == `3` goto demo_message
+if choice == `4` goto demo_door
+if choice == `5` goto demo_exit
 
-{label unknown_user
-print `\r\nUnknown user.\r\n`
+print `\r\nUnknown selection '%{choice}'. Try again.\r\n`
+goto demo_menu}
+
+{label demo_banner
+print `\r\n[Banner]\r\n`
+type `<Converse$Dir>.BBS.Art.DemoBanner`
+goto demo_menu}
+
+{label demo_status
+print `\r\n[Live Status]\r\n`
+print `Current line: %{line}`
+print `  Time now  : %{time}`
+print `  Date today: %{date}`
+print `\r\nCalling host callbacks for richer data...\r\n`
+call time
+call lineinfo
+print `Press any key to return to the menu.\r\n`
+anykey temp
+goto demo_menu}
+
+{label demo_message
+fgbg 2 0
+print `\r\nInline braces can mix colours and macros mid-paragraph. Line %{line} is still active.`
+call message `Sending a host notification from inside braces.`
+fgbg 7 0
+doing `Demo message`
+print `\r\nPress any key to continue.\r\n`
+anykey temp
+doing
+goto demo_menu}
+
+{label demo_door
+call message `\r\n[Launching Sample Door]\r\n`
+call door `<Converse$Dir>.BBS.Doors.!Tetris %{t_handle}`
+print `\r\nDoor closed, returning to the menu.\r\n`
+goto demo_menu}
+
+{label demo_exit
+print `\r\nThanks for trying the Converse Demo BBS.\r\n`
 logoff
 return}
-
-{label bad_password
-print `\r\nBad password.\r\n`
-logoff
-return}
-
-{label locked_account
-print `\r\nAccount Locked.\r\n`
-logoff
-return}
-
