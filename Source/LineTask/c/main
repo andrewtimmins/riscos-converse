@@ -368,7 +368,7 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
         state->door_launch_pending = Desk_bool_FALSE;
         state->door_launch_deadline = 0;
         state->door_next_ack_tick = 0;
-        pipes_output_write_string(state->line_id, "\r\n[Door connected]\r\n");
+        pipes_output_write_string(state->line_id, "");
         door_send_acknowledgement(state);
         state->door_next_ack_tick = clock() + DOOR_ACK_INTERVAL_TICKS;
         return Desk_bool_TRUE;
@@ -381,7 +381,7 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
             return Desk_bool_FALSE;
         }
 
-        door_close_session(state, "\r\n[Door closed]\r\n");
+        door_close_session(state, "");
         return Desk_bool_TRUE;
     }
 

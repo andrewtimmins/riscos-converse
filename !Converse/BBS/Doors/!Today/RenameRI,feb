@@ -1,3 +1,0 @@
-delete <obey$dir>.!runimage
-rename <obey$dir>.today <obey$dir>.!RunImage
-squeeze -f <obey$dir>.!RunImage

@@ -1,0 +1,8 @@
+{
+   attr 0 7
+   eoln
+   eoln
+   send `Chat terminated; BBS now active. Press <RETURN> to re-display current menu.`
+   eoln
+   eof
+}

@@ -61,6 +61,7 @@ static int script_buffer_append_char(script_buffer *buffer, char ch);
 static int script_buffer_append_string(script_buffer *buffer, const char *text);
 static void script_buffer_trim_trailing_whitespace(script_buffer *buffer);
 static int script_buffer_has_embedded_blocks(const char *buffer, size_t length);
+static char *script_strip_block_comments(const char *buffer, size_t length);
 static int script_parse_plain_lines(script_state *state, const char *buffer);
 static int script_append_print_literal(script_state *state, const char *text, size_t length);
 static int script_execute_inline_command(script_state *state, const char *command_text, int line_number);
@@ -422,7 +423,16 @@ static int script_load_file(script_state *state, const char *path)
     }
     else
     {
-        result = script_parse_plain_lines(state, buffer);
+        char *stripped = script_strip_block_comments(buffer, length);
+        if (stripped != NULL)
+        {
+            result = script_parse_plain_lines(state, stripped);
+            free(stripped);
+        }
+        else
+        {
+            result = script_parse_plain_lines(state, buffer);
+        }
     }
 
     free(buffer);
@@ -2060,6 +2070,52 @@ static int script_buffer_has_embedded_blocks(const char *buffer, size_t length)
     }
 
     return 0;
+}
+
+static char *script_strip_block_comments(const char *buffer, size_t length)
+{
+    char *result;
+    size_t src = 0;
+    size_t dst = 0;
+
+    if (buffer == NULL || length == 0)
+    {
+        return NULL;
+    }
+
+    result = (char *)malloc(length + 1);
+    if (result == NULL)
+    {
+        return NULL;
+    }
+
+    while (src < length)
+    {
+        if (buffer[src] == '/' && src + 1 < length && buffer[src + 1] == '*')
+        {
+            src += 2;
+            while (src < length)
+            {
+                if (buffer[src] == '*' && src + 1 < length && buffer[src + 1] == '/')
+                {
+                    src += 2;
+                    break;
+                }
+                if (buffer[src] == '\n')
+                {
+                    result[dst++] = '\n';
+                }
+                src++;
+            }
+        }
+        else
+        {
+            result[dst++] = buffer[src++];
+        }
+    }
+
+    result[dst] = '\0';
+    return result;
 }
 
 static int script_parse_plain_lines(script_state *state, const char *buffer)
