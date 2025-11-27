@@ -107,10 +107,27 @@ static void config_set_defaults(void)
 
     snprintf(config_data.bbs_name, sizeof(config_data.bbs_name), "Converse BBS");
     snprintf(config_data.sysop_name, sizeof(config_data.sysop_name), "Sysop");
+    snprintf(config_data.contact, sizeof(config_data.contact), "");
+    snprintf(config_data.hostname, sizeof(config_data.hostname), "localhost");
     config_data.max_lines = 4;
-    config_data.listen_port = 2023;
-    config_data.idle_timeout = 300;
-    snprintf(config_data.script_path, sizeof(config_data.script_path), "<Converse$Dir>.BBS");
+    config_data.listen_port = 23;
+    config_data.idle_timeout = 120;
+    snprintf(config_data.botstopper, sizeof(config_data.botstopper), "yes");
+    snprintf(config_data.needlogin, sizeof(config_data.needlogin), "yes");
+    snprintf(config_data.closed, sizeof(config_data.closed), "no");
+    snprintf(config_data.pager, sizeof(config_data.pager), "yes");
+    snprintf(config_data.anykey, sizeof(config_data.anykey), "<Converse$Dir>.BBS.AnyKey");
+    snprintf(config_data.chatstart, sizeof(config_data.chatstart), "<Converse$Dir>.BBS.ChatStart");
+    snprintf(config_data.chatend, sizeof(config_data.chatend), "<Converse$Dir>.BBS.ChatEnd");
+    snprintf(config_data.prelogon, sizeof(config_data.prelogon), "<Converse$Dir>.BBS.PreLogon");
+    snprintf(config_data.postlogon, sizeof(config_data.postlogon), "<Converse$Dir>.BBS.PostLogon");
+    snprintf(config_data.logoff, sizeof(config_data.logoff), "<Converse$Dir>.BBS.Logoff");
+    snprintf(config_data.welcome, sizeof(config_data.welcome), "<Converse$Dir>.BBS.Start");
+    snprintf(config_data.newuser, sizeof(config_data.newuser), "<Converse$Dir>.BBS.NewUser");
+    snprintf(config_data.timeup, sizeof(config_data.timeup), "<Converse$Dir>.BBS.TimeUp");
+    snprintf(config_data.lockedout, sizeof(config_data.lockedout), "<Converse$Dir>.BBS.Lockedout");
+    snprintf(config_data.closedsys, sizeof(config_data.closedsys), "<Converse$Dir>.BBS.ClosedSys");
+    snprintf(config_data.aftermail, sizeof(config_data.aftermail), "<Converse$Dir>.BBS.AfterMail");
 }
 
 static char config_value_buffer[CONFIG_VALUE_BUFFER];
@@ -130,6 +147,14 @@ static const char *config_get_value(const char *key)
     {
         return config_data.sysop_name;
     }
+    if (config_key_match(key, CONFIG_KEY_CONTACT))
+    {
+        return config_data.contact;
+    }
+    if (config_key_match(key, CONFIG_KEY_HOSTNAME))
+    {
+        return config_data.hostname;
+    }
     if (config_key_match(key, CONFIG_KEY_MAX_LINES))
     {
         snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.max_lines);
@@ -145,9 +170,69 @@ static const char *config_get_value(const char *key)
         snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.idle_timeout);
         return config_value_buffer;
     }
-    if (config_key_match(key, CONFIG_KEY_SCRIPT_PATH))
+    if (config_key_match(key, CONFIG_KEY_BOTSTOPPER))
     {
-        return config_data.script_path;
+        return config_data.botstopper;
+    }
+    if (config_key_match(key, CONFIG_KEY_NEEDLOGIN))
+    {
+        return config_data.needlogin;
+    }
+    if (config_key_match(key, CONFIG_KEY_CLOSED))
+    {
+        return config_data.closed;
+    }
+    if (config_key_match(key, CONFIG_KEY_PAGER))
+    {
+        return config_data.pager;
+    }
+    if (config_key_match(key, CONFIG_KEY_ANYKEY))
+    {
+        return config_data.anykey;
+    }
+    if (config_key_match(key, CONFIG_KEY_CHATSTART))
+    {
+        return config_data.chatstart;
+    }
+    if (config_key_match(key, CONFIG_KEY_CHATEND))
+    {
+        return config_data.chatend;
+    }
+    if (config_key_match(key, CONFIG_KEY_PRELOGON))
+    {
+        return config_data.prelogon;
+    }
+    if (config_key_match(key, CONFIG_KEY_POSTLOGON))
+    {
+        return config_data.postlogon;
+    }
+    if (config_key_match(key, CONFIG_KEY_LOGOFF))
+    {
+        return config_data.logoff;
+    }
+    if (config_key_match(key, CONFIG_KEY_WELCOME))
+    {
+        return config_data.welcome;
+    }
+    if (config_key_match(key, CONFIG_KEY_NEWUSER))
+    {
+        return config_data.newuser;
+    }
+    if (config_key_match(key, CONFIG_KEY_TIMEUP))
+    {
+        return config_data.timeup;
+    }
+    if (config_key_match(key, CONFIG_KEY_LOCKEDOUT))
+    {
+        return config_data.lockedout;
+    }
+    if (config_key_match(key, CONFIG_KEY_CLOSEDSYS))
+    {
+        return config_data.closedsys;
+    }
+    if (config_key_match(key, CONFIG_KEY_AFTERMAIL))
+    {
+        return config_data.aftermail;
     }
 
     return NULL;
@@ -186,6 +271,32 @@ static void config_set_value(const char *key, const char *value)
         return;
     }
 
+    if (config_key_match(key, CONFIG_KEY_CONTACT))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.contact, sizeof(config_data.contact), "%s", value);
+        }
+        else
+        {
+            config_data.contact[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_HOSTNAME))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.hostname, sizeof(config_data.hostname), "%s", value);
+        }
+        else
+        {
+            config_data.hostname[0] = '\0';
+        }
+        return;
+    }
+
     if (config_key_match(key, CONFIG_KEY_MAX_LINES))
     {
         config_data.max_lines = (value != NULL) ? atoi(value) : 0;
@@ -202,17 +313,17 @@ static void config_set_value(const char *key, const char *value)
 
     if (config_key_match(key, CONFIG_KEY_LISTEN_PORT))
     {
-        config_data.listen_port = (value != NULL) ? atoi(value) : 2023;
+        config_data.listen_port = (value != NULL) ? atoi(value) : 23;
         if (config_data.listen_port <= 0)
         {
-            config_data.listen_port = 2023;
+            config_data.listen_port = 23;
         }
         return;
     }
 
     if (config_key_match(key, CONFIG_KEY_IDLE_TIMEOUT))
     {
-        config_data.idle_timeout = (value != NULL) ? atoi(value) : 300;
+        config_data.idle_timeout = (value != NULL) ? atoi(value) : 120;
         if (config_data.idle_timeout < 0)
         {
             config_data.idle_timeout = 0;
@@ -220,15 +331,210 @@ static void config_set_value(const char *key, const char *value)
         return;
     }
 
-    if (config_key_match(key, CONFIG_KEY_SCRIPT_PATH))
+    if (config_key_match(key, CONFIG_KEY_BOTSTOPPER))
     {
         if (value != NULL)
         {
-            snprintf(config_data.script_path, sizeof(config_data.script_path), "%s", value);
+            snprintf(config_data.botstopper, sizeof(config_data.botstopper), "%s", value);
         }
         else
         {
-            config_data.script_path[0] = '\0';
+            config_data.botstopper[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_NEEDLOGIN))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.needlogin, sizeof(config_data.needlogin), "%s", value);
+        }
+        else
+        {
+            config_data.needlogin[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_CLOSED))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.closed, sizeof(config_data.closed), "%s", value);
+        }
+        else
+        {
+            config_data.closed[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_PAGER))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.pager, sizeof(config_data.pager), "%s", value);
+        }
+        else
+        {
+            config_data.pager[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_ANYKEY))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.anykey, sizeof(config_data.anykey), "%s", value);
+        }
+        else
+        {
+            config_data.anykey[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_CHATSTART))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.chatstart, sizeof(config_data.chatstart), "%s", value);
+        }
+        else
+        {
+            config_data.chatstart[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_CHATEND))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.chatend, sizeof(config_data.chatend), "%s", value);
+        }
+        else
+        {
+            config_data.chatend[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_PRELOGON))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.prelogon, sizeof(config_data.prelogon), "%s", value);
+        }
+        else
+        {
+            config_data.prelogon[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_POSTLOGON))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.postlogon, sizeof(config_data.postlogon), "%s", value);
+        }
+        else
+        {
+            config_data.postlogon[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_LOGOFF))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.logoff, sizeof(config_data.logoff), "%s", value);
+        }
+        else
+        {
+            config_data.logoff[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_WELCOME))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.welcome, sizeof(config_data.welcome), "%s", value);
+        }
+        else
+        {
+            config_data.welcome[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_NEWUSER))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.newuser, sizeof(config_data.newuser), "%s", value);
+        }
+        else
+        {
+            config_data.newuser[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_TIMEUP))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.timeup, sizeof(config_data.timeup), "%s", value);
+        }
+        else
+        {
+            config_data.timeup[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_LOCKEDOUT))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.lockedout, sizeof(config_data.lockedout), "%s", value);
+        }
+        else
+        {
+            config_data.lockedout[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_CLOSEDSYS))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.closedsys, sizeof(config_data.closedsys), "%s", value);
+        }
+        else
+        {
+            config_data.closedsys[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_AFTERMAIL))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.aftermail, sizeof(config_data.aftermail), "%s", value);
+        }
+        else
+        {
+            config_data.aftermail[0] = '\0';
         }
         return;
     }

@@ -1,0 +1,250 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Messagebase Configuration                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "msgbaseconfig.h"
+
+static MSGBASE_GLOBAL_CONFIG msgbase_config;
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static void msgbaseconfig_set_defaults(void)
+{
+    memset(&msgbase_config, 0, sizeof(msgbase_config));
+
+    msgbase_config.default_retention = 365;
+    msgbase_config.default_accesslevel = 0;
+    snprintf(msgbase_config.storage_root, sizeof(msgbase_config.storage_root),
+             "<Converse$Dir>.MsgBases");
+    msgbase_config.base_count = 0;
+}
+
+static MSGBASE_CONFIG *msgbaseconfig_find_base(int base_id)
+{
+    int i;
+
+    for (i = 0; i < msgbase_config.base_count; i++)
+    {
+        if (msgbase_config.bases[i].id == base_id)
+        {
+            return &msgbase_config.bases[i];
+        }
+    }
+
+    return NULL;
+}
+
+static MSGBASE_AREA_CONFIG *msgbaseconfig_find_area(MSGBASE_CONFIG *base, int area_id)
+{
+    int i;
+
+    if (base == NULL)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < base->area_count; i++)
+    {
+        if (base->areas[i].id == area_id)
+        {
+            return &base->areas[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void msgbaseconfig_initialise(void)
+{
+    msgbaseconfig_set_defaults();
+}
+
+void msgbaseconfig_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handler                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+void msgbaseconfig_swi_handler(_kernel_swi_regs *r)
+{
+    MSGBASE_CONFIG_REASON reason;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (MSGBASE_CONFIG_REASON)r->r[0];
+
+    switch (reason)
+    {
+        case MSGBASE_CONFIG_REASON_GET_GLOBAL:
+            r->r[0] = (int)&msgbase_config;
+            break;
+
+        case MSGBASE_CONFIG_REASON_SET_GLOBAL:
+        {
+            MSGBASE_GLOBAL_FIELD field = (MSGBASE_GLOBAL_FIELD)r->r[1];
+            const char *value = (const char *)r->r[2];
+
+            switch (field)
+            {
+                case MSGBASE_GLOBAL_FIELD_RETENTION:
+                    msgbase_config.default_retention = (value != NULL) ? atoi(value) : 365;
+                    break;
+
+                case MSGBASE_GLOBAL_FIELD_ACCESSLEVEL:
+                    msgbase_config.default_accesslevel = (value != NULL) ? atoi(value) : 0;
+                    break;
+
+                case MSGBASE_GLOBAL_FIELD_STORAGE_ROOT:
+                    if (value != NULL)
+                    {
+                        snprintf(msgbase_config.storage_root, sizeof(msgbase_config.storage_root), "%s", value);
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case MSGBASE_CONFIG_REASON_GET_BASE:
+        {
+            int base_id = r->r[1];
+            MSGBASE_CONFIG *base = msgbaseconfig_find_base(base_id);
+            r->r[0] = (int)base;
+            break;
+        }
+
+        case MSGBASE_CONFIG_REASON_SET_BASE:
+        {
+            int base_id = r->r[1];
+            MSGBASE_CONFIG *src = (MSGBASE_CONFIG *)r->r[2];
+            MSGBASE_CONFIG *base;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            base = msgbaseconfig_find_base(base_id);
+            if (base == NULL)
+            {
+                /* Add new base */
+                if (msgbase_config.base_count >= MSGBASE_CONFIG_MAX_BASES)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                base = &msgbase_config.bases[msgbase_config.base_count++];
+            }
+
+            memcpy(base, src, sizeof(MSGBASE_CONFIG));
+            base->id = base_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case MSGBASE_CONFIG_REASON_GET_AREA:
+        {
+            int base_id = r->r[1];
+            int area_id = r->r[2];
+            MSGBASE_CONFIG *base = msgbaseconfig_find_base(base_id);
+            MSGBASE_AREA_CONFIG *area = msgbaseconfig_find_area(base, area_id);
+            r->r[0] = (int)area;
+            break;
+        }
+
+        case MSGBASE_CONFIG_REASON_SET_AREA:
+        {
+            int base_id = r->r[1];
+            int area_id = r->r[2];
+            MSGBASE_AREA_CONFIG *src = (MSGBASE_AREA_CONFIG *)r->r[3];
+            MSGBASE_CONFIG *base;
+            MSGBASE_AREA_CONFIG *area;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            base = msgbaseconfig_find_base(base_id);
+            if (base == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            area = msgbaseconfig_find_area(base, area_id);
+            if (area == NULL)
+            {
+                /* Add new area */
+                if (base->area_count >= MSGBASE_CONFIG_MAX_AREAS)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                area = &base->areas[base->area_count++];
+            }
+
+            memcpy(area, src, sizeof(MSGBASE_AREA_CONFIG));
+            area->id = area_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case MSGBASE_CONFIG_REASON_COUNT_BASES:
+            r->r[0] = msgbase_config.base_count;
+            break;
+
+        case MSGBASE_CONFIG_REASON_COUNT_AREAS:
+        {
+            int base_id = r->r[1];
+            MSGBASE_CONFIG *base = msgbaseconfig_find_base(base_id);
+            r->r[0] = (base != NULL) ? base->area_count : 0;
+            break;
+        }
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+const MSGBASE_GLOBAL_CONFIG *msgbaseconfig_get(void)
+{
+    return &msgbase_config;
+}
+
+const MSGBASE_CONFIG *msgbaseconfig_get_base(int base_id)
+{
+    return msgbaseconfig_find_base(base_id);
+}
+
+const MSGBASE_AREA_CONFIG *msgbaseconfig_get_area(int base_id, int area_id)
+{
+    MSGBASE_CONFIG *base = msgbaseconfig_find_base(base_id);
+    return msgbaseconfig_find_area(base, area_id);
+}

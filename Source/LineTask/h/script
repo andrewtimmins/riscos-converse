@@ -18,6 +18,11 @@ typedef struct script_host
     void (*report_online_users)(void *context);
     int (*get_line_id)(void *context);
     int (*get_task_handle)(void *context);
+    /* Filebase callbacks */
+    void *(*get_filebase_session)(void *context);
+    int (*get_user_accesslevel)(void *context);
+    const char *(*get_user_keys)(void *context);
+    int (*filebase_download)(void *context, int base_id, int file_id);
 } script_host;
 
 typedef enum
@@ -53,7 +58,8 @@ typedef enum
     SCRIPT_CMD_SCRIPT,
     SCRIPT_CMD_DOING,
     SCRIPT_CMD_LOGOFF,
-    SCRIPT_CMD_ONLINE
+    SCRIPT_CMD_ONLINE,
+    SCRIPT_CMD_FILEBASE
 } script_command_type;
 
 typedef enum

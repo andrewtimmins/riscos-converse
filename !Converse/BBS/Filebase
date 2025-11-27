@@ -1,0 +1,39 @@
+{
+    goto filebase_menu
+
+    /* Filebase Menu */
+    label filebase_menu
+    cls
+    fgbg 7 0
+    doing `Filebase Menu`
+    type `<Converse$Dir>.BBS.ANSI.Header`
+    type `<Converse$Dir>.BBS.Menus.FileMenu`
+
+    print `\r\nEnter choice (1-5): `
+    prompt choice char echo
+
+    if choice == `1` goto list_filebases
+    if choice == `2` goto list_fileareas
+
+    if choice == `X` goto main_menu
+    if choice == `x` goto main_menu
+
+    print `\r\nUnknown selection '%{choice}', please try again.\r\n`
+    goto arcbbs_menu
+
+    label list_filebases
+    doing `Listing filebases...`
+    filebase list
+    anykey temp
+    goto filebase_menu
+
+
+    label list_fileareas
+    doing `Listing fileareas...`
+    filebase areas
+    anykey temp
+    goto filebase_menu
+
+    label main_menu
+    script `<Converse$Dir>.BBS.Start`
+}

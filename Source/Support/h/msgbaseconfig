@@ -1,0 +1,107 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Messagebase Configuration                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef MSGBASECONFIG_H
+#define MSGBASECONFIG_H
+
+#include "kernel.h"
+
+/* Maximum limits */
+#define MSGBASE_CONFIG_MAX_BASES        32
+#define MSGBASE_CONFIG_MAX_AREAS        64
+#define MSGBASE_CONFIG_NAME_LEN         64
+#define MSGBASE_CONFIG_TAG_LEN          64
+#define MSGBASE_CONFIG_KEYS_LEN         128
+#define MSGBASE_CONFIG_PATH_LEN         256
+
+/* Area types */
+typedef enum
+{
+    MSGBASE_AREATYPE_LOCAL = 0,
+    MSGBASE_AREATYPE_ECHO = 1,
+    MSGBASE_AREATYPE_NETMAIL = 2,
+    MSGBASE_AREATYPE_JUNK = 3,
+    MSGBASE_AREATYPE_OTHER = 4,
+    MSGBASE_AREATYPE_FILE = 5,
+    MSGBASE_AREATYPE_TICK = 6
+} MSGBASE_AREATYPE;
+
+/* Messagebase types */
+typedef enum
+{
+    MSGBASE_TYPE_NORMAL = 0,
+    MSGBASE_TYPE_FTN = 1,
+    MSGBASE_TYPE_INTERNET = 2,
+    MSGBASE_TYPE_PRIVATE = 3
+} MSGBASE_TYPE;
+
+/* Messagebase area configuration */
+typedef struct
+{
+    int id;                                     /* area ID within messagebase */
+    char name[MSGBASE_CONFIG_NAME_LEN];         /* area name */
+    char tag[MSGBASE_CONFIG_TAG_LEN];           /* FTN tag (echotag) */
+    int areatype;                               /* area type (LOCAL, ECHO, etc.) */
+    int daystokeep;                             /* message retention days (0=forever) */
+    int akause;                                 /* which AKA to use for this area */
+    int accesslevel;                            /* access level override (-1 = inherit) */
+    char keys[MSGBASE_CONFIG_KEYS_LEN];         /* access keys override */
+} MSGBASE_AREA_CONFIG;
+
+/* Messagebase configuration */
+typedef struct
+{
+    int id;                                     /* messagebase ID */
+    char name[MSGBASE_CONFIG_NAME_LEN];         /* messagebase name */
+    int type;                                   /* messagebase type */
+    int accesslevel;                            /* minimum access level */
+    char keys[MSGBASE_CONFIG_KEYS_LEN];         /* access keys required */
+    int area_count;                             /* number of areas */
+    MSGBASE_AREA_CONFIG areas[MSGBASE_CONFIG_MAX_AREAS];  /* area configs */
+} MSGBASE_CONFIG;
+
+/* Global messagebase settings */
+typedef struct
+{
+    int default_retention;                      /* default message retention days */
+    int default_accesslevel;                    /* default access level for new bases */
+    char storage_root[MSGBASE_CONFIG_PATH_LEN]; /* root path for message storage */
+    int base_count;                             /* number of messagebases */
+    MSGBASE_CONFIG bases[MSGBASE_CONFIG_MAX_BASES];  /* messagebase configs */
+} MSGBASE_GLOBAL_CONFIG;
+
+/* SWI reason codes for ConverseBBS_MsgBaseConfig (0x5AA84) */
+typedef enum
+{
+    MSGBASE_CONFIG_REASON_GET_GLOBAL = 0,       /* -> R0=MSGBASE_GLOBAL_CONFIG ptr */
+    MSGBASE_CONFIG_REASON_SET_GLOBAL = 1,       /* R1=field, R2=value */
+    MSGBASE_CONFIG_REASON_GET_BASE = 2,         /* R1=base_id -> R0=MSGBASE_CONFIG ptr */
+    MSGBASE_CONFIG_REASON_SET_BASE = 3,         /* R1=base_id, R2=MSGBASE_CONFIG ptr */
+    MSGBASE_CONFIG_REASON_GET_AREA = 4,         /* R1=base_id, R2=area_id -> R0=MSGBASE_AREA_CONFIG ptr */
+    MSGBASE_CONFIG_REASON_SET_AREA = 5,         /* R1=base_id, R2=area_id, R3=MSGBASE_AREA_CONFIG ptr */
+    MSGBASE_CONFIG_REASON_COUNT_BASES = 6,      /* -> R0=count */
+    MSGBASE_CONFIG_REASON_COUNT_AREAS = 7       /* R1=base_id -> R0=count */
+} MSGBASE_CONFIG_REASON;
+
+/* Global config fields for SET_GLOBAL */
+typedef enum
+{
+    MSGBASE_GLOBAL_FIELD_RETENTION = 0,
+    MSGBASE_GLOBAL_FIELD_ACCESSLEVEL = 1,
+    MSGBASE_GLOBAL_FIELD_STORAGE_ROOT = 2
+} MSGBASE_GLOBAL_FIELD;
+
+/* Initialisation and finalisation */
+void msgbaseconfig_initialise(void);
+void msgbaseconfig_finalise(void);
+
+/* SWI handler */
+void msgbaseconfig_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const MSGBASE_GLOBAL_CONFIG *msgbaseconfig_get(void);
+const MSGBASE_CONFIG *msgbaseconfig_get_base(int base_id);
+const MSGBASE_AREA_CONFIG *msgbaseconfig_get_area(int base_id, int area_id);
+
+#endif

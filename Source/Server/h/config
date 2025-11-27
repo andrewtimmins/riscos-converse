@@ -1,0 +1,17 @@
+/* ******************************************************************************************************************************************************** */
+/* Server - Configuration Loader                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* Load messagebase configuration from Config.MsgBases */
+void load_msgbase_config(void);
+
+/* Load filebase configuration from Config.FileBases */
+void load_filebase_config(void);
+
+/* Load FTN configuration from Config.FTN */
+void load_ftn_config(void);
+
+#endif

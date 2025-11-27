@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "script.h"
+#include "filebase.h"
 
 #define SCRIPT_DEFAULT_INSTRUCTION_CAPACITY 32
 #define SCRIPT_DEFAULT_LABEL_CAPACITY 16
@@ -868,6 +869,28 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "filebase") == 0)
+    {
+        char *subcmd = strtok(NULL, " \t");
+        char *arg_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_FILEBASE;
+        instruction->arg1 = script_duplicate_string(subcmd != NULL ? subcmd : "list");
+
+        if (arg_text != NULL)
+        {
+            arg_text = script_trim(arg_text);
+            if (!script_parse_backtick_string(arg_text, &consumed, &value_string))
+            {
+                value_string = script_duplicate_string(arg_text);
+            }
+            instruction->arg2 = value_string;
+        }
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -1274,6 +1297,225 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.report_online_users != NULL)
             {
                 state->host.report_online_users(state->host.context);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_FILEBASE:
+        {
+            const char *subcmd = instruction->arg1 != NULL ? instruction->arg1 : "list";
+            const char *arg_raw = instruction->arg2;
+            char arg_expanded[256];
+            const char *arg;
+            filebase_session *session = NULL;
+
+            /* Expand macros in argument */
+            if (arg_raw != NULL)
+            {
+                script_expand_macros(state, arg_raw, arg_expanded, sizeof(arg_expanded));
+                arg = arg_expanded;
+            }
+            else
+            {
+                arg = NULL;
+            }
+
+            /* Get or create filebase session from host */
+            if (state->host.get_filebase_session != NULL)
+            {
+                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            }
+
+            if (session == NULL)
+            {
+                script_write_output(state, "\r\n[Filebase not available]\r\n");
+                break;
+            }
+
+            /* Update session access level from current user */
+            if (state->host.get_user_accesslevel != NULL)
+            {
+                int level = state->host.get_user_accesslevel(state->host.context);
+                const char *keys = NULL;
+                if (state->host.get_user_keys != NULL)
+                {
+                    keys = state->host.get_user_keys(state->host.context);
+                }
+                filebase_session_set_access(session, level, keys);
+            }
+
+            if (script_stringcasecmp(subcmd, "list") == 0)
+            {
+                /* List available filebases */
+                filebase_list_bases(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "select") == 0)
+            {
+                /* Select a filebase: filebase select <id> */
+                int base_id;
+                LINETASK_FILEBASE_RECORD record;
+                char msg[128];
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: filebase select <id>]\r\n");
+                    break;
+                }
+
+                base_id = atoi(arg);
+                if (base_id <= 0)
+                {
+                    script_write_output(state, "\r\n[Invalid filebase ID]\r\n");
+                    break;
+                }
+
+                if (!filebase_get_info(base_id, &record))
+                {
+                    script_write_output(state, "\r\n[Filebase not found]\r\n");
+                    break;
+                }
+
+                /* Check access */
+                if (!filebase_check_access(record.accesslevel, record.keys,
+                                           session->user_accesslevel, session->user_keys))
+                {
+                    script_write_output(state, "\r\n[Access denied]\r\n");
+                    break;
+                }
+
+                session->current_filebase = base_id;
+                session->current_area = 0;
+                snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected filebase: %s\033[0m\r\n", record.name);
+                script_write_output(state, msg);
+            }
+            else if (script_stringcasecmp(subcmd, "areas") == 0)
+            {
+                /* List areas in current filebase */
+                filebase_list_areas(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "area") == 0)
+            {
+                /* Select an area: filebase area <id> */
+                int area_id;
+                char msg[128];
+
+                if (session->current_filebase <= 0)
+                {
+                    script_write_output(state, "\r\n[No filebase selected]\r\n");
+                    break;
+                }
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: filebase area <id>]\r\n");
+                    break;
+                }
+
+                area_id = atoi(arg);
+                if (area_id < 0)
+                {
+                    script_write_output(state, "\r\n[Invalid area ID]\r\n");
+                    break;
+                }
+
+                if (area_id > 0)
+                {
+                    LINETASK_FILEBASE_AREA_RECORD area_record;
+                    if (!filebase_get_area_info(session->current_filebase, area_id, &area_record))
+                    {
+                        script_write_output(state, "\r\n[Area not found]\r\n");
+                        break;
+                    }
+
+                    if (!filebase_check_access(area_record.accesslevel, area_record.keys,
+                                               session->user_accesslevel, session->user_keys))
+                    {
+                        script_write_output(state, "\r\n[Access denied]\r\n");
+                        break;
+                    }
+
+                    snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected area: %s\033[0m\r\n", area_record.name);
+                }
+                else
+                {
+                    snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected: All Files\033[0m\r\n");
+                }
+
+                session->current_area = area_id;
+                script_write_output(state, msg);
+            }
+            else if (script_stringcasecmp(subcmd, "files") == 0)
+            {
+                /* List files in current filebase/area */
+                filebase_list_files(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "info") == 0)
+            {
+                /* Show file info: filebase info <id> */
+                int file_id;
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: filebase info <file_id>]\r\n");
+                    break;
+                }
+
+                file_id = atoi(arg);
+                if (file_id <= 0)
+                {
+                    script_write_output(state, "\r\n[Invalid file ID]\r\n");
+                    break;
+                }
+
+                filebase_show_file_info(session, file_id, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "download") == 0)
+            {
+                /* Download a file: filebase download <id> */
+                int file_id;
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: filebase download <file_id>]\r\n");
+                    break;
+                }
+
+                file_id = atoi(arg);
+                if (file_id <= 0)
+                {
+                    script_write_output(state, "\r\n[Invalid file ID]\r\n");
+                    break;
+                }
+
+                if (state->host.filebase_download != NULL)
+                {
+                    if (state->host.filebase_download(state->host.context, session->current_filebase, file_id))
+                    {
+                        /* Download initiated - wait for it to complete */
+                        /* For now just show a message; transfer protocol will be added later */
+                        script_write_output(state, "\r\n[Download initiated...]\r\n");
+                    }
+                    else
+                    {
+                        script_write_output(state, "\r\n[Download failed]\r\n");
+                    }
+                }
+                else
+                {
+                    script_write_output(state, "\r\n[Download not implemented]\r\n");
+                }
+            }
+            else if (script_stringcasecmp(subcmd, "reset") == 0)
+            {
+                /* Reset session */
+                filebase_session_reset(session);
+                script_write_output(state, "\r\n\033[1;32mFilebase selection cleared.\033[0m\r\n");
+            }
+            else
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "\r\n[Unknown filebase command: %s]\r\n", subcmd);
+                script_write_output(state, msg);
             }
         }
         break;

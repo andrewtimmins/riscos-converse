@@ -11,20 +11,32 @@
 #include "support.h"
 #include "config.h"
 #include "linestate.h"
+#include "lineconfig.h"
+#include "msgbaseconfig.h"
+#include "filebaseconfig.h"
+#include "ftnconfig.h"
 
 /* SWI numbers (offset from chunk base) */
 typedef enum
 {
     SWI_CONFIG = 0,
     SWI_LINE = 1,
-    SWI_ACTIVITY = 2
+    SWI_ACTIVITY = 2,
+    SWI_LINECONFIG = 3,
+    SWI_MSGBASECONFIG = 4,
+    SWI_FILEBASECONFIG = 5,
+    SWI_FTNCONFIG = 6
 } SUPPORT_SWI;
 
 /* Command numbers */
 typedef enum
 {
     CMD_STATUS = 0,
-    CMD_CONFIG = 1
+    CMD_CONFIG = 1,
+    CMD_LINES = 2,
+    CMD_MSGBASES = 3,
+    CMD_FILEBASES = 4,
+    CMD_FTN = 5
 } SUPPORT_COMMAND;
 
 /* ******************************************************************************************************************************************************** */
@@ -39,6 +51,10 @@ _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *
 
     config_initialise();
     linestate_initialise();
+    lineconfig_initialise();
+    msgbaseconfig_initialise();
+    filebaseconfig_initialise();
+    ftnconfig_initialise();
 
     return NULL;
 }
@@ -49,6 +65,10 @@ _kernel_oserror *module_finalise(int fatal, int podule, void *pw)
     UNUSED(podule);
     UNUSED(pw);
 
+    ftnconfig_finalise();
+    filebaseconfig_finalise();
+    msgbaseconfig_finalise();
+    lineconfig_finalise();
     linestate_finalise();
     config_finalise();
 
@@ -83,6 +103,22 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
 
         case SWI_ACTIVITY:
             activity_swi_handler(r);
+            break;
+
+        case SWI_LINECONFIG:
+            lineconfig_swi_handler(r);
+            break;
+
+        case SWI_MSGBASECONFIG:
+            msgbaseconfig_swi_handler(r);
+            break;
+
+        case SWI_FILEBASECONFIG:
+            filebaseconfig_swi_handler(r);
+            break;
+
+        case SWI_FTNCONFIG:
+            ftnconfig_swi_handler(r);
             break;
 
         default:
@@ -164,10 +200,215 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
             {
                 printf("  BBS Name     : %s\n", cfg->bbs_name[0] ? cfg->bbs_name : "(not set)");
                 printf("  Sysop Name   : %s\n", cfg->sysop_name[0] ? cfg->sysop_name : "(not set)");
+                printf("  Contact      : %s\n", cfg->contact[0] ? cfg->contact : "(not set)");
+                printf("  Hostname     : %s\n", cfg->hostname[0] ? cfg->hostname : "(not set)");
                 printf("  Max Lines    : %d\n", cfg->max_lines);
                 printf("  Listen Port  : %d\n", cfg->listen_port);
                 printf("  Idle Timeout : %d seconds\n", cfg->idle_timeout);
-                printf("  Script Path  : %s\n", cfg->script_path[0] ? cfg->script_path : "(default)");
+                puts("");
+                printf("  Botstopper   : %s\n", cfg->botstopper[0] ? cfg->botstopper : "no");
+                printf("  Need Login   : %s\n", cfg->needlogin[0] ? cfg->needlogin : "no");
+                printf("  Closed       : %s\n", cfg->closed[0] ? cfg->closed : "no");
+                printf("  Pager        : %s\n", cfg->pager[0] ? cfg->pager : "no");
+                puts("");
+                printf("  Welcome      : %s\n", cfg->welcome[0] ? cfg->welcome : "(not set)");
+                printf("  Pre-Logon    : %s\n", cfg->prelogon[0] ? cfg->prelogon : "(not set)");
+                printf("  Post-Logon   : %s\n", cfg->postlogon[0] ? cfg->postlogon : "(not set)");
+                printf("  Logoff       : %s\n", cfg->logoff[0] ? cfg->logoff : "(not set)");
+                printf("  New User     : %s\n", cfg->newuser[0] ? cfg->newuser : "(not set)");
+                printf("  Any Key      : %s\n", cfg->anykey[0] ? cfg->anykey : "(not set)");
+                printf("  Chat Start   : %s\n", cfg->chatstart[0] ? cfg->chatstart : "(not set)");
+                printf("  Chat End     : %s\n", cfg->chatend[0] ? cfg->chatend : "(not set)");
+                printf("  Time Up      : %s\n", cfg->timeup[0] ? cfg->timeup : "(not set)");
+                printf("  Locked Out   : %s\n", cfg->lockedout[0] ? cfg->lockedout : "(not set)");
+                printf("  Closed Sys   : %s\n", cfg->closedsys[0] ? cfg->closedsys : "(not set)");
+                printf("  After Mail   : %s\n", cfg->aftermail[0] ? cfg->aftermail : "(not set)");
+            }
+            else
+            {
+                puts("  Configuration not loaded.");
+            }
+
+            puts("");
+            break;
+        }
+
+        case CMD_LINES:
+        {
+            const LINE_CONFIG *cfg;
+            int line;
+            int enabled_count = 0;
+
+            puts("ConverseBBS Line Configuration:\n");
+            puts("Line | Enabled | Botstopper                       | Hello");
+            puts("-----+---------+----------------------------------+----------------------------------");
+
+            for (line = 0; line < SUPPORT_MAX_LINES; line++)
+            {
+                cfg = lineconfig_get(line);
+                if (cfg == NULL)
+                {
+                    continue;
+                }
+
+                if (cfg->enabled)
+                {
+                    char botstopper_display[33];
+                    char hello_display[33];
+
+                    strncpy(botstopper_display, cfg->botstopper, 32);
+                    botstopper_display[32] = '\0';
+                    strncpy(hello_display, cfg->hello, 32);
+                    hello_display[32] = '\0';
+
+                    printf("%4d | %7s | %-32s | %-32s\n",
+                           line,
+                           cfg->enabled ? "Yes" : "No",
+                           cfg->botstopper[0] ? botstopper_display : "-",
+                           cfg->hello[0] ? hello_display : "-");
+
+                    enabled_count++;
+                }
+            }
+
+            puts("-----+---------+----------------------------------+----------------------------------");
+            printf("Enabled lines: %d\n\n", enabled_count);
+            break;
+        }
+
+        case CMD_MSGBASES:
+        {
+            const MSGBASE_GLOBAL_CONFIG *cfg = msgbaseconfig_get();
+            int i, j;
+
+            puts("ConverseBBS Messagebase Configuration:\n");
+
+            if (cfg != NULL)
+            {
+                printf("Global Settings:\n");
+                printf("  Default Retention  : %d days\n", cfg->default_retention);
+                printf("  Default Access     : %d\n", cfg->default_accesslevel);
+                printf("  Storage Root       : %s\n", cfg->storage_root[0] ? cfg->storage_root : "(not set)");
+                printf("  Messagebases       : %d\n\n", cfg->base_count);
+
+                for (i = 0; i < cfg->base_count; i++)
+                {
+                    const MSGBASE_CONFIG *base = &cfg->bases[i];
+
+                    printf("Messagebase %d: %s\n", base->id, base->name);
+                    printf("  Type         : %d\n", base->type);
+                    printf("  Access Level : %d\n", base->accesslevel);
+                    printf("  Keys         : %s\n", base->keys[0] ? base->keys : "(none)");
+                    printf("  Areas        : %d\n", base->area_count);
+
+                    for (j = 0; j < base->area_count; j++)
+                    {
+                        const MSGBASE_AREA_CONFIG *area = &base->areas[j];
+                        printf("    Area %d: %s [%s] (type=%d, keep=%d days)\n",
+                               area->id, area->name, area->tag, area->areatype, area->daystokeep);
+                    }
+                    puts("");
+                }
+            }
+            else
+            {
+                puts("  Configuration not loaded.");
+            }
+
+            break;
+        }
+
+        case CMD_FILEBASES:
+        {
+            const FILEBASE_GLOBAL_CONFIG *cfg = filebaseconfig_get();
+            int i, j;
+
+            puts("ConverseBBS Filebase Configuration:\n");
+
+            if (cfg != NULL)
+            {
+                printf("Global Settings:\n");
+                printf("  Default Access     : %d\n", cfg->default_accesslevel);
+                printf("  Storage Root       : %s\n", cfg->storage_root[0] ? cfg->storage_root : "(not set)");
+                printf("  Max Upload Size    : %ld bytes\n", cfg->max_upload_size);
+                printf("  Filebases          : %d\n\n", cfg->base_count);
+
+                for (i = 0; i < cfg->base_count; i++)
+                {
+                    const FILEBASE_CONFIG *base = &cfg->bases[i];
+
+                    printf("Filebase %d: %s\n", base->id, base->name);
+                    printf("  Type         : %d\n", base->type);
+                    printf("  Access Level : %d\n", base->accesslevel);
+                    printf("  Keys         : %s\n", base->keys[0] ? base->keys : "(none)");
+                    printf("  Read-Only    : %s\n", base->readonly ? "Yes" : "No");
+                    printf("  Path         : %s\n", base->path[0] ? base->path : "(default)");
+                    printf("  Areas        : %d\n", base->area_count);
+
+                    for (j = 0; j < base->area_count; j++)
+                    {
+                        const FILEBASE_AREA_CONFIG *area = &base->areas[j];
+                        printf("    Area %d: %s (access=%d)\n",
+                               area->id, area->name, area->accesslevel);
+                    }
+                    puts("");
+                }
+            }
+            else
+            {
+                puts("  Configuration not loaded.");
+            }
+
+            break;
+        }
+
+        case CMD_FTN:
+        {
+            const FTN_GLOBAL_CONFIG *cfg = ftnconfig_get();
+            int i;
+
+            puts("ConverseBBS FTN Configuration:\n");
+
+            if (cfg != NULL)
+            {
+                printf("System Information:\n");
+                printf("  Sysop            : %s\n", cfg->sysop[0] ? cfg->sysop : "(not set)");
+                printf("  System           : %s\n", cfg->system[0] ? cfg->system : "(not set)");
+                printf("  Location         : %s\n", cfg->location[0] ? cfg->location : "(not set)");
+                printf("  Phone            : %s\n", cfg->phone[0] ? cfg->phone : "(not set)");
+                printf("  Speed            : %d\n", cfg->speed);
+                printf("  Flags            : %s\n", cfg->flags[0] ? cfg->flags : "(none)");
+                puts("");
+
+                printf("Paths:\n");
+                printf("  Inbound          : %s\n", cfg->inbound[0] ? cfg->inbound : "(not set)");
+                printf("  Outbound         : %s\n", cfg->outbound[0] ? cfg->outbound : "(not set)");
+                printf("  Netmail          : %s\n", cfg->netmail[0] ? cfg->netmail : "(not set)");
+                printf("  Bad Mail         : %s\n", cfg->badmail[0] ? cfg->badmail : "(not set)");
+                puts("");
+
+                printf("Packet Settings:\n");
+                printf("  Max Packet Size  : %ld bytes\n", cfg->max_packet_size);
+                puts("");
+
+                printf("Addresses (%d):\n", cfg->address_count);
+                for (i = 0; i < cfg->address_count; i++)
+                {
+                    const FTN_ADDRESS_CONFIG *addr = &cfg->addresses[i];
+                    printf("  %d. %d:%d/%d.%d@%s (%s)\n",
+                           addr->id, addr->zone, addr->net, addr->node, addr->point,
+                           addr->network[0] ? addr->network : "unknown", addr->type);
+                }
+                puts("");
+
+                printf("Uplinks (%d):\n", cfg->uplink_count);
+                for (i = 0; i < cfg->uplink_count; i++)
+                {
+                    const FTN_UPLINK_CONFIG *uplink = &cfg->uplinks[i];
+                    printf("  %d. %s (%s) groups=%s\n",
+                           uplink->id, uplink->address, uplink->network,
+                           uplink->groups[0] ? uplink->groups : "(none)");
+                }
             }
             else
             {

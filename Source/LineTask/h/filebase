@@ -1,0 +1,124 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask Filebase Support                                                                                                                                */
+/*                                                                                                                                                          */
+/* Provides filebase browsing and file transfer capabilities via the Filer module SWIs.                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_FILEBASE_H
+#define LINETASK_FILEBASE_H
+
+/* Filer module SWI base */
+#define FILER_SWI_BASE           0x5AA40
+#define SWI_FILER_FILEBASE       (FILER_SWI_BASE + 3)
+
+/* Filebase SWI reason codes */
+#define FILEBASE_CMD_CREATE      0
+#define FILEBASE_CMD_UPDATE      1
+#define FILEBASE_CMD_INFO        2
+#define FILEBASE_CMD_BEGIN_UPLOAD 3
+#define FILEBASE_CMD_UPLOAD_BLOCK 4
+#define FILEBASE_CMD_DOWNLOAD_BLOCK 5
+#define FILEBASE_CMD_STORE_AREA  6
+#define FILEBASE_CMD_AREA_INFO   7
+#define FILEBASE_CMD_ENUMERATE_BASES 8
+#define FILEBASE_CMD_ENUMERATE_AREAS 9
+#define FILEBASE_CMD_ENUMERATE_FILES 10
+#define FILEBASE_CMD_FILE_INFO   11
+
+/* Field sizes (must match Filer/h/structs) */
+#define FB_MAX_NAME              64
+#define FB_MAX_DESC              256
+#define FB_MAX_KEYS              128
+#define FB_MAX_DIR               256
+
+/* Filebase record structure (mirrors Filer module) */
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[FB_MAX_KEYS];
+    char name[FB_MAX_NAME];
+    char filebasedir[FB_MAX_DIR];
+} LINETASK_FILEBASE_RECORD;
+
+/* Filebase area record structure */
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int accesslevel;
+    char keys[FB_MAX_KEYS];
+    char name[FB_MAX_NAME];
+} LINETASK_FILEBASE_AREA_RECORD;
+
+/* File record structure */
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int filebaseareaid;
+    int deleted;
+    int accesslevel;
+    char keys[FB_MAX_KEYS];
+    char name[FB_MAX_NAME];
+    int uploadedby;
+    long uploaddate;
+    char description[FB_MAX_DESC];
+    long filesize;
+    int downloads;
+} LINETASK_FILE_RECORD;
+
+/* Session filebase state */
+typedef struct
+{
+    int current_filebase;           /* Currently selected filebase ID (0 = none) */
+    int current_area;               /* Currently selected area ID (0 = root) */
+    int user_accesslevel;           /* User's access level for filtering */
+    char user_keys[FB_MAX_KEYS];    /* User's access keys for filtering */
+} filebase_session;
+
+/* Initialise filebase session state */
+void filebase_session_init(filebase_session *session);
+
+/* Reset filebase session */
+void filebase_session_reset(filebase_session *session);
+
+/* Set user access credentials for filtering */
+void filebase_session_set_access(filebase_session *session, int accesslevel, const char *keys);
+
+/* Filebase operations via SWI */
+int filebase_get_info(int base_id, LINETASK_FILEBASE_RECORD *record_out);
+int filebase_get_area_info(int base_id, int area_id, LINETASK_FILEBASE_AREA_RECORD *record_out);
+
+/* List operations - return formatted text for display */
+int filebase_list_bases(filebase_session *session, 
+                        void (*output)(void *ctx, const char *text), 
+                        void *ctx);
+
+int filebase_list_areas(filebase_session *session,
+                        void (*output)(void *ctx, const char *text),
+                        void *ctx);
+
+int filebase_list_files(filebase_session *session,
+                        void (*output)(void *ctx, const char *text),
+                        void *ctx);
+
+int filebase_show_file_info(filebase_session *session,
+                            int file_id,
+                            void (*output)(void *ctx, const char *text),
+                            void *ctx);
+
+/* File transfer operations */
+int filebase_download_block(int base_id, int file_id, void *buffer, long offset, int length);
+int filebase_get_file_size(int base_id, int file_id, long *size_out);
+
+/* Access control helpers */
+int filebase_check_access(int required_level, const char *required_keys,
+                          int user_level, const char *user_keys);
+
+/* Format helpers */
+void filebase_format_size(long bytes, char *buffer, int buffer_size);
+void filebase_format_date(long timestamp, char *buffer, int buffer_size);
+
+#endif

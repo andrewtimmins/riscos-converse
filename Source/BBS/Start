@@ -18,6 +18,10 @@
     if choice == `4` goto whos_online
     if choice == `5` goto arcbbs_doors
     if choice == `6` goto riscbbs_doors
+    if choice == `F` goto filebase_menu
+    if choice == `f` goto filebase_menu
+    if choice == `M` goto messagebase_menu
+    if choice == `m` goto messagebase_menu
 
     if choice == `S` goto chat_sysop
     if choice == `s` goto chat_sysop
@@ -32,6 +36,12 @@
 
     label riscbbs_doors
     script `<Converse$Dir>.BBS.RiscBBS`
+
+    label filebase_menu
+    script `<Converse$Dir>.BBS.Filebase`
+
+    label messagebase_menu
+    script `<Converse$Dir>.BBS.Msgbase`
 
     label ansi_artwork
     doing `ANSI Artwork`
@@ -71,7 +81,7 @@
 
     label chat_sysop
     doing `Chatting with Sysop...`
-    call arcbbsdoor 101 `<Converse$Dir>.BBS.Doors.ARCbbs.!Natter %{line}`
+    call arcbbsdoor 101 `<Converse$Dir>.BBS.Doors.ARCbbs.!Natter -door %{line}`
     goto main_menu
 
     label end_session

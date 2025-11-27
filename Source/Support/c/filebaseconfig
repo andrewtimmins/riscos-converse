@@ -1,0 +1,250 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Filebase Configuration                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "filebaseconfig.h"
+
+static FILEBASE_GLOBAL_CONFIG filebase_config;
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static void filebaseconfig_set_defaults(void)
+{
+    memset(&filebase_config, 0, sizeof(filebase_config));
+
+    filebase_config.default_accesslevel = 0;
+    snprintf(filebase_config.storage_root, sizeof(filebase_config.storage_root),
+             "<Converse$Dir>.FileBases");
+    filebase_config.max_upload_size = 10485760;  /* 10MB default */
+    filebase_config.base_count = 0;
+}
+
+static FILEBASE_CONFIG *filebaseconfig_find_base(int base_id)
+{
+    int i;
+
+    for (i = 0; i < filebase_config.base_count; i++)
+    {
+        if (filebase_config.bases[i].id == base_id)
+        {
+            return &filebase_config.bases[i];
+        }
+    }
+
+    return NULL;
+}
+
+static FILEBASE_AREA_CONFIG *filebaseconfig_find_area(FILEBASE_CONFIG *base, int area_id)
+{
+    int i;
+
+    if (base == NULL)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < base->area_count; i++)
+    {
+        if (base->areas[i].id == area_id)
+        {
+            return &base->areas[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void filebaseconfig_initialise(void)
+{
+    filebaseconfig_set_defaults();
+}
+
+void filebaseconfig_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handler                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+void filebaseconfig_swi_handler(_kernel_swi_regs *r)
+{
+    FILEBASE_CONFIG_REASON reason;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (FILEBASE_CONFIG_REASON)r->r[0];
+
+    switch (reason)
+    {
+        case FILEBASE_CONFIG_REASON_GET_GLOBAL:
+            r->r[0] = (int)&filebase_config;
+            break;
+
+        case FILEBASE_CONFIG_REASON_SET_GLOBAL:
+        {
+            FILEBASE_GLOBAL_FIELD field = (FILEBASE_GLOBAL_FIELD)r->r[1];
+            const char *value = (const char *)r->r[2];
+
+            switch (field)
+            {
+                case FILEBASE_GLOBAL_FIELD_ACCESSLEVEL:
+                    filebase_config.default_accesslevel = (value != NULL) ? atoi(value) : 0;
+                    break;
+
+                case FILEBASE_GLOBAL_FIELD_STORAGE_ROOT:
+                    if (value != NULL)
+                    {
+                        snprintf(filebase_config.storage_root, sizeof(filebase_config.storage_root), "%s", value);
+                    }
+                    break;
+
+                case FILEBASE_GLOBAL_FIELD_MAX_UPLOAD:
+                    filebase_config.max_upload_size = (value != NULL) ? atol(value) : 10485760;
+                    break;
+
+                default:
+                    break;
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case FILEBASE_CONFIG_REASON_GET_BASE:
+        {
+            int base_id = r->r[1];
+            FILEBASE_CONFIG *base = filebaseconfig_find_base(base_id);
+            r->r[0] = (int)base;
+            break;
+        }
+
+        case FILEBASE_CONFIG_REASON_SET_BASE:
+        {
+            int base_id = r->r[1];
+            FILEBASE_CONFIG *src = (FILEBASE_CONFIG *)r->r[2];
+            FILEBASE_CONFIG *base;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            base = filebaseconfig_find_base(base_id);
+            if (base == NULL)
+            {
+                /* Add new base */
+                if (filebase_config.base_count >= FILEBASE_CONFIG_MAX_BASES)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                base = &filebase_config.bases[filebase_config.base_count++];
+            }
+
+            memcpy(base, src, sizeof(FILEBASE_CONFIG));
+            base->id = base_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case FILEBASE_CONFIG_REASON_GET_AREA:
+        {
+            int base_id = r->r[1];
+            int area_id = r->r[2];
+            FILEBASE_CONFIG *base = filebaseconfig_find_base(base_id);
+            FILEBASE_AREA_CONFIG *area = filebaseconfig_find_area(base, area_id);
+            r->r[0] = (int)area;
+            break;
+        }
+
+        case FILEBASE_CONFIG_REASON_SET_AREA:
+        {
+            int base_id = r->r[1];
+            int area_id = r->r[2];
+            FILEBASE_AREA_CONFIG *src = (FILEBASE_AREA_CONFIG *)r->r[3];
+            FILEBASE_CONFIG *base;
+            FILEBASE_AREA_CONFIG *area;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            base = filebaseconfig_find_base(base_id);
+            if (base == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            area = filebaseconfig_find_area(base, area_id);
+            if (area == NULL)
+            {
+                /* Add new area */
+                if (base->area_count >= FILEBASE_CONFIG_MAX_AREAS)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                area = &base->areas[base->area_count++];
+            }
+
+            memcpy(area, src, sizeof(FILEBASE_AREA_CONFIG));
+            area->id = area_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case FILEBASE_CONFIG_REASON_COUNT_BASES:
+            r->r[0] = filebase_config.base_count;
+            break;
+
+        case FILEBASE_CONFIG_REASON_COUNT_AREAS:
+        {
+            int base_id = r->r[1];
+            FILEBASE_CONFIG *base = filebaseconfig_find_base(base_id);
+            r->r[0] = (base != NULL) ? base->area_count : 0;
+            break;
+        }
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+const FILEBASE_GLOBAL_CONFIG *filebaseconfig_get(void)
+{
+    return &filebase_config;
+}
+
+const FILEBASE_CONFIG *filebaseconfig_get_base(int base_id)
+{
+    return filebaseconfig_find_base(base_id);
+}
+
+const FILEBASE_AREA_CONFIG *filebaseconfig_get_area(int base_id, int area_id)
+{
+    FILEBASE_CONFIG *base = filebaseconfig_find_base(base_id);
+    return filebaseconfig_find_area(base, area_id);
+}

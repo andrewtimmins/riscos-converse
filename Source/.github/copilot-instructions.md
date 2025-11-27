@@ -60,11 +60,31 @@ The workspace includes `SharedLibs` containing:
 - **LineTask / Script Engine**:
   - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
   - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
+  - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
 
 ## Filer Module Architecture
 
 ### Overview
 The Filer module (`Filer/`) provides persistent storage for user accounts, filebases, and messagebases. It uses struct-based flat files with "copy-update-rename" for atomic updates.
+
+### Configuration Files
+| Purpose | Path |
+|---------|------|
+| System Config | `<Converse$Dir>.Resources.Config.System` |
+| Lines Config | `<Converse$Dir>.Resources.Config.Lines` |
+| MsgBases Master | `<Converse$Dir>.Resources.Config.MsgBases` |
+| FileBases Master | `<Converse$Dir>.Resources.Config.FileBases` |
+| FTN Config | `<Converse$Dir>.Resources.Config.FTN` |
+| MsgBase Defs | `<Converse$Dir>.Resources.Config.MsgBases.<name>` |
+| FileBase Defs | `<Converse$Dir>.Resources.Config.FileBases.<name>` |
+
+### Configuration File Format
+Configuration files use a simple key-value format with block structures:
+- Comments start with `;`
+- Global settings: `key value` or `key<tab>value`
+- Include directive: `include <path>`
+- Block structures: `messagebase N` ... `endmessagebase`, `filebase N` ... `endfilebase`
+- Nested blocks: `area N` ... `endarea`, `address N` ... `endaddress`, `uplink N` ... `enduplink`
 
 ### File Paths (RISC OS system variables)
 | Purpose | Path |
@@ -265,7 +285,7 @@ void log_ftn(char *entry);
 - **Config (0x5AA80)**:
   - 0 (Get): R1=Key -> R0=ValuePtr (or 0 if not found)
   - 1 (Set): R1=Key, R2=Value
-  - Keys: `bbs_name`, `sysop_name`, `max_lines`, `listen_port`, `idle_timeout`, `script_path`
+  - Keys: `bbs_name`, `sysop_name`, `contact`, `hostname`, `max_lines`, `listen_port`, `idle_timeout`, `botstopper`, `needlogin`, `closed`, `pager`, `anykey`, `chatstart`, `chatend`, `prelogon`, `postlogon`, `logoff`, `welcome`, `newuser`, `timeup`, `lockedout`, `closedsys`, `aftermail`
 - **Line (0x5AA81)**:
   - 0 (Set): R1=Line, R2=Field, R3=Value
   - 1 (Get): R1=Line, R2=Field -> R0=Value
@@ -273,6 +293,37 @@ void log_ftn(char *entry);
 - **Activity (0x5AA82)**:
   - 0 (Set): R1=Line, R2=TextPtr
   - 1 (Get): R1=Line -> R0=TextPtr
+- **LineConfig (0x5AA83)**:
+  - 0 (Set): R1=Line, R2=Field, R3=Value
+  - 1 (Get): R1=Line, R2=Field -> R0=Value
+  - Fields: 0=enabled, 1=botstopper (char*), 2=hello (char*)
+- **MsgBaseConfig (0x5AA84)**:
+  - 0 (GetGlobal): -> R0=MSGBASE_GLOBAL_CONFIG ptr
+  - 1 (SetGlobal): R1=Field (0=retention, 1=accesslevel, 2=storage_root), R2=Value
+  - 2 (GetBase): R1=BaseID -> R0=MSGBASE_CONFIG ptr
+  - 3 (SetBase): R1=BaseID, R2=MSGBASE_CONFIG ptr
+  - 4 (GetArea): R1=BaseID, R2=AreaID -> R0=MSGBASE_AREA_CONFIG ptr
+  - 5 (SetArea): R1=BaseID, R2=AreaID, R3=MSGBASE_AREA_CONFIG ptr
+  - 6 (CountBases): -> R0=Count
+  - 7 (CountAreas): R1=BaseID -> R0=Count
+- **FileBaseConfig (0x5AA85)**:
+  - 0 (GetGlobal): -> R0=FILEBASE_GLOBAL_CONFIG ptr
+  - 1 (SetGlobal): R1=Field (0=accesslevel, 1=storage_root, 2=max_upload), R2=Value
+  - 2 (GetBase): R1=BaseID -> R0=FILEBASE_CONFIG ptr
+  - 3 (SetBase): R1=BaseID, R2=FILEBASE_CONFIG ptr
+  - 4 (GetArea): R1=BaseID, R2=AreaID -> R0=FILEBASE_AREA_CONFIG ptr
+  - 5 (SetArea): R1=BaseID, R2=AreaID, R3=FILEBASE_AREA_CONFIG ptr
+  - 6 (CountBases): -> R0=Count
+  - 7 (CountAreas): R1=BaseID -> R0=Count
+- **FTNConfig (0x5AA86)**:
+  - 0 (GetGlobal): -> R0=FTN_GLOBAL_CONFIG ptr
+  - 1 (SetGlobal): R1=Field, R2=Value
+  - 2 (GetAddress): R1=AddrID -> R0=FTN_ADDRESS_CONFIG ptr
+  - 3 (SetAddress): R1=AddrID, R2=FTN_ADDRESS_CONFIG ptr
+  - 4 (GetUplink): R1=UplinkID -> R0=FTN_UPLINK_CONFIG ptr
+  - 5 (SetUplink): R1=UplinkID, R2=FTN_UPLINK_CONFIG ptr
+  - 6 (CountAddresses): -> R0=Count
+  - 7 (CountUplinks): -> R0=Count
 
 ## ARCbbsDoors Emulator Module
 

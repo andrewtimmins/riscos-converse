@@ -98,6 +98,32 @@ Instructions
     `<Converse$Dir>.BBS.SubMenu``). The new script can later return to the
     original by running `script <Converse$Dir>.BBS.Start`.
 
+`FILEBASE <subcommand> [argument]`
+    Interacts with the Filer module's filebase system. Supported
+    subcommands:
+    - `list` — Lists all accessible filebases (filtered by access level).
+    - `select <id>` — Selects a filebase for browsing.
+    - `areas` — Lists areas within the selected filebase.
+    - `area <id>` — Selects an area (0 = all files in filebase).
+    - `files` — Lists files in the selected filebase/area.
+    - `info <file_id>` — Shows detailed file information.
+    - `download <file_id>` — Initiates download of a file (requires
+      transfer protocol support).
+    - `reset` — Clears filebase selection.
+    
+    Example:
+        filebase list
+        filebase select 1
+        filebase areas
+        filebase area 2
+        filebase files
+        filebase info 5
+        filebase download 5
+
+`ONLINE`
+    Lists currently connected users with their line numbers, usernames,
+    online duration, and current activity.
+
 Macros
 ------
 Macros substitute runtime values inside `PRINT`, `SET`, and `CALL`

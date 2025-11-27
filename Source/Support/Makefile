@@ -1,7 +1,7 @@
 # Makefile for Support
 
 COMPONENT   = Support
-OBJS        = config linestate support
+OBJS        = config debug filebaseconfig ftnconfig lineconfig linestate msgbaseconfig support
 LIBS        = OSLib:o.OSLib32
 CMHGDEPENDS = support
 CFLAGS      = -c -depend !Depend -I,C: -apcs 3/32bit -Wcdp -throwback -fan

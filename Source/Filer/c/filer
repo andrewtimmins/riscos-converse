@@ -381,7 +381,11 @@ static void filer_command_show_files(void)
       {"User DB Temp", TEMPUSERDB},
       {"Filebase DB", FILEBASE_DB_PATH},
       {"Filebase DB Temp", FILEBASE_DB_TEMP_PATH},
-      {"Filebase Index", FILEBASE_IDX_PATH}};
+      {"Filebase Index", FILEBASE_IDX_PATH},
+      {"Messagebase DB", MESSAGEBASE_DB_PATH},
+      {"Messagebase DB Temp", MESSAGEBASE_DB_TEMP_PATH},
+      {"Messagebase Index", MESSAGEBASE_IDX_PATH},
+      {"Call Count", "<Converse$Dir>.Resources.Data.CallCount"}};
   size_t index;
 
   puts("Converse Filer file status:\n");

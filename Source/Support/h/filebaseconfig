@@ -1,0 +1,93 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Filebase Configuration                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FILEBASECONFIG_H
+#define FILEBASECONFIG_H
+
+#include "kernel.h"
+
+/* Maximum limits */
+#define FILEBASE_CONFIG_MAX_BASES       32
+#define FILEBASE_CONFIG_MAX_AREAS       64
+#define FILEBASE_CONFIG_NAME_LEN        64
+#define FILEBASE_CONFIG_KEYS_LEN        128
+#define FILEBASE_CONFIG_PATH_LEN        256
+
+/* Filebase types */
+typedef enum
+{
+    FILEBASE_TYPE_NORMAL = 0,
+    FILEBASE_TYPE_FREEFORM = 1,
+    FILEBASE_TYPE_USERDIR = 2,
+    FILEBASE_TYPE_CDROM = 3
+} FILEBASE_TYPE;
+
+/* Filebase area configuration */
+typedef struct
+{
+    int id;                                     /* area ID within filebase */
+    char name[FILEBASE_CONFIG_NAME_LEN];        /* area name */
+    int accesslevel;                            /* access level override (-1 = inherit) */
+    char keys[FILEBASE_CONFIG_KEYS_LEN];        /* access keys override */
+    char path[FILEBASE_CONFIG_PATH_LEN];        /* custom path (for CD-ROM areas) */
+} FILEBASE_AREA_CONFIG;
+
+/* Filebase configuration */
+typedef struct
+{
+    int id;                                     /* filebase ID */
+    char name[FILEBASE_CONFIG_NAME_LEN];        /* filebase name */
+    int type;                                   /* filebase type */
+    int accesslevel;                            /* minimum access level */
+    char keys[FILEBASE_CONFIG_KEYS_LEN];        /* access keys required */
+    int readonly;                               /* read-only flag (for CD-ROM) */
+    char path[FILEBASE_CONFIG_PATH_LEN];        /* custom root path */
+    int area_count;                             /* number of areas */
+    FILEBASE_AREA_CONFIG areas[FILEBASE_CONFIG_MAX_AREAS];  /* area configs */
+} FILEBASE_CONFIG;
+
+/* Global filebase settings */
+typedef struct
+{
+    int default_accesslevel;                    /* default access level for new bases */
+    char storage_root[FILEBASE_CONFIG_PATH_LEN];/* root path for file storage */
+    long max_upload_size;                       /* max upload size in bytes (0=unlimited) */
+    int base_count;                             /* number of filebases */
+    FILEBASE_CONFIG bases[FILEBASE_CONFIG_MAX_BASES];  /* filebase configs */
+} FILEBASE_GLOBAL_CONFIG;
+
+/* SWI reason codes for ConverseBBS_FileBaseConfig (0x5AA85) */
+typedef enum
+{
+    FILEBASE_CONFIG_REASON_GET_GLOBAL = 0,      /* -> R0=FILEBASE_GLOBAL_CONFIG ptr */
+    FILEBASE_CONFIG_REASON_SET_GLOBAL = 1,      /* R1=field, R2=value */
+    FILEBASE_CONFIG_REASON_GET_BASE = 2,        /* R1=base_id -> R0=FILEBASE_CONFIG ptr */
+    FILEBASE_CONFIG_REASON_SET_BASE = 3,        /* R1=base_id, R2=FILEBASE_CONFIG ptr */
+    FILEBASE_CONFIG_REASON_GET_AREA = 4,        /* R1=base_id, R2=area_id -> R0=FILEBASE_AREA_CONFIG ptr */
+    FILEBASE_CONFIG_REASON_SET_AREA = 5,        /* R1=base_id, R2=area_id, R3=FILEBASE_AREA_CONFIG ptr */
+    FILEBASE_CONFIG_REASON_COUNT_BASES = 6,     /* -> R0=count */
+    FILEBASE_CONFIG_REASON_COUNT_AREAS = 7      /* R1=base_id -> R0=count */
+} FILEBASE_CONFIG_REASON;
+
+/* Global config fields for SET_GLOBAL */
+typedef enum
+{
+    FILEBASE_GLOBAL_FIELD_ACCESSLEVEL = 0,
+    FILEBASE_GLOBAL_FIELD_STORAGE_ROOT = 1,
+    FILEBASE_GLOBAL_FIELD_MAX_UPLOAD = 2
+} FILEBASE_GLOBAL_FIELD;
+
+/* Initialisation and finalisation */
+void filebaseconfig_initialise(void);
+void filebaseconfig_finalise(void);
+
+/* SWI handler */
+void filebaseconfig_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const FILEBASE_GLOBAL_CONFIG *filebaseconfig_get(void);
+const FILEBASE_CONFIG *filebaseconfig_get_base(int base_id);
+const FILEBASE_AREA_CONFIG *filebaseconfig_get_area(int base_id, int area_id);
+
+#endif

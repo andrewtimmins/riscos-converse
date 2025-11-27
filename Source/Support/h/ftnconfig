@@ -1,0 +1,113 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - FTN Configuration                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FTNCONFIG_H
+#define FTNCONFIG_H
+
+#include "kernel.h"
+
+/* Maximum limits */
+#define FTN_CONFIG_MAX_ADDRESSES        8
+#define FTN_CONFIG_MAX_UPLINKS          16
+#define FTN_CONFIG_NAME_LEN             64
+#define FTN_CONFIG_PATH_LEN             256
+#define FTN_CONFIG_PASSWORD_LEN         32
+#define FTN_CONFIG_GROUPS_LEN           64
+#define FTN_CONFIG_FLAGS_LEN            64
+
+/* FTN address configuration */
+typedef struct
+{
+    int id;                                     /* address ID (1-based) */
+    char network[FTN_CONFIG_NAME_LEN];          /* network name (Fidonet, etc.) */
+    int zone;                                   /* zone number */
+    int net;                                    /* net number */
+    int node;                                   /* node number */
+    int point;                                  /* point number */
+    char type[8];                               /* address type (4d, 5d) */
+    char packet_password[FTN_CONFIG_PASSWORD_LEN];    /* packet password */
+    char areafix_password[FTN_CONFIG_PASSWORD_LEN];   /* areafix password */
+} FTN_ADDRESS_CONFIG;
+
+/* FTN uplink configuration */
+typedef struct
+{
+    int id;                                     /* uplink ID (1-based) */
+    char address[FTN_CONFIG_NAME_LEN];          /* uplink address string */
+    char network[FTN_CONFIG_NAME_LEN];          /* network this uplink belongs to */
+    char password[FTN_CONFIG_PASSWORD_LEN];     /* session password */
+    char groups[FTN_CONFIG_GROUPS_LEN];         /* groups we receive from this uplink */
+} FTN_UPLINK_CONFIG;
+
+/* Global FTN settings */
+typedef struct
+{
+    /* System information */
+    char sysop[FTN_CONFIG_NAME_LEN];            /* sysop name */
+    char system[FTN_CONFIG_NAME_LEN];           /* system name */
+    char location[FTN_CONFIG_NAME_LEN];         /* location */
+    char phone[FTN_CONFIG_NAME_LEN];            /* phone number */
+    int speed;                                  /* connection speed */
+    char flags[FTN_CONFIG_FLAGS_LEN];           /* mailer flags */
+
+    /* Paths */
+    char inbound[FTN_CONFIG_PATH_LEN];          /* inbound directory */
+    char outbound[FTN_CONFIG_PATH_LEN];         /* outbound directory */
+    char netmail[FTN_CONFIG_PATH_LEN];          /* netmail directory */
+    char badmail[FTN_CONFIG_PATH_LEN];          /* bad mail directory */
+
+    /* Packet settings */
+    long max_packet_size;                       /* maximum packet size */
+
+    /* Addresses */
+    int address_count;                          /* number of addresses */
+    FTN_ADDRESS_CONFIG addresses[FTN_CONFIG_MAX_ADDRESSES];
+
+    /* Uplinks */
+    int uplink_count;                           /* number of uplinks */
+    FTN_UPLINK_CONFIG uplinks[FTN_CONFIG_MAX_UPLINKS];
+} FTN_GLOBAL_CONFIG;
+
+/* SWI reason codes for ConverseBBS_FTNConfig (0x5AA86) */
+typedef enum
+{
+    FTN_CONFIG_REASON_GET_GLOBAL = 0,           /* -> R0=FTN_GLOBAL_CONFIG ptr */
+    FTN_CONFIG_REASON_SET_GLOBAL = 1,           /* R1=field, R2=value */
+    FTN_CONFIG_REASON_GET_ADDRESS = 2,          /* R1=addr_id -> R0=FTN_ADDRESS_CONFIG ptr */
+    FTN_CONFIG_REASON_SET_ADDRESS = 3,          /* R1=addr_id, R2=FTN_ADDRESS_CONFIG ptr */
+    FTN_CONFIG_REASON_GET_UPLINK = 4,           /* R1=uplink_id -> R0=FTN_UPLINK_CONFIG ptr */
+    FTN_CONFIG_REASON_SET_UPLINK = 5,           /* R1=uplink_id, R2=FTN_UPLINK_CONFIG ptr */
+    FTN_CONFIG_REASON_COUNT_ADDRESSES = 6,      /* -> R0=count */
+    FTN_CONFIG_REASON_COUNT_UPLINKS = 7         /* -> R0=count */
+} FTN_CONFIG_REASON;
+
+/* Global config fields for SET_GLOBAL */
+typedef enum
+{
+    FTN_GLOBAL_FIELD_SYSOP = 0,
+    FTN_GLOBAL_FIELD_SYSTEM = 1,
+    FTN_GLOBAL_FIELD_LOCATION = 2,
+    FTN_GLOBAL_FIELD_PHONE = 3,
+    FTN_GLOBAL_FIELD_SPEED = 4,
+    FTN_GLOBAL_FIELD_FLAGS = 5,
+    FTN_GLOBAL_FIELD_INBOUND = 6,
+    FTN_GLOBAL_FIELD_OUTBOUND = 7,
+    FTN_GLOBAL_FIELD_NETMAIL = 8,
+    FTN_GLOBAL_FIELD_BADMAIL = 9,
+    FTN_GLOBAL_FIELD_MAX_PACKET = 10
+} FTN_GLOBAL_FIELD;
+
+/* Initialisation and finalisation */
+void ftnconfig_initialise(void);
+void ftnconfig_finalise(void);
+
+/* SWI handler */
+void ftnconfig_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const FTN_GLOBAL_CONFIG *ftnconfig_get(void);
+const FTN_ADDRESS_CONFIG *ftnconfig_get_address(int addr_id);
+const FTN_UPLINK_CONFIG *ftnconfig_get_uplink(int uplink_id);
+
+#endif

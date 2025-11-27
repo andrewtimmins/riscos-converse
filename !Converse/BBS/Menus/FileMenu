@@ -1,0 +1,9 @@
+{fgbg 6 0}
+Filebase Menu
+-=-=-=-=-=-=-
+{fgbg 7 0}
+ [{fg 3 }1{fg 7}] List Filebases       [{fg 3 }2{fg 7}] List Areas
+
+ [{fg 1 }X{fg 7 }] Back to Main Menu
+
+{fgbg 3 0}

@@ -1,0 +1,49 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Line Configuration                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINECONFIG_H
+#define LINECONFIG_H
+
+#include "kernel.h"
+
+#define LINECONFIG_MAX_LINES        32
+#define LINECONFIG_BOTSTOPPER_LEN   128
+#define LINECONFIG_HELLO_LEN        256
+
+/* Line config reason codes for SWI ConverseBBS_LineConfig (0x5AA83) */
+typedef enum
+{
+    LINECONFIG_REASON_SET = 0,      /* R1=line, R2=field, R3=value */
+    LINECONFIG_REASON_GET = 1       /* R1=line, R2=field -> R0=value */
+} LINECONFIG_REASON;
+
+/* Line config fields */
+typedef enum
+{
+    LINECONFIG_FIELD_ENABLED = 0,       /* int: is line enabled? (0=no, 1=yes) */
+    LINECONFIG_FIELD_BOTSTOPPER = 1,    /* char*: botstopper challenge text */
+    LINECONFIG_FIELD_HELLO = 2          /* char*: welcome message */
+} LINECONFIG_FIELD;
+
+/* Per-line configuration structure */
+typedef struct
+{
+    int line_number;                            /* Line number (0-31) */
+    int enabled;                                /* Is this line enabled? */
+    char botstopper[LINECONFIG_BOTSTOPPER_LEN]; /* Bot stopper challenge text */
+    char hello[LINECONFIG_HELLO_LEN];           /* Welcome message */
+} LINE_CONFIG;
+
+/* Initialisation and finalisation */
+void lineconfig_initialise(void);
+void lineconfig_finalise(void);
+
+/* SWI handler */
+void lineconfig_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const LINE_CONFIG *lineconfig_get(int line);
+int lineconfig_count_enabled(void);
+
+#endif

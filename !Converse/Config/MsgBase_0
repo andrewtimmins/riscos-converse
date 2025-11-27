@@ -1,0 +1,34 @@
+;
+; Local Messagebase Configuration
+;
+
+messagebase 1
+    name            Local Messages
+    type            0
+    accesslevel     0
+    keys            
+
+    area 1
+        name        General Chat
+        tag         GENERAL
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 2
+        name        For Sale
+        tag         FORSALE
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 3
+        name        Sysop Area
+        tag         SYSOP
+        areatype    0
+        daystokeep  0
+        accesslevel 200
+        keys        SYSOP
+    endarea
+
+endmessagebase

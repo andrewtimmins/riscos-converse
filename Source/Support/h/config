@@ -8,8 +8,11 @@
 #include "kernel.h"
 
 #define CONFIG_BBS_NAME_LEN      64
-#define CONFIG_SYSOP_NAME_LEN    32
-#define CONFIG_SCRIPT_PATH_LEN   256
+#define CONFIG_SYSOP_NAME_LEN    64
+#define CONFIG_CONTACT_LEN       128
+#define CONFIG_HOSTNAME_LEN      128
+#define CONFIG_PATH_LEN          256
+#define CONFIG_FLAG_LEN          4
 
 /* Configuration reason codes for SWI ConverseBBS_Config (0x5AA80) */
 typedef enum
@@ -21,20 +24,54 @@ typedef enum
 /* Configuration keys */
 #define CONFIG_KEY_BBS_NAME      "bbs_name"
 #define CONFIG_KEY_SYSOP_NAME    "sysop_name"
+#define CONFIG_KEY_CONTACT       "contact"
+#define CONFIG_KEY_HOSTNAME      "hostname"
 #define CONFIG_KEY_MAX_LINES     "max_lines"
 #define CONFIG_KEY_LISTEN_PORT   "listen_port"
 #define CONFIG_KEY_IDLE_TIMEOUT  "idle_timeout"
-#define CONFIG_KEY_SCRIPT_PATH   "script_path"
+#define CONFIG_KEY_BOTSTOPPER    "botstopper"
+#define CONFIG_KEY_NEEDLOGIN     "needlogin"
+#define CONFIG_KEY_CLOSED        "closed"
+#define CONFIG_KEY_PAGER         "pager"
+#define CONFIG_KEY_ANYKEY        "anykey"
+#define CONFIG_KEY_CHATSTART     "chatstart"
+#define CONFIG_KEY_CHATEND       "chatend"
+#define CONFIG_KEY_PRELOGON      "prelogon"
+#define CONFIG_KEY_POSTLOGON     "postlogon"
+#define CONFIG_KEY_LOGOFF        "logoff"
+#define CONFIG_KEY_WELCOME       "welcome"
+#define CONFIG_KEY_NEWUSER       "newuser"
+#define CONFIG_KEY_TIMEUP        "timeup"
+#define CONFIG_KEY_LOCKEDOUT     "lockedout"
+#define CONFIG_KEY_CLOSEDSYS     "closedsys"
+#define CONFIG_KEY_AFTERMAIL     "aftermail"
 
 /* BBS configuration structure */
 typedef struct
 {
     char bbs_name[CONFIG_BBS_NAME_LEN];
     char sysop_name[CONFIG_SYSOP_NAME_LEN];
+    char contact[CONFIG_CONTACT_LEN];
+    char hostname[CONFIG_HOSTNAME_LEN];
     int max_lines;
     int listen_port;
     int idle_timeout;
-    char script_path[CONFIG_SCRIPT_PATH_LEN];
+    char botstopper[CONFIG_FLAG_LEN];
+    char needlogin[CONFIG_FLAG_LEN];
+    char closed[CONFIG_FLAG_LEN];
+    char pager[CONFIG_FLAG_LEN];
+    char anykey[CONFIG_PATH_LEN];
+    char chatstart[CONFIG_PATH_LEN];
+    char chatend[CONFIG_PATH_LEN];
+    char prelogon[CONFIG_PATH_LEN];
+    char postlogon[CONFIG_PATH_LEN];
+    char logoff[CONFIG_PATH_LEN];
+    char welcome[CONFIG_PATH_LEN];
+    char newuser[CONFIG_PATH_LEN];
+    char timeup[CONFIG_PATH_LEN];
+    char lockedout[CONFIG_PATH_LEN];
+    char closedsys[CONFIG_PATH_LEN];
+    char aftermail[CONFIG_PATH_LEN];
 } BBS_CONFIG;
 
 /* Initialisation and finalisation */

@@ -1,0 +1,1045 @@
+/* ******************************************************************************************************************************************************** */
+/* Server - Configuration Loader                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "config.h"
+#include "debug.h"
+
+/* SWI numbers */
+#define SWI_FILER_FILEBASE      0x5AA43
+#define SWI_FILER_MESSAGEBASE   0x5AA42
+#define SWI_SUPPORT_MSGBASE     0x5AA84
+#define SWI_SUPPORT_FILEBASE    0x5AA85
+#define SWI_SUPPORT_FTN         0x5AA86
+
+/* Filer command codes */
+#define FILER_CMD_CREATE        0
+#define FILER_CMD_UPDATE        1
+#define FILER_CMD_INFO          2
+#define FILER_CMD_STORE_AREA    6
+
+/* Support command codes */
+#define SUPPORT_CMD_SET_GLOBAL  1
+#define SUPPORT_CMD_SET_BASE    3
+#define SUPPORT_CMD_SET_AREA    5
+
+/* Maximum field lengths - match Filer structs */
+#define MAX_NAME    64
+#define MAX_KEYS    128
+#define MAX_DESC    256
+#define MAX_DIR     256
+#define MAX_PATH    256
+#define MAX_LINE    512
+
+/* Messagebase record - must match Filer/h/structs MESSAGEBASE_RECORD */
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+    char messagebasedir[MAX_DIR];
+} MSGBASE_RECORD;
+
+/* Messagebase area - must match Filer/h/structs MESSAGEBASE_AREA */
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    char tag[MAX_NAME];
+    int daystokeep;
+    int akause;
+    short areatype;
+} MSGBASE_AREA_RECORD;
+
+/* Filebase record - must match Filer/h/structs FILEBASE_RECORD */
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+    char filebasedir[MAX_DIR];
+} FILEBASE_RECORD;
+
+/* Filebase area - must match Filer/h/structs FILEBASE_AREA_RECORD */
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+} FILEBASE_AREA_RECORD;
+
+/* Config parser state */
+typedef enum
+{
+    PARSE_STATE_GLOBAL,
+    PARSE_STATE_MESSAGEBASE,
+    PARSE_STATE_MSGBASE_AREA,
+    PARSE_STATE_FILEBASE,
+    PARSE_STATE_FILEBASE_AREA,
+    PARSE_STATE_ADDRESS,
+    PARSE_STATE_UPLINK
+} PARSE_STATE;
+
+/* Global msgbase config */
+static int msgbase_default_retention = 365;
+static int msgbase_default_accesslevel = 0;
+static char msgbase_storage_root[MAX_PATH];
+
+/* Global filebase config */
+static int filebase_default_accesslevel = 0;
+static char filebase_storage_root[MAX_PATH];
+static long filebase_max_upload_size = 10485760;
+
+/* Static helpers */
+static void parse_key_value(char *line, char **key, char **value);
+static void process_include(const char *path, void (*parser)(FILE *file));
+static int filer_msgbase_exists(int id);
+static int filer_filebase_exists(int id);
+static int filer_create_msgbase(MSGBASE_RECORD *record);
+static int filer_update_msgbase(int id, MSGBASE_RECORD *record);
+static int filer_store_msgbase_area(int base_id, MSGBASE_AREA_RECORD *area);
+static int filer_create_filebase(FILEBASE_RECORD *record);
+static int filer_update_filebase(int id, FILEBASE_RECORD *record);
+static int filer_store_filebase_area(int base_id, FILEBASE_AREA_RECORD *area);
+static void support_push_msgbase_global(void);
+static void support_push_filebase_global(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Parse Helpers                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+static void parse_key_value(char *line, char **key, char **value)
+{
+    char *p;
+
+    *key = NULL;
+    *value = NULL;
+
+    if (line == NULL)
+    {
+        return;
+    }
+
+    /* Skip leading whitespace */
+    while (*line == ' ' || *line == '\t')
+    {
+        line++;
+    }
+
+    /* Skip comments and empty lines */
+    if (*line == '\0' || *line == ';' || *line == '#')
+    {
+        return;
+    }
+
+    /* Remove trailing newline/whitespace */
+    p = line + strlen(line) - 1;
+    while (p >= line && (*p == '\n' || *p == '\r' || *p == ' ' || *p == '\t'))
+    {
+        *p-- = '\0';
+    }
+
+    *key = line;
+
+    /* Find first space or tab as delimiter */
+    p = line;
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+    {
+        p++;
+    }
+
+    if (*p != '\0')
+    {
+        *p++ = '\0';
+
+        /* Skip whitespace between key and value */
+        while (*p == ' ' || *p == '\t')
+        {
+            p++;
+        }
+
+        if (*p != '\0')
+        {
+            *value = p;
+        }
+    }
+}
+
+static void process_include(const char *path, void (*parser)(FILE *file))
+{
+    FILE *file;
+
+    if (path == NULL || parser == NULL)
+    {
+        debug_printf("config: process_include: NULL path or parser");
+        return;
+    }
+
+    debug_printf("config: Including: %s", path);
+    file = fopen(path, "r");
+    if (file != NULL)
+    {
+        parser(file);
+        fclose(file);
+        debug_printf("config: Include done: %s", path);
+    }
+    else
+    {
+        debug_printf("config: Failed to open include: %s", path);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filer SWI Wrappers                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+static int filer_msgbase_exists(int id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_INFO;
+    regs.r[1] = id;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] != -1);
+}
+
+static int filer_filebase_exists(int id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_INFO;
+    regs.r[1] = id;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] != -1);
+}
+
+static int filer_create_msgbase(MSGBASE_RECORD *record)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_CREATE;
+    regs.r[1] = (int)record;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int filer_update_msgbase(int id, MSGBASE_RECORD *record)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_UPDATE;
+    regs.r[1] = id;
+    regs.r[2] = (int)record;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int filer_store_msgbase_area(int base_id, MSGBASE_AREA_RECORD *area)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_STORE_AREA;
+    regs.r[1] = base_id;
+    regs.r[2] = (int)area;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int filer_create_filebase(FILEBASE_RECORD *record)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_CREATE;
+    regs.r[1] = (int)record;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int filer_update_filebase(int id, FILEBASE_RECORD *record)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_UPDATE;
+    regs.r[1] = id;
+    regs.r[2] = (int)record;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int filer_store_filebase_area(int base_id, FILEBASE_AREA_RECORD *area)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = FILER_CMD_STORE_AREA;
+    regs.r[1] = base_id;
+    regs.r[2] = (int)area;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Support SWI Wrappers                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static void support_push_msgbase_global(void)
+{
+    _kernel_swi_regs regs;
+    char buf[32];
+
+    /* Push retention */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 0; /* MSGBASE_GLOBAL_FIELD_RETENTION */
+    snprintf(buf, sizeof(buf), "%d", msgbase_default_retention);
+    regs.r[2] = (int)buf;
+    _kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs);
+
+    /* Push accesslevel */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 1; /* MSGBASE_GLOBAL_FIELD_ACCESSLEVEL */
+    snprintf(buf, sizeof(buf), "%d", msgbase_default_accesslevel);
+    regs.r[2] = (int)buf;
+    _kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs);
+
+    /* Push storage root */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 2; /* MSGBASE_GLOBAL_FIELD_STORAGE_ROOT */
+    regs.r[2] = (int)msgbase_storage_root;
+    _kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs);
+}
+
+static void support_push_filebase_global(void)
+{
+    _kernel_swi_regs regs;
+    char buf[32];
+
+    /* Push accesslevel */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 0; /* FILEBASE_GLOBAL_FIELD_ACCESSLEVEL */
+    snprintf(buf, sizeof(buf), "%d", filebase_default_accesslevel);
+    regs.r[2] = (int)buf;
+    _kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs);
+
+    /* Push storage root */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 1; /* FILEBASE_GLOBAL_FIELD_STORAGE_ROOT */
+    regs.r[2] = (int)filebase_storage_root;
+    _kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs);
+
+    /* Push max upload */
+    regs.r[0] = SUPPORT_CMD_SET_GLOBAL;
+    regs.r[1] = 2; /* FILEBASE_GLOBAL_FIELD_MAX_UPLOAD */
+    snprintf(buf, sizeof(buf), "%ld", filebase_max_upload_size);
+    regs.r[2] = (int)buf;
+    _kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Messagebase Config Parser                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define MAX_PENDING_AREAS 64
+
+static void parse_msgbase_file(FILE *file);
+
+static void parse_msgbase_file(FILE *file)
+{
+    char line[MAX_LINE];
+    char *key, *value;
+    PARSE_STATE state = PARSE_STATE_GLOBAL;
+    MSGBASE_RECORD current_base;
+    MSGBASE_AREA_RECORD current_area;
+    MSGBASE_AREA_RECORD pending_areas[MAX_PENDING_AREAS];
+    int pending_area_count = 0;
+    int i;
+
+    memset(&current_base, 0, sizeof(current_base));
+    memset(&current_area, 0, sizeof(current_area));
+
+    while (fgets(line, sizeof(line), file) != NULL)
+    {
+        parse_key_value(line, &key, &value);
+
+        if (key == NULL)
+        {
+            continue;
+        }
+
+        /* Handle include directive at any level */
+        if (strcmp(key, "include") == 0 && value != NULL)
+        {
+            process_include(value, parse_msgbase_file);
+            continue;
+        }
+
+        switch (state)
+        {
+            case PARSE_STATE_GLOBAL:
+                if (strcmp(key, "default_retention") == 0 && value != NULL)
+                {
+                    msgbase_default_retention = atoi(value);
+                }
+                else if (strcmp(key, "default_accesslevel") == 0 && value != NULL)
+                {
+                    msgbase_default_accesslevel = atoi(value);
+                }
+                else if (strcmp(key, "storage_root") == 0 && value != NULL)
+                {
+                    strncpy(msgbase_storage_root, value, sizeof(msgbase_storage_root) - 1);
+                    msgbase_storage_root[sizeof(msgbase_storage_root) - 1] = '\0';
+                }
+                else if (strcmp(key, "messagebase") == 0 && value != NULL)
+                {
+                    /* Start new messagebase block */
+                    memset(&current_base, 0, sizeof(current_base));
+                    current_base.id = atoi(value);
+                    current_base.accesslevel = msgbase_default_accesslevel;
+                    pending_area_count = 0;
+                    state = PARSE_STATE_MESSAGEBASE;
+                    debug_printf("config: Parsing messagebase %d", current_base.id);
+                }
+                break;
+
+            case PARSE_STATE_MESSAGEBASE:
+                if (strcmp(key, "endmessagebase") == 0)
+                {
+                    /* First create/update the messagebase */
+                    if (current_base.id > 0 && current_base.name[0] != '\0')
+                    {
+                        int base_id;
+                        
+                        if (filer_msgbase_exists(current_base.id))
+                        {
+                            filer_update_msgbase(current_base.id, &current_base);
+                            debug_printf("config: Updated messagebase %d: %s", current_base.id, current_base.name);
+                            base_id = current_base.id;
+                        }
+                        else
+                        {
+                            base_id = filer_create_msgbase(&current_base);
+                            if (base_id > 0)
+                            {
+                                debug_printf("config: Created messagebase %d: %s", base_id, current_base.name);
+                            }
+                            else
+                            {
+                                debug_printf("config: Failed to create messagebase %d", current_base.id);
+                                base_id = 0;
+                            }
+                        }
+                        
+                        /* Now store all pending areas */
+                        if (base_id > 0)
+                        {
+                            for (i = 0; i < pending_area_count; i++)
+                            {
+                                int area_id = filer_store_msgbase_area(base_id, &pending_areas[i]);
+                                if (area_id > 0)
+                                {
+                                    debug_printf("config: Stored area %d in messagebase %d: %s", 
+                                                 area_id, base_id, pending_areas[i].name);
+                                }
+                                else
+                                {
+                                    debug_printf("config: Failed to store area %d in messagebase %d",
+                                                 pending_areas[i].id, base_id);
+                                }
+                            }
+                        }
+                    }
+                    pending_area_count = 0;
+                    state = PARSE_STATE_GLOBAL;
+                }
+                else if (strcmp(key, "name") == 0 && value != NULL)
+                {
+                    strncpy(current_base.name, value, sizeof(current_base.name) - 1);
+                }
+                else if (strcmp(key, "type") == 0 && value != NULL)
+                {
+                    current_base.type = atoi(value);
+                }
+                else if (strcmp(key, "accesslevel") == 0 && value != NULL)
+                {
+                    current_base.accesslevel = atoi(value);
+                }
+                else if (strcmp(key, "keys") == 0 && value != NULL)
+                {
+                    strncpy(current_base.keys, value, sizeof(current_base.keys) - 1);
+                }
+                else if (strcmp(key, "area") == 0 && value != NULL)
+                {
+                    /* Start area block */
+                    memset(&current_area, 0, sizeof(current_area));
+                    current_area.id = atoi(value);
+                    current_area.daystokeep = msgbase_default_retention;
+                    state = PARSE_STATE_MSGBASE_AREA;
+                    debug_printf("config: Parsing area %d", current_area.id);
+                }
+                break;
+
+            case PARSE_STATE_MSGBASE_AREA:
+                if (strcmp(key, "endarea") == 0)
+                {
+                    /* Queue area for storage after base is created */
+                    if (current_area.id > 0 && current_area.name[0] != '\0' && 
+                        pending_area_count < MAX_PENDING_AREAS)
+                    {
+                        pending_areas[pending_area_count++] = current_area;
+                        debug_printf("config: Queued area %d: %s", current_area.id, current_area.name);
+                    }
+                    state = PARSE_STATE_MESSAGEBASE;
+                }
+                else if (strcmp(key, "name") == 0 && value != NULL)
+                {
+                    strncpy(current_area.name, value, sizeof(current_area.name) - 1);
+                }
+                else if (strcmp(key, "tag") == 0 && value != NULL)
+                {
+                    strncpy(current_area.tag, value, sizeof(current_area.tag) - 1);
+                }
+                else if (strcmp(key, "areatype") == 0 && value != NULL)
+                {
+                    current_area.areatype = (short)atoi(value);
+                }
+                else if (strcmp(key, "daystokeep") == 0 && value != NULL)
+                {
+                    current_area.daystokeep = atoi(value);
+                }
+                else if (strcmp(key, "akause") == 0 && value != NULL)
+                {
+                    current_area.akause = atoi(value);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+void load_msgbase_config(void)
+{
+    FILE *file;
+
+    /* Set defaults */
+    msgbase_default_retention = 365;
+    msgbase_default_accesslevel = 0;
+    strncpy(msgbase_storage_root, "<Converse$Dir>.MsgBases", sizeof(msgbase_storage_root) - 1);
+
+    debug_printf("config: Opening <Converse$Dir>.Config.MsgBases");
+    file = fopen("<Converse$Dir>.Config.MsgBases", "r");
+    if (file == NULL)
+    {
+        debug_printf("config: No MsgBases config found (fopen failed)");
+        return;
+    }
+
+    debug_printf("config: Parsing MsgBases config...");
+    parse_msgbase_file(file);
+    fclose(file);
+
+    support_push_msgbase_global();
+    debug_printf("config: Messagebase config loaded");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filebase Config Parser                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+static void parse_filebase_file(FILE *file);
+
+static void parse_filebase_file(FILE *file)
+{
+    char line[MAX_LINE];
+    char *key, *value;
+    PARSE_STATE state = PARSE_STATE_GLOBAL;
+    FILEBASE_RECORD current_base;
+    FILEBASE_AREA_RECORD current_area;
+    FILEBASE_AREA_RECORD pending_areas[MAX_PENDING_AREAS];
+    int pending_area_count = 0;
+    int i;
+
+    memset(&current_base, 0, sizeof(current_base));
+    memset(&current_area, 0, sizeof(current_area));
+
+    while (fgets(line, sizeof(line), file) != NULL)
+    {
+        parse_key_value(line, &key, &value);
+
+        if (key == NULL)
+        {
+            continue;
+        }
+
+        /* Handle include directive at any level */
+        if (strcmp(key, "include") == 0 && value != NULL)
+        {
+            process_include(value, parse_filebase_file);
+            continue;
+        }
+
+        switch (state)
+        {
+            case PARSE_STATE_GLOBAL:
+                if (strcmp(key, "default_accesslevel") == 0 && value != NULL)
+                {
+                    filebase_default_accesslevel = atoi(value);
+                }
+                else if (strcmp(key, "storage_root") == 0 && value != NULL)
+                {
+                    strncpy(filebase_storage_root, value, sizeof(filebase_storage_root) - 1);
+                    filebase_storage_root[sizeof(filebase_storage_root) - 1] = '\0';
+                }
+                else if (strcmp(key, "max_upload_size") == 0 && value != NULL)
+                {
+                    filebase_max_upload_size = atol(value);
+                }
+                else if (strcmp(key, "filebase") == 0 && value != NULL)
+                {
+                    /* Start new filebase block */
+                    memset(&current_base, 0, sizeof(current_base));
+                    current_base.id = atoi(value);
+                    current_base.accesslevel = filebase_default_accesslevel;
+                    pending_area_count = 0;
+                    state = PARSE_STATE_FILEBASE;
+                    debug_printf("config: Parsing filebase %d", current_base.id);
+                }
+                break;
+
+            case PARSE_STATE_FILEBASE:
+                if (strcmp(key, "endfilebase") == 0)
+                {
+                    /* First create/update the filebase */
+                    if (current_base.id > 0 && current_base.name[0] != '\0')
+                    {
+                        int base_id;
+                        
+                        if (filer_filebase_exists(current_base.id))
+                        {
+                            filer_update_filebase(current_base.id, &current_base);
+                            debug_printf("config: Updated filebase %d: %s", current_base.id, current_base.name);
+                            base_id = current_base.id;
+                        }
+                        else
+                        {
+                            base_id = filer_create_filebase(&current_base);
+                            if (base_id > 0)
+                            {
+                                debug_printf("config: Created filebase %d: %s", base_id, current_base.name);
+                            }
+                            else
+                            {
+                                debug_printf("config: Failed to create filebase %d", current_base.id);
+                                base_id = 0;
+                            }
+                        }
+                        
+                        /* Now store all pending areas */
+                        if (base_id > 0)
+                        {
+                            for (i = 0; i < pending_area_count; i++)
+                            {
+                                pending_areas[i].filebaseid = base_id;
+                                int area_id = filer_store_filebase_area(base_id, &pending_areas[i]);
+                                if (area_id > 0)
+                                {
+                                    debug_printf("config: Stored area %d in filebase %d: %s", 
+                                                 area_id, base_id, pending_areas[i].name);
+                                }
+                                else
+                                {
+                                    debug_printf("config: Failed to store area %d in filebase %d",
+                                                 pending_areas[i].id, base_id);
+                                }
+                            }
+                        }
+                    }
+                    pending_area_count = 0;
+                    state = PARSE_STATE_GLOBAL;
+                }
+                else if (strcmp(key, "name") == 0 && value != NULL)
+                {
+                    strncpy(current_base.name, value, sizeof(current_base.name) - 1);
+                }
+                else if (strcmp(key, "type") == 0 && value != NULL)
+                {
+                    current_base.type = atoi(value);
+                }
+                else if (strcmp(key, "accesslevel") == 0 && value != NULL)
+                {
+                    current_base.accesslevel = atoi(value);
+                }
+                else if (strcmp(key, "keys") == 0 && value != NULL)
+                {
+                    strncpy(current_base.keys, value, sizeof(current_base.keys) - 1);
+                }
+                else if (strcmp(key, "area") == 0 && value != NULL)
+                {
+                    /* Start area block */
+                    memset(&current_area, 0, sizeof(current_area));
+                    current_area.id = atoi(value);
+                    current_area.filebaseid = current_base.id;
+                    current_area.accesslevel = current_base.accesslevel;
+                    state = PARSE_STATE_FILEBASE_AREA;
+                    debug_printf("config: Parsing area %d", current_area.id);
+                }
+                break;
+
+            case PARSE_STATE_FILEBASE_AREA:
+                if (strcmp(key, "endarea") == 0)
+                {
+                    /* Queue area for storage after base is created */
+                    if (current_area.id > 0 && current_area.name[0] != '\0' && 
+                        pending_area_count < MAX_PENDING_AREAS)
+                    {
+                        pending_areas[pending_area_count++] = current_area;
+                        debug_printf("config: Queued area %d: %s", current_area.id, current_area.name);
+                    }
+                    state = PARSE_STATE_FILEBASE;
+                }
+                else if (strcmp(key, "name") == 0 && value != NULL)
+                {
+                    strncpy(current_area.name, value, sizeof(current_area.name) - 1);
+                }
+                else if (strcmp(key, "accesslevel") == 0 && value != NULL)
+                {
+                    current_area.accesslevel = atoi(value);
+                }
+                else if (strcmp(key, "keys") == 0 && value != NULL)
+                {
+                    strncpy(current_area.keys, value, sizeof(current_area.keys) - 1);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+void load_filebase_config(void)
+{
+    FILE *file;
+
+    /* Set defaults */
+    filebase_default_accesslevel = 0;
+    strncpy(filebase_storage_root, "<Converse$Dir>.FileBases", sizeof(filebase_storage_root) - 1);
+    filebase_max_upload_size = 10485760;
+
+    debug_printf("config: Opening <Converse$Dir>.Config.FileBases");
+    file = fopen("<Converse$Dir>.Config.FileBases", "r");
+    if (file == NULL)
+    {
+        debug_printf("config: No FileBases config found (fopen failed)");
+        return;
+    }
+
+    debug_printf("config: Parsing FileBases config...");
+    parse_filebase_file(file);
+    fclose(file);
+
+    support_push_filebase_global();
+    debug_printf("config: Filebase config loaded");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Config Parser                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* FTN Support SWI reason codes */
+#define FTN_REASON_SET_GLOBAL       1
+#define FTN_REASON_SET_ADDRESS      3
+#define FTN_REASON_SET_UPLINK       5
+
+/* FTN address structure for Support module */
+typedef struct
+{
+    int id;
+    char network[MAX_NAME];
+    int zone, net, node, point;
+    char type[8];
+    char packet_password[32];
+    char areafix_password[32];
+} FTN_ADDR_RECORD;
+
+/* FTN uplink structure for Support module */
+typedef struct
+{
+    int id;
+    char address[MAX_NAME];
+    char network[MAX_NAME];
+    char password[32];
+    char groups[64];
+} FTN_UPLINK_RECORD;
+
+void load_ftn_config(void)
+{
+    FILE *file;
+    char line[MAX_LINE];
+    char *key, *value;
+    _kernel_swi_regs regs;
+    PARSE_STATE state = PARSE_STATE_GLOBAL;
+    FTN_ADDR_RECORD current_addr;
+    FTN_UPLINK_RECORD current_uplink;
+
+    memset(&current_addr, 0, sizeof(current_addr));
+    memset(&current_uplink, 0, sizeof(current_uplink));
+
+    debug_printf("config: Opening <Converse$Dir>.Config.FTN");
+    file = fopen("<Converse$Dir>.Config.FTN", "r");
+    if (file == NULL)
+    {
+        debug_printf("config: No FTN config found (fopen failed)");
+        return;
+    }
+
+    debug_printf("config: Parsing FTN config...");
+
+    while (fgets(line, sizeof(line), file) != NULL)
+    {
+        parse_key_value(line, &key, &value);
+
+        if (key == NULL)
+        {
+            continue;
+        }
+
+        switch (state)
+        {
+            case PARSE_STATE_GLOBAL:
+                /* Global FTN settings - push to Support */
+                if (strcmp(key, "sysop") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 0; /* FTN_GLOBAL_FIELD_SYSOP */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: FTN sysop: %s", value);
+                }
+                else if (strcmp(key, "system") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 1; /* FTN_GLOBAL_FIELD_SYSTEM */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: FTN system: %s", value);
+                }
+                else if (strcmp(key, "location") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 2; /* FTN_GLOBAL_FIELD_LOCATION */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "phone") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 3; /* FTN_GLOBAL_FIELD_PHONE */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "speed") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 4; /* FTN_GLOBAL_FIELD_SPEED */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "flags") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 5; /* FTN_GLOBAL_FIELD_FLAGS */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "inbound") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 6; /* FTN_GLOBAL_FIELD_INBOUND */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "outbound") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 7; /* FTN_GLOBAL_FIELD_OUTBOUND */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "netmail") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 8; /* FTN_GLOBAL_FIELD_NETMAIL */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "badmail") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 9; /* FTN_GLOBAL_FIELD_BADMAIL */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "max_packet_size") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 10; /* FTN_GLOBAL_FIELD_MAX_PACKET */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "address") == 0 && value != NULL)
+                {
+                    /* Start address block */
+                    memset(&current_addr, 0, sizeof(current_addr));
+                    current_addr.id = atoi(value);
+                    state = PARSE_STATE_ADDRESS;
+                    debug_printf("config: Parsing FTN address %d", current_addr.id);
+                }
+                else if (strcmp(key, "uplink") == 0 && value != NULL)
+                {
+                    /* Start uplink block */
+                    memset(&current_uplink, 0, sizeof(current_uplink));
+                    current_uplink.id = atoi(value);
+                    state = PARSE_STATE_UPLINK;
+                    debug_printf("config: Parsing FTN uplink %d", current_uplink.id);
+                }
+                break;
+
+            case PARSE_STATE_ADDRESS:
+                if (strcmp(key, "endaddress") == 0)
+                {
+                    /* Push address to Support via SWI */
+                    regs.r[0] = FTN_REASON_SET_ADDRESS;
+                    regs.r[1] = current_addr.id;
+                    regs.r[2] = (int)&current_addr;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: Stored FTN address %d: %d:%d/%d.%d@%s",
+                                 current_addr.id, current_addr.zone, current_addr.net,
+                                 current_addr.node, current_addr.point, current_addr.network);
+                    state = PARSE_STATE_GLOBAL;
+                }
+                else if (strcmp(key, "network") == 0 && value != NULL)
+                {
+                    strncpy(current_addr.network, value, sizeof(current_addr.network) - 1);
+                }
+                else if (strcmp(key, "zone") == 0 && value != NULL)
+                {
+                    current_addr.zone = atoi(value);
+                }
+                else if (strcmp(key, "net") == 0 && value != NULL)
+                {
+                    current_addr.net = atoi(value);
+                }
+                else if (strcmp(key, "node") == 0 && value != NULL)
+                {
+                    current_addr.node = atoi(value);
+                }
+                else if (strcmp(key, "point") == 0 && value != NULL)
+                {
+                    current_addr.point = atoi(value);
+                }
+                else if (strcmp(key, "type") == 0 && value != NULL)
+                {
+                    strncpy(current_addr.type, value, sizeof(current_addr.type) - 1);
+                }
+                else if (strcmp(key, "packet_password") == 0 && value != NULL)
+                {
+                    strncpy(current_addr.packet_password, value, sizeof(current_addr.packet_password) - 1);
+                }
+                else if (strcmp(key, "areafix_password") == 0 && value != NULL)
+                {
+                    strncpy(current_addr.areafix_password, value, sizeof(current_addr.areafix_password) - 1);
+                }
+                break;
+
+            case PARSE_STATE_UPLINK:
+                if (strcmp(key, "enduplink") == 0)
+                {
+                    /* Push uplink to Support via SWI */
+                    regs.r[0] = FTN_REASON_SET_UPLINK;
+                    regs.r[1] = current_uplink.id;
+                    regs.r[2] = (int)&current_uplink;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: Stored FTN uplink %d: %s (%s)",
+                                 current_uplink.id, current_uplink.address, current_uplink.network);
+                    state = PARSE_STATE_GLOBAL;
+                }
+                else if (strcmp(key, "address") == 0 && value != NULL)
+                {
+                    strncpy(current_uplink.address, value, sizeof(current_uplink.address) - 1);
+                }
+                else if (strcmp(key, "network") == 0 && value != NULL)
+                {
+                    strncpy(current_uplink.network, value, sizeof(current_uplink.network) - 1);
+                }
+                else if (strcmp(key, "password") == 0 && value != NULL)
+                {
+                    strncpy(current_uplink.password, value, sizeof(current_uplink.password) - 1);
+                }
+                else if (strcmp(key, "groups") == 0 && value != NULL)
+                {
+                    strncpy(current_uplink.groups, value, sizeof(current_uplink.groups) - 1);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    fclose(file);
+    debug_printf("config: FTN config loaded");
+}

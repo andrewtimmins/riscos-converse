@@ -1,0 +1,29 @@
+;
+; Main Filebase Configuration
+;
+
+filebase 1
+    name            Main Files
+    type            0
+    accesslevel     0
+    keys            
+
+    area 1
+        name        Utilities
+        accesslevel 0
+        keys        
+    endarea
+
+    area 2
+        name        Games
+        accesslevel 0
+        keys        
+    endarea
+
+    area 3
+        name        Development
+        accesslevel 50
+        keys        DEV
+    endarea
+
+endfilebase

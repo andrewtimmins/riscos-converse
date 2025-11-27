@@ -1,0 +1,295 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - FTN Configuration                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "ftnconfig.h"
+
+static FTN_GLOBAL_CONFIG ftn_config;
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnconfig_set_defaults(void)
+{
+    memset(&ftn_config, 0, sizeof(ftn_config));
+
+    snprintf(ftn_config.sysop, sizeof(ftn_config.sysop), "Sysop");
+    snprintf(ftn_config.system, sizeof(ftn_config.system), "Converse BBS");
+    snprintf(ftn_config.location, sizeof(ftn_config.location), "Unknown");
+    snprintf(ftn_config.phone, sizeof(ftn_config.phone), "-Unpublished-");
+    ftn_config.speed = 115200;
+    snprintf(ftn_config.flags, sizeof(ftn_config.flags), "CM,XA");
+
+    snprintf(ftn_config.inbound, sizeof(ftn_config.inbound), "<Converse$Dir>.FTN.Inbound");
+    snprintf(ftn_config.outbound, sizeof(ftn_config.outbound), "<Converse$Dir>.FTN.Outbound");
+    snprintf(ftn_config.netmail, sizeof(ftn_config.netmail), "<Converse$Dir>.FTN.Netmail");
+    snprintf(ftn_config.badmail, sizeof(ftn_config.badmail), "<Converse$Dir>.FTN.Bad");
+
+    ftn_config.max_packet_size = 32768;
+    ftn_config.address_count = 0;
+    ftn_config.uplink_count = 0;
+}
+
+static FTN_ADDRESS_CONFIG *ftnconfig_find_address(int addr_id)
+{
+    int i;
+
+    for (i = 0; i < ftn_config.address_count; i++)
+    {
+        if (ftn_config.addresses[i].id == addr_id)
+        {
+            return &ftn_config.addresses[i];
+        }
+    }
+
+    return NULL;
+}
+
+static FTN_UPLINK_CONFIG *ftnconfig_find_uplink(int uplink_id)
+{
+    int i;
+
+    for (i = 0; i < ftn_config.uplink_count; i++)
+    {
+        if (ftn_config.uplinks[i].id == uplink_id)
+        {
+            return &ftn_config.uplinks[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void ftnconfig_initialise(void)
+{
+    ftnconfig_set_defaults();
+}
+
+void ftnconfig_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handler                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+void ftnconfig_swi_handler(_kernel_swi_regs *r)
+{
+    FTN_CONFIG_REASON reason;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (FTN_CONFIG_REASON)r->r[0];
+
+    switch (reason)
+    {
+        case FTN_CONFIG_REASON_GET_GLOBAL:
+            r->r[0] = (int)&ftn_config;
+            break;
+
+        case FTN_CONFIG_REASON_SET_GLOBAL:
+        {
+            FTN_GLOBAL_FIELD field = (FTN_GLOBAL_FIELD)r->r[1];
+            const char *value = (const char *)r->r[2];
+
+            switch (field)
+            {
+                case FTN_GLOBAL_FIELD_SYSOP:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.sysop, sizeof(ftn_config.sysop), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_SYSTEM:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.system, sizeof(ftn_config.system), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_LOCATION:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.location, sizeof(ftn_config.location), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_PHONE:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.phone, sizeof(ftn_config.phone), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_SPEED:
+                    ftn_config.speed = (value != NULL) ? atoi(value) : 115200;
+                    break;
+
+                case FTN_GLOBAL_FIELD_FLAGS:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.flags, sizeof(ftn_config.flags), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_INBOUND:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.inbound, sizeof(ftn_config.inbound), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_OUTBOUND:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.outbound, sizeof(ftn_config.outbound), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_NETMAIL:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.netmail, sizeof(ftn_config.netmail), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_BADMAIL:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.badmail, sizeof(ftn_config.badmail), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_MAX_PACKET:
+                    ftn_config.max_packet_size = (value != NULL) ? atol(value) : 32768;
+                    break;
+
+                default:
+                    break;
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_GET_ADDRESS:
+        {
+            int addr_id = r->r[1];
+            FTN_ADDRESS_CONFIG *addr = ftnconfig_find_address(addr_id);
+            r->r[0] = (int)addr;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_SET_ADDRESS:
+        {
+            int addr_id = r->r[1];
+            FTN_ADDRESS_CONFIG *src = (FTN_ADDRESS_CONFIG *)r->r[2];
+            FTN_ADDRESS_CONFIG *addr;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            addr = ftnconfig_find_address(addr_id);
+            if (addr == NULL)
+            {
+                /* Add new address */
+                if (ftn_config.address_count >= FTN_CONFIG_MAX_ADDRESSES)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                addr = &ftn_config.addresses[ftn_config.address_count++];
+            }
+
+            memcpy(addr, src, sizeof(FTN_ADDRESS_CONFIG));
+            addr->id = addr_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_GET_UPLINK:
+        {
+            int uplink_id = r->r[1];
+            FTN_UPLINK_CONFIG *uplink = ftnconfig_find_uplink(uplink_id);
+            r->r[0] = (int)uplink;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_SET_UPLINK:
+        {
+            int uplink_id = r->r[1];
+            FTN_UPLINK_CONFIG *src = (FTN_UPLINK_CONFIG *)r->r[2];
+            FTN_UPLINK_CONFIG *uplink;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            uplink = ftnconfig_find_uplink(uplink_id);
+            if (uplink == NULL)
+            {
+                /* Add new uplink */
+                if (ftn_config.uplink_count >= FTN_CONFIG_MAX_UPLINKS)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                uplink = &ftn_config.uplinks[ftn_config.uplink_count++];
+            }
+
+            memcpy(uplink, src, sizeof(FTN_UPLINK_CONFIG));
+            uplink->id = uplink_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_COUNT_ADDRESSES:
+            r->r[0] = ftn_config.address_count;
+            break;
+
+        case FTN_CONFIG_REASON_COUNT_UPLINKS:
+            r->r[0] = ftn_config.uplink_count;
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+const FTN_GLOBAL_CONFIG *ftnconfig_get(void)
+{
+    return &ftn_config;
+}
+
+const FTN_ADDRESS_CONFIG *ftnconfig_get_address(int addr_id)
+{
+    return ftnconfig_find_address(addr_id);
+}
+
+const FTN_UPLINK_CONFIG *ftnconfig_get_uplink(int uplink_id)
+{
+    return ftnconfig_find_uplink(uplink_id);
+}

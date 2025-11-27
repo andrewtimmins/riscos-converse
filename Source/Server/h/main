@@ -56,32 +56,6 @@
 
     #define Resolver_GetHost         0x66001
 
-    #define RiscBBS_DoorStart        0xC0900
-    #define RiscBBS_DoorEnd          0xC0901
-    #define RiscBBS_IncomingBytes    0xC0902
-    #define RiscBBS_Acknowledge      0xC0903
-    #define RiscBBS_OutgoingBytes    0xC0904
-
-    #define ArmBBS_DoorRXCount       0xa2795
-    #define ArmBBS_PBTD              0xa278e
-    #define ArmBBS_GBFD              0xa278d
-
-    #define ARCbbsDoors_ReadStatus   0x61040
-    #define ARCbbsDoors_WriteStatus  0x61041
-    #define ARCbbsDoors_SendRequest  0x61042
-    #define ARCbbsDoors_GetReply     0x61043
-    #define ARCbbsDoors_GetRequest   0x61044
-    #define ARCbbsDoors_SendReply    0x61045
-    #define ARCbbsDoors_InputStatus  0x61046
-    #define ARCbbsDoors_InputRead    0x61047
-    #define ARCbbsDoors_OutputStatus 0x61048
-    #define ARCbbsDoors_OutputWrite  0x61049
-    #define ARCbbsDoors_ClearInput   0x6104a
-    #define ARCbbsDoors_ClearOutput  0x6104b
-    #define ARCbbsDoors_InputWrite   0x6104c
-    #define ARCbbsDoors_OutputRead   0x6104d
-    #define ARCbbsDoors_ResetState   0x6104e
-
     /* Variables */
     struct wimp_components
     {
@@ -96,18 +70,31 @@
         char sysop[256];
         char contact[256];
         char hostname[256];
-        char needlogin[3];
-        char usersfile[256];
+        int port;
+        int timeout;
+        char botstopper[4];
+        char needlogin[4];
+        char closed[4];
+        char pager[4];
         char anykey[256];
-        char connect[256];
-        char menu[256];
+        char chatstart[256];
+        char chatend[256];
+        char prelogon[256];
+        char postlogon[256];
         char logoff[256];
+        char welcome[256];
+        char newuser[256];
+        char timeup[256];
+        char lockedout[256];
+        char closedsys[256];
+        char aftermail[256];
     } system_components;
 
     typedef struct
     {
-        char line[3];
-        char enabled[3];
+        char line[4];
+        char enabled[4];
+        char botstopper[128];
         char hello[256];
         int socket;
         struct sockaddr to;
@@ -118,21 +105,9 @@
         char remote[128];
     } line_components;
 
-    typedef struct
-    {
-        char menuoption[3];
-        char name[50];
-        char type[10];
-        char path[120];
-        char doornumber[3];
-        char aemulor[3];
-        char enabled[3];
-    } door_components;
-
     static Desk_dialog2_block *proginfo_window;
     static Desk_dialog2_block *systeminfo_window;
     static Desk_window_handle main_window;
-    static Desk_window_handle doors_window;
     
     static char app_compiled[]=__DATE__" at "__TIME__;
 
@@ -145,25 +120,14 @@
     
     static char error_cantfindsystemconfig[100];
     static char error_cantfindlineconfig[100];
-    static char error_cantfinddoorconfig[100];
     static char error_toomanylines[100];
-    static char error_cantfindaemulor[100];
-    static char error_toomanydoors[100];
-    static char error_cantfindusersfile[100];
     static char error_nolinesdefined[100];
-    static char error_nodoorsdefined[100];
-
-    static char door_notfound[100];
-    static char door_notresponding[100];
 
     static system_components system_configuration[1];
 
     static line_components line_configuration[32];
     static int line_configurations=0;
     static int line_task_handles[32];
-
-    static door_components door_configuration[32];
-    static int door_configurations=0;
 
     static int listening_socket = 0;
     static int active_sockets = 0;

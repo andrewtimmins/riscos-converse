@@ -1,0 +1,75 @@
+;
+; Lines configuration file
+;
+
+
+start
+line        0
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        1
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        2
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        3
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        4
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        5
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        6
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        7
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        8
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------
+start
+line        9
+enabled     yes
+botstopper  Please press * (SHIFT+8) twice to enter the system...
+hello       Welcome to the Converse BBS...
+end
+; ----------------------------------------------------------------------------

@@ -1,0 +1,15 @@
+;
+; Messagebase Global Configuration
+;
+
+; Default retention for all areas (days, 0 = forever)
+default_retention   365
+
+; Default access level for new bases
+default_accesslevel 0
+
+; Path to message storage root
+storage_root        <Converse$Dir>.MsgBases
+
+; Include individual messagebase definitions
+include <Converse$Dir>.Config.MsgBase_0

@@ -34,6 +34,8 @@ static FILE_RECORD filebase_file_cache;
 
 static void filebase_create_directory(const char *path);
 static void filebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id);
+static void filebase_format_area_db_path(char *buffer, size_t length, int base_id);
+static void filebase_format_file_db_path(char *buffer, size_t length, int base_id);
 static int filebase_format_file_path(char *buffer, size_t length, int base_id, int area_id, int file_id);
 static int filebase_ensure_group_directory(int base_id, int area_id, int file_id);
 static void filebase_assign_directory(FILEBASE_RECORD *record);
@@ -107,6 +109,8 @@ void filebase_swi_handler(_kernel_swi_regs *r)
   }
 
   command = (FILER_FILEBASE_COMMAND)r->r[0];
+
+  filebase_log("filebase_swi_handler: command=%d R1=%d", (int)command, r->r[1]);
 
   switch (command)
   {
@@ -462,6 +466,178 @@ void filebase_swi_handler(_kernel_swi_regs *r)
       }
 
       r->r[0] = (int)(uintptr_t)&filebase_area_cache;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_ENUMERATE_BASES:
+    {
+      /* R1 = index (0-based), returns pointer to record in R0 or -1 if end */
+      int index = r->r[1];
+      FILE *file;
+      int current = 0;
+
+      filebase_log("ENUMERATE_BASES: index=%d", index);
+
+      if (index < 0)
+      {
+        filebase_log("ENUMERATE_BASES: invalid index");
+        r->r[0] = -1;
+        return;
+      }
+
+      file = fopen(FILEBASE_DB_PATH, "rb");
+      if (file == NULL)
+      {
+        filebase_log("ENUMERATE_BASES: failed to open FileDB");
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, file) == 1)
+      {
+        filebase_log("ENUMERATE_BASES: read record id=%d current=%d", filebase_info_cache.id, current);
+        if (current == index)
+        {
+          fclose(file);
+          filebase_assign_directory(&filebase_info_cache);
+          filebase_log("ENUMERATE_BASES: returning record ptr=%p", (void*)&filebase_info_cache);
+          r->r[0] = (int)(uintptr_t)&filebase_info_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      filebase_log("ENUMERATE_BASES: end of file, returning -1");
+      r->r[0] = -1; /* No more records */
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_ENUMERATE_AREAS:
+    {
+      /* R1 = base_id, R2 = index (0-based), returns pointer to area record or -1 */
+      int base_id = r->r[1];
+      int index = r->r[2];
+      char path[300];
+      FILE *file;
+      int current = 0;
+
+      if (base_id <= 0 || index < 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_format_area_db_path(path, sizeof(path), base_id);
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&filebase_area_cache, sizeof(FILEBASE_AREA_RECORD), 1, file) == 1)
+      {
+        if (current == index)
+        {
+          fclose(file);
+          r->r[0] = (int)(uintptr_t)&filebase_area_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      r->r[0] = -1;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_ENUMERATE_FILES:
+    {
+      /* R1 = base_id, R2 = area_id (0 for all), R3 = index, returns pointer or -1 */
+      int base_id = r->r[1];
+      int area_id = r->r[2];
+      int index = r->r[3];
+      char path[300];
+      FILE *file;
+      int current = 0;
+
+      if (base_id <= 0 || index < 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_format_file_db_path(path, sizeof(path), base_id);
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
+      {
+        /* Skip deleted files */
+        if (filebase_file_cache.deleted)
+        {
+          continue;
+        }
+
+        /* Filter by area if specified */
+        if (area_id > 0 && filebase_file_cache.filebaseareaid != area_id)
+        {
+          continue;
+        }
+
+        if (current == index)
+        {
+          fclose(file);
+          r->r[0] = (int)(uintptr_t)&filebase_file_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      r->r[0] = -1;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_FILE_INFO:
+    {
+      /* R1 = base_id, R2 = file_id, returns pointer to FILE_RECORD or -1 */
+      int base_id = r->r[1];
+      int file_id = r->r[2];
+      char path[300];
+      FILE *file;
+
+      if (base_id <= 0 || file_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_format_file_db_path(path, sizeof(path), base_id);
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
+      {
+        if (filebase_file_cache.id == file_id && !filebase_file_cache.deleted)
+        {
+          fclose(file);
+          r->r[0] = (int)(uintptr_t)&filebase_file_cache;
+          return;
+        }
+      }
+
+      fclose(file);
+      r->r[0] = -1;
       break;
     }
 

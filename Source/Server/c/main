@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 
 /* OS Includes */
@@ -46,6 +47,7 @@
 #include "iconnames.h"
 #include "ansi.h"
 #include "debug.h"
+#include "config.h"
 
 /* Function Prototypes */
 Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref);
@@ -63,10 +65,8 @@ void display_error_dialog(int isFatal, const char *stringFormat, ...);
 
 void load_system_config(void);
 void load_line_config(void);
-void load_door_config(void);
 
 int create_line_icons(void);
-int create_door_icons(void);
 
 void create_listener(void);
 void destroy_listener(void);
@@ -99,11 +99,29 @@ static void send_line_task_view_request(int line_id);
 
 /* ConverseBBS support functions */
 static void support_push_config(void);
+static void support_push_line_config(int line_id);
 static void support_set_line_configured(int line_id, int configured);
 static void support_set_line_connected(int line_id, int connected);
 static void support_set_line_hostname(int line_id, const char *hostname);
 static void support_set_line_connect_time(int line_id, time_t connect_time);
 static void support_set_activity(int line_id, const char *activity);
+
+/* Case-insensitive string comparison helper */
+static int str_casecmp(const char *s1, const char *s2)
+{
+	while (*s1 && *s2)
+	{
+		int c1 = tolower((unsigned char)*s1);
+		int c2 = tolower((unsigned char)*s2);
+		if (c1 != c2)
+		{
+			return c1 - c2;
+		}
+		s1++;
+		s2++;
+	}
+	return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
 
 #define MAIN_WINDOW_ICON_BASE 13
 #define MAIN_WINDOW_ICONS_PER_LINE 7
@@ -123,10 +141,6 @@ static void support_set_activity(int line_id, const char *activity);
 #define MAIN_WINDOW_ACTION_COLUMN_WIDTH 80
 #define MAIN_WINDOW_VIEW_COLUMN_WIDTH 80
 
-#define DOOR_WINDOW_ICON_HEIGHT 64
-#define DOOR_WINDOW_STATIC_ICON_COUNT 2
-#define DOOR_WINDOW_PADDING 10
-
 #define PIPES_SWI_BASE 0x5AA00
 #define PIPES_BUFFER_CAPACITY 4096
 #define PIPE_TRANSFER_CHUNK 256
@@ -142,9 +156,10 @@ static void support_set_activity(int line_id, const char *activity);
 #define SWI_CONVERSE_PIPES_RESET_STATE       (PIPES_SWI_BASE + 10)
 
 /* ConverseBBS Support module SWIs */
-#define SWI_CONVERSEBBS_CONFIG   0x5AA80
-#define SWI_CONVERSEBBS_LINE     0x5AA81
-#define SWI_CONVERSEBBS_ACTIVITY 0x5AA82
+#define SWI_CONVERSEBBS_CONFIG     0x5AA80
+#define SWI_CONVERSEBBS_LINE       0x5AA81
+#define SWI_CONVERSEBBS_ACTIVITY   0x5AA82
+#define SWI_CONVERSEBBS_LINECONFIG 0x5AA83
 
 /* Config reason codes */
 #define CONFIG_REASON_GET 0
@@ -164,6 +179,15 @@ static void support_set_activity(int line_id, const char *activity);
 /* Activity reason codes */
 #define ACTIVITY_REASON_SET 0
 #define ACTIVITY_REASON_GET 1
+
+/* LineConfig reason codes */
+#define LINECONFIG_REASON_SET 0
+#define LINECONFIG_REASON_GET 1
+
+/* LineConfig field indices */
+#define LINECONFIG_FIELD_ENABLED    0
+#define LINECONFIG_FIELD_BOTSTOPPER 1
+#define LINECONFIG_FIELD_HELLO      2
 
 #define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
 #define PIPE_CONTROL_CONNECT    'C'
@@ -213,22 +237,12 @@ static int main_window_icon_index(int line_id, int column)
 
 static int main_window_visible_lines(void)
 {
-	if (line_configurations <= 1)
+	if (line_configurations < 1)
 	{
 		return 0;
 	}
 
-	return line_configurations - 1;
-}
-
-static int door_window_visible_rows(void)
-{
-	if (door_configurations <= 1)
-	{
-		return 0;
-	}
-
-	return door_configurations - 1;
+	return line_configurations;
 }
 
 static void launch_line_tasks(void)
@@ -236,7 +250,7 @@ static void launch_line_tasks(void)
 	int line_index = 0;
 	char command[128];
 
-	while (line_index < line_configurations - 1)
+	while (line_index < line_configurations)
 	{
 		snprintf(command, sizeof(command), "<Converse$Dir>.Resources.!RunLine %d", line_index);
 		Desk_Wimp_StartTask(command);
@@ -251,7 +265,7 @@ static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, i
 	int relative;
 	int total_lines;
 
-	total_lines = line_configurations - 1;
+	total_lines = line_configurations;
 	if (icon < MAIN_WINDOW_ICON_BASE || total_lines <= 0)
 	{
 		return Desk_bool_FALSE;
@@ -281,7 +295,7 @@ static void send_line_task_view_request(int line_id)
 	Desk_message_block message;
 	int total_lines;
 
-	total_lines = line_configurations - 1;
+	total_lines = line_configurations;
 	if (line_id < 0 || line_id >= total_lines)
 	{
 		return;
@@ -317,30 +331,148 @@ static void support_push_config(void)
 	regs.r[2] = (int)system_configuration[0].sysop;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
+	/* Push contact email */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"contact";
+	regs.r[2] = (int)system_configuration[0].contact;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push hostname */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"hostname";
+	regs.r[2] = (int)system_configuration[0].hostname;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
 	/* Push max_lines */
-	snprintf(value_buf, sizeof(value_buf), "%d", line_configurations - 1);
+	snprintf(value_buf, sizeof(value_buf), "%d", line_configurations);
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"max_lines";
 	regs.r[2] = (int)value_buf;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
-	/* Push listen_port (hardcoded to 23 currently) */
+	/* Push listen_port */
+	snprintf(value_buf, sizeof(value_buf), "%d", system_configuration[0].port);
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"listen_port";
-	regs.r[2] = (int)"23";
+	regs.r[2] = (int)value_buf;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
-	/* Push idle_timeout (30 seconds default) */
+	/* Push idle_timeout */
+	snprintf(value_buf, sizeof(value_buf), "%d", system_configuration[0].timeout);
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"idle_timeout";
-	regs.r[2] = (int)"30";
+	regs.r[2] = (int)value_buf;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
-	/* Push script_path */
+	/* Push flags */
 	regs.r[0] = CONFIG_REASON_SET;
-	regs.r[1] = (int)"script_path";
-	regs.r[2] = (int)"<Converse$Dir>.BBS";
+	regs.r[1] = (int)"botstopper";
+	regs.r[2] = (int)system_configuration[0].botstopper;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"needlogin";
+	regs.r[2] = (int)system_configuration[0].needlogin;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"closed";
+	regs.r[2] = (int)system_configuration[0].closed;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"pager";
+	regs.r[2] = (int)system_configuration[0].pager;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push script paths */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"anykey";
+	regs.r[2] = (int)system_configuration[0].anykey;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"chatstart";
+	regs.r[2] = (int)system_configuration[0].chatstart;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"chatend";
+	regs.r[2] = (int)system_configuration[0].chatend;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"prelogon";
+	regs.r[2] = (int)system_configuration[0].prelogon;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"postlogon";
+	regs.r[2] = (int)system_configuration[0].postlogon;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"logoff";
+	regs.r[2] = (int)system_configuration[0].logoff;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"welcome";
+	regs.r[2] = (int)system_configuration[0].welcome;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"newuser";
+	regs.r[2] = (int)system_configuration[0].newuser;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"timeup";
+	regs.r[2] = (int)system_configuration[0].timeup;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"lockedout";
+	regs.r[2] = (int)system_configuration[0].lockedout;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"closedsys";
+	regs.r[2] = (int)system_configuration[0].closedsys;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"aftermail";
+	regs.r[2] = (int)system_configuration[0].aftermail;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+}
+
+static void support_push_line_config(int line_id)
+{
+	_kernel_swi_regs regs;
+	int enabled;
+
+	/* Push enabled flag (convert "yes"/"no" to 1/0) */
+	enabled = (str_casecmp(line_configuration[line_id].enabled, "yes") == 0) ? 1 : 0;
+	regs.r[0] = LINECONFIG_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINECONFIG_FIELD_ENABLED;
+	regs.r[3] = enabled;
+	_kernel_swi(SWI_CONVERSEBBS_LINECONFIG, &regs, &regs);
+
+	/* Push botstopper text */
+	regs.r[0] = LINECONFIG_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINECONFIG_FIELD_BOTSTOPPER;
+	regs.r[3] = (int)line_configuration[line_id].botstopper;
+	_kernel_swi(SWI_CONVERSEBBS_LINECONFIG, &regs, &regs);
+
+	/* Push hello text */
+	regs.r[0] = LINECONFIG_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINECONFIG_FIELD_HELLO;
+	regs.r[3] = (int)line_configuration[line_id].hello;
+	_kernel_swi(SWI_CONVERSEBBS_LINECONFIG, &regs, &regs);
 }
 
 static void support_set_line_configured(int line_id, int configured)
@@ -460,25 +592,6 @@ Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 		Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY, wimp_handle_iconbar_menu_choice, ref); 
   	}
 
- 	if(event->data.mouse.button.data.adjust)
-    {
-		int visible_rows;
-		int total_height;
-		window_extent.window=doors_window;
-		window_extent.rect.min.x=0;
-		window_extent.rect.max.x=1344;
-		window_extent.rect.max.y=0;
-
-		visible_rows = door_window_visible_rows();
-		total_height = ((visible_rows + DOOR_WINDOW_STATIC_ICON_COUNT) * DOOR_WINDOW_ICON_HEIGHT) + (2 * DOOR_WINDOW_PADDING);
-
-		window_extent.rect.min.y = -total_height;
-
-		Desk_Wimp_SetExtent(doors_window, &(window_extent.rect));
-
-		Desk_Window_Show(doors_window, Desk_open_CENTERED);
-	}
-
 	return Desk_bool_TRUE;
 }
 
@@ -543,7 +656,7 @@ Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
 
 	check_listener();
 
-	while (socket_poll < line_configurations - 1)
+	while (socket_poll < line_configurations)
 	{
 		if (line_configuration[socket_poll].socket != 0 )
 		{
@@ -578,7 +691,7 @@ Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *r
 	}
 
 	line_id = event->data.message.data.words[0];
-	if (line_id < 0 || line_id >= (line_configurations - 1))
+	if (line_id < 0 || line_id >= line_configurations)
 	{
 		return Desk_bool_FALSE;
 	}
@@ -621,7 +734,7 @@ Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *re
 	line_id = event->data.message.data.words[0];
 	reason = event->data.message.data.words[1];
 
-	if (line_id < 0 || line_id >= (line_configurations - 1))
+	if (line_id < 0 || line_id >= line_configurations)
 	{
 		return Desk_bool_FALSE;
 	}
@@ -884,108 +997,7 @@ int create_line_icons(void)
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
 		current_line_configuration++;
-	} while (current_line_configuration < line_configurations - 1);
-
-	return Desk_bool_TRUE;
-}
-
-int create_door_icons(void) 
-{
-	int current_door_configuration = 0;
-	char *text_buffer;
-
-	Desk_icon_createblock icon_create_block;
-	Desk_icon_handle icon_handle;
-
-	icon_create_block.window=doors_window;
-		
-	do
-	{
-		icon_create_block.icondata.workarearect.max.y = -68+(-64*current_door_configuration);
-		icon_create_block.icondata.workarearect.min.y = icon_create_block.icondata.workarearect.max.y-64;
-
-		text_buffer=malloc(25);
-		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].menuoption);
-		icon_create_block.icondata.flags.value=0;
-		icon_create_block.icondata.workarearect.min.x=5;
-		icon_create_block.icondata.workarearect.max.x=5+199;
-		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
-												Desk_icon_VCENTRE |
-												Desk_icon_HCENTRE |
-												Desk_icon_INDIRECTED |
-												Desk_icon_BORDER |
-												Desk_icon_FILLED |
-												(Desk_icon_FORECOLOUR*7) |
-												(Desk_icon_BACKCOLOUR*1) |
-												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R2";
-		icon_create_block.icondata.data.indirecttext.bufflen=25;
-
-		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
-
-		text_buffer=malloc(25);
-		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].name);
-		icon_create_block.icondata.flags.value=0;
-		icon_create_block.icondata.workarearect.min.x=5+202;
-		icon_create_block.icondata.workarearect.max.x=5+202+549;
-		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
-												Desk_icon_VCENTRE |
-												Desk_icon_HCENTRE |
-												Desk_icon_INDIRECTED |
-												Desk_icon_BORDER |
-												Desk_icon_FILLED |
-												(Desk_icon_FORECOLOUR*7) |
-												(Desk_icon_BACKCOLOUR*1) |
-												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R2";
-		icon_create_block.icondata.data.indirecttext.bufflen=25;
-
-		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
-
-		text_buffer=malloc(120);
-		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].type);
-		icon_create_block.icondata.flags.value=0;
-		icon_create_block.icondata.workarearect.min.x=5+749;
-		icon_create_block.icondata.workarearect.max.x=5+749+297;
-		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
-												Desk_icon_VCENTRE |
-												Desk_icon_HCENTRE |
-												Desk_icon_INDIRECTED |
-												Desk_icon_BORDER |
-												Desk_icon_FILLED |
-												(Desk_icon_FORECOLOUR*7) |
-												(Desk_icon_BACKCOLOUR*1) |
-												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R2";
-		icon_create_block.icondata.data.indirecttext.bufflen=120;
-
-		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
-
-		text_buffer=malloc(120);
-		strcpy(text_buffer, (char *)door_configuration[current_door_configuration].doornumber);
-		icon_create_block.icondata.flags.value=0;
-		icon_create_block.icondata.workarearect.min.x=5+1045;
-		icon_create_block.icondata.workarearect.max.x=5+1045+290;
-		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
-												Desk_icon_VCENTRE |
-												Desk_icon_HCENTRE |
-												Desk_icon_INDIRECTED |
-												Desk_icon_BORDER |
-												Desk_icon_FILLED |
-												(Desk_icon_FORECOLOUR*7) |
-												(Desk_icon_BACKCOLOUR*1) |
-												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R2";
-		icon_create_block.icondata.data.indirecttext.bufflen=120;
-
-		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
-
-		current_door_configuration++;
-	} while (current_door_configuration < door_configurations-1);
+	} while (current_line_configuration < line_configurations);
 
 	return Desk_bool_TRUE;
 }
@@ -1014,10 +1026,10 @@ void create_listener(void)
 	args[1] = 10; // 10 seconds manimum
 	setsockopt(listening_socket, SOL_SOCKET, SO_LINGER, &args, (sizeof(int) * 2));
 
-	// Bind to port 23
+	// Bind to configured port
 	memset(&saddr, 0, sizeof(saddr));   // zero everything before use
 	saddr.sin_family = AF_INET;         // accept internet connection...
-	saddr.sin_port = htons(23);        // ...on port 123...
+	saddr.sin_port = htons(system_configuration[0].port);
 	saddr.sin_addr.s_addr = INADDR_ANY; // ...from anybody.
 	if ( bind(listening_socket, (struct sockaddr *)&saddr, sizeof(saddr)) != 0 )
 	{
@@ -1057,7 +1069,7 @@ void check_listener(void)
    if (FD_ISSET(listening_socket, &is_socket_ready))
    {
       // There is a connection pending.
-		if (active_sockets >= line_configurations - 1)
+		if (active_sockets >= line_configurations)
       	{
          int orphaned_socket;
 
@@ -1622,6 +1634,10 @@ void load_system_config(void)
 	char config_line[250];
 	char *temporary_line;
 
+	/* Set defaults */
+	system_configuration[0].port = 23;
+	system_configuration[0].timeout = 120;
+
 	if ((system_config=fopen("<Converse$Dir>.Config.System","r"))==NULL)
 	{
 		display_error_dialog(1, error_cantfindsystemconfig);
@@ -1642,7 +1658,12 @@ void load_system_config(void)
 			{
 				config_line[strlen(config_line)-1]=0;
 			}
+			/* Find first space or tab as delimiter */
           	if ((temporary_line=strchr(config_line,' '))!=NULL)
+			{
+          		*temporary_line++=0; 
+			}
+			else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
 			{
           		*temporary_line++=0; 
 			} 
@@ -1650,7 +1671,8 @@ void load_system_config(void)
 			{
           		temporary_line="";
 			}
-        	while(*temporary_line==' ')
+			/* Skip any whitespace (spaces or tabs) */
+        	while(*temporary_line==' ' || *temporary_line=='\t')
 			{
 				temporary_line++;
 			}
@@ -1671,29 +1693,77 @@ void load_system_config(void)
 			{
 				strcpy(system_configuration[0].hostname, temporary_line);
 			}
+			if (strcmp(config_line,"port")==0)
+			{
+				system_configuration[0].port = atoi(temporary_line);
+			}
+			if (strcmp(config_line,"timeout")==0)
+			{
+				system_configuration[0].timeout = atoi(temporary_line);
+			}
+			if (strcmp(config_line,"botstopper")==0)
+			{
+				strcpy(system_configuration[0].botstopper, temporary_line);
+			}
 			if (strcmp(config_line,"needlogin")==0)
 			{
 				strcpy(system_configuration[0].needlogin, temporary_line);
 			}
-			if (strcmp(config_line,"usersfile")==0)
+			if (strcmp(config_line,"closed")==0)
 			{
-				strcpy(system_configuration[0].usersfile, temporary_line);
+				strcpy(system_configuration[0].closed, temporary_line);
+			}
+			if (strcmp(config_line,"pager")==0)
+			{
+				strcpy(system_configuration[0].pager, temporary_line);
 			}
 			if (strcmp(config_line,"anykey")==0)
 			{
 				strcpy(system_configuration[0].anykey, temporary_line);
 			}
-			if (strcmp(config_line,"connect")==0)
+			if (strcmp(config_line,"chatstart")==0)
 			{
-				strcpy(system_configuration[0].connect, temporary_line);
+				strcpy(system_configuration[0].chatstart, temporary_line);
 			}
-			if (strcmp(config_line,"menu")==0)
+			if (strcmp(config_line,"chatend")==0)
 			{
-				strcpy(system_configuration[0].menu, temporary_line);
+				strcpy(system_configuration[0].chatend, temporary_line);
+			}
+			if (strcmp(config_line,"prelogon")==0)
+			{
+				strcpy(system_configuration[0].prelogon, temporary_line);
+			}
+			if (strcmp(config_line,"postlogon")==0)
+			{
+				strcpy(system_configuration[0].postlogon, temporary_line);
 			}
 			if (strcmp(config_line,"logoff")==0)
 			{
 				strcpy(system_configuration[0].logoff, temporary_line);
+			}
+			if (strcmp(config_line,"welcome")==0)
+			{
+				strcpy(system_configuration[0].welcome, temporary_line);
+			}
+			if (strcmp(config_line,"newuser")==0)
+			{
+				strcpy(system_configuration[0].newuser, temporary_line);
+			}
+			if (strcmp(config_line,"timeup")==0)
+			{
+				strcpy(system_configuration[0].timeup, temporary_line);
+			}
+			if (strcmp(config_line,"lockedout")==0)
+			{
+				strcpy(system_configuration[0].lockedout, temporary_line);
+			}
+			if (strcmp(config_line,"closedsys")==0)
+			{
+				strcpy(system_configuration[0].closedsys, temporary_line);
+			}
+			if (strcmp(config_line,"aftermail")==0)
+			{
+				strcpy(system_configuration[0].aftermail, temporary_line);
 			}
 		} while(feof(system_config)==0 && strcmp(config_line,"end")!=0);
 	} while(feof(system_config)==0);
@@ -1708,6 +1778,12 @@ void load_line_config(void)
 	char config_line[250];
 	char *temporary_line;
 
+	/* Temporary storage for parsing before we know if enabled */
+	char temp_line[4] = "";
+	char temp_enabled[4] = "";
+	char temp_botstopper[128] = "";
+	char temp_hello[256] = "";
+
 	if ((line_config=fopen("<Converse$Dir>.Config.Lines","r"))==NULL)
 	{
 		display_error_dialog(1, error_cantfindlineconfig);
@@ -1719,6 +1795,12 @@ void load_line_config(void)
     	{
       		display_error_dialog(1, error_toomanylines);
     	}
+
+		/* Reset temporary storage for each block */
+		temp_line[0] = '\0';
+		temp_enabled[0] = '\0';
+		temp_botstopper[0] = '\0';
+		temp_hello[0] = '\0';
 
     	config_line[0]=0;
     	fgets(config_line, 120, line_config);
@@ -1734,7 +1816,12 @@ void load_line_config(void)
 			{
 				config_line[strlen(config_line)-1]=0;
 			}
+			/* Find first space or tab as delimiter */
           	if ((temporary_line=strchr(config_line,' '))!=NULL)
+			{
+          		*temporary_line++=0; 
+			}
+			else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
 			{
           		*temporary_line++=0; 
 			} 
@@ -1742,115 +1829,49 @@ void load_line_config(void)
 			{
           		temporary_line="";
 			}
-        	while(*temporary_line==' ')
+			/* Skip any whitespace (spaces or tabs) */
+        	while(*temporary_line==' ' || *temporary_line=='\t')
 			{
 				temporary_line++;
 			}
 
 			if (strcmp(config_line,"line")==0)
 			{
-				strcpy(line_configuration[line_configurations].line, temporary_line);
+				strncpy(temp_line, temporary_line, sizeof(temp_line) - 1);
+				temp_line[sizeof(temp_line) - 1] = '\0';
 			}
 			if (strcmp(config_line,"enabled")==0)
 			{
-				strcpy(line_configuration[line_configurations].enabled, temporary_line);
+				strncpy(temp_enabled, temporary_line, sizeof(temp_enabled) - 1);
+				temp_enabled[sizeof(temp_enabled) - 1] = '\0';
+			}
+			if (strcmp(config_line,"botstopper")==0)
+			{
+				strncpy(temp_botstopper, temporary_line, sizeof(temp_botstopper) - 1);
+				temp_botstopper[sizeof(temp_botstopper) - 1] = '\0';
 			}
 			if (strcmp(config_line,"hello")==0)
 			{
-				strcpy(line_configuration[line_configurations].hello, temporary_line);
+				strncpy(temp_hello, temporary_line, sizeof(temp_hello) - 1);
+				temp_hello[sizeof(temp_hello) - 1] = '\0';
 			}
 		} while(feof(line_config)==0 && strcmp(config_line,"end")!=0);
-		line_configurations++;
+
+		/* Only add line if enabled */
+		if (str_casecmp(temp_enabled, "yes") == 0)
+		{
+			strcpy(line_configuration[line_configurations].line, temp_line);
+			strcpy(line_configuration[line_configurations].enabled, temp_enabled);
+			strcpy(line_configuration[line_configurations].botstopper, temp_botstopper);
+			strcpy(line_configuration[line_configurations].hello, temp_hello);
+			line_configurations++;
+		}
 	} while(feof(line_config)==0);
 
 	fclose(line_config);
 
 	if (line_configurations == 0) {
 		display_error_dialog(1, error_nolinesdefined);
-	}
-}
-
-void load_door_config(void)
-{
-	FILE *door_config;
-
-	char config_line[250];
-	char *temporary_line;
-
-	if ((door_config=fopen("<Converse$Dir>.Config.Doors","r"))==NULL)
-	{
-		display_error_dialog(1, error_cantfinddoorconfig);
-	}
-
-	do
-  	{
-		if(door_configurations>32)
-    	{
-      		display_error_dialog(1, error_toomanydoors);
-    	}
-
-    	config_line[0]=0;
-    	fgets(config_line, 120, door_config);
-		do
-		{
-			fgets(config_line, 120, door_config);
-			if (config_line[strlen(config_line)-1]<32)
-			{
-          		config_line[strlen(config_line)-1]=0;
-			}
-        	while(config_line[strlen(config_line)-1]==32)
-			{
-				config_line[strlen(config_line)-1]=0;
-			}
-          	if ((temporary_line=strchr(config_line,' '))!=NULL)
-			{
-          		*temporary_line++=0; 
-			} 
-			else
-			{
-          		temporary_line="";
-			}
-        	while(*temporary_line==' ')
-			{
-				temporary_line++;
-			}
-
-			if (strcmp(config_line,"menuoption")==0)
-			{
-				strcpy(door_configuration[door_configurations].menuoption, temporary_line);
-			}
-			if (strcmp(config_line,"name")==0)
-			{
-				strcpy(door_configuration[door_configurations].name, temporary_line);
-			}
-			if (strcmp(config_line,"type")==0)
-			{
-				strcpy(door_configuration[door_configurations].type, temporary_line);
-			}
-			if (strcmp(config_line,"path")==0)
-			{
-				strcpy(door_configuration[door_configurations].path, temporary_line);
-			}
-			if (strcmp(config_line,"doornumber")==0)
-			{
-				strcpy(door_configuration[door_configurations].doornumber, temporary_line);
-			}
-			if (strcmp(config_line,"aemulor")==0)
-			{
-				strcpy(door_configuration[door_configurations].aemulor, temporary_line);
-			}
-			if (strcmp(config_line,"enabled")==0)
-			{
-				strcpy(door_configuration[door_configurations].enabled, temporary_line);
-			}
-		} while(feof(door_config)==0 && strcmp(config_line,"end")!=0);
-		door_configurations++;
-	} while(feof(door_config)==0);
-
-	fclose(door_config);
-
-	if (door_configurations == 0) {
-		display_error_dialog(1, error_nodoorsdefined);
 	}
 }
 
@@ -1880,16 +1901,8 @@ int main(void) {
 	Desk_Msgs_Lookup("error.3", error_busy, 100);
 	Desk_Msgs_Lookup("error.4", error_cantfindsystemconfig, 100);
 	Desk_Msgs_Lookup("error.5", error_cantfindlineconfig, 100);
-	Desk_Msgs_Lookup("error.6", error_cantfinddoorconfig, 100);
 	Desk_Msgs_Lookup("error.7", error_toomanylines, 100);
-	Desk_Msgs_Lookup("error.8", error_cantfindaemulor, 100);
-	Desk_Msgs_Lookup("error.9", error_toomanydoors, 100);
-	Desk_Msgs_Lookup("error.10", error_cantfindusersfile, 100);
 	Desk_Msgs_Lookup("error.11", error_nolinesdefined, 100);
-	Desk_Msgs_Lookup("error.12", error_nodoorsdefined, 100);
-
-	Desk_Msgs_Lookup("door.1", door_notfound, 100);
-	Desk_Msgs_Lookup("door.2", door_notresponding, 100);
 
 	Desk_Event_Initialise("Converse");
 	Desk_EventMsg_Initialise();
@@ -1920,26 +1933,27 @@ int main(void) {
   	proginfo_window=Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
 	systeminfo_window=Desk_Dialog2_CreateDialogBlock("sysinfo", -1, -1, NULL, NULL, NULL);
   	main_window=Desk_Window_Create("status", NULL);
-	doors_window=Desk_Window_Create("doors", NULL);
 
   	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_proginfo, Desk_bool_TRUE, wimp_open_proginfo_window, (void *)proginfo_window);
 	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_systeminfo, Desk_bool_TRUE, wimp_open_systeminfo_window, (void *)systeminfo_window);
 
 	load_system_config();
 	load_line_config();
-	load_door_config();
 	support_push_config();
+	load_msgbase_config();
+	load_filebase_config();
+	load_ftn_config();
 	{
 		int i;
-		for (i = 0; i < line_configurations - 1; i++)
+		for (i = 0; i < line_configurations; i++)
 		{
 			support_set_line_configured(i, 1);
+			support_push_line_config(i);
 		}
 	}
 	launch_line_tasks();
 
 	create_line_icons();
-	create_door_icons();
 	create_listener();
 	atexit(destroy_listener);
 
