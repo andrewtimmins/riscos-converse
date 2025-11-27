@@ -1,0 +1,137 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - BinkP Protocol Header                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef BINKP_H
+#define BINKP_H
+
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* BinkP Protocol Constants                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/* BinkP version we support */
+#define BINKP_VERSION               "1.1"
+
+/* Frame type bit - high bit indicates command frame */
+#define BINKP_FLAG_COMMAND          0x8000
+#define BINKP_MAX_FRAME             32767
+
+/* ******************************************************************************************************************************************************** */
+/* BinkP Command Types                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    BINKP_M_NUL  = 0,   /* Site information / keepalive */
+    BINKP_M_ADR  = 1,   /* List of addresses */
+    BINKP_M_PWD  = 2,   /* Session password */
+    BINKP_M_FILE = 3,   /* File information: name size time offset */
+    BINKP_M_OK   = 4,   /* Password accepted (strval may be "secure" or "non-secure") */
+    BINKP_M_EOB  = 5,   /* End of batch */
+    BINKP_M_GOT  = 6,   /* File received: name size time */
+    BINKP_M_ERR  = 7,   /* Fatal error, terminate session */
+    BINKP_M_BSY  = 8,   /* Busy, try later */
+    BINKP_M_GET  = 9,   /* Get file from offset: name size time offset */
+    BINKP_M_SKIP = 10   /* Skip file: name size time */
+} BINKP_COMMAND;
+
+/* ******************************************************************************************************************************************************** */
+/* BinkP Options (sent in M_NUL)                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#define BINKP_OPT_CRAM_MD5          "CRAM-MD5"
+#define BINKP_OPT_NR                "NR"        /* Non-reliable mode */
+#define BINKP_OPT_ND                "ND"        /* No dupes mode */
+#define BINKP_OPT_NDA               "NDA"       /* No dupes asymmetric */
+#define BINKP_OPT_MB                "MB"        /* Multiple batch */
+#define BINKP_OPT_EXTCMD            "EXTCMD"    /* Extended commands */
+
+/* ******************************************************************************************************************************************************** */
+/* BinkP Frame Structure                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int is_command;         /* 1 if command frame, 0 if data frame */
+    int command;            /* Command type (if command frame) */
+    int length;             /* Data length */
+    unsigned char *data;    /* Frame data */
+} BINKP_FRAME;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Frame I/O                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+/* Build frames for transmission */
+int binkp_build_command(unsigned char *buffer, BINKP_COMMAND cmd, const char *arg);
+int binkp_build_data(unsigned char *buffer, const unsigned char *data, int length);
+
+/* Parse received frames */
+int binkp_parse_frame(const unsigned char *buffer, int length, BINKP_FRAME *frame);
+int binkp_frame_complete(const unsigned char *buffer, int length);
+int binkp_get_frame_length(const unsigned char *buffer);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Protocol Handling                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/* Session initiation */
+void binkp_send_handshake(MAILER_SESSION *session);
+void binkp_send_password(MAILER_SESSION *session);
+
+/* Command handlers */
+void binkp_handle_frame(MAILER_SESSION *session, BINKP_FRAME *frame);
+void binkp_handle_nul(MAILER_SESSION *session, const char *data);
+void binkp_handle_adr(MAILER_SESSION *session, const char *data);
+void binkp_handle_pwd(MAILER_SESSION *session, const char *data);
+void binkp_handle_ok(MAILER_SESSION *session, const char *data);
+void binkp_handle_err(MAILER_SESSION *session, const char *data);
+void binkp_handle_bsy(MAILER_SESSION *session, const char *data);
+void binkp_handle_eob(MAILER_SESSION *session);
+
+/* File transfer commands */
+void binkp_handle_file(MAILER_SESSION *session, const char *data);
+void binkp_handle_got(MAILER_SESSION *session, const char *data);
+void binkp_handle_skip(MAILER_SESSION *session, const char *data);
+void binkp_handle_get(MAILER_SESSION *session, const char *data);
+void binkp_handle_data(MAILER_SESSION *session, const unsigned char *data, int length);
+
+/* Sending commands */
+void binkp_send_nul(MAILER_SESSION *session, const char *key, const char *value);
+void binkp_send_adr(MAILER_SESSION *session);
+void binkp_send_pwd(MAILER_SESSION *session);
+void binkp_send_ok(MAILER_SESSION *session, int secure);
+void binkp_send_err(MAILER_SESSION *session, const char *message);
+void binkp_send_bsy(MAILER_SESSION *session, const char *message);
+void binkp_send_eob(MAILER_SESSION *session);
+void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset);
+void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
+void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
+
+/* File transfer */
+void binkp_start_send_file(MAILER_SESSION *session, const char *path);
+void binkp_send_file_data(MAILER_SESSION *session);
+void binkp_finish_send_file(MAILER_SESSION *session);
+void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset);
+void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data, int length);
+void binkp_finish_receive_file(MAILER_SESSION *session);
+
+/* Session flow */
+void binkp_process_session(MAILER_SESSION *session);
+void binkp_check_for_files(MAILER_SESSION *session);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Authentication                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/* CRAM-MD5 authentication */
+void binkp_generate_challenge(char *buffer, size_t size);
+int binkp_verify_cram_response(const char *challenge, const char *password, const char *response);
+void binkp_compute_cram_response(const char *challenge, const char *password, char *response, size_t size);
+
+/* Password lookup */
+const char *binkp_get_password_for_node(const FTN_ADDR *addr);
+
+#endif

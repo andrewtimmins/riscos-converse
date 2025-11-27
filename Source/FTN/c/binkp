@@ -1,0 +1,834 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - BinkP Protocol Implementation                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "binkp.h"
+#include "mailer.h"
+#include "queue.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Frame Building                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int binkp_build_command(unsigned char *buffer, BINKP_COMMAND cmd, const char *arg)
+{
+    int arg_len = (arg != NULL) ? strlen(arg) : 0;
+    int frame_len = 1 + arg_len;  /* command byte + argument */
+
+    if (frame_len > BINKP_MAX_FRAME)
+    {
+        frame_len = BINKP_MAX_FRAME;
+        arg_len = frame_len - 1;
+    }
+
+    /* Header: 2 bytes, big-endian, high bit set for command */
+    buffer[0] = (unsigned char)(((frame_len >> 8) & 0x7F) | 0x80);
+    buffer[1] = (unsigned char)(frame_len & 0xFF);
+
+    /* Command byte */
+    buffer[2] = (unsigned char)cmd;
+
+    /* Argument */
+    if (arg_len > 0)
+    {
+        memcpy(&buffer[3], arg, arg_len);
+    }
+
+    return 2 + frame_len;  /* header + payload */
+}
+
+int binkp_build_data(unsigned char *buffer, const unsigned char *data, int length)
+{
+    if (length > BINKP_MAX_FRAME)
+    {
+        length = BINKP_MAX_FRAME;
+    }
+
+    /* Header: 2 bytes, big-endian, high bit clear for data */
+    buffer[0] = (unsigned char)((length >> 8) & 0x7F);
+    buffer[1] = (unsigned char)(length & 0xFF);
+
+    /* Data */
+    if (length > 0)
+    {
+        memcpy(&buffer[2], data, length);
+    }
+
+    return 2 + length;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Frame Parsing                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int binkp_frame_complete(const unsigned char *buffer, int length)
+{
+    int frame_len;
+
+    if (length < 2)
+    {
+        return 0;
+    }
+
+    frame_len = ((buffer[0] & 0x7F) << 8) | buffer[1];
+    return (length >= 2 + frame_len);
+}
+
+int binkp_get_frame_length(const unsigned char *buffer)
+{
+    return ((buffer[0] & 0x7F) << 8) | buffer[1];
+}
+
+int binkp_parse_frame(const unsigned char *buffer, int length, BINKP_FRAME *frame)
+{
+    int frame_len;
+
+    if (length < 2)
+    {
+        return 0;
+    }
+
+    frame->is_command = (buffer[0] & 0x80) != 0;
+    frame_len = ((buffer[0] & 0x7F) << 8) | buffer[1];
+
+    if (length < 2 + frame_len)
+    {
+        return 0;
+    }
+
+    if (frame->is_command && frame_len > 0)
+    {
+        frame->command = buffer[2];
+        frame->length = frame_len - 1;
+        frame->data = (unsigned char *)&buffer[3];
+    }
+    else
+    {
+        frame->command = 0;
+        frame->length = frame_len;
+        frame->data = (unsigned char *)&buffer[2];
+    }
+
+    return 2 + frame_len;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Command Sending                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+static void binkp_queue_frame(MAILER_SESSION *session, const unsigned char *frame, int length)
+{
+    if (session->tx_length + length <= MAILER_BUFFER_SIZE)
+    {
+        memcpy(&session->tx_buffer[session->tx_length], frame, length);
+        session->tx_length += length;
+    }
+    else
+    {
+        debug_printf("binkp: TX buffer overflow");
+    }
+}
+
+void binkp_send_nul(MAILER_SESSION *session, const char *key, const char *value)
+{
+    unsigned char frame[512];
+    char arg[256];
+    int len;
+
+    snprintf(arg, sizeof(arg), "%s %s", key, value);
+    len = binkp_build_command(frame, BINKP_M_NUL, arg);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_NUL %s %s", key, value);
+}
+
+void binkp_send_adr(MAILER_SESSION *session)
+{
+    unsigned char frame[512];
+    char arg[256];
+    char addr_str[64];
+    int i, len;
+
+    arg[0] = '\0';
+
+    for (i = 0; i < mailer.our_addr_count; i++)
+    {
+        ftn_addr_to_string(&mailer.our_addrs[i], addr_str, sizeof(addr_str));
+
+        if (i > 0)
+        {
+            strncat(arg, " ", sizeof(arg) - strlen(arg) - 1);
+        }
+        strncat(arg, addr_str, sizeof(arg) - strlen(arg) - 1);
+    }
+
+    len = binkp_build_command(frame, BINKP_M_ADR, arg);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_ADR %s", arg);
+}
+
+void binkp_send_pwd(MAILER_SESSION *session)
+{
+    unsigned char frame[256];
+    int len;
+
+    /* TODO: Support CRAM-MD5 */
+    len = binkp_build_command(frame, BINKP_M_PWD, session->password);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_PWD ****");
+}
+
+void binkp_send_ok(MAILER_SESSION *session, int secure)
+{
+    unsigned char frame[64];
+    int len;
+
+    len = binkp_build_command(frame, BINKP_M_OK, secure ? "secure" : "non-secure");
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_OK %s", secure ? "secure" : "non-secure");
+}
+
+void binkp_send_err(MAILER_SESSION *session, const char *message)
+{
+    unsigned char frame[256];
+    int len;
+
+    len = binkp_build_command(frame, BINKP_M_ERR, message);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_ERR %s", message);
+}
+
+void binkp_send_bsy(MAILER_SESSION *session, const char *message)
+{
+    unsigned char frame[256];
+    int len;
+
+    len = binkp_build_command(frame, BINKP_M_BSY, message);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_BSY %s", message);
+}
+
+void binkp_send_eob(MAILER_SESSION *session)
+{
+    unsigned char frame[8];
+    int len;
+
+    len = binkp_build_command(frame, BINKP_M_EOB, NULL);
+    binkp_queue_frame(session, frame, len);
+
+    session->local_eob = 1;
+    debug_printf("binkp: >> M_EOB");
+}
+
+void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset)
+{
+    unsigned char frame[512];
+    char arg[256];
+    int len;
+
+    snprintf(arg, sizeof(arg), "%s %ld %ld %ld", filename, size, (long)mtime, offset);
+    len = binkp_build_command(frame, BINKP_M_FILE, arg);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_FILE %s", arg);
+}
+
+void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
+{
+    unsigned char frame[512];
+    char arg[256];
+    int len;
+
+    snprintf(arg, sizeof(arg), "%s %ld %ld", filename, size, (long)mtime);
+    len = binkp_build_command(frame, BINKP_M_GOT, arg);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_GOT %s", arg);
+}
+
+void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
+{
+    unsigned char frame[512];
+    char arg[256];
+    int len;
+
+    snprintf(arg, sizeof(arg), "%s %ld %ld", filename, size, (long)mtime);
+    len = binkp_build_command(frame, BINKP_M_SKIP, arg);
+    binkp_queue_frame(session, frame, len);
+
+    debug_printf("binkp: >> M_SKIP %s", arg);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Handshake                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_send_handshake(MAILER_SESSION *session)
+{
+    char buf[128];
+
+    /* Send system information */
+    binkp_send_nul(session, "SYS", mailer.system_name);
+    binkp_send_nul(session, "ZYZ", mailer.sysop);
+    binkp_send_nul(session, "LOC", mailer.location);
+
+    snprintf(buf, sizeof(buf), "%d", mailer.speed);
+    binkp_send_nul(session, "NDL", buf);
+
+    binkp_send_nul(session, "TIME", "");  /* TODO: Format time */
+    binkp_send_nul(session, "VER", MAILER_NAME "/" MAILER_VERSION " binkp/" BINKP_VERSION);
+
+    /* Send options */
+    binkp_send_nul(session, "OPT", "NR");
+
+    /* Send our addresses */
+    binkp_send_adr(session);
+
+    if (session->direction == SESSION_DIR_OUTBOUND)
+    {
+        /* We initiated, send password */
+        session->state = SESSION_STATE_WAIT_OK;
+        binkp_send_pwd(session);
+    }
+    else
+    {
+        /* We're answering, wait for their password */
+        session->state = SESSION_STATE_WAIT_PWD;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Command Handlers                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_handle_nul(MAILER_SESSION *session, const char *data)
+{
+    char key[32], value[256];
+    const char *p;
+
+    debug_printf("binkp: << M_NUL %s", data);
+
+    /* Parse "KEY VALUE" format */
+    p = strchr(data, ' ');
+    if (p != NULL)
+    {
+        size_t key_len = p - data;
+        if (key_len >= sizeof(key)) key_len = sizeof(key) - 1;
+        strncpy(key, data, key_len);
+        key[key_len] = '\0';
+        strncpy(value, p + 1, sizeof(value) - 1);
+        value[sizeof(value) - 1] = '\0';
+
+        if (strcmp(key, "SYS") == 0)
+        {
+            strncpy(session->remote_system, value, sizeof(session->remote_system) - 1);
+        }
+        else if (strcmp(key, "ZYZ") == 0)
+        {
+            strncpy(session->remote_sysop, value, sizeof(session->remote_sysop) - 1);
+        }
+        else if (strcmp(key, "LOC") == 0)
+        {
+            strncpy(session->remote_location, value, sizeof(session->remote_location) - 1);
+        }
+        else if (strcmp(key, "OPT") == 0)
+        {
+            /* Parse options */
+            if (strstr(value, BINKP_OPT_CRAM_MD5) != NULL)
+            {
+                session->cram_enabled = 1;
+                /* Extract challenge if present */
+            }
+        }
+    }
+}
+
+void binkp_handle_adr(MAILER_SESSION *session, const char *data)
+{
+    char addr_str[64];
+    const char *p = data;
+
+    debug_printf("binkp: << M_ADR %s", data);
+
+    /* Parse space-separated address list */
+    /* Take first address as primary */
+    while (*p == ' ') p++;
+
+    {
+        const char *end = strchr(p, ' ');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+
+        if (len >= sizeof(addr_str)) len = sizeof(addr_str) - 1;
+        strncpy(addr_str, p, len);
+        addr_str[len] = '\0';
+
+        ftn_string_to_addr(addr_str, &session->remote_addr);
+    }
+
+    debug_printf("binkp: Remote address: %d:%d/%d.%d",
+                 session->remote_addr.zone, session->remote_addr.net,
+                 session->remote_addr.node, session->remote_addr.point);
+}
+
+void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
+{
+    const char *expected;
+    int secure = 0;
+
+    debug_printf("binkp: << M_PWD (hidden)");
+
+    /* Look up expected password for this node */
+    expected = binkp_get_password_for_node(&session->remote_addr);
+
+    if (expected == NULL || *expected == '\0')
+    {
+        /* No password required */
+        session->authenticated = 1;
+        binkp_send_ok(session, 0);
+        session->state = SESSION_STATE_AUTHENTICATED;
+    }
+    else if (session->cram_enabled && data[0] == 'C' && data[1] == 'R' && data[2] == 'A' && data[3] == 'M')
+    {
+        /* CRAM-MD5 response */
+        if (binkp_verify_cram_response(session->cram_challenge, expected, data))
+        {
+            session->authenticated = 1;
+            secure = 1;
+            binkp_send_ok(session, secure);
+            session->state = SESSION_STATE_AUTHENTICATED;
+        }
+        else
+        {
+            binkp_send_err(session, "Bad password");
+            session->state = SESSION_STATE_ERROR;
+        }
+    }
+    else
+    {
+        /* Plain password */
+        if (strcmp(data, expected) == 0)
+        {
+            session->authenticated = 1;
+            binkp_send_ok(session, 0);
+            session->state = SESSION_STATE_AUTHENTICATED;
+        }
+        else
+        {
+            binkp_send_err(session, "Bad password");
+            session->state = SESSION_STATE_ERROR;
+        }
+    }
+}
+
+void binkp_handle_ok(MAILER_SESSION *session, const char *data)
+{
+    debug_printf("binkp: << M_OK %s", data);
+
+    session->authenticated = 1;
+    session->state = SESSION_STATE_AUTHENTICATED;
+
+    /* Start file transfer phase */
+    binkp_check_for_files(session);
+}
+
+void binkp_handle_err(MAILER_SESSION *session, const char *data)
+{
+    debug_printf("binkp: << M_ERR %s", data);
+    session->state = SESSION_STATE_ERROR;
+}
+
+void binkp_handle_bsy(MAILER_SESSION *session, const char *data)
+{
+    debug_printf("binkp: << M_BSY %s", data);
+    session->state = SESSION_STATE_CLOSING;
+}
+
+void binkp_handle_eob(MAILER_SESSION *session)
+{
+    debug_printf("binkp: << M_EOB");
+
+    session->remote_eob = 1;
+
+    /* If we've also sent EOB, session is complete */
+    if (session->local_eob && session->remote_eob)
+    {
+        debug_printf("binkp: Session complete");
+        session->state = SESSION_STATE_CLOSING;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File Transfer Handlers                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_handle_file(MAILER_SESSION *session, const char *data)
+{
+    char filename[128];
+    long size, mtime, offset;
+
+    debug_printf("binkp: << M_FILE %s", data);
+
+    /* Parse: filename size time offset */
+    if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) >= 3)
+    {
+        binkp_start_receive_file(session, filename, size, (time_t)mtime, offset);
+    }
+}
+
+void binkp_handle_got(MAILER_SESSION *session, const char *data)
+{
+    debug_printf("binkp: << M_GOT %s", data);
+
+    /* Remote has received our file successfully */
+    if (session->send_file.state == TRANSFER_STATE_SENDING)
+    {
+        binkp_finish_send_file(session);
+        session->files_sent++;
+
+        /* Check for more files to send */
+        binkp_check_for_files(session);
+    }
+}
+
+void binkp_handle_skip(MAILER_SESSION *session, const char *data)
+{
+    debug_printf("binkp: << M_SKIP %s", data);
+
+    /* Remote doesn't want this file */
+    if (session->send_file.state == TRANSFER_STATE_SENDING)
+    {
+        binkp_finish_send_file(session);
+        binkp_check_for_files(session);
+    }
+}
+
+void binkp_handle_get(MAILER_SESSION *session, const char *data)
+{
+    (void)session;
+    debug_printf("binkp: << M_GET %s", data);
+    /* TODO: Resume file transfer from offset */
+}
+
+void binkp_handle_data(MAILER_SESSION *session, const unsigned char *data, int length)
+{
+    if (session->recv_file.state == TRANSFER_STATE_RECEIVING)
+    {
+        binkp_receive_file_data(session, data, length);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Frame Handler                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_handle_frame(MAILER_SESSION *session, BINKP_FRAME *frame)
+{
+    if (frame->is_command)
+    {
+        /* Null-terminate command argument for string parsing */
+        char arg[MAILER_BUFFER_SIZE];
+        if (frame->length > 0 && frame->length < (int)sizeof(arg))
+        {
+            memcpy(arg, frame->data, frame->length);
+            arg[frame->length] = '\0';
+        }
+        else
+        {
+            arg[0] = '\0';
+        }
+
+        switch (frame->command)
+        {
+            case BINKP_M_NUL:  binkp_handle_nul(session, arg); break;
+            case BINKP_M_ADR:  binkp_handle_adr(session, arg); break;
+            case BINKP_M_PWD:  binkp_handle_pwd(session, arg); break;
+            case BINKP_M_OK:   binkp_handle_ok(session, arg); break;
+            case BINKP_M_ERR:  binkp_handle_err(session, arg); break;
+            case BINKP_M_BSY:  binkp_handle_bsy(session, arg); break;
+            case BINKP_M_EOB:  binkp_handle_eob(session); break;
+            case BINKP_M_FILE: binkp_handle_file(session, arg); break;
+            case BINKP_M_GOT:  binkp_handle_got(session, arg); break;
+            case BINKP_M_SKIP: binkp_handle_skip(session, arg); break;
+            case BINKP_M_GET:  binkp_handle_get(session, arg); break;
+            default:
+                debug_printf("binkp: Unknown command %d", frame->command);
+                break;
+        }
+    }
+    else
+    {
+        /* Data frame */
+        binkp_handle_data(session, frame->data, frame->length);
+    }
+
+    session->last_activity = time(NULL);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File Transfer Implementation                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset)
+{
+    char path[MAILER_PATH_SIZE];
+
+    /* Build temp path in inbound.tmp */
+    snprintf(path, sizeof(path), "%s.%s", mailer.temp_inbound, filename);
+
+    session->recv_file.file = fopen(path, offset > 0 ? "ab" : "wb");
+    if (session->recv_file.file == NULL)
+    {
+        debug_printf("binkp: Failed to create %s", path);
+        binkp_send_skip(session, filename, size, mtime);
+        return;
+    }
+
+    strncpy(session->recv_file.filename, filename, sizeof(session->recv_file.filename) - 1);
+    strncpy(session->recv_file.local_path, path, sizeof(session->recv_file.local_path) - 1);
+    session->recv_file.size = size;
+    session->recv_file.mtime = mtime;
+    session->recv_file.offset = offset;
+    session->recv_file.state = TRANSFER_STATE_RECEIVING;
+
+    debug_printf("binkp: Receiving %s (%ld bytes)", filename, size);
+}
+
+void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data, int length)
+{
+    FILE_TRANSFER *ft = &session->recv_file;
+
+    if (ft->file != NULL)
+    {
+        fwrite(data, 1, length, ft->file);
+        ft->offset += length;
+        session->bytes_received += length;
+
+        /* Check if complete */
+        if (ft->offset >= ft->size)
+        {
+            binkp_finish_receive_file(session);
+        }
+    }
+}
+
+void binkp_finish_receive_file(MAILER_SESSION *session)
+{
+    FILE_TRANSFER *ft = &session->recv_file;
+    char final_path[MAILER_PATH_SIZE];
+
+    if (ft->file != NULL)
+    {
+        fclose(ft->file);
+        ft->file = NULL;
+    }
+
+    /* Move from temp to final inbound */
+    snprintf(final_path, sizeof(final_path), "%s.%s", mailer.inbound_path, ft->filename);
+
+    /* Rename temp file to final location */
+    rename(ft->local_path, final_path);
+
+    debug_printf("binkp: Received %s (%ld bytes)", ft->filename, ft->size);
+
+    /* Acknowledge receipt */
+    binkp_send_got(session, ft->filename, ft->size, ft->mtime);
+
+    ft->state = TRANSFER_STATE_IDLE;
+    session->files_received++;
+}
+
+void binkp_start_send_file(MAILER_SESSION *session, const char *path)
+{
+    FILE_TRANSFER *ft = &session->send_file;
+    _kernel_swi_regs regs;
+    long fsize;
+    const char *filename;
+
+    /* Get file size */
+    regs.r[0] = 17;
+    regs.r[1] = (int)path;
+    _kernel_swi(OS_File, &regs, &regs);
+
+    if (regs.r[0] != 1)
+    {
+        debug_printf("binkp: File not found: %s", path);
+        return;
+    }
+
+    fsize = regs.r[4];
+
+    /* Extract filename */
+    filename = strrchr(path, '.');
+    filename = filename ? filename + 1 : path;
+
+    ft->file = fopen(path, "rb");
+    if (ft->file == NULL)
+    {
+        debug_printf("binkp: Failed to open %s", path);
+        return;
+    }
+
+    strncpy(ft->filename, filename, sizeof(ft->filename) - 1);
+    strncpy(ft->local_path, path, sizeof(ft->local_path) - 1);
+    ft->size = fsize;
+    ft->mtime = time(NULL);  /* TODO: Get actual file time */
+    ft->offset = 0;
+    ft->state = TRANSFER_STATE_SENDING;
+
+    /* Send M_FILE header */
+    binkp_send_file(session, ft->filename, ft->size, ft->mtime, 0);
+
+    debug_printf("binkp: Sending %s (%ld bytes)", filename, fsize);
+}
+
+void binkp_send_file_data(MAILER_SESSION *session)
+{
+    FILE_TRANSFER *ft = &session->send_file;
+    unsigned char buffer[4096];
+    unsigned char frame[4100];
+    int bytes_read;
+    int frame_len;
+
+    if (ft->state != TRANSFER_STATE_SENDING || ft->file == NULL)
+    {
+        return;
+    }
+
+    /* Don't send if TX buffer is getting full */
+    if (session->tx_length > MAILER_BUFFER_SIZE - 4100)
+    {
+        return;
+    }
+
+    bytes_read = fread(buffer, 1, sizeof(buffer), ft->file);
+    if (bytes_read > 0)
+    {
+        frame_len = binkp_build_data(frame, buffer, bytes_read);
+        binkp_queue_frame(session, frame, frame_len);
+        ft->offset += bytes_read;
+        session->bytes_sent += bytes_read;
+    }
+
+    /* Check if complete */
+    if (ft->offset >= ft->size || bytes_read <= 0)
+    {
+        /* Wait for M_GOT before finishing */
+        debug_printf("binkp: File data sent, waiting for M_GOT");
+    }
+}
+
+void binkp_finish_send_file(MAILER_SESSION *session)
+{
+    FILE_TRANSFER *ft = &session->send_file;
+
+    if (ft->file != NULL)
+    {
+        fclose(ft->file);
+        ft->file = NULL;
+    }
+
+    /* Mark file as sent in queue */
+    queue_mark_file_sent(queue_find_node(&session->remote_addr), ft->local_path);
+
+    ft->state = TRANSFER_STATE_IDLE;
+
+    debug_printf("binkp: Sent %s successfully", ft->filename);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Processing                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_check_for_files(MAILER_SESSION *session)
+{
+    QUEUE_NODE *node;
+    QUEUE_FILE *file;
+
+    if (session->send_file.state != TRANSFER_STATE_IDLE)
+    {
+        return;  /* Already sending */
+    }
+
+    node = queue_find_node(&session->remote_addr);
+    if (node == NULL)
+    {
+        /* No files to send, send EOB */
+        if (!session->local_eob)
+        {
+            binkp_send_eob(session);
+        }
+        return;
+    }
+
+    file = queue_get_next_file(node);
+    if (file != NULL)
+    {
+        binkp_start_send_file(session, file->path);
+    }
+    else
+    {
+        /* No more files */
+        if (!session->local_eob)
+        {
+            binkp_send_eob(session);
+        }
+    }
+}
+
+void binkp_process_session(MAILER_SESSION *session)
+{
+    /* Continue sending file data if in progress */
+    if (session->send_file.state == TRANSFER_STATE_SENDING)
+    {
+        binkp_send_file_data(session);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Authentication Helpers                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+void binkp_generate_challenge(char *buffer, size_t size)
+{
+    /* TODO: Generate random challenge for CRAM-MD5 */
+    snprintf(buffer, size, "%08lx%08lx", (long)time(NULL), (long)rand());
+}
+
+int binkp_verify_cram_response(const char *challenge, const char *password, const char *response)
+{
+    /* TODO: Implement CRAM-MD5 verification */
+    (void)challenge;
+    (void)password;
+    (void)response;
+    return 0;
+}
+
+void binkp_compute_cram_response(const char *challenge, const char *password, char *response, size_t size)
+{
+    /* TODO: Implement CRAM-MD5 response computation */
+    (void)challenge;
+    (void)password;
+    snprintf(response, size, "CRAM-MD5-TODO");
+}
+
+const char *binkp_get_password_for_node(const FTN_ADDR *addr)
+{
+    /* TODO: Look up password from uplink config via Support SWI */
+    (void)addr;
+    return "";
+}

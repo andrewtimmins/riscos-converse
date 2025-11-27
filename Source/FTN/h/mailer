@@ -1,0 +1,251 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Main Header                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef MAILER_H
+#define MAILER_H
+
+#include <time.h>
+#include "C:Desk.Wimp.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define MAILER_VERSION              "0.01"
+#define MAILER_NAME                 "Converse FTN Mailer"
+#define MAILER_TASK_NAME            "FTN Mailer"
+
+/* BinkP default port */
+#define BINKP_DEFAULT_PORT          24554
+
+/* Maximum simultaneous sessions */
+#define MAILER_MAX_SESSIONS         4
+
+/* Buffer sizes */
+#define MAILER_BUFFER_SIZE          32768
+#define MAILER_PATH_SIZE            256
+#define MAILER_ADDR_SIZE            64
+
+/* Poll intervals (centiseconds) */
+#define MAILER_POLL_INTERVAL        100     /* 1 second Wimp poll */
+#define MAILER_CONNECT_TIMEOUT      6000    /* 60 seconds connection timeout */
+#define MAILER_SESSION_TIMEOUT      30000   /* 5 minutes session timeout */
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Address Structure                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int zone;
+    int net;
+    int node;
+    int point;
+    char domain[32];
+} FTN_ADDR;
+
+/* ******************************************************************************************************************************************************** */
+/* Session State                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    SESSION_STATE_IDLE = 0,
+    SESSION_STATE_CONNECTING,
+    SESSION_STATE_WAIT_NUL,
+    SESSION_STATE_WAIT_ADR,
+    SESSION_STATE_WAIT_PWD,
+    SESSION_STATE_WAIT_OK,
+    SESSION_STATE_AUTHENTICATED,
+    SESSION_STATE_TRANSFER,
+    SESSION_STATE_WAIT_EOB,
+    SESSION_STATE_CLOSING,
+    SESSION_STATE_ERROR
+} SESSION_STATE;
+
+/* Session direction */
+typedef enum
+{
+    SESSION_DIR_INBOUND = 0,
+    SESSION_DIR_OUTBOUND
+} SESSION_DIRECTION;
+
+/* ******************************************************************************************************************************************************** */
+/* File Transfer State                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    TRANSFER_STATE_IDLE = 0,
+    TRANSFER_STATE_SENDING,
+    TRANSFER_STATE_RECEIVING,
+    TRANSFER_STATE_COMPLETE
+} TRANSFER_STATE;
+
+typedef struct
+{
+    TRANSFER_STATE state;
+    char filename[MAILER_PATH_SIZE];
+    char local_path[MAILER_PATH_SIZE];
+    long size;
+    long offset;
+    time_t mtime;
+    FILE *file;
+} FILE_TRANSFER;
+
+/* ******************************************************************************************************************************************************** */
+/* Session Structure                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int active;
+    int socket;
+    SESSION_STATE state;
+    SESSION_DIRECTION direction;
+    
+    /* Remote node info */
+    FTN_ADDR remote_addr;
+    char remote_sysop[64];
+    char remote_system[64];
+    char remote_location[64];
+    char remote_hostname[64];
+    
+    /* Authentication */
+    int authenticated;
+    char password[32];
+    int cram_enabled;
+    char cram_challenge[64];
+    
+    /* Timing */
+    time_t connect_time;
+    time_t last_activity;
+    long timeout;
+    
+    /* Buffers */
+    unsigned char rx_buffer[MAILER_BUFFER_SIZE];
+    int rx_length;
+    unsigned char tx_buffer[MAILER_BUFFER_SIZE];
+    int tx_length;
+    int tx_offset;
+    
+    /* File transfer */
+    FILE_TRANSFER send_file;
+    FILE_TRANSFER recv_file;
+    int files_sent;
+    int files_received;
+    long bytes_sent;
+    long bytes_received;
+    
+    /* End of batch flags */
+    int local_eob;
+    int remote_eob;
+} MAILER_SESSION;
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp State                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    Desk_task_handle task_handle;
+    Desk_icon_handle iconbar_icon;
+    Desk_menu_ptr iconbar_menu_handle;
+    Desk_window_handle main_window;
+    Desk_bool quit;
+} WIMP_STATE;
+
+/* ******************************************************************************************************************************************************** */
+/* Global State                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    /* Configuration */
+    int listen_port;
+    int max_sessions;
+    char inbound_path[MAILER_PATH_SIZE];
+    char outbound_path[MAILER_PATH_SIZE];
+    char temp_inbound[MAILER_PATH_SIZE];
+    
+    /* Our addresses */
+    FTN_ADDR our_addrs[8];
+    int our_addr_count;
+    
+    /* System info */
+    char sysop[64];
+    char system_name[64];
+    char location[64];
+    int speed;
+    char flags[64];
+    
+    /* Listener */
+    int listen_socket;
+    int listener_active;
+    
+    /* Sessions */
+    MAILER_SESSION sessions[MAILER_MAX_SESSIONS];
+    int active_sessions;
+    
+    /* Statistics */
+    int total_sessions;
+    int total_files_sent;
+    int total_files_received;
+    long total_bytes_sent;
+    long total_bytes_received;
+    time_t start_time;
+} MAILER_STATE;
+
+/* ******************************************************************************************************************************************************** */
+/* Global Variables (extern)                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+extern WIMP_STATE wimp;
+extern MAILER_STATE mailer;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Mailer Core                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialisation */
+void mailer_initialise(void);
+void mailer_finalise(void);
+void mailer_load_config(void);
+
+/* Listener */
+int mailer_create_listener(void);
+void mailer_destroy_listener(void);
+void mailer_accept_connection(void);
+
+/* Session management */
+MAILER_SESSION *mailer_allocate_session(void);
+void mailer_free_session(MAILER_SESSION *session);
+void mailer_close_session(MAILER_SESSION *session, const char *reason);
+void mailer_process_sessions(void);
+void mailer_check_timeouts(void);
+
+/* Outbound connections */
+int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port);
+void mailer_poll_outbound(void);
+
+/* Statistics */
+void mailer_update_stats(MAILER_SESSION *session);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - UI                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+void mailer_update_status_window(void);
+void mailer_log(const char *format, ...);
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Address formatting */
+void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size);
+int ftn_string_to_addr(const char *str, FTN_ADDR *addr);
+int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b);
+
+#endif

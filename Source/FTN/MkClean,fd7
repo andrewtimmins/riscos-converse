@@ -1,0 +1,4 @@
+| MkClean - Clean build script for FTN Mailer
+Set Alias$Mk amu %*0
+Dir <Obey$Dir>
+Mk clean

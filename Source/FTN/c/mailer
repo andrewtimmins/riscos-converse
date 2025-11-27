@@ -1,0 +1,902 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Main Application                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/* Standard ANSI Includes */
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <time.h>
+
+/* OS Includes */
+#include "kernel.h"
+#include "swis.h"
+
+/* Desk Includes */
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Resource.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.File.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Dialog.h"
+#include "C:Desk.Dialog2.h"
+
+/* TCPIP Includes */
+#define COMPAT_INET4 1
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "socklib.h"
+#include "inetlib.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "sys/errno.h"
+#include "netdb.h"
+
+/* Our Includes */
+#include "mailer.h"
+#include "binkp.h"
+#include "queue.h"
+#include "timer.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Global Variables                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+WIMP_STATE wimp;
+MAILER_STATE mailer;
+
+/* Menu entries */
+enum
+{
+    ICONBAR_MENU_INFO = 0,
+    ICONBAR_MENU_STATUS,
+    ICONBAR_MENU_POLL,
+    ICONBAR_MENU_QUIT
+};
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Numbers                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_SUPPORT_FTN     0x5AA86
+#define SWI_FILER_LOGGING   0x5AA40
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size)
+{
+    if (addr->point == 0)
+    {
+        snprintf(buffer, size, "%d:%d/%d", addr->zone, addr->net, addr->node);
+    }
+    else
+    {
+        snprintf(buffer, size, "%d:%d/%d.%d", addr->zone, addr->net, addr->node, addr->point);
+    }
+
+    if (addr->domain[0] != '\0')
+    {
+        size_t len = strlen(buffer);
+        snprintf(buffer + len, size - len, "@%s", addr->domain);
+    }
+}
+
+int ftn_string_to_addr(const char *str, FTN_ADDR *addr)
+{
+    const char *p = str;
+    char *end;
+
+    memset(addr, 0, sizeof(FTN_ADDR));
+
+    /* Parse zone:net/node.point@domain */
+    addr->zone = (int)strtol(p, &end, 10);
+    if (*end != ':') return 0;
+    p = end + 1;
+
+    addr->net = (int)strtol(p, &end, 10);
+    if (*end != '/') return 0;
+    p = end + 1;
+
+    addr->node = (int)strtol(p, &end, 10);
+    p = end;
+
+    if (*p == '.')
+    {
+        p++;
+        addr->point = (int)strtol(p, &end, 10);
+        p = end;
+    }
+
+    if (*p == '@')
+    {
+        p++;
+        strncpy(addr->domain, p, sizeof(addr->domain) - 1);
+    }
+
+    return 1;
+}
+
+int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b)
+{
+    return (a->zone == b->zone &&
+            a->net == b->net &&
+            a->node == b->node &&
+            a->point == b->point);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Logging                                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+static void mailer_log_ftn(const char *format, ...)
+{
+    char buffer[512];
+    va_list args;
+    _kernel_swi_regs regs;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    /* Log via Filer module */
+    regs.r[0] = 3;  /* FILER_LOG_CMD_FTN */
+    regs.r[1] = (int)buffer;
+    _kernel_swi(SWI_FILER_LOGGING, &regs, &regs);
+
+    debug_printf("FTN: %s", buffer);
+}
+
+void mailer_log(const char *format, ...)
+{
+    char buffer[512];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    mailer_log_ftn("%s", buffer);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Configuration                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+void mailer_load_config(void)
+{
+    _kernel_swi_regs regs;
+    int i;
+
+    debug_printf("mailer: Loading configuration from Support module");
+
+    /* Get FTN config from Support module */
+    regs.r[0] = 0;  /* FTN_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        /* FTN_GLOBAL_CONFIG structure */
+        typedef struct
+        {
+            char sysop[64];
+            char system[64];
+            char location[64];
+            char phone[64];
+            int speed;
+            char flags[64];
+            char inbound[256];
+            char outbound[256];
+            char netmail[256];
+            char badmail[256];
+            long max_packet_size;
+            int address_count;
+            /* Followed by addresses and uplinks */
+        } FTN_GLOBAL_CONFIG;
+
+        FTN_GLOBAL_CONFIG *cfg = (FTN_GLOBAL_CONFIG *)regs.r[0];
+
+        strncpy(mailer.sysop, cfg->sysop, sizeof(mailer.sysop) - 1);
+        strncpy(mailer.system_name, cfg->system, sizeof(mailer.system_name) - 1);
+        strncpy(mailer.location, cfg->location, sizeof(mailer.location) - 1);
+        mailer.speed = cfg->speed;
+        strncpy(mailer.flags, cfg->flags, sizeof(mailer.flags) - 1);
+        strncpy(mailer.inbound_path, cfg->inbound, sizeof(mailer.inbound_path) - 1);
+        strncpy(mailer.outbound_path, cfg->outbound, sizeof(mailer.outbound_path) - 1);
+
+        debug_printf("mailer: System: %s, Sysop: %s", mailer.system_name, mailer.sysop);
+        debug_printf("mailer: Inbound: %s", mailer.inbound_path);
+        debug_printf("mailer: Outbound: %s", mailer.outbound_path);
+
+        /* Get addresses */
+        for (i = 0; i < 8; i++)
+        {
+            regs.r[0] = 2;  /* FTN_CONFIG_REASON_GET_ADDRESS */
+            regs.r[1] = i + 1;
+            if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+            {
+                /* FTN_ADDRESS_CONFIG structure */
+                typedef struct
+                {
+                    int id;
+                    char network[64];
+                    int zone, net, node, point;
+                    char type[8];
+                    char packet_password[32];
+                    char areafix_password[32];
+                } FTN_ADDRESS_CONFIG;
+
+                FTN_ADDRESS_CONFIG *addr_cfg = (FTN_ADDRESS_CONFIG *)regs.r[0];
+
+                if (addr_cfg->id > 0)
+                {
+                    mailer.our_addrs[mailer.our_addr_count].zone = addr_cfg->zone;
+                    mailer.our_addrs[mailer.our_addr_count].net = addr_cfg->net;
+                    mailer.our_addrs[mailer.our_addr_count].node = addr_cfg->node;
+                    mailer.our_addrs[mailer.our_addr_count].point = addr_cfg->point;
+                    strncpy(mailer.our_addrs[mailer.our_addr_count].domain, addr_cfg->network,
+                            sizeof(mailer.our_addrs[mailer.our_addr_count].domain) - 1);
+                    mailer.our_addr_count++;
+
+                    debug_printf("mailer: Address %d: %d:%d/%d.%d@%s",
+                                 addr_cfg->id, addr_cfg->zone, addr_cfg->net,
+                                 addr_cfg->node, addr_cfg->point, addr_cfg->network);
+                }
+            }
+        }
+    }
+    else
+    {
+        debug_printf("mailer: Failed to get FTN config from Support module");
+
+        /* Set defaults */
+        strcpy(mailer.system_name, "Converse BBS");
+        strcpy(mailer.sysop, "Sysop");
+        strcpy(mailer.location, "Unknown");
+        mailer.speed = 115200;
+        strcpy(mailer.inbound_path, "<Converse$Dir>.FTN.Inbound");
+        strcpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound");
+    }
+
+    /* Set temp inbound path */
+    snprintf(mailer.temp_inbound, sizeof(mailer.temp_inbound), "%s.tmp", mailer.inbound_path);
+
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Listener Management                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+int mailer_create_listener(void)
+{
+    struct sockaddr_in addr;
+    int yes = 1;
+
+    mailer.listen_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (mailer.listen_socket < 0)
+    {
+        debug_printf("mailer: Failed to create listener socket");
+        return 0;
+    }
+
+    setsockopt(mailer.listen_socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons((unsigned short)mailer.listen_port);
+
+    if (bind(mailer.listen_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0)
+    {
+        debug_printf("mailer: Failed to bind to port %d", mailer.listen_port);
+        socketclose(mailer.listen_socket);
+        mailer.listen_socket = -1;
+        return 0;
+    }
+
+    if (listen(mailer.listen_socket, 5) < 0)
+    {
+        debug_printf("mailer: Failed to listen");
+        socketclose(mailer.listen_socket);
+        mailer.listen_socket = -1;
+        return 0;
+    }
+
+    /* Set non-blocking */
+    {
+        int flags = 1;
+        socketioctl(mailer.listen_socket, FIONBIO, &flags);
+    }
+
+    mailer.listener_active = 1;
+    mailer_log_ftn("Listening on port %d", mailer.listen_port);
+
+    return 1;
+}
+
+void mailer_destroy_listener(void)
+{
+    if (mailer.listen_socket >= 0)
+    {
+        socketclose(mailer.listen_socket);
+        mailer.listen_socket = -1;
+    }
+    mailer.listener_active = 0;
+}
+
+void mailer_accept_connection(void)
+{
+    struct sockaddr_in client_addr;
+    int client_addr_len = sizeof(client_addr);
+    int client_socket;
+    MAILER_SESSION *session;
+
+    client_socket = accept(mailer.listen_socket,
+                           (struct sockaddr *)&client_addr, &client_addr_len);
+
+    if (client_socket < 0)
+    {
+        return;  /* No connection waiting */
+    }
+
+    session = mailer_allocate_session();
+    if (session == NULL)
+    {
+        /* No free sessions */
+        debug_printf("mailer: No free sessions, rejecting connection");
+
+        /* Send BSY and close */
+        {
+            unsigned char frame[64];
+            int len = binkp_build_command(frame, BINKP_M_BSY, "No free sessions");
+            send(client_socket, frame, len, 0);
+        }
+
+        socketclose(client_socket);
+        return;
+    }
+
+    /* Set non-blocking */
+    {
+        int flags = 1;
+        socketioctl(client_socket, FIONBIO, &flags);
+    }
+
+    session->socket = client_socket;
+    session->direction = SESSION_DIR_INBOUND;
+    session->state = SESSION_STATE_WAIT_NUL;
+    session->connect_time = time(NULL);
+    session->last_activity = session->connect_time;
+
+    /* Get remote hostname */
+    strncpy(session->remote_hostname, inet_ntoa(client_addr.sin_addr),
+            sizeof(session->remote_hostname) - 1);
+
+    mailer_log_ftn("Incoming connection from %s", session->remote_hostname);
+    mailer.total_sessions++;
+
+    /* Send our handshake */
+    binkp_send_handshake(session);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Management                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+MAILER_SESSION *mailer_allocate_session(void)
+{
+    int i;
+
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        if (!mailer.sessions[i].active)
+        {
+            memset(&mailer.sessions[i], 0, sizeof(MAILER_SESSION));
+            mailer.sessions[i].active = 1;
+            mailer.sessions[i].socket = -1;
+            mailer.active_sessions++;
+            return &mailer.sessions[i];
+        }
+    }
+
+    return NULL;
+}
+
+void mailer_free_session(MAILER_SESSION *session)
+{
+    if (session->socket >= 0)
+    {
+        socketclose(session->socket);
+    }
+
+    if (session->send_file.file != NULL)
+    {
+        fclose(session->send_file.file);
+    }
+
+    if (session->recv_file.file != NULL)
+    {
+        fclose(session->recv_file.file);
+    }
+
+    /* Update queue */
+    queue_mark_node_busy(&session->remote_addr, 0);
+
+    session->active = 0;
+    mailer.active_sessions--;
+}
+
+void mailer_close_session(MAILER_SESSION *session, const char *reason)
+{
+    char addr_str[64];
+
+    ftn_addr_to_string(&session->remote_addr, addr_str, sizeof(addr_str));
+
+    mailer_log_ftn("Session closed with %s: %s (sent %d files/%ld bytes, recv %d files/%ld bytes)",
+            addr_str, reason,
+            session->files_sent, session->bytes_sent,
+            session->files_received, session->bytes_received);
+
+    /* Update statistics */
+    mailer.total_files_sent += session->files_sent;
+    mailer.total_files_received += session->files_received;
+    mailer.total_bytes_sent += session->bytes_sent;
+    mailer.total_bytes_received += session->bytes_received;
+
+    mailer_free_session(session);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Processing                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+static void process_session_rx(MAILER_SESSION *session)
+{
+    int bytes;
+
+    /* Read available data */
+    bytes = recv(session->socket,
+                 &session->rx_buffer[session->rx_length],
+                 sizeof(session->rx_buffer) - session->rx_length, 0);
+
+    if (bytes > 0)
+    {
+        session->rx_length += bytes;
+
+        /* Process complete frames */
+        while (session->rx_length > 0 && binkp_frame_complete(session->rx_buffer, session->rx_length))
+        {
+            BINKP_FRAME frame;
+            int consumed = binkp_parse_frame(session->rx_buffer, session->rx_length, &frame);
+
+            if (consumed > 0)
+            {
+                binkp_handle_frame(session, &frame);
+
+                /* Remove processed data from buffer */
+                if (consumed < session->rx_length)
+                {
+                    memmove(session->rx_buffer, &session->rx_buffer[consumed],
+                            session->rx_length - consumed);
+                }
+                session->rx_length -= consumed;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+    else if (bytes == 0)
+    {
+        /* Connection closed */
+        session->state = SESSION_STATE_CLOSING;
+    }
+    else if (errno != EWOULDBLOCK && errno != EAGAIN)
+    {
+        /* Error */
+        session->state = SESSION_STATE_ERROR;
+    }
+}
+
+static void process_session_tx(MAILER_SESSION *session)
+{
+    int bytes;
+
+    if (session->tx_length > session->tx_offset)
+    {
+        bytes = send(session->socket,
+                     &session->tx_buffer[session->tx_offset],
+                     session->tx_length - session->tx_offset, 0);
+
+        if (bytes > 0)
+        {
+            session->tx_offset += bytes;
+
+            /* Reset buffer if all sent */
+            if (session->tx_offset >= session->tx_length)
+            {
+                session->tx_offset = 0;
+                session->tx_length = 0;
+            }
+        }
+        else if (errno != EWOULDBLOCK && errno != EAGAIN)
+        {
+            session->state = SESSION_STATE_ERROR;
+        }
+    }
+}
+
+void mailer_process_sessions(void)
+{
+    int i;
+
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        MAILER_SESSION *session = &mailer.sessions[i];
+
+        if (!session->active)
+        {
+            continue;
+        }
+
+        /* Handle based on state */
+        switch (session->state)
+        {
+            case SESSION_STATE_CLOSING:
+            case SESSION_STATE_ERROR:
+                mailer_close_session(session, 
+                    session->state == SESSION_STATE_ERROR ? "Error" : "Complete");
+                break;
+
+            default:
+                /* Process I/O */
+                process_session_rx(session);
+                process_session_tx(session);
+
+                /* BinkP session processing */
+                binkp_process_session(session);
+                break;
+        }
+    }
+}
+
+void mailer_check_timeouts(void)
+{
+    int i;
+    time_t now = time(NULL);
+
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        MAILER_SESSION *session = &mailer.sessions[i];
+
+        if (!session->active)
+        {
+            continue;
+        }
+
+        /* Check for session timeout */
+        if (now - session->last_activity > MAILER_SESSION_TIMEOUT / 100)
+        {
+            mailer_log_ftn("Session timeout");
+            binkp_send_err(session, "Timeout");
+            session->state = SESSION_STATE_ERROR;
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Outbound Polling                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
+{
+    MAILER_SESSION *session;
+    struct sockaddr_in server_addr;
+    struct hostent *host;
+    int sock;
+    char addr_str[64];
+
+    ftn_addr_to_string(addr, addr_str, sizeof(addr_str));
+
+    session = mailer_allocate_session();
+    if (session == NULL)
+    {
+        debug_printf("mailer: No free sessions for outbound");
+        return 0;
+    }
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+    {
+        debug_printf("mailer: Failed to create socket");
+        mailer_free_session(session);
+        return 0;
+    }
+
+    /* Resolve hostname */
+    host = gethostbyname(hostname);
+    if (host == NULL)
+    {
+        debug_printf("mailer: Failed to resolve %s", hostname);
+        socketclose(sock);
+        mailer_free_session(session);
+        return 0;
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    memcpy(&server_addr.sin_addr, host->h_addr, host->h_length);
+    server_addr.sin_port = htons(port);
+
+    /* Set non-blocking before connect */
+    {
+        int flags = 1;
+        socketioctl(sock, FIONBIO, &flags);
+    }
+
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    {
+        if (errno != EINPROGRESS && errno != EWOULDBLOCK)
+        {
+            debug_printf("mailer: Connect failed to %s:%d", hostname, port);
+            socketclose(sock);
+            mailer_free_session(session);
+            return 0;
+        }
+    }
+
+    session->socket = sock;
+    session->direction = SESSION_DIR_OUTBOUND;
+    session->state = SESSION_STATE_CONNECTING;
+    session->remote_addr = *addr;
+    session->connect_time = time(NULL);
+    session->last_activity = session->connect_time;
+    strncpy(session->remote_hostname, hostname, sizeof(session->remote_hostname) - 1);
+
+    /* Mark node as busy */
+    queue_mark_node_busy(addr, 1);
+
+    mailer_log_ftn("Connecting to %s (%s:%d)", addr_str, hostname, port);
+    mailer.total_sessions++;
+
+    return 1;
+}
+
+void mailer_poll_outbound(void)
+{
+    QUEUE_NODE *node;
+
+    /* Don't poll if we're at max sessions */
+    if (mailer.active_sessions >= mailer.max_sessions)
+    {
+        return;
+    }
+
+    node = queue_get_next_poll_node();
+    if (node != NULL)
+    {
+        if (!mailer_connect_to_node(&node->addr, node->hostname, node->port))
+        {
+            /* Connection failed, schedule retry */
+            queue_schedule_retry(node, 300);  /* Retry in 5 minutes */
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void mailer_initialise(void)
+{
+    memset(&mailer, 0, sizeof(mailer));
+
+    mailer.listen_socket = -1;
+    mailer.listen_port = BINKP_DEFAULT_PORT;
+    mailer.max_sessions = MAILER_MAX_SESSIONS;
+    mailer.start_time = time(NULL);
+
+    timer_initialise();
+    queue_initialise();
+    mailer_load_config();
+}
+
+void mailer_finalise(void)
+{
+    int i;
+
+    /* Close all sessions */
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        if (mailer.sessions[i].active)
+        {
+            mailer_close_session(&mailer.sessions[i], "Shutdown");
+        }
+    }
+
+    mailer_destroy_listener();
+    queue_finalise();
+    timer_finalise();
+
+    mailer_log_ftn("Mailer shutdown");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp Handlers                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+
+    if (event->data.mouse.button.data.select)
+    {
+        /* Open status window */
+        Desk_Window_Show(wimp.main_window, Desk_open_CENTERED);
+    }
+    else if (event->data.mouse.button.data.menu)
+    {
+        Desk_Menu_Show(wimp.iconbar_menu_handle, event->data.mouse.pos.x, -1);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+
+    switch (event->data.selection[0])
+    {
+        case ICONBAR_MENU_INFO:
+            /* Show info window */
+            break;
+
+        case ICONBAR_MENU_STATUS:
+            Desk_Window_Show(wimp.main_window, Desk_open_CENTERED);
+            break;
+
+        case ICONBAR_MENU_POLL:
+            /* Force poll now */
+            queue_scan_outbound();
+            mailer_poll_outbound();
+            break;
+
+        case ICONBAR_MENU_QUIT:
+            wimp.quit = Desk_bool_TRUE;
+            break;
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool wimp_handle_window_close(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+    Desk_Window_Hide(event->data.openblock.window);
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(event);
+    Desk_UNUSED(ref);
+
+    /* Accept incoming connections */
+    if (mailer.listener_active)
+    {
+        mailer_accept_connection();
+    }
+
+    /* Process active sessions */
+    mailer_process_sessions();
+
+    /* Check for timeouts */
+    mailer_check_timeouts();
+
+    /* Poll outbound queue */
+    mailer_poll_outbound();
+
+    return Desk_bool_TRUE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp Setup                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+static void create_iconbar_icon(void)
+{
+    wimp.iconbar_icon = Desk_Icon_BarIcon("!ftn", Desk_iconbar_RIGHT);
+}
+
+static void create_iconbar_menu(void)
+{
+    wimp.iconbar_menu_handle = Desk_Menu_New(MAILER_TASK_NAME,
+        ">Info,Status,Poll Now,Quit");
+}
+
+static void poll_idle(void)
+{
+    Desk_event_pollblock event;
+    Desk_event_pollmask mask;
+    int next_time;
+
+    mask.value = 0;
+    mask.data.null = Desk_bool_FALSE;  /* We want null events */
+
+    next_time = timer_get_next_wakeup();
+
+    Desk_Wimp_PollIdle3(mask, &event, next_time, NULL);
+    Desk_Event_Process(&event);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int main(int argc, char *argv[])
+{
+    (void)argc;
+    (void)argv;
+
+    debug_printf("FTN Mailer starting");
+
+    /* Initialise Wimp */
+    Desk_Event_Initialise(MAILER_TASK_NAME);
+    Desk_EventMsg_Initialise();
+    Desk_Screen_CacheModeInfo();
+    Desk_Resource_Initialise("ConverseRes");
+    Desk_Msgs_LoadFile("Messages");
+    Desk_Template_Initialise();
+    Desk_Template_LoadFile("Templates");
+
+    wimp.quit = Desk_bool_FALSE;
+
+    /* Create UI elements */
+    create_iconbar_icon();
+    create_iconbar_menu();
+    wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
+
+    /* Register event handlers */
+    Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, Desk_event_ANY,
+                     wimp_handle_iconbar_click, NULL);
+    Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
+                     wimp_handle_iconbar_menu_choice, NULL);
+    Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY,
+                     wimp_handle_window_close, NULL);
+    Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY,
+                     wimp_handle_poll, NULL);
+
+    /* Initialise mailer */
+    mailer_initialise();
+
+    /* Create listener */
+    mailer_create_listener();
+
+    /* Initial queue scan */
+    queue_scan_outbound();
+
+    mailer_log_ftn("Mailer ready (%s %s)", MAILER_NAME, MAILER_VERSION);
+
+    /* Main loop */
+    while (wimp.quit == Desk_bool_FALSE)
+    {
+        poll_idle();
+    }
+
+    /* Cleanup */
+    mailer_finalise();
+    Desk_Template_ClearAll();
+
+    return 0;
+}

@@ -1,0 +1,146 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Timer Implementation                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "timer.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Timer Structures                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+#define MAX_TIMERS 32
+
+typedef struct
+{
+    int active;
+    TIMER_TYPE type;
+    int expire_time;        /* OS monotonic time when timer expires */
+    void *context;
+} TIMER_ENTRY;
+
+static TIMER_ENTRY timers[MAX_TIMERS];
+static int timer_count = 0;
+
+/* ******************************************************************************************************************************************************** */
+/* Helper Functions                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int get_monotonic_time(void)
+{
+    _kernel_swi_regs regs;
+    _kernel_swi(OS_ReadMonotonicTime, &regs, &regs);
+    return regs.r[0];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Timer Implementation                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+void timer_initialise(void)
+{
+    memset(timers, 0, sizeof(timers));
+    timer_count = 0;
+}
+
+void timer_finalise(void)
+{
+    timer_count = 0;
+}
+
+timer_handle timer_set(TIMER_TYPE type, int centiseconds, void *context)
+{
+    int i;
+    int now = get_monotonic_time();
+
+    for (i = 0; i < MAX_TIMERS; i++)
+    {
+        if (!timers[i].active)
+        {
+            timers[i].active = 1;
+            timers[i].type = type;
+            timers[i].expire_time = now + centiseconds;
+            timers[i].context = context;
+            timer_count++;
+            return (timer_handle)(i + 1);
+        }
+    }
+
+    debug_printf("timer: No free timer slots");
+    return 0;
+}
+
+void timer_cancel(timer_handle handle)
+{
+    int index = (int)handle - 1;
+
+    if (index >= 0 && index < MAX_TIMERS && timers[index].active)
+    {
+        timers[index].active = 0;
+        timer_count--;
+    }
+}
+
+void timer_action(timer_handle handle)
+{
+    int index = (int)handle - 1;
+
+    if (index >= 0 && index < MAX_TIMERS && timers[index].active)
+    {
+        TIMER_ENTRY *t = &timers[index];
+
+        switch (t->type)
+        {
+            case TIMER_TYPE_POLL:
+                debug_printf("timer: Poll timer fired");
+                break;
+
+            case TIMER_TYPE_SCAN:
+                debug_printf("timer: Scan timer fired");
+                break;
+
+            case TIMER_TYPE_TIMEOUT:
+                debug_printf("timer: Timeout timer fired");
+                break;
+
+            case TIMER_TYPE_RETRY:
+                debug_printf("timer: Retry timer fired");
+                break;
+        }
+
+        /* Timer is one-shot, mark inactive */
+        t->active = 0;
+        timer_count--;
+    }
+}
+
+int timer_get_next_wakeup(void)
+{
+    int i;
+    int now = get_monotonic_time();
+    int next = now + 100;  /* Default: wake up in 1 second */
+
+    for (i = 0; i < MAX_TIMERS; i++)
+    {
+        if (timers[i].active)
+        {
+            if (timers[i].expire_time <= now)
+            {
+                /* Timer has expired, process it */
+                timer_action((timer_handle)(i + 1));
+            }
+            else if (timers[i].expire_time < next)
+            {
+                next = timers[i].expire_time;
+            }
+        }
+    }
+
+    return next;
+}

@@ -23,7 +23,7 @@ WimpSlot -Min 128k -Max 128k
 |Run <Converse$Dir>.Resources.Web %*0
 
 WimpSlot -Min 256k -Max 256k
-|Run <Converse$Dir>.Resources.Mail %*0
+Run <Converse$Dir>.Resources.FTN %*0
 
 WimpSlot -Min 256k -Max 256k
 Run <Converse$Dir>.Resources.Server %*0

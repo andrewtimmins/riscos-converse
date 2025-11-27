@@ -1,0 +1,28 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Timer Header                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef TIMER_H
+#define TIMER_H
+
+/* Timer handles */
+typedef long timer_handle;
+
+/* Timer types */
+typedef enum
+{
+    TIMER_TYPE_POLL = 0,        /* Outbound poll timer */
+    TIMER_TYPE_SCAN,            /* Queue scan timer */
+    TIMER_TYPE_TIMEOUT,         /* Session timeout */
+    TIMER_TYPE_RETRY            /* Connection retry */
+} TIMER_TYPE;
+
+/* Timer functions */
+void timer_initialise(void);
+void timer_finalise(void);
+timer_handle timer_set(TIMER_TYPE type, int centiseconds, void *context);
+void timer_cancel(timer_handle handle);
+void timer_action(timer_handle handle);
+int timer_get_next_wakeup(void);
+
+#endif

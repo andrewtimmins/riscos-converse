@@ -1,0 +1,120 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Outbound Queue Header                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef QUEUE_H
+#define QUEUE_H
+
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Queue Constants                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#define QUEUE_MAX_FILES             256
+#define QUEUE_MAX_NODES             64
+
+/* Flavours (BSO style) */
+typedef enum
+{
+    QUEUE_FLAVOUR_NORMAL = 0,   /* .out, .flo */
+    QUEUE_FLAVOUR_HOLD,         /* .hut, .hlo */
+    QUEUE_FLAVOUR_DIRECT,       /* .dut, .dlo */
+    QUEUE_FLAVOUR_CRASH,        /* .cut, .clo */
+    QUEUE_FLAVOUR_IMMEDIATE     /* .iut, .ilo */
+} QUEUE_FLAVOUR;
+
+/* File types in queue */
+typedef enum
+{
+    QUEUE_FILE_PKT = 0,         /* Mail packet */
+    QUEUE_FILE_REQ,             /* File request */
+    QUEUE_FILE_ATTACH,          /* File attach */
+    QUEUE_FILE_FLOENTRY         /* Entry from .?lo file */
+} QUEUE_FILE_TYPE;
+
+/* ******************************************************************************************************************************************************** */
+/* Queue Structures                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    QUEUE_FILE_TYPE type;
+    QUEUE_FLAVOUR flavour;
+    char path[MAILER_PATH_SIZE];
+    char name[64];
+    long size;
+    time_t mtime;
+    int delete_after;           /* Delete file after sending */
+    int truncate_after;         /* Truncate file after sending */
+} QUEUE_FILE;
+
+typedef struct
+{
+    FTN_ADDR addr;
+    char hostname[64];
+    int port;
+    QUEUE_FLAVOUR max_flavour;  /* Highest priority flavour waiting */
+    int file_count;
+    long total_size;
+    time_t next_poll;           /* When to try connecting */
+    int retry_count;
+    int busy;                   /* Currently in session */
+    QUEUE_FILE files[QUEUE_MAX_FILES];
+} QUEUE_NODE;
+
+typedef struct
+{
+    int node_count;
+    QUEUE_NODE nodes[QUEUE_MAX_NODES];
+    time_t last_scan;
+    int scan_interval;          /* Seconds between outbound scans */
+} OUTBOUND_QUEUE;
+
+/* ******************************************************************************************************************************************************** */
+/* Global Queue                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+extern OUTBOUND_QUEUE outbound_queue;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Queue Management                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialisation */
+void queue_initialise(void);
+void queue_finalise(void);
+
+/* Scanning */
+void queue_scan_outbound(void);
+void queue_rescan_node(const FTN_ADDR *addr);
+int queue_parse_bso_directory(const char *path);
+int queue_parse_flo_file(QUEUE_NODE *node, const char *path, QUEUE_FLAVOUR flavour);
+
+/* Node lookup */
+QUEUE_NODE *queue_find_node(const FTN_ADDR *addr);
+QUEUE_NODE *queue_add_node(const FTN_ADDR *addr);
+void queue_remove_node(const FTN_ADDR *addr);
+
+/* File management */
+int queue_add_file(QUEUE_NODE *node, const char *path, QUEUE_FILE_TYPE type, QUEUE_FLAVOUR flavour);
+void queue_remove_file(QUEUE_NODE *node, const char *path);
+void queue_mark_file_sent(QUEUE_NODE *node, const char *path);
+QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node);
+
+/* Polling */
+QUEUE_NODE *queue_get_next_poll_node(void);
+void queue_schedule_retry(QUEUE_NODE *node, int delay_seconds);
+void queue_mark_node_busy(const FTN_ADDR *addr, int busy);
+
+/* BSO path helpers */
+void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr);
+void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr, const char *ext);
+int queue_create_poll_file(const FTN_ADDR *addr, QUEUE_FLAVOUR flavour);
+
+/* Status */
+int queue_get_pending_count(void);
+long queue_get_pending_size(void);
+void queue_dump_status(void);
+
+#endif

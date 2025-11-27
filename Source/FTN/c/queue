@@ -1,0 +1,545 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Queue Implementation                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "queue.h"
+#include "mailer.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Global Queue                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+OUTBOUND_QUEUE outbound_queue;
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void queue_initialise(void)
+{
+    memset(&outbound_queue, 0, sizeof(outbound_queue));
+    outbound_queue.scan_interval = 60;  /* Scan every 60 seconds */
+}
+
+void queue_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* BSO Path Helpers                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * BSO (Binkley-Style Outbound) directory structure:
+ * <outbound>/              - Zone 2 (default zone)
+ * <outbound>.001/          - Zone 1
+ * <outbound>.003/          - Zone 3
+ * 
+ * Within each zone directory:
+ * NNNNNNNN.OUT             - Normal mail (net/node as hex)
+ * NNNNNNNN.HUT             - Hold mail
+ * NNNNNNNN.DUT             - Direct mail
+ * NNNNNNNN.CUT             - Crash mail
+ * NNNNNNNN.IUT             - Immediate mail
+ * NNNNNNNN.FLO             - Normal file attach list
+ * NNNNNNNN.HLO             - Hold file attach list
+ * etc.
+ * NNNNNNNN.PNT/            - Point directory
+ * NNNNNNNN.PNT/PPPPPPPP.*  - Point files
+ */
+
+void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr)
+{
+    char zone_ext[8];
+
+    if (addr->zone == 2)
+    {
+        /* Zone 2 is default, no extension */
+        zone_ext[0] = '\0';
+    }
+    else
+    {
+        snprintf(zone_ext, sizeof(zone_ext), ".%03x", addr->zone);
+    }
+
+    if (addr->point == 0)
+    {
+        /* Node address */
+        snprintf(buffer, size, "%s%s.%04x%04x",
+                 mailer.outbound_path, zone_ext, addr->net, addr->node);
+    }
+    else
+    {
+        /* Point address */
+        snprintf(buffer, size, "%s%s.%04x%04x.pnt.%08x",
+                 mailer.outbound_path, zone_ext, addr->net, addr->node, addr->point);
+    }
+}
+
+void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr, const char *ext)
+{
+    char zone_dir[MAILER_PATH_SIZE];
+
+    if (addr->zone == 2)
+    {
+        snprintf(zone_dir, sizeof(zone_dir), "%s", mailer.outbound_path);
+    }
+    else
+    {
+        snprintf(zone_dir, sizeof(zone_dir), "%s.%03x", mailer.outbound_path, addr->zone);
+    }
+
+    if (addr->point == 0)
+    {
+        snprintf(buffer, size, "%s.%04x%04x.%s",
+                 zone_dir, addr->net, addr->node, ext);
+    }
+    else
+    {
+        snprintf(buffer, size, "%s.%04x%04x.pnt.%08x.%s",
+                 zone_dir, addr->net, addr->node, addr->point, ext);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Node Management                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+QUEUE_NODE *queue_find_node(const FTN_ADDR *addr)
+{
+    int i;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        if (ftn_addr_match(&outbound_queue.nodes[i].addr, addr))
+        {
+            return &outbound_queue.nodes[i];
+        }
+    }
+
+    return NULL;
+}
+
+QUEUE_NODE *queue_add_node(const FTN_ADDR *addr)
+{
+    QUEUE_NODE *node;
+
+    if (outbound_queue.node_count >= QUEUE_MAX_NODES)
+    {
+        debug_printf("queue: Maximum nodes reached");
+        return NULL;
+    }
+
+    node = &outbound_queue.nodes[outbound_queue.node_count++];
+    memset(node, 0, sizeof(QUEUE_NODE));
+    node->addr = *addr;
+    node->port = BINKP_DEFAULT_PORT;
+
+    return node;
+}
+
+void queue_remove_node(const FTN_ADDR *addr)
+{
+    int i;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        if (ftn_addr_match(&outbound_queue.nodes[i].addr, addr))
+        {
+            /* Shift remaining nodes down */
+            if (i < outbound_queue.node_count - 1)
+            {
+                memmove(&outbound_queue.nodes[i],
+                        &outbound_queue.nodes[i + 1],
+                        (outbound_queue.node_count - i - 1) * sizeof(QUEUE_NODE));
+            }
+            outbound_queue.node_count--;
+            return;
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File Management                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int queue_add_file(QUEUE_NODE *node, const char *path, QUEUE_FILE_TYPE type, QUEUE_FLAVOUR flavour)
+{
+    QUEUE_FILE *file;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int objtype;
+    long fsize;
+
+    if (node->file_count >= QUEUE_MAX_FILES)
+    {
+        debug_printf("queue: Maximum files for node reached");
+        return 0;
+    }
+
+    /* Get file info */
+    regs.r[0] = 17;  /* Read catalogue info, no path */
+    regs.r[1] = (int)path;
+    err = _kernel_swi(OS_File, &regs, &regs);
+
+    if (err != NULL || regs.r[0] == 0)
+    {
+        debug_printf("queue: File not found: %s", path);
+        return 0;
+    }
+
+    objtype = regs.r[0];
+    fsize = regs.r[4];
+
+    if (objtype != 1)
+    {
+        /* Not a file */
+        return 0;
+    }
+
+    file = &node->files[node->file_count++];
+    memset(file, 0, sizeof(QUEUE_FILE));
+    file->type = type;
+    file->flavour = flavour;
+    strncpy(file->path, path, sizeof(file->path) - 1);
+    file->size = fsize;
+    file->mtime = time(NULL);  /* TODO: Get actual file time */
+
+    /* Extract filename from path */
+    {
+        const char *p = strrchr(path, '.');
+        if (p != NULL)
+        {
+            strncpy(file->name, p + 1, sizeof(file->name) - 1);
+        }
+        else
+        {
+            strncpy(file->name, path, sizeof(file->name) - 1);
+        }
+    }
+
+    node->total_size += fsize;
+
+    /* Update max flavour */
+    if (flavour > node->max_flavour)
+    {
+        node->max_flavour = flavour;
+    }
+
+    debug_printf("queue: Added file %s (%ld bytes) for %d:%d/%d.%d",
+                 file->name, fsize,
+                 node->addr.zone, node->addr.net, node->addr.node, node->addr.point);
+
+    return 1;
+}
+
+void queue_remove_file(QUEUE_NODE *node, const char *path)
+{
+    int i;
+
+    for (i = 0; i < node->file_count; i++)
+    {
+        if (strcmp(node->files[i].path, path) == 0)
+        {
+            node->total_size -= node->files[i].size;
+
+            if (i < node->file_count - 1)
+            {
+                memmove(&node->files[i],
+                        &node->files[i + 1],
+                        (node->file_count - i - 1) * sizeof(QUEUE_FILE));
+            }
+            node->file_count--;
+            return;
+        }
+    }
+}
+
+void queue_mark_file_sent(QUEUE_NODE *node, const char *path)
+{
+    int i;
+
+    for (i = 0; i < node->file_count; i++)
+    {
+        if (strcmp(node->files[i].path, path) == 0)
+        {
+            QUEUE_FILE *file = &node->files[i];
+
+            if (file->delete_after)
+            {
+                _kernel_swi_regs regs;
+                regs.r[0] = 6;  /* Delete */
+                regs.r[1] = (int)path;
+                _kernel_swi(OS_File, &regs, &regs);
+                debug_printf("queue: Deleted sent file: %s", path);
+            }
+            else if (file->truncate_after)
+            {
+                FILE *f = fopen(path, "w");
+                if (f != NULL)
+                {
+                    fclose(f);
+                }
+                debug_printf("queue: Truncated sent file: %s", path);
+            }
+
+            queue_remove_file(node, path);
+            return;
+        }
+    }
+}
+
+QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node)
+{
+    int i;
+    QUEUE_FILE *best = NULL;
+
+    /* Return highest priority file first */
+    for (i = 0; i < node->file_count; i++)
+    {
+        if (best == NULL || node->files[i].flavour > best->flavour)
+        {
+            best = &node->files[i];
+        }
+    }
+
+    return best;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FLO File Parsing                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int queue_parse_flo_file(QUEUE_NODE *node, const char *path, QUEUE_FLAVOUR flavour)
+{
+    FILE *f;
+    char line[MAILER_PATH_SIZE];
+    int count = 0;
+
+    f = fopen(path, "r");
+    if (f == NULL)
+    {
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), f) != NULL)
+    {
+        char *p = line;
+        int delete_after = 0;
+        int truncate_after = 0;
+        QUEUE_FILE *file;
+
+        /* Remove trailing newline */
+        {
+            char *nl = strchr(p, '\n');
+            if (nl != NULL) *nl = '\0';
+            nl = strchr(p, '\r');
+            if (nl != NULL) *nl = '\0';
+        }
+
+        /* Skip empty lines */
+        if (*p == '\0')
+        {
+            continue;
+        }
+
+        /* Check for delete/truncate prefix */
+        if (*p == '^')
+        {
+            delete_after = 1;
+            p++;
+        }
+        else if (*p == '#')
+        {
+            truncate_after = 1;
+            p++;
+        }
+        else if (*p == '~')
+        {
+            /* Already sent, skip */
+            continue;
+        }
+
+        /* Add file to queue */
+        if (queue_add_file(node, p, QUEUE_FILE_FLOENTRY, flavour))
+        {
+            file = &node->files[node->file_count - 1];
+            file->delete_after = delete_after;
+            file->truncate_after = truncate_after;
+            count++;
+        }
+    }
+
+    fclose(f);
+    return count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Outbound Scanning                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+void queue_scan_outbound(void)
+{
+    /* TODO: Implement BSO directory scanning */
+    /* This would iterate through the outbound directory structure */
+    /* looking for .OUT, .FLO, .HUT, .HLO, .CUT, .CLO, etc. files */
+
+    debug_printf("queue: Scanning outbound: %s", mailer.outbound_path);
+
+    outbound_queue.last_scan = time(NULL);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Polling                                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+QUEUE_NODE *queue_get_next_poll_node(void)
+{
+    int i;
+    time_t now = time(NULL);
+    QUEUE_NODE *best = NULL;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        QUEUE_NODE *node = &outbound_queue.nodes[i];
+
+        /* Skip if busy or not ready */
+        if (node->busy || node->file_count == 0)
+        {
+            continue;
+        }
+
+        /* Skip if not time to poll yet */
+        if (node->next_poll > now)
+        {
+            continue;
+        }
+
+        /* Prefer higher priority (crash > direct > normal > hold) */
+        if (best == NULL || node->max_flavour > best->max_flavour)
+        {
+            best = node;
+        }
+    }
+
+    return best;
+}
+
+void queue_schedule_retry(QUEUE_NODE *node, int delay_seconds)
+{
+    node->next_poll = time(NULL) + delay_seconds;
+    node->retry_count++;
+
+    debug_printf("queue: Scheduled retry for %d:%d/%d.%d in %d seconds (attempt %d)",
+                 node->addr.zone, node->addr.net, node->addr.node, node->addr.point,
+                 delay_seconds, node->retry_count);
+}
+
+void queue_mark_node_busy(const FTN_ADDR *addr, int busy)
+{
+    QUEUE_NODE *node = queue_find_node(addr);
+
+    if (node != NULL)
+    {
+        node->busy = busy;
+        if (!busy)
+        {
+            node->retry_count = 0;
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Status                                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+int queue_get_pending_count(void)
+{
+    int i, count = 0;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        count += outbound_queue.nodes[i].file_count;
+    }
+
+    return count;
+}
+
+long queue_get_pending_size(void)
+{
+    int i;
+    long size = 0;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        size += outbound_queue.nodes[i].total_size;
+    }
+
+    return size;
+}
+
+void queue_dump_status(void)
+{
+    int i;
+
+    debug_printf("queue: %d nodes, %d files, %ld bytes pending",
+                 outbound_queue.node_count,
+                 queue_get_pending_count(),
+                 queue_get_pending_size());
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        QUEUE_NODE *node = &outbound_queue.nodes[i];
+
+        debug_printf("queue:   %d:%d/%d.%d - %d files, %ld bytes, %s",
+                     node->addr.zone, node->addr.net, node->addr.node, node->addr.point,
+                     node->file_count, node->total_size,
+                     node->busy ? "BUSY" : "ready");
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Poll File Creation                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+int queue_create_poll_file(const FTN_ADDR *addr, QUEUE_FLAVOUR flavour)
+{
+    char path[MAILER_PATH_SIZE];
+    const char *ext;
+    FILE *f;
+
+    switch (flavour)
+    {
+        case QUEUE_FLAVOUR_CRASH:     ext = "clo"; break;
+        case QUEUE_FLAVOUR_DIRECT:    ext = "dlo"; break;
+        case QUEUE_FLAVOUR_HOLD:      ext = "hlo"; break;
+        case QUEUE_FLAVOUR_IMMEDIATE: ext = "ilo"; break;
+        default:                      ext = "flo"; break;
+    }
+
+    queue_format_outbound_name(path, sizeof(path), addr, ext);
+
+    /* Create empty poll file */
+    f = fopen(path, "w");
+    if (f == NULL)
+    {
+        debug_printf("queue: Failed to create poll file: %s", path);
+        return 0;
+    }
+
+    fclose(f);
+    debug_printf("queue: Created poll file: %s", path);
+
+    return 1;
+}
