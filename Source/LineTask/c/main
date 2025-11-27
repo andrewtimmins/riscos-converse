@@ -349,7 +349,7 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
         state->door_launch_pending = Desk_bool_FALSE;
         state->door_launch_deadline = 0;
         state->door_next_ack_tick = 0;
-        pipes_output_write_string(state->line_id, "\r\n[Tetris door connected]\r\n");
+        pipes_output_write_string(state->line_id, "\r\n[Door connected]\r\n");
         door_send_acknowledgement(state);
         state->door_next_ack_tick = clock() + DOOR_ACK_INTERVAL_TICKS;
         return Desk_bool_TRUE;
@@ -362,7 +362,7 @@ static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref)
             return Desk_bool_FALSE;
         }
 
-        door_close_session(state, "\r\n[Tetris door closed]\r\n");
+        door_close_session(state, "\r\n[Door closed]\r\n");
         return Desk_bool_TRUE;
     }
 
@@ -471,7 +471,7 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             state->session_active = 0;
             if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
             {
-                door_close_session(state, "\r\n[Tetris door session ended]\r\n");
+                door_close_session(state, "\r\n[Door session ended]\r\n");
             }
             log_line_event(state->line_id, "Session disconnected");
             script_stop_session(state);
@@ -583,8 +583,7 @@ static void wait_for_pipe_space(void)
  * ------------------
  * The line task now owns the RiscBBS door handshake so we can prototype door launches without involving the server.
  * Once a door starts it posts 0xC0900, we latch the task handle, stream user keystrokes via 0xC0904, and drip-feed
- * acknowledgements (0xC0903) so the door keeps pumping output (0xC0902).  Future work: make the door path configurable
- * instead of hard-coding Tetris and plumb in per-door state from the server’s configuration data.
+ * acknowledgements (0xC0903) so the door keeps pumping output (0xC0902).  
  */
 static void door_process(line_task_state *state)
 {
@@ -598,7 +597,7 @@ static void door_process(line_task_state *state)
     {
         if (now >= state->door_launch_deadline)
         {
-            pipes_output_write_string(state->line_id, "\r\n[Tetris door did not respond]\r\n");
+            pipes_output_write_string(state->line_id, "\r\n[Door did not respond]\r\n");
             door_reset_state(state);
             script_notify_door_closed(&state->script);
             return;

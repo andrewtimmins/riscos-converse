@@ -120,9 +120,12 @@ void script_dispose(script_state *state)
     state->instruction_count = 0;
     state->instruction_capacity = 0;
 
-    for (size_t i = 0; i < state->label_count; ++i)
     {
-        script_free_label(&state->labels[i]);
+        size_t i;
+        for (i = 0; i < state->label_count; ++i)
+        {
+            script_free_label(&state->labels[i]);
+        }
     }
     free(state->labels);
     state->labels = NULL;
@@ -318,9 +321,11 @@ script_status script_get_status(const script_state *state)
 
 static void script_clear_program(script_state *state)
 {
+    size_t i;
+
     if (state->instructions != NULL)
     {
-        for (size_t i = 0; i < state->instruction_count; ++i)
+        for (i = 0; i < state->instruction_count; ++i)
         {
             script_free_instruction(&state->instructions[i]);
         }
@@ -330,7 +335,7 @@ static void script_clear_program(script_state *state)
 
     if (state->labels != NULL)
     {
-        for (size_t i = 0; i < state->label_count; ++i)
+        for (i = 0; i < state->label_count; ++i)
         {
             script_free_label(&state->labels[i]);
         }
@@ -340,9 +345,11 @@ static void script_clear_program(script_state *state)
 
 static void script_clear_variables(script_state *state)
 {
+    size_t i;
+
     if (state->variables != NULL)
     {
-        for (size_t i = 0; i < state->variable_count; ++i)
+        for (i = 0; i < state->variable_count; ++i)
         {
             script_free_variable(&state->variables[i]);
         }
@@ -892,12 +899,14 @@ static size_t script_find_label(const script_state *state, const char *name, int
         *found = 0;
     }
 
+    size_t i;
+
     if (state == NULL || name == NULL)
     {
         return 0;
     }
 
-    for (size_t i = 0; i < state->label_count; ++i)
+    for (i = 0; i < state->label_count; ++i)
     {
         if (state->labels[i].name != NULL && script_stringcasecmp(state->labels[i].name, name) == 0)
         {
@@ -914,12 +923,14 @@ static size_t script_find_label(const script_state *state, const char *name, int
 
 static script_variable *script_find_variable(script_state *state, const char *name, int create_if_missing)
 {
+    size_t i;
+
     if (state == NULL || name == NULL)
     {
         return NULL;
     }
 
-    for (size_t i = 0; i < state->variable_count; ++i)
+    for (i = 0; i < state->variable_count; ++i)
     {
         if (script_stringcasecmp(state->variables[i].name, name) == 0)
         {
@@ -972,8 +983,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_GOTO:
         {
+            size_t pc;
             int found = 0;
-            size_t pc = script_find_label(state, instruction->arg1, &found);
+            pc = script_find_label(state, instruction->arg1, &found);
             if (!found)
             {
                 script_set_error(state, "Unknown label '%s'", instruction->arg1 != NULL ? instruction->arg1 : "");
@@ -1025,8 +1037,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
             if (condition)
             {
+                size_t pc;
                 int found = 0;
-                size_t pc = script_find_label(state, label, &found);
+                pc = script_find_label(state, label, &found);
                 if (!found)
                 {
                     script_set_error(state, "Unknown label '%s'", label != NULL ? label : "");
@@ -1278,6 +1291,14 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
 
 static int script_expand_macros_to_buffer(script_state *state, const char *input, script_buffer *buffer, int translate_newlines)
 {
+    size_t i;
+    unsigned char current;
+    size_t start;
+    size_t end;
+    size_t macro_len;
+    char macro_name[64];
+    size_t previous_length;
+
     if (buffer == NULL)
     {
         return 0;
@@ -1288,9 +1309,9 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
         return 1;
     }
 
-    for (size_t i = 0; input[i] != '\0'; ++i)
+    for (i = 0; input[i] != '\0'; ++i)
     {
-        unsigned char current = (unsigned char)input[i];
+        current = (unsigned char)input[i];
 
         if (current == 0xC2 && (unsigned char)input[i + 1] == 0xA7)
         {
@@ -1300,8 +1321,8 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
 
         if (current == 0xA7)
         {
-            size_t start = i + 1;
-            size_t end = start;
+            start = i + 1;
+            end = start;
 
             while (input[end] != '\0' && (unsigned char)input[end] != 0xA7)
             {
@@ -1310,8 +1331,7 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
 
             if ((unsigned char)input[end] == 0xA7)
             {
-                size_t macro_len = end - start;
-                char macro_name[64];
+                macro_len = end - start;
 
                 if (macro_len >= sizeof(macro_name))
                 {
@@ -1332,8 +1352,8 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
 
         if (current == '%' && input[i + 1] == '{')
         {
-            size_t start = i + 2;
-            size_t end = start;
+            start = i + 2;
+            end = start;
 
             while (input[end] != '\0' && input[end] != '}')
             {
@@ -1342,8 +1362,7 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
 
             if (input[end] == '}')
             {
-                size_t macro_len = end - start;
-                char macro_name[64];
+                macro_len = end - start;
 
                 if (macro_len >= sizeof(macro_name))
                 {
@@ -1364,7 +1383,7 @@ static int script_expand_macros_to_buffer(script_state *state, const char *input
 
         if (translate_newlines && current == '\n')
         {
-            size_t previous_length = buffer->length;
+            previous_length = buffer->length;
             if (previous_length > 0 && buffer->data[previous_length - 1] == '\r')
             {
                 if (!script_buffer_append_char(buffer, '\n'))
@@ -1435,6 +1454,7 @@ static void script_translate_escapes(char *text)
 {
     size_t read_index = 0;
     size_t write_index = 0;
+    char next;
 
     if (text == NULL)
     {
@@ -1445,7 +1465,7 @@ static void script_translate_escapes(char *text)
     {
         if (text[read_index] == '\\' && text[read_index + 1] != '\0')
         {
-            char next = text[read_index + 1];
+            next = text[read_index + 1];
             switch (next)
             {
                     case 'n':
@@ -1524,12 +1544,14 @@ static void script_set_variable_value(script_state *state, const char *name, con
 
 static const char *script_get_variable_value(const script_state *state, const char *name)
 {
+    size_t i;
+
     if (state == NULL || name == NULL)
     {
         return NULL;
     }
 
-    for (size_t i = 0; i < state->variable_count; ++i)
+    for (i = 0; i < state->variable_count; ++i)
     {
         if (script_stringcasecmp(state->variables[i].name, name) == 0)
         {
@@ -1998,6 +2020,7 @@ static void script_buffer_trim_trailing_whitespace(script_buffer *buffer)
 static int script_buffer_has_embedded_blocks(const char *buffer, size_t length)
 {
     size_t index = 0;
+    char ch;
 
     if (buffer == NULL)
     {
@@ -2006,7 +2029,7 @@ static int script_buffer_has_embedded_blocks(const char *buffer, size_t length)
 
     while (index < length)
     {
-        char ch = buffer[index];
+        ch = buffer[index];
 
         if (ch == '/' && index + 1 < length && buffer[index + 1] == '*')
         {
@@ -2099,6 +2122,8 @@ static int script_append_print_literal(script_state *state, const char *text, si
 {
     script_instruction instruction;
     script_buffer normalised;
+    size_t i;
+    char ch;
 
     if (text == NULL || length == 0)
     {
@@ -2106,9 +2131,9 @@ static int script_append_print_literal(script_state *state, const char *text, si
     }
 
     script_buffer_init(&normalised);
-    for (size_t i = 0; i < length; ++i)
+    for (i = 0; i < length; ++i)
     {
-        char ch = text[i];
+        ch = text[i];
 
         if (ch == '\n')
         {
@@ -2409,6 +2434,7 @@ static int script_process_embedded_content(script_state *state, const char *buff
     int line_number = 1;
     script_buffer literal;
     int result = 1;
+    char ch;
 
     if (text_handler == NULL || command_handler == NULL)
     {
@@ -2419,7 +2445,7 @@ static int script_process_embedded_content(script_state *state, const char *buff
 
     while (index < length && result)
     {
-        char ch = buffer[index];
+        ch = buffer[index];
 
         if (ch == '\r')
         {
