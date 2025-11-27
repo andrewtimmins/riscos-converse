@@ -240,6 +240,11 @@ void mailer_update_stats(MAILER_SESSION *session);
 void mailer_update_status_window(void);
 void mailer_log(const char *format, ...);
 
+/* FTN Connect window - scrolling log display */
+void ftnconnect_open(const char *hostname);
+void ftnconnect_log(const char *format, ...);
+void ftnconnect_close(void);
+
 /* ******************************************************************************************************************************************************** */
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */

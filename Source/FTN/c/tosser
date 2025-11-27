@@ -1,0 +1,1245 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Mail Tosser Implementation                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "tosser.h"
+#include "mailer.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define TOSSER_READ_BUFFER          4096
+#define TOSSER_MAX_BODY_SIZE        65536
+#define TOSSER_DUPE_HASH_SIZE       1024
+
+/* SWI numbers */
+#define SWI_FILER_MESSAGEBASE       0x5AA42
+#define SWI_SUPPORT_MSGBASECONFIG   0x5AA84
+
+/* Filer messagebase commands */
+#define MSGBASE_CMD_CREATE          0
+
+/* Case-insensitive string compare (portable) */
+static int str_casecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+#define MSGBASE_CMD_UPDATE          1
+#define MSGBASE_CMD_INFO            2
+#define MSGBASE_CMD_BEGIN_UPLOAD    3
+#define MSGBASE_CMD_UPLOAD_BLOCK    4
+
+/* Support messagebase config commands */
+#define MSGBASE_CONFIG_GET_GLOBAL   0
+#define MSGBASE_CONFIG_GET_BASE     2
+#define MSGBASE_CONFIG_GET_AREA     4
+#define MSGBASE_CONFIG_COUNT_BASES  6
+#define MSGBASE_CONFIG_COUNT_AREAS  7
+
+/* ******************************************************************************************************************************************************** */
+/* Module State                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static TOSSER_STATS tosser_stats;
+static char tosser_inbound[TOSSER_MAX_PATH];
+static char tosser_processed[TOSSER_MAX_PATH];
+static char tosser_bad[TOSSER_MAX_PATH];
+
+/* Simple dupe detection - hash of recent MSGIDs */
+static unsigned long dupe_hashes[TOSSER_DUPE_HASH_SIZE];
+static int dupe_hash_index = 0;
+
+/* Status callback for UI updates */
+static tosser_status_callback status_callback = NULL;
+
+/* ******************************************************************************************************************************************************** */
+/* Status Callback                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void tosser_set_status_callback(tosser_status_callback callback)
+{
+    status_callback = callback;
+}
+
+static void tosser_report_status(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    if (status_callback != NULL)
+    {
+        status_callback(buffer);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned long tosser_hash_string(const char *str)
+{
+    unsigned long hash = 5381;
+    int c;
+    
+    while ((c = *str++) != 0)
+    {
+        hash = ((hash << 5) + hash) + c;
+    }
+    
+    return hash;
+}
+
+static void tosser_ensure_directory(const char *path)
+{
+    _kernel_swi_regs regs;
+    
+    regs.r[0] = 8;  /* Create directory */
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;
+    _kernel_swi(OS_File, &regs, &regs);
+}
+
+static int tosser_file_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+    
+    regs.r[0] = 17;  /* Read catalogue info */
+    regs.r[1] = (int)path;
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    
+    return (regs.r[0] == 1);  /* 1 = file found */
+}
+
+static void tosser_copy_string(char *dest, const char *src, size_t max)
+{
+    size_t i;
+    
+    for (i = 0; i < max - 1 && src[i] != '\0'; i++)
+    {
+        dest[i] = src[i];
+    }
+    dest[i] = '\0';
+}
+
+/*
+ * Read a null-terminated string from a packet file.
+ * Returns number of bytes read (including null terminator).
+ */
+static int tosser_read_pkt_string(FILE *f, char *buffer, size_t max)
+{
+    size_t i = 0;
+    int c;
+    
+    while (i < max - 1)
+    {
+        c = fgetc(f);
+        if (c == EOF || c == '\0')
+        {
+            break;
+        }
+        buffer[i++] = (char)c;
+    }
+    buffer[i] = '\0';
+    
+    /* Skip remaining bytes if string was truncated */
+    if (c != EOF && c != '\0')
+    {
+        while ((c = fgetc(f)) != EOF && c != '\0')
+        {
+            /* Skip */
+        }
+    }
+    
+    return (c == EOF) ? -1 : (int)(i + 1);
+}
+
+/*
+ * Convert little-endian bytes to unsigned short.
+ */
+static unsigned short tosser_read_le16(const unsigned char *p)
+{
+    return (unsigned short)(p[0] | (p[1] << 8));
+}
+
+/*
+ * Convert little-endian bytes to unsigned long.
+ */
+static unsigned long tosser_read_le32(const unsigned char *p)
+{
+    return (unsigned long)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void tosser_initialise(void)
+{
+    _kernel_swi_regs regs;
+    
+    /* Local definition matching Support module's FTN_GLOBAL_CONFIG */
+    typedef struct
+    {
+        char sysop[64];
+        char system[64];
+        char location[64];
+        char phone[64];
+        int speed;
+        char flags[64];
+        char inbound[256];
+        char outbound[256];
+        char netmail[256];
+        char badmail[256];
+        /* ... more fields follow but we only need inbound */
+    } FTN_CFG;
+    
+    memset(&tosser_stats, 0, sizeof(tosser_stats));
+    memset(dupe_hashes, 0, sizeof(dupe_hashes));
+    dupe_hash_index = 0;
+    
+    /* Get inbound path from FTN config */
+    regs.r[0] = 0;  /* FTN_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(0x5AA86, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        FTN_CFG *cfg = (FTN_CFG *)regs.r[0];
+        tosser_copy_string(tosser_inbound, cfg->inbound, sizeof(tosser_inbound));
+    }
+    else
+    {
+        tosser_copy_string(tosser_inbound, "<Converse$Dir>.FTN.Inbound", sizeof(tosser_inbound));
+    }
+    
+    /* Set up processed and bad directories */
+    snprintf(tosser_processed, sizeof(tosser_processed), "%s.Processed", tosser_inbound);
+    snprintf(tosser_bad, sizeof(tosser_bad), "%s.Bad", tosser_inbound);
+    
+    tosser_ensure_directory(tosser_inbound);
+    tosser_ensure_directory(tosser_processed);
+    tosser_ensure_directory(tosser_bad);
+    
+    debug_printf("tosser: Initialised, inbound=%s", tosser_inbound);
+}
+
+void tosser_finalise(void)
+{
+    debug_printf("tosser: Finalised (tossed=%d, dupes=%d, bad=%d)",
+                 tosser_stats.messages_tossed,
+                 tosser_stats.messages_duped,
+                 tosser_stats.messages_bad);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Duplicate Detection                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+int tosser_check_duplicate(const char *msgid)
+{
+    unsigned long hash;
+    int i;
+    
+    if (msgid == NULL || *msgid == '\0')
+    {
+        return 0;  /* No MSGID = can't check dupes */
+    }
+    
+    hash = tosser_hash_string(msgid);
+    
+    /* Check if hash exists in recent list */
+    for (i = 0; i < TOSSER_DUPE_HASH_SIZE; i++)
+    {
+        if (dupe_hashes[i] == hash)
+        {
+            return 1;  /* Duplicate */
+        }
+    }
+    
+    /* Add hash to list (circular buffer) */
+    dupe_hashes[dupe_hash_index] = hash;
+    dupe_hash_index = (dupe_hash_index + 1) % TOSSER_DUPE_HASH_SIZE;
+    
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Datetime Parsing                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Parse FTN datetime format: "DD Mon YY  HH:MM:SS"
+ * Also handles variations like "DD Mon YYYY HH:MM:SS"
+ */
+time_t tosser_parse_datetime(const char *datetime_str)
+{
+    static const char *months[] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+    struct tm tm;
+    int day, year, hour, min, sec;
+    char mon[4];
+    int i;
+    
+    if (datetime_str == NULL || *datetime_str == '\0')
+    {
+        return time(NULL);
+    }
+    
+    memset(&tm, 0, sizeof(tm));
+    
+    /* Try parsing "DD Mon YY  HH:MM:SS" */
+    if (sscanf(datetime_str, "%d %3s %d %d:%d:%d", &day, mon, &year, &hour, &min, &sec) >= 5)
+    {
+        tm.tm_mday = day;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
+        tm.tm_sec = sec;
+        
+        /* Convert month name to number */
+        for (i = 0; i < 12; i++)
+        {
+            if (strncmp(mon, months[i], 3) == 0)
+            {
+                tm.tm_mon = i;
+                break;
+            }
+        }
+        
+        /* Handle 2-digit vs 4-digit year */
+        if (year < 100)
+        {
+            tm.tm_year = (year < 80) ? (year + 100) : year;  /* 80-99 = 1980-1999, 00-79 = 2000-2079 */
+        }
+        else
+        {
+            tm.tm_year = year - 1900;
+        }
+        
+        return mktime(&tm);
+    }
+    
+    return time(NULL);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Packet Parsing                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int tosser_open_packet(const char *path, PKT_HEADER *header)
+{
+    FILE *f;
+    unsigned char buf[58];
+    
+    if (path == NULL || header == NULL)
+    {
+        return 0;
+    }
+    
+    f = fopen(path, "rb");
+    if (f == NULL)
+    {
+        debug_printf("tosser: Cannot open packet %s", path);
+        return 0;
+    }
+    
+    /* Read 58-byte header */
+    if (fread(buf, 1, 58, f) != 58)
+    {
+        debug_printf("tosser: Short packet header in %s", path);
+        fclose(f);
+        return 0;
+    }
+    
+    fclose(f);
+    
+    /* Parse header (little-endian) */
+    header->orig_node = tosser_read_le16(&buf[0]);
+    header->dest_node = tosser_read_le16(&buf[2]);
+    header->year = tosser_read_le16(&buf[4]);
+    header->month = tosser_read_le16(&buf[6]);
+    header->day = tosser_read_le16(&buf[8]);
+    header->hour = tosser_read_le16(&buf[10]);
+    header->minute = tosser_read_le16(&buf[12]);
+    header->second = tosser_read_le16(&buf[14]);
+    header->baud = tosser_read_le16(&buf[16]);
+    header->pkt_type = tosser_read_le16(&buf[18]);
+    header->orig_net = tosser_read_le16(&buf[20]);
+    header->dest_net = tosser_read_le16(&buf[22]);
+    header->prod_code_lo = buf[24];
+    header->prod_rev_major = buf[25];
+    memcpy(header->password, &buf[26], 8);
+    header->orig_zone = tosser_read_le16(&buf[34]);
+    header->dest_zone = tosser_read_le16(&buf[36]);
+    header->aux_net = tosser_read_le16(&buf[38]);
+    header->cap_word_copy = tosser_read_le16(&buf[40]);
+    header->prod_code_hi = buf[42];
+    header->prod_rev_minor = buf[43];
+    header->cap_word = tosser_read_le16(&buf[44]);
+    header->orig_zone2 = tosser_read_le16(&buf[46]);
+    header->dest_zone2 = tosser_read_le16(&buf[48]);
+    header->orig_point = tosser_read_le16(&buf[50]);
+    header->dest_point = tosser_read_le16(&buf[52]);
+    header->prod_data = tosser_read_le32(&buf[54]);
+    
+    /* Validate packet type */
+    if (header->pkt_type != PKT_TYPE_2)
+    {
+        debug_printf("tosser: Unknown packet type %d in %s", header->pkt_type, path);
+        return 0;
+    }
+    
+    debug_printf("tosser: Packet from %d:%d/%d.%d to %d:%d/%d.%d",
+                 header->orig_zone2 ? header->orig_zone2 : header->orig_zone,
+                 header->orig_net, header->orig_node, header->orig_point,
+                 header->dest_zone2 ? header->dest_zone2 : header->dest_zone,
+                 header->dest_net, header->dest_node, header->dest_point);
+    
+    return 1;
+}
+
+int tosser_read_message(FILE *pkt, const PKT_HEADER *pkt_hdr, TOSSER_MESSAGE *msg)
+{
+    unsigned char hdr_buf[14];
+    PKT_MSG_HEADER msg_hdr;
+    char *raw_body = NULL;
+    size_t body_size = 0;
+    size_t body_capacity = TOSSER_READ_BUFFER;
+    int c;
+    
+    if (pkt == NULL || msg == NULL)
+    {
+        return 0;
+    }
+    
+    memset(msg, 0, sizeof(TOSSER_MESSAGE));
+    
+    /* Read message header (14 bytes) */
+    if (fread(hdr_buf, 1, 14, pkt) != 14)
+    {
+        return 0;  /* End of packet or error */
+    }
+    
+    /* Check for end of packet (two null bytes) */
+    msg_hdr.pkt_type = tosser_read_le16(&hdr_buf[0]);
+    if (msg_hdr.pkt_type == 0)
+    {
+        return 0;  /* End of messages */
+    }
+    
+    /* Validate message type */
+    if (msg_hdr.pkt_type != 2)
+    {
+        debug_printf("tosser: Bad message type %d", msg_hdr.pkt_type);
+        return -1;
+    }
+    
+    /* Parse message header */
+    msg_hdr.orig_node = tosser_read_le16(&hdr_buf[2]);
+    msg_hdr.dest_node = tosser_read_le16(&hdr_buf[4]);
+    msg_hdr.orig_net = tosser_read_le16(&hdr_buf[6]);
+    msg_hdr.dest_net = tosser_read_le16(&hdr_buf[8]);
+    msg_hdr.attribute = tosser_read_le16(&hdr_buf[10]);
+    msg_hdr.cost = tosser_read_le16(&hdr_buf[12]);
+    
+    /* Set up addressing using packet header for zone/point */
+    msg->orig_addr.zone = pkt_hdr->orig_zone2 ? pkt_hdr->orig_zone2 : pkt_hdr->orig_zone;
+    msg->orig_addr.net = msg_hdr.orig_net;
+    msg->orig_addr.node = msg_hdr.orig_node;
+    msg->orig_addr.point = 0;  /* Updated from FMPT kludge if present */
+    
+    msg->dest_addr.zone = pkt_hdr->dest_zone2 ? pkt_hdr->dest_zone2 : pkt_hdr->dest_zone;
+    msg->dest_addr.net = msg_hdr.dest_net;
+    msg->dest_addr.node = msg_hdr.dest_node;
+    msg->dest_addr.point = 0;  /* Updated from TOPT kludge if present */
+    
+    msg->attribute = msg_hdr.attribute;
+    
+    /* Read null-terminated strings: datetime, to, from, subject */
+    if (tosser_read_pkt_string(pkt, msg->datetime, sizeof(msg->datetime)) < 0)
+    {
+        return -1;
+    }
+    
+    if (tosser_read_pkt_string(pkt, msg->to, sizeof(msg->to)) < 0)
+    {
+        return -1;
+    }
+    
+    if (tosser_read_pkt_string(pkt, msg->from, sizeof(msg->from)) < 0)
+    {
+        return -1;
+    }
+    
+    if (tosser_read_pkt_string(pkt, msg->subject, sizeof(msg->subject)) < 0)
+    {
+        return -1;
+    }
+    
+    msg->timestamp = tosser_parse_datetime(msg->datetime);
+    
+    /* Read message body until null terminator */
+    raw_body = malloc(body_capacity);
+    if (raw_body == NULL)
+    {
+        return -1;
+    }
+    
+    while ((c = fgetc(pkt)) != EOF && c != '\0')
+    {
+        if (body_size >= body_capacity - 1)
+        {
+            char *new_body;
+            body_capacity *= 2;
+            if (body_capacity > TOSSER_MAX_BODY_SIZE)
+            {
+                free(raw_body);
+                debug_printf("tosser: Message body too large");
+                return -1;
+            }
+            new_body = realloc(raw_body, body_capacity);
+            if (new_body == NULL)
+            {
+                free(raw_body);
+                return -1;
+            }
+            raw_body = new_body;
+        }
+        raw_body[body_size++] = (char)c;
+    }
+    raw_body[body_size] = '\0';
+    
+    /* Parse body for AREA line and kludges */
+    if (!tosser_parse_body(msg, raw_body, body_size))
+    {
+        free(raw_body);
+        return -1;
+    }
+    
+    free(raw_body);
+    
+    debug_printf("tosser: Message from %s to %s: %s", msg->from, msg->to, msg->subject);
+    
+    return 1;
+}
+
+void tosser_free_message(TOSSER_MESSAGE *msg)
+{
+    if (msg != NULL && msg->body != NULL)
+    {
+        free(msg->body);
+        msg->body = NULL;
+        msg->body_len = 0;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Body Parsing                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Parse message body, extracting:
+ * - AREA line (echomail)
+ * - Kludge lines (^A prefixed)
+ * - Clean body text
+ */
+int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len)
+{
+    const char *p = raw_body;
+    const char *end = raw_body + raw_len;
+    const char *body_start = NULL;
+    char *clean_body;
+    size_t clean_len = 0;
+    size_t clean_capacity;
+    
+    if (msg == NULL || raw_body == NULL)
+    {
+        return 0;
+    }
+    
+    clean_capacity = raw_len + 1;
+    clean_body = malloc(clean_capacity);
+    if (clean_body == NULL)
+    {
+        return 0;
+    }
+    
+    /* Check for AREA line at start (echomail) */
+    if (strncmp(p, "AREA:", 5) == 0)
+    {
+        const char *area_start = p + 5;
+        const char *area_end;
+        size_t area_len;
+        
+        /* Find end of line */
+        area_end = area_start;
+        while (area_end < end && *area_end != '\r' && *area_end != '\n')
+        {
+            area_end++;
+        }
+        
+        area_len = area_end - area_start;
+        if (area_len >= sizeof(msg->area))
+        {
+            area_len = sizeof(msg->area) - 1;
+        }
+        
+        memcpy(msg->area, area_start, area_len);
+        msg->area[area_len] = '\0';
+        msg->is_echomail = 1;
+        
+        /* Skip past AREA line */
+        p = area_end;
+        while (p < end && (*p == '\r' || *p == '\n'))
+        {
+            p++;
+        }
+        
+        debug_printf("tosser: AREA: %s", msg->area);
+    }
+    
+    /* Process body line by line */
+    body_start = p;
+    
+    while (p < end)
+    {
+        /* Check for kludge line (^A = 0x01) */
+        if (*p == '\x01')
+        {
+            const char *kludge_start = p + 1;
+            const char *kludge_end = kludge_start;
+            
+            /* Find end of kludge line */
+            while (kludge_end < end && *kludge_end != '\r' && *kludge_end != '\n')
+            {
+                kludge_end++;
+            }
+            
+            /* Parse known kludges */
+            if (strncmp(kludge_start, "MSGID: ", 7) == 0)
+            {
+                size_t len = kludge_end - (kludge_start + 7);
+                if (len >= sizeof(msg->msgid)) len = sizeof(msg->msgid) - 1;
+                memcpy(msg->msgid, kludge_start + 7, len);
+                msg->msgid[len] = '\0';
+            }
+            else if (strncmp(kludge_start, "REPLY: ", 7) == 0)
+            {
+                size_t len = kludge_end - (kludge_start + 7);
+                if (len >= sizeof(msg->reply)) len = sizeof(msg->reply) - 1;
+                memcpy(msg->reply, kludge_start + 7, len);
+                msg->reply[len] = '\0';
+            }
+            else if (strncmp(kludge_start, "FMPT ", 5) == 0)
+            {
+                msg->orig_addr.point = atoi(kludge_start + 5);
+            }
+            else if (strncmp(kludge_start, "TOPT ", 5) == 0)
+            {
+                msg->dest_addr.point = atoi(kludge_start + 5);
+            }
+            else if (strncmp(kludge_start, "INTL ", 5) == 0)
+            {
+                /* INTL dest_zone:dest_net/dest_node orig_zone:orig_net/orig_node */
+                int dz, dn, dnode, oz, on, onode;
+                if (sscanf(kludge_start + 5, "%d:%d/%d %d:%d/%d", 
+                           &dz, &dn, &dnode, &oz, &on, &onode) == 6)
+                {
+                    msg->dest_addr.zone = dz;
+                    msg->dest_addr.net = dn;
+                    msg->dest_addr.node = dnode;
+                    msg->orig_addr.zone = oz;
+                    msg->orig_addr.net = on;
+                    msg->orig_addr.node = onode;
+                }
+            }
+            
+            /* Skip past kludge line */
+            p = kludge_end;
+            while (p < end && (*p == '\r' || *p == '\n'))
+            {
+                p++;
+            }
+        }
+        else
+        {
+            /* Regular body line - copy to clean body */
+            const char *line_end = p;
+            
+            while (line_end < end && *line_end != '\r' && *line_end != '\n')
+            {
+                line_end++;
+            }
+            
+            /* Skip tearline and origin for storage (keep SEEN-BY, PATH for echomail) */
+            if (strncmp(p, "--- ", 4) != 0 && strncmp(p, " * Origin:", 10) != 0)
+            {
+                /* Copy line to clean body */
+                while (p < line_end)
+                {
+                    clean_body[clean_len++] = *p++;
+                }
+                clean_body[clean_len++] = '\n';
+            }
+            else
+            {
+                p = line_end;
+            }
+            
+            /* Skip line ending */
+            while (p < end && (*p == '\r' || *p == '\n'))
+            {
+                p++;
+            }
+        }
+    }
+    
+    clean_body[clean_len] = '\0';
+    
+    msg->body = clean_body;
+    msg->body_len = clean_len;
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Area Matching                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Match an echotag to a configured messagebase area.
+ * Searches through Support module's messagebase config for matching tag.
+ * Returns 1 if found, 0 if not.
+ */
+int tosser_match_area(const char *echotag, int *base_id, int *area_id)
+{
+    _kernel_swi_regs regs;
+    int base_count = 0;
+    int b, a;
+    
+    if (echotag == NULL || *echotag == '\0' || base_id == NULL || area_id == NULL)
+    {
+        return 0;
+    }
+    
+    *base_id = 0;
+    *area_id = 0;
+    
+    /* Get number of messagebases from Support module */
+    regs.r[0] = MSGBASE_CONFIG_COUNT_BASES;
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+    {
+        debug_printf("tosser: Failed to get messagebase count");
+        return 0;
+    }
+    base_count = regs.r[0];
+    
+    /* Search through each messagebase */
+    for (b = 1; b <= base_count; b++)
+    {
+        int area_count = 0;
+        
+        /* Get area count for this base */
+        regs.r[0] = MSGBASE_CONFIG_COUNT_AREAS;
+        regs.r[1] = b;
+        if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+        {
+            continue;
+        }
+        area_count = regs.r[0];
+        
+        /* Search through areas */
+        for (a = 1; a <= area_count; a++)
+        {
+            /* Get area config */
+            regs.r[0] = MSGBASE_CONFIG_GET_AREA;
+            regs.r[1] = b;
+            regs.r[2] = a;
+            if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
+            {
+                /* MSGBASE_AREA_CONFIG structure */
+                typedef struct
+                {
+                    int id;
+                    char name[64];
+                    char tag[64];
+                    int areatype;
+                    int daystokeep;
+                    int akause;
+                    int accesslevel;
+                    char keys[128];
+                } AREA_CFG;
+                
+                AREA_CFG *area = (AREA_CFG *)regs.r[0];
+                
+                /* Case-insensitive tag comparison */
+                if (str_casecmp(area->tag, echotag) == 0)
+                {
+                    *base_id = b;
+                    *area_id = area->id;
+                    debug_printf("tosser: Matched %s to base %d area %d (%s)",
+                                 echotag, b, area->id, area->name);
+                    return 1;
+                }
+            }
+        }
+    }
+    
+    debug_printf("tosser: No match for area %s", echotag);
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Message Storage                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
+{
+    _kernel_swi_regs regs;
+    int message_id;
+    
+    /* MESSAGE_RECORD structure matching Filer module */
+    typedef struct
+    {
+        int id;
+        int messagebaseid;
+        int messagebaseareaid;
+        int type;
+        int deleted;
+        int accesslevel;
+        char keys[128];
+        int sentby;
+        int receivedby;
+        struct { char domain[100]; int zone, net, node, point; } orgaddr;
+        struct { char domain[100]; int zone, net, node, point; } dstaddr;
+        time_t imported;
+        time_t sent;
+        time_t read;
+        int timesread;
+        long bodysize;
+        char subject[256];
+    } MSG_REC;
+    
+    MSG_REC record;
+    
+    if (msg == NULL || base_id <= 0)
+    {
+        return 0;
+    }
+    
+    memset(&record, 0, sizeof(record));
+    
+    record.messagebaseid = base_id;
+    record.messagebaseareaid = area_id;
+    record.type = msg->is_echomail ? 1 : 0;  /* 1 = FTN echomail */
+    record.deleted = 0;
+    record.accesslevel = 0;
+    record.sentby = 0;
+    record.receivedby = 0;
+    
+    /* Copy addresses */
+    strncpy(record.orgaddr.domain, msg->orig_addr.domain, sizeof(record.orgaddr.domain) - 1);
+    record.orgaddr.zone = msg->orig_addr.zone;
+    record.orgaddr.net = msg->orig_addr.net;
+    record.orgaddr.node = msg->orig_addr.node;
+    record.orgaddr.point = msg->orig_addr.point;
+    
+    strncpy(record.dstaddr.domain, msg->dest_addr.domain, sizeof(record.dstaddr.domain) - 1);
+    record.dstaddr.zone = msg->dest_addr.zone;
+    record.dstaddr.net = msg->dest_addr.net;
+    record.dstaddr.node = msg->dest_addr.node;
+    record.dstaddr.point = msg->dest_addr.point;
+    
+    record.imported = time(NULL);
+    record.sent = msg->timestamp;
+    record.read = 0;
+    record.timesread = 0;
+    record.bodysize = 0;  /* Updated by upload */
+    
+    /* Subject includes From/To for display */
+    snprintf(record.subject, sizeof(record.subject), "%s", msg->subject);
+    
+    /* Begin upload via Filer SWI */
+    regs.r[0] = MSGBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = base_id;
+    regs.r[2] = (int)&record;
+    
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+    {
+        debug_printf("tosser: Failed to begin message upload");
+        return 0;
+    }
+    
+    message_id = regs.r[0];
+    
+    /* Upload message body */
+    if (msg->body != NULL && msg->body_len > 0)
+    {
+        /* Build full message with headers for storage */
+        char *full_msg;
+        size_t full_len;
+        size_t offset = 0;
+        
+        /* Format: "From: name\nTo: name\nDate: date\n\nbody" */
+        full_len = msg->body_len + 256;
+        full_msg = malloc(full_len);
+        if (full_msg != NULL)
+        {
+            offset = snprintf(full_msg, full_len,
+                              "From: %s (%d:%d/%d.%d)\n"
+                              "To: %s\n"
+                              "Date: %s\n"
+                              "Subject: %s\n",
+                              msg->from,
+                              msg->orig_addr.zone, msg->orig_addr.net,
+                              msg->orig_addr.node, msg->orig_addr.point,
+                              msg->to,
+                              msg->datetime,
+                              msg->subject);
+            
+            if (msg->msgid[0] != '\0')
+            {
+                offset += snprintf(full_msg + offset, full_len - offset,
+                                   "Message-ID: %s\n", msg->msgid);
+            }
+            
+            offset += snprintf(full_msg + offset, full_len - offset, "\n");
+            
+            /* Append body */
+            if (offset + msg->body_len < full_len)
+            {
+                memcpy(full_msg + offset, msg->body, msg->body_len);
+                offset += msg->body_len;
+            }
+            
+            /* Upload in one block */
+            regs.r[0] = MSGBASE_CMD_UPLOAD_BLOCK;
+            regs.r[1] = base_id;
+            regs.r[2] = message_id;
+            regs.r[3] = (int)full_msg;
+            regs.r[4] = (int)offset;
+            
+            _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+            
+            free(full_msg);
+        }
+    }
+    
+    debug_printf("tosser: Stored message %d in base %d area %d", message_id, base_id, area_id);
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Packet Processing                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+int tosser_process_packet(const char *path)
+{
+    PKT_HEADER pkt_hdr;
+    FILE *pkt;
+    TOSSER_MESSAGE msg;
+    int msg_count = 0;
+    int result;
+    const char *leaf;
+    
+    if (path == NULL)
+    {
+        return 0;
+    }
+    
+    /* Get leaf name for status display */
+    leaf = strrchr(path, '.');
+    leaf = leaf ? leaf + 1 : path;
+    
+    tosser_report_status("Opening %s...", leaf);
+    mailer_log("Processing packet: %s", path);
+    
+    /* Open and validate packet */
+    if (!tosser_open_packet(path, &pkt_hdr))
+    {
+        tosser_report_status("Bad packet: %s", leaf);
+        tosser_move_to_bad(path);
+        tosser_stats.packets_processed++;
+        return 0;
+    }
+    
+    /* Open packet for reading messages */
+    pkt = fopen(path, "rb");
+    if (pkt == NULL)
+    {
+        return 0;
+    }
+    
+    /* Skip packet header */
+    fseek(pkt, 58, SEEK_SET);
+    
+    /* Process each message */
+    while ((result = tosser_read_message(pkt, &pkt_hdr, &msg)) > 0)
+    {
+        int base_id = 0;
+        int area_id = 0;
+        
+        msg_count++;
+        tosser_report_status("Message %d: %s", msg_count, msg.subject);
+        
+        /* Check for duplicates */
+        if (tosser_check_duplicate(msg.msgid))
+        {
+            debug_printf("tosser: Duplicate message: %s", msg.msgid);
+            tosser_stats.messages_duped++;
+            msg.duplicate = 1;
+            tosser_free_message(&msg);
+            continue;
+        }
+        
+        /* Process based on message type */
+        if (msg.is_echomail)
+        {
+            tosser_stats.echomail_count++;
+            
+            /* Match area tag to configured area */
+            if (tosser_match_area(msg.area, &base_id, &area_id))
+            {
+                tosser_stats.areas_matched++;
+                
+                if (tosser_store_message(&msg, base_id, area_id))
+                {
+                    tosser_stats.messages_tossed++;
+                    msg.tossed = 1;
+                }
+                else
+                {
+                    tosser_stats.messages_bad++;
+                    msg.bad = 1;
+                }
+            }
+            else
+            {
+                /* Unknown area - could store in junk or skip */
+                tosser_stats.areas_unmatched++;
+                debug_printf("tosser: Unknown area %s, skipping", msg.area);
+            }
+        }
+        else
+        {
+            /* Netmail - store in netmail area (base 1 area 0 typically) */
+            tosser_stats.netmail_count++;
+            
+            /* For now, store all netmail in base 1 */
+            base_id = 1;
+            area_id = 0;
+            
+            if (tosser_store_message(&msg, base_id, area_id))
+            {
+                tosser_stats.messages_tossed++;
+                msg.tossed = 1;
+            }
+            else
+            {
+                tosser_stats.messages_bad++;
+                msg.bad = 1;
+            }
+        }
+        
+        tosser_free_message(&msg);
+    }
+    
+    fclose(pkt);
+    
+    tosser_stats.packets_processed++;
+    
+    /* Move packet to processed folder */
+    if (msg_count > 0)
+    {
+        tosser_move_to_processed(path);
+        mailer_log("Tossed %d messages from packet", msg_count);
+    }
+    else
+    {
+        tosser_move_to_bad(path);
+    }
+    
+    return msg_count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Inbound Processing                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Scan inbound directory for .pkt files and process them.
+ * RISC OS filenames: xxxxxxpkt (no extension separator)
+ */
+int tosser_process_inbound(void)
+{
+    _kernel_swi_regs regs;
+    char buffer[256];
+    int context = 0;
+    int count = 0;
+    int total_messages = 0;
+    
+    debug_printf("tosser: Scanning inbound: %s", tosser_inbound);
+    
+    /* Use OS_GBPB 9 to enumerate directory */
+    do
+    {
+        regs.r[0] = 9;  /* Read directory entries */
+        regs.r[1] = (int)tosser_inbound;
+        regs.r[2] = (int)buffer;
+        regs.r[3] = 1;  /* Number of objects to read */
+        regs.r[4] = context;
+        regs.r[5] = sizeof(buffer);
+        regs.r[6] = (int)"*";  /* Wildcard */
+        
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        {
+            break;
+        }
+        
+        context = regs.r[4];
+        
+        if (regs.r[3] > 0)
+        {
+            /* Check if filename ends with "pkt" */
+            size_t len = strlen(buffer);
+            
+            if (len >= 3 && str_casecmp(buffer + len - 3, "pkt") == 0)
+            {
+                char full_path[TOSSER_MAX_PATH];
+                int messages;
+                
+                snprintf(full_path, sizeof(full_path), "%s.%s", tosser_inbound, buffer);
+                
+                tosser_report_status("Processing: %s", buffer);
+                
+                messages = tosser_process_packet(full_path);
+                if (messages > 0)
+                {
+                    total_messages += messages;
+                    count++;
+                }
+            }
+        }
+    }
+    while (context != -1);
+    
+    if (count > 0)
+    {
+        mailer_log("Processed %d packets, %d messages total", count, total_messages);
+    }
+    
+    return total_messages;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File Movement                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+void tosser_move_to_processed(const char *path)
+{
+    char dest[TOSSER_MAX_PATH];
+    const char *leaf;
+    
+    if (path == NULL)
+    {
+        return;
+    }
+    
+    /* Extract leaf name */
+    leaf = strrchr(path, '.');
+    leaf = leaf ? leaf + 1 : path;
+    
+    snprintf(dest, sizeof(dest), "%s.%s", tosser_processed, leaf);
+    
+    /* Use OS_FSControl 25 to rename/move */
+    {
+        _kernel_swi_regs regs;
+        
+        regs.r[0] = 25;  /* Rename */
+        regs.r[1] = (int)path;
+        regs.r[2] = (int)dest;
+        
+        if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
+        {
+            /* If rename fails, try to delete original */
+            remove(path);
+        }
+    }
+}
+
+void tosser_move_to_bad(const char *path)
+{
+    char dest[TOSSER_MAX_PATH];
+    const char *leaf;
+    
+    if (path == NULL)
+    {
+        return;
+    }
+    
+    /* Extract leaf name */
+    leaf = strrchr(path, '.');
+    leaf = leaf ? leaf + 1 : path;
+    
+    snprintf(dest, sizeof(dest), "%s.%s", tosser_bad, leaf);
+    
+    /* Use OS_FSControl 25 to rename/move */
+    {
+        _kernel_swi_regs regs;
+        
+        regs.r[0] = 25;  /* Rename */
+        regs.r[1] = (int)path;
+        regs.r[2] = (int)dest;
+        
+        if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
+        {
+            /* If rename fails, try to delete original */
+            remove(path);
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+void tosser_get_stats(TOSSER_STATS *stats)
+{
+    if (stats != NULL)
+    {
+        *stats = tosser_stats;
+    }
+}
+
+void tosser_reset_stats(void)
+{
+    memset(&tosser_stats, 0, sizeof(tosser_stats));
+}

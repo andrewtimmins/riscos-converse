@@ -43,8 +43,10 @@
 
 /* Our Includes */
 #include "mailer.h"
+#include "iconnames.h"
 #include "binkp.h"
 #include "queue.h"
+#include "tosser.h"
 #include "timer.h"
 #include "debug.h"
 
@@ -55,13 +57,26 @@
 WIMP_STATE wimp;
 MAILER_STATE mailer;
 Desk_dialog2_block *proginfo_window;
+Desk_window_handle ftnstatus_window;
+Desk_window_handle ftnconnect_window;
+
+/* Number of status lines in ftnconnect window */
+#define FTNCONNECT_NUM_LINES 16
+
+/* Status line icon numbers (STATUS1=4, STATUS2=5, etc) */
+static const int ftnconnect_status_icons[FTNCONNECT_NUM_LINES] = {
+    FTNCONNECT_STATUS1, FTNCONNECT_STATUS2, FTNCONNECT_STATUS3, FTNCONNECT_STATUS4,
+    FTNCONNECT_STATUS5, FTNCONNECT_STATUS6, FTNCONNECT_STATUS7, FTNCONNECT_STATUS8,
+    FTNCONNECT_STATUS9, FTNCONNECT_STATUS10, FTNCONNECT_STATUS11, FTNCONNECT_STATUS12,
+    FTNCONNECT_STATUS13, FTNCONNECT_STATUS14, FTNCONNECT_STATUS15, FTNCONNECT_STATUS16
+};
 
 /* Menu entries */
 enum
 {
     ICONBAR_MENU_INFO = 0,
-    ICONBAR_MENU_STATUS,
     ICONBAR_MENU_POLL,
+    ICONBAR_MENU_TOSS,
     ICONBAR_MENU_QUIT
 };
 
@@ -172,6 +187,164 @@ void mailer_log(const char *format, ...)
     va_end(args);
 
     mailer_log_ftn("%s", buffer);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Status Window                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnstatus_open(const char *operation_msg_tag)
+{
+    char operation[64];
+    
+    /* Look up operation string from Messages file */
+    Desk_Msgs_Lookup(operation_msg_tag, operation, sizeof(operation));
+    
+    /* Set operation text */
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, operation);
+    
+    /* Clear status */
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "");
+    
+    /* Show window centered */
+    Desk_Window_Show(ftnstatus_window, Desk_open_CENTERED);
+    
+    /* Force a redraw so user sees it immediately */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+static void ftnstatus_update(const char *status)
+{
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, (char *)status);
+    
+    /* Force a redraw so user sees update */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+static void ftnstatus_close(void)
+{
+    Desk_Window_Hide(ftnstatus_window);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Connect Window - Scrolling Log Display                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Open the ftnconnect window and set the hostname.
+ * Clears all status lines ready for new log entries.
+ */
+void ftnconnect_open(const char *hostname)
+{
+    int i;
+    
+    /* Set hostname */
+    Desk_Icon_SetText(ftnconnect_window, FTNCONNECT_HOSTNAME, (char *)hostname);
+    
+    /* Clear all status lines */
+    for (i = 0; i < FTNCONNECT_NUM_LINES; i++)
+    {
+        Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[i], "");
+    }
+    
+    /* Position window at bottom-right, just above iconbar */
+    {
+        Desk_window_state state;
+        int screen_width, screen_height;
+        int win_width, win_height;
+        
+        /* Get current screen size */
+        screen_width = Desk_screen_size.x;
+        screen_height = Desk_screen_size.y;
+        
+        /* Get window dimensions */
+        Desk_Wimp_GetWindowState(ftnconnect_window, &state);
+        win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+        win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+        
+        /* Position at bottom-right, above iconbar */
+        state.openblock.screenrect.min.x = screen_width - win_width - 16;
+        state.openblock.screenrect.max.x = screen_width - 16;
+        state.openblock.screenrect.min.y = 126 + 16;  /* Iconbar + margin */
+        state.openblock.screenrect.max.y = 126 + 16 + win_height;
+        state.openblock.behind = -1;  /* Open at front */
+        
+        Desk_Wimp_OpenWindow(&state.openblock);
+    }
+    
+    /* Force redraw */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+/*
+ * Add a log line to the ftnconnect window.
+ * Scrolls existing lines up and adds new line at the bottom.
+ */
+void ftnconnect_log(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    int i;
+    Desk_icon_block icon_info;
+    char line_buffer[256];
+    
+    /* Format the message */
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    
+    /* Scroll lines up: copy line N+1 to line N */
+    for (i = 0; i < FTNCONNECT_NUM_LINES - 1; i++)
+    {
+        /* Get text from next line */
+        Desk_Wimp_GetIconState(ftnconnect_window, ftnconnect_status_icons[i + 1], &icon_info);
+        if (icon_info.flags.data.indirected && icon_info.data.indirecttext.buffer != NULL)
+        {
+            strncpy(line_buffer, icon_info.data.indirecttext.buffer, sizeof(line_buffer) - 1);
+            line_buffer[sizeof(line_buffer) - 1] = '\0';
+        }
+        else
+        {
+            line_buffer[0] = '\0';
+        }
+        
+        /* Set it to current line */
+        Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[i], line_buffer);
+    }
+    
+    /* Add new message at the bottom */
+    Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[FTNCONNECT_NUM_LINES - 1], buffer);
+    
+    /* Force redraw so user sees update */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+/*
+ * Close the ftnconnect window.
+ */
+void ftnconnect_close(void)
+{
+    Desk_Window_Hide(ftnconnect_window);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -385,6 +558,10 @@ void mailer_accept_connection(void)
     strncpy(session->remote_hostname, inet_ntoa(client_addr.sin_addr),
             sizeof(session->remote_hostname) - 1);
 
+    /* Open connection window for incoming call */
+    ftnconnect_open(session->remote_hostname);
+    ftnconnect_log("Incoming connection from %s", session->remote_hostname);
+
     mailer_log_ftn("Incoming connection from %s", session->remote_hostname);
     mailer.total_sessions++;
 
@@ -442,6 +619,7 @@ void mailer_free_session(MAILER_SESSION *session)
 void mailer_close_session(MAILER_SESSION *session, const char *reason)
 {
     char addr_str[64];
+    int received_files = session->files_received;
 
     ftn_addr_to_string(&session->remote_addr, addr_str, sizeof(addr_str));
 
@@ -457,6 +635,16 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
     mailer.total_bytes_received += session->bytes_received;
 
     mailer_free_session(session);
+
+    /* Auto-toss if we received any files */
+    if (received_files > 0)
+    {
+        int tossed = tosser_process_inbound();
+        if (tossed > 0)
+        {
+            mailer_log_ftn("Auto-tossed %d messages", tossed);
+        }
+    }
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -671,6 +859,10 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     /* Mark node as busy */
     queue_mark_node_busy(addr, 1);
 
+    /* Log to connection window */
+    ftnconnect_log("Connecting to %s:%d", hostname, port);
+    ftnconnect_log("Node: %s", addr_str);
+
     mailer_log_ftn("Connecting to %s (%s:%d)", addr_str, hostname, port);
     mailer.total_sessions++;
 
@@ -734,6 +926,7 @@ void mailer_initialise(void)
 
     timer_initialise();
     queue_initialise();
+    tosser_initialise();
     mailer_load_config();
     mailer_create_directories();
 }
@@ -752,6 +945,7 @@ void mailer_finalise(void)
     }
 
     mailer_destroy_listener();
+    tosser_finalise();
     queue_finalise();
     timer_finalise();
 
@@ -768,8 +962,8 @@ static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *re
 
     if (event->data.mouse.button.data.select)
     {
-        /* Open status window */
-        Desk_Window_Show(wimp.main_window, Desk_open_CENTERED);
+        /* Open connection log window */
+        ftnconnect_open("");
     }
     else if (event->data.mouse.button.data.menu)
     {
@@ -789,14 +983,45 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
             /* Show info window */
             break;
 
-        case ICONBAR_MENU_STATUS:
-            Desk_Window_Show(wimp.main_window, Desk_open_CENTERED);
+        case ICONBAR_MENU_POLL:
+            /* Force poll now with status and connection windows */
+            ftnconnect_open("");
+            ftnstatus_open("ftn.polling");
+            ftnstatus_update("Scanning outbound...");
+            ftnconnect_log("Scanning outbound queue...");
+            queue_scan_outbound();
+            ftnstatus_update("Connecting to nodes...");
+            mailer_poll_outbound();
+            ftnstatus_update("Complete");
+            ftnstatus_close();
+            /* Leave ftnconnect open so user can see the log */
             break;
 
-        case ICONBAR_MENU_POLL:
-            /* Force poll now */
-            queue_scan_outbound();
-            mailer_poll_outbound();
+        case ICONBAR_MENU_TOSS:
+            /* Process inbound mail with status window */
+            ftnconnect_open("");
+            ftnstatus_open("ftn.tossing");
+            ftnstatus_update("Scanning inbound...");
+            ftnconnect_log("Scanning inbound directory...");
+            tosser_set_status_callback(ftnstatus_update);
+            {
+                int count = tosser_process_inbound();
+                tosser_set_status_callback(NULL);
+                if (count > 0)
+                {
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "Tossed %d messages", count);
+                    ftnstatus_update(msg);
+                    ftnconnect_log(msg);
+                    mailer_log("Tossed %d messages", count);
+                }
+                else
+                {
+                    ftnstatus_update("No packets found");
+                    ftnconnect_log("No packets found");
+                }
+            }
+            ftnstatus_close();
             break;
 
         case ICONBAR_MENU_QUIT:
@@ -804,6 +1029,13 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
             break;
     }
 
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool wimp_handle_window_open(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+    Desk_Wimp_OpenWindow(&event->data.openblock);
     return Desk_bool_TRUE;
 }
 
@@ -934,6 +1166,8 @@ int main(int argc, char *argv[])
     create_iconbar_menu();
     proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
+    ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
+    ftnconnect_window = Desk_Window_Create("ftnconnect", Desk_template_TITLEMIN);
 
     /* Register menu warning for proginfo */
     Desk_Menu_Warn(wimp.iconbar_menu_handle, ICONBAR_MENU_INFO, Desk_bool_TRUE,
@@ -944,6 +1178,8 @@ int main(int argc, char *argv[])
                      wimp_handle_iconbar_click, NULL);
     Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_iconbar_menu_choice, NULL);
+    Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY,
+                     wimp_handle_window_open, NULL);
     Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_window_close, NULL);
     Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY,

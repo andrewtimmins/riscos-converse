@@ -20,6 +20,7 @@
 #include "script.h"
 #include "filebase.h"
 #include "debug.h"
+#include "iconnames.h"
 
 #define PIPES_SWI_BASE 0x5AA00
 

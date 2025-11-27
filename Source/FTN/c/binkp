@@ -175,6 +175,7 @@ void binkp_send_adr(MAILER_SESSION *session)
     len = binkp_build_command(frame, BINKP_M_ADR, arg);
     binkp_queue_frame(session, frame, len);
 
+    ftnconnect_log(">> ADR: %s", arg);
     debug_printf("binkp: >> M_ADR %s", arg);
 }
 
@@ -394,6 +395,10 @@ void binkp_handle_adr(MAILER_SESSION *session, const char *data)
                  session->remote_addr.zone, session->remote_addr.net,
                  session->remote_addr.node, session->remote_addr.point);
 
+    ftnconnect_log("<< ADR %d:%d/%d.%d",
+                   session->remote_addr.zone, session->remote_addr.net,
+                   session->remote_addr.node, session->remote_addr.point);
+
     mailer_log("Remote address: %d:%d/%d.%d",
                session->remote_addr.zone, session->remote_addr.net,
                session->remote_addr.node, session->remote_addr.point);
@@ -439,6 +444,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         if (strcmp(data, expected) == 0)
         {
             debug_printf("binkp: Password matched, sending M_OK");
+            ftnconnect_log(">> OK: Password accepted");
             session->authenticated = 1;
             binkp_send_ok(session, 0);
             session->state = SESSION_STATE_AUTHENTICATED;
@@ -446,6 +452,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         else
         {
             debug_printf("binkp: Password mismatch");
+            ftnconnect_log(">> ERR: Bad password");
             binkp_send_err(session, "Bad password");
             session->state = SESSION_STATE_ERROR;
         }
@@ -457,6 +464,8 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
 void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_OK %s (state=%d)", data, session->state);
+
+    ftnconnect_log("<< OK: %s", strstr(data, "secure") ? "Secure session" : "Non-secure");
 
     mailer_log("Session established, remote reports \"%s\"", 
                strstr(data, "secure") ? "secure" : "non-secure");
@@ -473,6 +482,7 @@ void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 void binkp_handle_err(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_ERR %s", data);
+    ftnconnect_log("<< ERR: %s", data);
     mailer_log("Session error: %s", data);
     session->state = SESSION_STATE_ERROR;
 }
@@ -480,6 +490,7 @@ void binkp_handle_err(MAILER_SESSION *session, const char *data)
 void binkp_handle_bsy(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_BSY %s", data);
+    ftnconnect_log("<< BSY: %s", data);
     mailer_log("Remote busy: %s", data);
     session->state = SESSION_STATE_CLOSING;
 }
@@ -488,12 +499,16 @@ void binkp_handle_eob(MAILER_SESSION *session)
 {
     debug_printf("binkp: << M_EOB");
 
+    ftnconnect_log("<< EOB: End of batch");
+
     session->remote_eob = 1;
 
     /* If we've also sent EOB, session is complete */
     if (session->local_eob && session->remote_eob)
     {
         debug_printf("binkp: Session complete");
+        ftnconnect_log("Session complete: sent %d, recv %d files",
+                       session->files_sent, session->files_received);
         mailer_log("Session complete (sent %d files/%ld bytes, recv %d files/%ld bytes)",
                    session->files_sent, session->bytes_sent,
                    session->files_received, session->bytes_received);
@@ -524,6 +539,7 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
     /* Parse: filename size time offset */
     if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) >= 3)
     {
+        ftnconnect_log("<< FILE: %s (%ld bytes)", filename, size);
         binkp_start_receive_file(session, filename, size, (time_t)mtime, offset);
     }
 }
@@ -535,6 +551,7 @@ void binkp_handle_got(MAILER_SESSION *session, const char *data)
     /* Remote has received our file successfully */
     if (session->send_file.state == TRANSFER_STATE_SENDING)
     {
+        ftnconnect_log("<< GOT: File sent successfully");
         binkp_finish_send_file(session);
 
         /* Check for more files to send */
@@ -769,6 +786,8 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
     /* Acknowledge receipt using original DOS filename */
     binkp_send_got(session, ft->filename, ft->size, ft->mtime);
 
+    ftnconnect_log(">> GOT: Received %s (%ld bytes)", ft->filename, ft->size);
+
     ft->state = TRANSFER_STATE_IDLE;
     session->files_received++;
 
@@ -822,6 +841,7 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
     binkp_send_file(session, dos_filename, ft->size, ft->mtime, 0);
 
     debug_printf("binkp: Sending %s as %s (%ld bytes)", riscos_filename, dos_filename, fsize);
+    ftnconnect_log(">> FILE: %s (%ld bytes)", dos_filename, fsize);
     mailer_log("Sending: %s (%ld bytes)", dos_filename, fsize);
 }
 

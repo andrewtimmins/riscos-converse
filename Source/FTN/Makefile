@@ -1,7 +1,7 @@
 # Make file for FTN Mailer
 
 COMPONENT 	= FTN
-OBJS        = debug timer mailer binkp queue
+OBJS        = debug timer mailer binkp queue tosser
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -17,16 +17,6 @@ o.timer:	C:h.kernel
 o.timer:	C:h.swis
 o.timer:	h.timer
 o.timer:	h.debug
-o.queue:	c.queue
-o.queue:	C:h.kernel
-o.queue:	C:h.swis
-o.queue:	h.queue
-o.queue:	h.mailer
-o.queue:	C:Desk.h.Wimp
-o.queue:	C:Desk.h.Core
-o.queue:	C:h.kernel
-o.queue:	h.mailer
-o.queue:	h.debug
 o.binkp:	c.binkp
 o.binkp:	C:h.kernel
 o.binkp:	C:h.swis
@@ -39,6 +29,26 @@ o.binkp:	h.mailer
 o.binkp:	h.queue
 o.binkp:	h.mailer
 o.binkp:	h.debug
+o.queue:	c.queue
+o.queue:	C:h.kernel
+o.queue:	C:h.swis
+o.queue:	h.queue
+o.queue:	h.mailer
+o.queue:	C:Desk.h.Wimp
+o.queue:	C:Desk.h.Core
+o.queue:	C:h.kernel
+o.queue:	h.mailer
+o.queue:	h.debug
+o.tosser:	c.tosser
+o.tosser:	C:h.kernel
+o.tosser:	C:h.swis
+o.tosser:	h.tosser
+o.tosser:	h.mailer
+o.tosser:	C:Desk.h.Wimp
+o.tosser:	C:Desk.h.Core
+o.tosser:	C:h.kernel
+o.tosser:	h.mailer
+o.tosser:	h.debug
 o.mailer:	c.mailer
 o.mailer:	C:h.kernel
 o.mailer:	C:h.swis
@@ -108,9 +118,12 @@ o.mailer:	TCPIPLibs:h.netdb
 o.mailer:	TCPIPLibs:sys.h.cdefs
 o.mailer:	h.mailer
 o.mailer:	C:Desk.h.Wimp
+o.mailer:	h.iconnames
 o.mailer:	h.binkp
 o.mailer:	h.mailer
 o.mailer:	h.queue
+o.mailer:	h.mailer
+o.mailer:	h.tosser
 o.mailer:	h.mailer
 o.mailer:	h.timer
 o.mailer:	h.debug

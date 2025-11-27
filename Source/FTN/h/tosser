@@ -1,0 +1,189 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Mail Tosser                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef TOSSER_H
+#define TOSSER_H
+
+#include <time.h>
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define TOSSER_MAX_MSGID            80
+#define TOSSER_MAX_AREA             64
+#define TOSSER_MAX_FROM             36
+#define TOSSER_MAX_TO               36
+#define TOSSER_MAX_SUBJECT          72
+#define TOSSER_MAX_DATETIME         20
+#define TOSSER_MAX_KLUDGE           256
+#define TOSSER_MAX_PATH             256
+
+/* Packet type constants */
+#define PKT_TYPE_2                  2
+#define PKT_TYPE_2PLUS              2
+
+/* Message attribute flags (Type 2 packet) */
+#define MSG_PRIVATE                 0x0001
+#define MSG_CRASH                   0x0002
+#define MSG_RECEIVED                0x0004
+#define MSG_SENT                    0x0008
+#define MSG_FILEATTACH              0x0010
+#define MSG_INTRANSIT               0x0020
+#define MSG_ORPHAN                  0x0040
+#define MSG_KILLSENT                0x0080
+#define MSG_LOCAL                   0x0100
+#define MSG_HOLD                    0x0200
+#define MSG_FILEREQUEST             0x0800
+#define MSG_RETURNRECEIPT           0x1000
+#define MSG_ISRETURNRECEIPT         0x2000
+#define MSG_AUDITREQUEST            0x4000
+#define MSG_FILEUPDATEREQ           0x8000
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Packet Structures (Type 2/2+)                                                                                                                        */
+/* Little-endian format as per FTS-0001                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/* Type 2 Packet Header (58 bytes) */
+typedef struct
+{
+    unsigned short orig_node;           /* Originating node */
+    unsigned short dest_node;           /* Destination node */
+    unsigned short year;                /* Year (e.g., 2025) */
+    unsigned short month;               /* Month (0-11) */
+    unsigned short day;                 /* Day (1-31) */
+    unsigned short hour;                /* Hour (0-23) */
+    unsigned short minute;              /* Minute (0-59) */
+    unsigned short second;              /* Second (0-59) */
+    unsigned short baud;                /* Baud rate (ignored) */
+    unsigned short pkt_type;            /* Packet type (always 2) */
+    unsigned short orig_net;            /* Originating net */
+    unsigned short dest_net;            /* Destination net */
+    unsigned char  prod_code_lo;        /* Product code low byte */
+    unsigned char  prod_rev_major;      /* Product revision major */
+    char           password[8];         /* Packet password (null-padded) */
+    unsigned short orig_zone;           /* Originating zone (QMail) */
+    unsigned short dest_zone;           /* Destination zone (QMail) */
+    unsigned short aux_net;             /* Aux net (for points) */
+    unsigned short cap_word_copy;       /* Capability word copy */
+    unsigned char  prod_code_hi;        /* Product code high byte */
+    unsigned char  prod_rev_minor;      /* Product revision minor */
+    unsigned short cap_word;            /* Capability word */
+    unsigned short orig_zone2;          /* Originating zone (Type 2+) */
+    unsigned short dest_zone2;          /* Destination zone (Type 2+) */
+    unsigned short orig_point;          /* Originating point */
+    unsigned short dest_point;          /* Destination point */
+    unsigned long  prod_data;           /* Product-specific data */
+} PKT_HEADER;
+
+/* Type 2 Packed Message Header (14 bytes fixed + variable strings) */
+typedef struct
+{
+    unsigned short pkt_type;            /* Message type (always 2) */
+    unsigned short orig_node;           /* Originating node */
+    unsigned short dest_node;           /* Destination node */
+    unsigned short orig_net;            /* Originating net */
+    unsigned short dest_net;            /* Destination net */
+    unsigned short attribute;           /* Message attributes */
+    unsigned short cost;                /* Cost (usually 0) */
+    /* Followed by null-terminated strings:
+     *   datetime[20]  - "DD Mon YY  HH:MM:SS"
+     *   to[]          - Recipient name
+     *   from[]        - Sender name
+     *   subject[]     - Subject line
+     *   body[]        - Message body (terminated by single null)
+     */
+} PKT_MSG_HEADER;
+
+/* ******************************************************************************************************************************************************** */
+/* Parsed Message Structure                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    /* Addressing */
+    FTN_ADDR orig_addr;                 /* Full originating address */
+    FTN_ADDR dest_addr;                 /* Full destination address */
+    
+    /* Header fields */
+    char from[TOSSER_MAX_FROM];         /* Sender name */
+    char to[TOSSER_MAX_TO];             /* Recipient name */
+    char subject[TOSSER_MAX_SUBJECT];   /* Subject line */
+    char datetime[TOSSER_MAX_DATETIME]; /* Original datetime string */
+    time_t timestamp;                   /* Parsed timestamp */
+    unsigned short attribute;           /* Message attributes */
+    
+    /* Kludge lines */
+    char msgid[TOSSER_MAX_MSGID];       /* MSGID kludge */
+    char reply[TOSSER_MAX_MSGID];       /* REPLY kludge */
+    char area[TOSSER_MAX_AREA];         /* AREA tag (echomail) */
+    int is_echomail;                    /* True if AREA line present */
+    
+    /* Body */
+    char *body;                         /* Message body (allocated) */
+    size_t body_len;                    /* Body length */
+    
+    /* Processing state */
+    int tossed;                         /* Successfully tossed */
+    int duplicate;                      /* Duplicate message */
+    int bad;                            /* Bad/unroutable message */
+} TOSSER_MESSAGE;
+
+/* ******************************************************************************************************************************************************** */
+/* Tosser Statistics                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int packets_processed;              /* Packets opened */
+    int messages_tossed;                /* Messages stored */
+    int messages_duped;                 /* Duplicates skipped */
+    int messages_bad;                   /* Bad messages */
+    int echomail_count;                 /* Echomail messages */
+    int netmail_count;                  /* Netmail messages */
+    int areas_matched;                  /* Messages matched to areas */
+    int areas_unmatched;                /* Messages with unknown area */
+} TOSSER_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Status callback type */
+typedef void (*tosser_status_callback)(const char *status);
+
+/* Initialisation */
+void tosser_initialise(void);
+void tosser_finalise(void);
+
+/* Status callback registration */
+void tosser_set_status_callback(tosser_status_callback callback);
+
+/* Main tossing functions */
+int tosser_process_inbound(void);
+int tosser_process_packet(const char *path);
+
+/* Packet parsing */
+int tosser_open_packet(const char *path, PKT_HEADER *header);
+int tosser_read_message(FILE *pkt, const PKT_HEADER *pkt_hdr, TOSSER_MESSAGE *msg);
+void tosser_free_message(TOSSER_MESSAGE *msg);
+
+/* Message processing */
+int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len);
+int tosser_match_area(const char *echotag, int *base_id, int *area_id);
+int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id);
+int tosser_check_duplicate(const char *msgid);
+
+/* Utility functions */
+time_t tosser_parse_datetime(const char *datetime_str);
+void tosser_move_to_processed(const char *path);
+void tosser_move_to_bad(const char *path);
+
+/* Statistics */
+void tosser_get_stats(TOSSER_STATS *stats);
+void tosser_reset_stats(void);
+
+#endif
