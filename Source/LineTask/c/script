@@ -219,7 +219,10 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         return 0;
     }
 
-    if (state->status != SCRIPT_STATUS_WAIT_INPUT_CHAR && state->status != SCRIPT_STATUS_WAIT_INPUT_LINE)
+    if (state->status != SCRIPT_STATUS_WAIT_INPUT_CHAR && 
+        state->status != SCRIPT_STATUS_WAIT_INPUT_LINE &&
+        state->status != SCRIPT_STATUS_WAIT_LOGON_USERNAME &&
+        state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD)
     {
         return 0;
     }
@@ -291,6 +294,222 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             char echo[2] = { (char)byte, '\0' };
             state->host.write_text(state->host.context, echo);
         }
+        return 1;
+    }
+
+    /* Handle LOGON username input */
+    if (state->status == SCRIPT_STATUS_WAIT_LOGON_USERNAME)
+    {
+        /* Handle backspace (ASCII 8 or 127) */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                /* Echo backspace-space-backspace to erase character */
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Ignore LF if we just processed CR */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Check if user typed NEW */
+            if (script_stringcasecmp(state->input_buffer, "NEW") == 0)
+            {
+                /* User wants to register - start newuser script */
+                if (state->host.start_newuser != NULL)
+                {
+                    state->host.start_newuser(state->host.context);
+                }
+                /* Don't set COMPLETED - start_newuser calls script_start which sets the status */
+                return 1;
+            }
+
+            /* Store the username and prompt for password */
+            strncpy(state->logon_username, state->input_buffer, sizeof(state->logon_username) - 1);
+            state->logon_username[sizeof(state->logon_username) - 1] = '\0';
+
+            script_write_output(state, "Password: ");
+            state->input_echo = 0;  /* No echo for password */
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
+            {
+                state->input_buffer[0] = '\0';
+            }
+            state->status = SCRIPT_STATUS_WAIT_LOGON_PASSWORD;
+            return 1;
+        }
+
+        /* Accumulate username character */
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        if (state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        return 1;
+    }
+
+    /* Handle LOGON password input */
+    if (state->status == SCRIPT_STATUS_WAIT_LOGON_PASSWORD)
+    {
+        /* Handle backspace (ASCII 8 or 127) */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                /* No echo for password backspace */
+            }
+            return 1;
+        }
+
+        /* Ignore LF if we just processed CR */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            int auth_result = 0;
+            int authenticated = 0;
+
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Attempt authentication */
+            if (state->host.authenticate_user != NULL)
+            {
+                authenticated = state->host.authenticate_user(
+                    state->host.context,
+                    state->logon_username,
+                    state->input_buffer,
+                    &auth_result
+                );
+            }
+
+            if (authenticated)
+            {
+                /* Success - run postlogon script */
+                script_write_output(state, "\r\n\033[1;32mLogin successful!\033[0m\r\n\r\n");
+                if (state->host.start_postlogon != NULL)
+                {
+                    state->host.start_postlogon(state->host.context);
+                }
+                /* Don't set COMPLETED - start_postlogon calls script_start which sets the status */
+                return 1;
+            }
+
+            /* Authentication failed */
+            state->logon_attempts++;
+
+            if (auth_result == 1)
+            {
+                /* User not found */
+                script_write_output(state, "\r\n\033[1;31mUsername not found.\033[0m\r\n");
+            }
+            else if (auth_result == 2)
+            {
+                /* Bad password */
+                script_write_output(state, "\r\n\033[1;31mIncorrect password.\033[0m\r\n");
+            }
+            else if (auth_result == 3)
+            {
+                /* Account locked */
+                script_write_output(state, "\r\n\033[1;31mAccount is locked.\033[0m\r\n");
+                if (state->host.force_disconnect != NULL)
+                {
+                    state->host.force_disconnect(state->host.context);
+                }
+                state->status = SCRIPT_STATUS_COMPLETED;
+                return 1;
+            }
+            else
+            {
+                /* Generic error */
+                script_write_output(state, "\r\n\033[1;31mLogin failed.\033[0m\r\n");
+            }
+
+            /* Check retry limit */
+            if (state->logon_attempts >= 3)
+            {
+                script_write_output(state, "\r\n\033[1;31mToo many failed attempts.\033[0m\r\n");
+                if (state->host.force_disconnect != NULL)
+                {
+                    state->host.force_disconnect(state->host.context);
+                }
+                state->status = SCRIPT_STATUS_COMPLETED;
+                return 1;
+            }
+
+            /* Allow retry - prompt for username again */
+            script_write_output(state, "\r\nUsername: ");
+            state->logon_username[0] = '\0';
+            state->input_echo = 1;
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
+            {
+                state->input_buffer[0] = '\0';
+            }
+            state->status = SCRIPT_STATUS_WAIT_LOGON_USERNAME;
+            return 1;
+        }
+
+        /* Accumulate password character (no echo) */
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        /* No echo for password */
         return 1;
     }
 
@@ -888,6 +1107,12 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
             }
             instruction->arg2 = value_string;
         }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "logon") == 0)
+    {
+        instruction->type = SCRIPT_CMD_LOGON;
         return 1;
     }
 
@@ -1519,6 +1744,29 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
         }
         break;
+
+        case SCRIPT_CMD_LOGON:
+        {
+            /* Display logon prompt and wait for username */
+            script_write_output(state, "\r\n");
+            script_write_output(state, "Enter your username/password below to logon,\r\nor type NEW (and return) to register.\r\n");
+            script_write_output(state, "\r\n");
+            script_write_output(state, "Username: ");
+            
+            /* Initialize logon state */
+            state->logon_username[0] = '\0';
+            state->logon_attempts = 0;
+            
+            /* Wait for username input (line mode with echo) */
+            state->input_echo = 1;
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
+            {
+                state->input_buffer[0] = '\0';
+            }
+            state->status = SCRIPT_STATUS_WAIT_LOGON_USERNAME;
+            return;
+        }
 
         default:
             break;

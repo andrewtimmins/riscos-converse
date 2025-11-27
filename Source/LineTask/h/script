@@ -23,6 +23,10 @@ typedef struct script_host
     int (*get_user_accesslevel)(void *context);
     const char *(*get_user_keys)(void *context);
     int (*filebase_download)(void *context, int base_id, int file_id);
+    /* Authentication callbacks */
+    int (*authenticate_user)(void *context, const char *username, const char *password, int *auth_result);
+    void (*start_postlogon)(void *context);
+    void (*start_newuser)(void *context);
 } script_host;
 
 typedef enum
@@ -33,6 +37,8 @@ typedef enum
     SCRIPT_STATUS_WAIT_INPUT_LINE,
     SCRIPT_STATUS_WAIT_DOOR,
     SCRIPT_STATUS_WAIT_SLEEP,
+    SCRIPT_STATUS_WAIT_LOGON_USERNAME,
+    SCRIPT_STATUS_WAIT_LOGON_PASSWORD,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -59,7 +65,8 @@ typedef enum
     SCRIPT_CMD_DOING,
     SCRIPT_CMD_LOGOFF,
     SCRIPT_CMD_ONLINE,
-    SCRIPT_CMD_FILEBASE
+    SCRIPT_CMD_FILEBASE,
+    SCRIPT_CMD_LOGON
 } script_command_type;
 
 typedef enum
@@ -112,6 +119,9 @@ typedef struct script_state
     size_t input_capacity;
     clock_t sleep_deadline;
     char last_error[128];
+    /* Logon state */
+    char logon_username[64];
+    int logon_attempts;
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);

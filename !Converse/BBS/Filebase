@@ -35,5 +35,5 @@
     goto filebase_menu
 
     label main_menu
-    script `<Converse$Dir>.BBS.Start`
+    script `<Converse$Dir>.BBS.Postlogon`
 }

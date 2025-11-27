@@ -64,6 +64,37 @@ Instructions
     Use this instead of `call disconnect` when you want an immediate
     hangup once any farewell text has been sent.
 
+`LOGON`
+    Initiates the user login flow. Prompts for a username, then for a
+    password (with no echo). Users can type "NEW" instead of a username
+    to begin the new user registration flow.
+    
+    Authentication flow:
+    1. Display prompt message
+    2. Prompt for username (echoed)
+    3. If "NEW" is entered, run the newuser script and exit
+    4. Prompt for password (not echoed)
+    5. Authenticate via Filer module
+    6. If successful, run the postlogon script
+    7. If failed, allow up to 3 retries
+    8. After 3 failures, disconnect the user
+    
+    On successful login:
+    - User ID is stored in Support module's line state
+    - User's access level and keys are made available for filebase access
+    - postlogon script (from config) is executed
+    
+    Example prelogon script:
+    ```
+    type `<Converse$Dir>.BBS.ANSI.Header`
+    print `\r\n`
+    logon
+    ```
+    
+    The logon command handles all prompts internally and terminates the
+    current script after authentication. The postlogon or newuser script
+    runs next.
+
 `RETURN` or `STOP`
     Ends the script immediately.
 

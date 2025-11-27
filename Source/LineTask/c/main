@@ -51,8 +51,12 @@
 
 #define CONVERSE_FILER_BASE          0x5AA40
 #define FILER_SWI_LOGGING            0
+#define FILER_SWI_USERDB             1
 #define FILER_LOG_REASON_LINE        1
+#define FILER_USERDB_CMD_SEARCH      3
+#define FILER_USERDB_CMD_AUTHENTICATE 4
 #define SWI_CONVERSE_FILER_LOGGING   (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
+#define SWI_CONVERSE_FILER_USERDB    (CONVERSE_FILER_BASE + FILER_SWI_USERDB)
 
 /* ConverseBBS Support module SWIs */
 #define SWI_CONVERSEBBS_CONFIG       0x5AA80
@@ -78,6 +82,7 @@
 #define ARCBBS_STATUS_REQUEST        1
 
 /* Line state reason codes and field indices */
+#define LINE_REASON_SET              0
 #define LINE_REASON_GET              1
 #define LINE_FIELD_CONFIGURED        0
 #define LINE_FIELD_CONNECTED         1
@@ -151,6 +156,8 @@ typedef struct
     script_state script;
     /* Filebase session */
     filebase_session fb_session;
+    /* User session state */
+    int user_id;
     int user_accesslevel;
     char user_keys[128];
 } line_task_state;
@@ -183,10 +190,14 @@ static void botstopper_process(line_task_state *state);
 static int botstopper_handle_byte(line_task_state *state, unsigned char byte);
 static int config_get_botstopper_enabled(void);
 static const char *config_get_prelogon_script(void);
+static const char *config_get_postlogon_script(void);
+static const char *config_get_newuser_script(void);
 static const char *lineconfig_get_hello(int line_id);
 static const char *lineconfig_get_botstopper(int line_id);
 static void script_start_session(line_task_state *state);
 static void script_start_prelogon(line_task_state *state);
+static void script_start_postlogon(line_task_state *state);
+static void script_start_newuser(line_task_state *state);
 static void script_stop_session(line_task_state *state);
 static void script_print_time(line_task_state *state);
 static void script_print_line_info(line_task_state *state);
@@ -220,6 +231,9 @@ static void *script_host_get_filebase_session(void *context);
 static int script_host_get_user_accesslevel(void *context);
 static const char *script_host_get_user_keys(void *context);
 static int script_host_filebase_download(void *context, int base_id, int file_id);
+static int script_host_authenticate_user(void *context, const char *username, const char *password, int *auth_result);
+static void script_host_start_postlogon(void *context);
+static void script_host_start_newuser(void *context);
 static void log_line_event(int line_id, const char *message);
 static void poll_idle(void);
 
@@ -324,11 +338,15 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_user_accesslevel = script_host_get_user_accesslevel;
         host.get_user_keys = script_host_get_user_keys;
         host.filebase_download = script_host_filebase_download;
+        host.authenticate_user = script_host_authenticate_user;
+        host.start_postlogon = script_host_start_postlogon;
+        host.start_newuser = script_host_start_newuser;
         script_initialise(&state->script, &host);
     }
 
     /* Initialise filebase session */
     filebase_session_init(&state->fb_session);
+    state->user_id = 0;
     state->user_accesslevel = 0;
     state->user_keys[0] = '\0';
 }
@@ -624,8 +642,9 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             {
                 arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
             }
-            /* Reset filebase session on disconnect */
+            /* Reset filebase session and user state on disconnect */
             filebase_session_reset(&state->fb_session);
+            state->user_id = 0;
             state->user_accesslevel = 0;
             state->user_keys[0] = '\0';
             log_line_event(state->line_id, "Session disconnected");
@@ -1156,6 +1175,42 @@ static const char *config_get_prelogon_script(void)
 }
 
 /*
+ * Get the postlogon script path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_postlogon_script(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"postlogon";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
+ * Get the newuser script path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_newuser_script(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"newuser";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
  * Get the hello message for a specific line.
  * Returns pointer to string or NULL.
  */
@@ -1341,6 +1396,86 @@ static void script_start_prelogon(line_task_state *state)
         /* No prelogon script - fall back to default Start script */
         log_line_event(state->line_id, "No prelogon script, starting default");
         script_start_session(state);
+    }
+}
+
+/*
+ * Start the postlogon script (after successful authentication).
+ */
+static void script_start_postlogon(line_task_state *state)
+{
+    const char *postlogon_path;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Get postlogon script path from config */
+    postlogon_path = config_get_postlogon_script();
+    
+    debug_printf("script_start_postlogon: postlogon_path=%s", 
+                 postlogon_path ? postlogon_path : "(null)");
+    
+    if (postlogon_path != NULL && postlogon_path[0] != '\0')
+    {
+        log_line_event(state->line_id, "Starting postlogon script");
+        if (!script_start(&state->script, postlogon_path))
+        {
+            const char *error = state->script.last_error[0] != '\0' ? state->script.last_error : "Script failed";
+            char message[192];
+            snprintf(message, sizeof(message), "\r\n[Unable to start postlogon script: %s]\r\n", error);
+            pipes_output_write_string(state->line_id, message);
+            /* Fall back to Start script */
+            script_start_session(state);
+            return;
+        }
+        script_process(&state->script);
+    }
+    else
+    {
+        /* No postlogon script - fall back to default Start script */
+        log_line_event(state->line_id, "No postlogon script, starting default");
+        script_start_session(state);
+    }
+}
+
+/*
+ * Start the newuser script (for new user registration).
+ */
+static void script_start_newuser(line_task_state *state)
+{
+    const char *newuser_path;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Get newuser script path from config */
+    newuser_path = config_get_newuser_script();
+    
+    debug_printf("script_start_newuser: newuser_path=%s", 
+                 newuser_path ? newuser_path : "(null)");
+    
+    if (newuser_path != NULL && newuser_path[0] != '\0')
+    {
+        log_line_event(state->line_id, "Starting newuser script");
+        if (!script_start(&state->script, newuser_path))
+        {
+            const char *error = state->script.last_error[0] != '\0' ? state->script.last_error : "Script failed";
+            char message[192];
+            snprintf(message, sizeof(message), "\r\n[Unable to start newuser script: %s]\r\n", error);
+            pipes_output_write_string(state->line_id, message);
+            return;
+        }
+        script_process(&state->script);
+    }
+    else
+    {
+        /* No newuser script configured */
+        pipes_output_write_string(state->line_id, "\r\n[New user registration is not available]\r\n");
+        log_line_event(state->line_id, "No newuser script configured");
     }
 }
 
@@ -1663,8 +1798,8 @@ static void script_host_report_online_users(void *context)
 
     /* Print header */
     pipes_output_write_string(state->line_id, "\r\n");
-    pipes_output_write_string(state->line_id, "Port         User            Online        Activity\r\n");
-    pipes_output_write_string(state->line_id, "----         ----            ------        --------\r\n");
+    pipes_output_write_string(state->line_id, "Line  User                           Online  Activity\r\n");
+    pipes_output_write_string(state->line_id, "----  ------------------------------  ------  --------\r\n");
 
     /* Query each line */
     for (line = 0; line < SUPPORT_MAX_LINES; line++)
@@ -1675,7 +1810,7 @@ static void script_host_report_online_users(void *context)
         const char *activity = "Online";
         int online_mins = 0;
         int online_secs = 0;
-        const char *username = "Guest";
+        char username[64];
 
         /* Check if line is connected */
         regs.r[0] = LINE_REASON_GET;
@@ -1706,8 +1841,58 @@ static void script_host_report_online_users(void *context)
             user_id = regs.r[0];
         }
 
-        /* Map user_id 0 to "Guest" */
-        username = (user_id == 0) ? "Guest" : "User";
+        /* Look up user from Filer userdb */
+        strcpy(username, "Guest");
+        if (user_id > 0)
+        {
+            regs.r[0] = FILER_USERDB_CMD_SEARCH;
+            regs.r[1] = user_id;
+            if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) == NULL && regs.r[0] != 0)
+            {
+                /* USER_RECORD returned:
+                 * - realname at offset 36 (64 bytes)
+                 * - user_flags.sysop at offset 600 (int)
+                 */
+                char *record_bytes = (char *)regs.r[0];
+                char realname[64];
+                int is_sysop;
+
+                strncpy(realname, record_bytes + 36, sizeof(realname) - 1);
+                realname[sizeof(realname) - 1] = '\0';
+
+                is_sysop = *((int *)(record_bytes + 600));
+
+                if (realname[0] != '\0')
+                {
+                    if (is_sysop)
+                    {
+                        snprintf(username, sizeof(username), "%s [SYSOP]", realname);
+                    }
+                    else
+                    {
+                        strncpy(username, realname, sizeof(username) - 1);
+                        username[sizeof(username) - 1] = '\0';
+                    }
+                }
+                else
+                {
+                    /* No real name, fall back to username at offset 4 */
+                    strncpy(username, record_bytes + 4, sizeof(username) - 1);
+                    username[sizeof(username) - 1] = '\0';
+                    if (is_sysop)
+                    {
+                        char temp[64];
+                        strncpy(temp, username, sizeof(temp) - 1);
+                        temp[sizeof(temp) - 1] = '\0';
+                        snprintf(username, sizeof(username), "%s [SYSOP]", temp);
+                    }
+                }
+            }
+            else
+            {
+                snprintf(username, sizeof(username), "User #%d", user_id);
+            }
+        }
 
         /* Get connect time */
         regs.r[0] = LINE_REASON_GET;
@@ -1741,7 +1926,7 @@ static void script_host_report_online_users(void *context)
         }
 
         /* Format and output the line */
-        snprintf(output, sizeof(output), "%-12d %-15s %02d:%02d         %s\r\n",
+        snprintf(output, sizeof(output), "%-4d  %-30s  %02d:%02d   %s\r\n",
                  line, username, online_mins, online_secs, activity);
         pipes_output_write_string(state->line_id, output);
     }
@@ -1807,6 +1992,133 @@ static int script_host_filebase_download(void *context, int base_id, int file_id
     pipes_output_write_string(state->line_id, msg);
 
     return 1;
+}
+
+/*
+ * Authenticate user via Filer module.
+ * Returns 1 on success, 0 on failure.
+ * auth_result is set to:
+ *   0 = success
+ *   1 = user not found
+ *   2 = bad password
+ *   3 = account locked
+ */
+static int script_host_authenticate_user(void *context, const char *username, const char *password, int *auth_result)
+{
+    line_task_state *state = (line_task_state *)context;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int result;
+    int user_id;
+    int access_level;
+    const char *keys;
+    char log_msg[128];
+
+    if (state == NULL || username == NULL || password == NULL || auth_result == NULL)
+    {
+        if (auth_result != NULL)
+        {
+            *auth_result = 1;  /* User not found */
+        }
+        return 0;
+    }
+
+    /* Call Filer SWI 0x5AA41 with reason 4 (authenticate) */
+    regs.r[0] = FILER_USERDB_CMD_AUTHENTICATE;
+    regs.r[1] = (int)username;
+    regs.r[2] = (int)password;
+    
+    err = _kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs);
+    if (err != NULL)
+    {
+        debug_printf("script_host_authenticate_user: SWI error %s", err->errmess);
+        *auth_result = 1;  /* User not found (or module error) */
+        return 0;
+    }
+
+    /* R0 = auth result, R1 = USER_RECORD pointer (if success) */
+    result = regs.r[0];
+    *auth_result = result;
+
+    if (result != 0)
+    {
+        /* Authentication failed */
+        snprintf(log_msg, sizeof(log_msg), "Login failed for '%s' (reason %d)", username, result);
+        log_line_event(state->line_id, log_msg);
+        return 0;
+    }
+
+    /* Authentication successful - extract user data from USER_RECORD */
+    if (regs.r[1] != 0)
+    {
+        /* USER_RECORD layout (from structs.h):
+         * int id                   offset 0
+         * char username[32]        offset 4
+         * char realname[64]        offset 36
+         * char email[64]           offset 100
+         * char password[32]        offset 164
+         * char keys[128]           offset 196
+         * char userdir[256]        offset 324
+         * USER_FLAGS               offset 580
+         *   - accesslevel is 15 ints (60 bytes) into USER_FLAGS = offset 640
+         */
+        #define USER_RECORD_OFFSET_ID          0
+        #define USER_RECORD_OFFSET_KEYS        196
+        #define USER_RECORD_OFFSET_ACCESSLEVEL 640
+        
+        char *record_bytes = (char *)regs.r[1];
+        
+        user_id = *((int *)(record_bytes + USER_RECORD_OFFSET_ID));
+        keys = record_bytes + USER_RECORD_OFFSET_KEYS;
+        access_level = *((int *)(record_bytes + USER_RECORD_OFFSET_ACCESSLEVEL));
+        
+        /* Update line state with user ID */
+        {
+            _kernel_swi_regs line_regs;
+            line_regs.r[0] = LINE_REASON_SET;
+            line_regs.r[1] = state->line_id;
+            line_regs.r[2] = LINE_FIELD_USER_ID;
+            line_regs.r[3] = user_id;
+            _kernel_swi(SWI_CONVERSEBBS_LINE, &line_regs, &line_regs);
+        }
+        
+        /* Store user info in task state */
+        state->user_id = user_id;
+        state->user_accesslevel = access_level;
+        strncpy(state->user_keys, keys, sizeof(state->user_keys) - 1);
+        state->user_keys[sizeof(state->user_keys) - 1] = '\0';
+        
+        snprintf(log_msg, sizeof(log_msg), "User '%s' logged in (id=%d, level=%d)", username, user_id, access_level);
+        log_line_event(state->line_id, log_msg);
+        
+        debug_printf("script_host_authenticate_user: success user_id=%d access=%d", user_id, access_level);
+    }
+
+    return 1;
+}
+
+static void script_host_start_postlogon(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    script_start_postlogon(state);
+}
+
+static void script_host_start_newuser(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    script_start_newuser(state);
 }
 
 static void log_line_event(int line_id, const char *message)

@@ -1,0 +1,258 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef STRUCTS_H
+#define STRUCTS_H
+
+    #include <stdio.h>
+    #include <time.h>
+
+    #define MAX_USERNAME                32
+    #define MAX_REALNAME                64
+    #define MAX_EMAIL                   64
+    #define MAX_PASSWORD                32
+    #define MAX_KEYS                    128
+    #define MAX_DIR                     256
+
+    #define MAX_NAME                    64
+    #define MAX_DESC                    256
+
+    typedef enum
+    {
+        FILER_SWI_LOGGING = 0,
+        FILER_SWI_USERDB,
+        FILER_SWI_MESSAGEBASE,
+        FILER_SWI_FILEBASE,
+        FILER_SWI_STATISTICS
+    } FILER_SWI_GROUP;
+
+    typedef enum
+    {
+        FILER_LOG_CMD_SYSTEM = 0,
+        FILER_LOG_CMD_LINE,
+        FILER_LOG_CMD_CALL,
+        FILER_LOG_CMD_FTN
+    } FILER_LOG_COMMAND;
+
+    typedef enum
+    {
+        FILER_USERDB_CMD_ADD = 0,
+        FILER_USERDB_CMD_UPDATE,
+        FILER_USERDB_CMD_DELETE,
+        FILER_USERDB_CMD_SEARCH,
+        FILER_USERDB_CMD_AUTHENTICATE
+    } FILER_USERDB_COMMAND;
+
+    typedef enum
+    {
+        FILER_FILEBASE_CMD_CREATE = 0,
+        FILER_FILEBASE_CMD_UPDATE,
+        FILER_FILEBASE_CMD_INFO,
+        FILER_FILEBASE_CMD_BEGIN_UPLOAD,
+        FILER_FILEBASE_CMD_UPLOAD_BLOCK,
+        FILER_FILEBASE_CMD_DOWNLOAD_BLOCK,
+        FILER_FILEBASE_CMD_STORE_AREA,
+        FILER_FILEBASE_CMD_AREA_INFO,
+        FILER_FILEBASE_CMD_ENUMERATE_BASES,
+        FILER_FILEBASE_CMD_ENUMERATE_AREAS,
+        FILER_FILEBASE_CMD_ENUMERATE_FILES,
+        FILER_FILEBASE_CMD_FILE_INFO
+    } FILER_FILEBASE_COMMAND;
+
+    typedef enum
+    {
+        FILER_MESSAGEBASE_CMD_CREATE = 0,
+        FILER_MESSAGEBASE_CMD_UPDATE,
+        FILER_MESSAGEBASE_CMD_INFO,
+        FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD,
+        FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK,
+        FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK,
+        FILER_MESSAGEBASE_CMD_STORE_AREA,
+        FILER_MESSAGEBASE_CMD_AREA_INFO
+    } FILER_MESSAGEBASE_COMMAND;
+
+    typedef enum
+    {
+        FILER_COMMAND_STATUS = 0,
+        FILER_COMMAND_STATS,
+        FILER_COMMAND_FILERBASES,
+        FILER_COMMAND_MESSAGEBASES,
+        FILER_COMMAND_FILEAREAS,
+        FILER_COMMAND_MESSAGEAREAS
+    } FILER_COMMAND;
+
+    /* ******************************************************************************************************************************************************** */
+    /* Internal Counters                                                                                                                                        */
+    /* ******************************************************************************************************************************************************** */
+
+    typedef struct {
+        long programstarttime;         /* time & date software was loaded */
+        int configuredlines;           /* number of configured lines, does not mean enabled lines */
+        int activesockets;             /* number of acting tcp connections */
+        int callstoday;                /* number of calls today (resets at 00:00)*/
+        int currentonlineusers;        /* number of users currently connected (authenticated users only)*/
+    } COUNTERS;
+
+    /* ******************************************************************************************************************************************************** */
+    /* Open File List                                                                                                                                           */
+    /* ******************************************************************************************************************************************************** */
+    
+    typedef struct {
+        char filepath[500];            /* path of the file */
+        FILE *filehandle;              /* handle for the file */
+        time_t opened;                 /* time & date the file was opened */
+        time_t lastaccessed;           /* time & date the file was last accessed */
+    } OPEN_FILES;
+
+    /* ******************************************************************************************************************************************************** */
+    /* User Database                                                                                                                                            */
+    /* ******************************************************************************************************************************************************** */
+
+    typedef struct
+    {
+        int deleted;                    /* is this user deleted? */
+        int ansi;                       /* user's terminal supports ansi */
+        int more;                       /* user wants prompts every screenfull */
+        int lines;                      /* screen lines to pass before more? prompt appears */
+        int cls;                        /* user wants screen clearing codes */
+        int sysop;                      /* user has sysop privileges */
+        int cli;                        /* user has cli access */
+        int registered;                 /* user is registered with the system */
+        int expert;                     /* user has expert menus */
+        int lockedout;                  /* user is barred from entry to the system */
+        int nolimit;                    /* user has no time limits */
+        int invisible;                  /* user is invisible (online users, userlist, user search, etc) */
+        int userdir;                    /* user has optional user private directory */
+        int chataccess;                 /* chat access (0=normal, 1=always, 2=never) */
+        int resettime;                  /* reset time on login */
+        int accesslevel;                /* access level the user has got */
+        int ratios;                     /* download/upload ratio */
+        int maxtime;                    /* amount of time in minutes the user is allowed in one day */
+    } USER_FLAGS;
+
+    typedef struct
+    {
+        time_t lastlogon;               /* time & date when user last logged on */
+        time_t lastscan;                /* time & date of last message/file newscan */
+        int calls;                      /* number of calls the user has made so far */
+        int todaytime;                  /* number of minutes used today */
+        int uploadskb;                  /* number of kilobytes uploaded */
+        int downloadskb;                /* number of kilobytes downloaded */
+        int uploads;                    /* number of uploads */
+        int downloads;                  /* number of downloads */
+    } USER_STATS;
+
+    typedef struct
+    {
+        int messagebase;                /* the id of the last accessed messagebase */
+        int filebase;                   /* the id of the last accessed filebase */
+    } USER_HISTORY;
+
+    typedef struct {
+        int id;                         /* the id of the user */
+        char username[MAX_USERNAME];    /* user's username */
+        char realname[MAX_REALNAME];    /* user's real name */
+        char email[MAX_EMAIL];          /* user's email address */
+        char password[MAX_PASSWORD];    /* user's password */
+        char keys[MAX_KEYS];            /* access keys allocated to user */
+        char userdir[MAX_DIR];          /* path of the user's personal directory */
+        USER_FLAGS user_flags;
+        USER_HISTORY user_history;
+        USER_STATS user_stats;
+    } USER_RECORD;
+
+    /* ******************************************************************************************************************************************************** */
+    /* Filebase Database                                                                                                                                        */
+    /* ******************************************************************************************************************************************************** */
+
+    typedef struct
+    {
+        int id;                         /* the id of the filebase */
+        int type;                       /* the type of the filebase (0=normal, 1=freeform, 2=user directory) */
+        int accesslevel;                /* minimum access level required */
+        char keys[MAX_KEYS];            /* access keys required */
+        char name[MAX_NAME];            /* the name of the filebase */
+        char filebasedir[MAX_DIR];      /* path of the filebase directory */
+    } FILEBASE_RECORD;
+
+    typedef struct
+    {
+        int id;                         /* the id of the filebase area */
+        int filebaseid;                 /* the id of the filebase in which this area belongs */
+        int accesslevel;                /* minimum access level required */
+        char keys[MAX_KEYS];            /* access keys required */
+        char name[MAX_NAME];            /* the name of the area */
+    } FILEBASE_AREA_RECORD;
+
+    typedef struct
+    {
+        int id;                         /* the id of the file */
+        int filebaseid;                 /* the id of the filebase in which this file belongs */
+        int filebaseareaid;             /* the id of the filebase area in which this file belongs */
+        int deleted;                    /* is this file deleted? */
+        int accesslevel;                /* minimum access level required */
+        char keys[MAX_KEYS];            /* access keys required */
+        char name[MAX_NAME];            /* the name of the filebase */
+        int uploadedby;                 /* the id of the user who uploaded the file */
+        time_t uploaddate;              /* time & date of upload */
+        char description[MAX_DESC];     /* the description given during upload */
+        long filesize;                  /* size of the stored payload */
+        int downloads;                  /* number of times downloaded */
+    } FILE_RECORD;
+
+    /* ******************************************************************************************************************************************************** */
+    /* Messagebase Database                                                                                                                                     */
+    /* ******************************************************************************************************************************************************** */
+
+    typedef struct
+    {
+        char domain[100];               /* name of the domain (fidonet, etc.) */
+        int zone;                       /* ftn zone */
+        int net;                        /* net within zone */
+        int node;                       /* node within net */
+        int point;                      /* point within node */
+    } FTN_ADDRESS;
+
+    typedef struct
+    {
+        int id;                         /* the id of the messagebase */
+        int type;                       /* the type of the messagebase (0=normal, 1=ftn, 2=internet, 3=private) */            
+        int accesslevel;                /* minimum access level required */
+        char keys[MAX_KEYS];            /* access keys required */
+        char name[MAX_NAME];            /* the name of the messagebase */
+        char messagebasedir[MAX_DIR];   /* path of the messagebase directory */
+    } MESSAGEBASE_RECORD;
+
+    typedef struct
+    {
+        int id;                         /* area number */
+        char name[MAX_NAME];            /* area name */
+        char tag[MAX_NAME];             /* tag of ftn area */
+        int daystokeep;                 /* max.days to keep messages for */
+        int akause;                     /* aka number to use */
+        short areatype;                 /* type of area (LOCAL=0, ECHO=1, NETMAIL=2, JUNK=3, OTHER=4, FILE=5, TICK=6) */
+    } MESSAGEBASE_AREA;
+
+    typedef struct
+    {
+        int id;                         /* the id of the message */
+        int messagebaseid;              /* the id of the messagebase in which this message belongs */
+        int messagebaseareaid;          /* the id of the messagebase area in which this message belongs */
+        int type;                       /* the type of the message (0=normal, 1=ftn, 2=internet, 3=private) */
+        int deleted;                    /* is this message deleted? */
+        int accesslevel;                /* minimum access level required */
+        char keys[MAX_KEYS];            /* access keys required */
+        int sentby;                     /* the id of the user who sent the message */
+        int receivedby;                 /* the id of the user who the message is for */
+        FTN_ADDRESS orgaddr;            /* originating public network address */
+        FTN_ADDRESS dstaddr;            /* destination public network address */
+        time_t imported;                /* time imported into messagebase */
+        time_t sent;                    /* time & date of message sent */
+        time_t read;                    /* time & date message was read */
+        int timesread;                  /* number of times message has been read */
+        long bodysize;                  /* size of the stored payload */
+        char subject[MAX_DESC];         /* subject/title of the message */
+    } MESSAGE_RECORD;
+
+#endif

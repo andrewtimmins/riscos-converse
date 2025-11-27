@@ -1,0 +1,18 @@
+{
+    doing `Registering...`
+    cls
+    fgbg 7 0
+    type `<Converse$Dir>.BBS.ANSI.Header`
+    
+    print `\r\n`
+    fgbg 3 0
+    print `                     New User Registration\r\n`
+    fgbg 7 0
+    print `                     ----------------------\r\n\r\n`
+    
+    print `New user registration is coming soon!\r\n`
+    print `\r\nPlease contact the sysop to request an account.\r\n\r\n`
+    
+    anykey temp
+    logoff
+}
