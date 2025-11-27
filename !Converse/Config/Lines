@@ -2,7 +2,6 @@
 ; Lines configuration file
 ;
 
-
 start
 line        0
 enabled     yes

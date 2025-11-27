@@ -16,6 +16,8 @@ needlogin   yes
 closed      no
 pager       yes
 
+ftnmail    yes
+
 anykey      <Converse$Dir>.BBS.AnyKey
 chatstart   <Converse$Dir>.BBS.ChatStart
 chatend     <Converse$Dir>.BBS.ChatEnd

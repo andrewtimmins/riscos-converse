@@ -116,6 +116,7 @@ static void config_set_defaults(void)
     snprintf(config_data.needlogin, sizeof(config_data.needlogin), "yes");
     snprintf(config_data.closed, sizeof(config_data.closed), "no");
     snprintf(config_data.pager, sizeof(config_data.pager), "yes");
+    snprintf(config_data.ftnmail, sizeof(config_data.ftnmail), "no");
     snprintf(config_data.anykey, sizeof(config_data.anykey), "<Converse$Dir>.BBS.AnyKey");
     snprintf(config_data.chatstart, sizeof(config_data.chatstart), "<Converse$Dir>.BBS.ChatStart");
     snprintf(config_data.chatend, sizeof(config_data.chatend), "<Converse$Dir>.BBS.ChatEnd");
@@ -185,6 +186,10 @@ static const char *config_get_value(const char *key)
     if (config_key_match(key, CONFIG_KEY_PAGER))
     {
         return config_data.pager;
+    }
+    if (config_key_match(key, CONFIG_KEY_FTNMAIL))
+    {
+        return config_data.ftnmail;
     }
     if (config_key_match(key, CONFIG_KEY_ANYKEY))
     {
@@ -379,6 +384,19 @@ static void config_set_value(const char *key, const char *value)
         else
         {
             config_data.pager[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_FTNMAIL))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.ftnmail, sizeof(config_data.ftnmail), "%s", value);
+        }
+        else
+        {
+            config_data.ftnmail[0] = '\0';
         }
         return;
     }

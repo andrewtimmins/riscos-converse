@@ -19,6 +19,7 @@
         "bbs": "cpp",
         "script": "cpp",
         "userdb": "cpp",
-        "window": "cpp"
+        "window": "cpp",
+        "mailer": "c"
     }
 }

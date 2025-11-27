@@ -19,11 +19,5 @@ RMEnsure ARCbbs_Doors 0.01 RMLoad <Converse$Dir>.Resources.ARCbbs
 WimpSlot -Min 64k -Max 64k
 Run <Converse$Dir>.Resources.ResFind Converse
 
-WimpSlot -Min 128k -Max 128k
-|Run <Converse$Dir>.Resources.Web %*0
-
-WimpSlot -Min 256k -Max 256k
-Run <Converse$Dir>.Resources.FTN %*0
-
 WimpSlot -Min 256k -Max 256k
 Run <Converse$Dir>.Resources.Server %*0

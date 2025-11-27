@@ -85,6 +85,7 @@ static void telnet_advertise_capabilities(int socket);
 static void telnet_handle_option(int socket, unsigned char command, unsigned char option);
 static int telnet_filter_input(int socket, char *buffer, int length);
 static void launch_line_tasks(void);
+static void launch_ftn_task(void);
 static void pipes_reset_line(int line_id);
 static int pipes_input_status(int line_id);
 static int pipes_input_write_block(int line_id, const char *buffer, int length);
@@ -105,6 +106,43 @@ static void support_set_line_connected(int line_id, int connected);
 static void support_set_line_hostname(int line_id, const char *hostname);
 static void support_set_line_connect_time(int line_id, time_t connect_time);
 static void support_set_activity(int line_id, const char *activity);
+
+/* String sanitization - strips leading/trailing whitespace and control chars */
+static void sanitize_string(char *str)
+{
+	char *src = str;
+	char *dst = str;
+	char *end;
+
+	/* Skip leading whitespace and control characters */
+	while (*src && ((unsigned char)*src <= 32))
+	{
+		src++;
+	}
+
+	/* Copy to destination, stopping at any control character (< 32) except we allow space */
+	while (*src)
+	{
+		unsigned char c = (unsigned char)*src;
+		/* Stop at CR, LF, or other control chars (but allow printable chars and space) */
+		if (c < 32)
+		{
+			break;
+		}
+		*dst++ = *src++;
+	}
+	*dst = '\0';
+
+	/* Strip trailing spaces */
+	if (dst > str)
+	{
+		end = dst - 1;
+		while (end >= str && *end == ' ')
+		{
+			*end-- = '\0';
+		}
+	}
+}
 
 /* Case-insensitive string comparison helper */
 static int str_casecmp(const char *s1, const char *s2)
@@ -260,6 +298,30 @@ static void launch_line_tasks(void)
 	}
 }
 
+static void launch_ftn_task(void)
+{
+	int i;
+	debug_printf("launch_ftn_task: ftnmail config value = '%s' (len=%d)\n", 
+		system_configuration[0].ftnmail, 
+		(int)strlen(system_configuration[0].ftnmail));
+	debug_printf("launch_ftn_task: ftnmail bytes: ");
+	for (i = 0; i < (int)strlen(system_configuration[0].ftnmail) && i < 10; i++)
+	{
+		debug_printf("%02X ", (unsigned char)system_configuration[0].ftnmail[i]);
+	}
+	debug_printf("\n");
+
+	if (str_casecmp(system_configuration[0].ftnmail, "yes") != 0)
+	{
+		debug_printf("launch_ftn_task: FTN mailer disabled (ftnmail != 'yes')\n");
+		return;
+	}
+
+	debug_printf("launch_ftn_task: Starting FTN mailer task\n");
+	Desk_Wimp_StartTask("Run <Converse$Dir>.Resources.!RunFTN");
+	debug_printf("launch_ftn_task: FTN mailer task started\n");
+}
+
 static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column)
 {
 	int relative;
@@ -383,6 +445,11 @@ static void support_push_config(void)
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"pager";
 	regs.r[2] = (int)system_configuration[0].pager;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"ftnmail";
+	regs.r[2] = (int)system_configuration[0].ftnmail;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
 	/* Push script paths */
@@ -1637,6 +1704,7 @@ void load_system_config(void)
 	/* Set defaults */
 	system_configuration[0].port = 23;
 	system_configuration[0].timeout = 120;
+	strcpy(system_configuration[0].ftnmail, "no");
 
 	if ((system_config=fopen("<Converse$Dir>.Config.System","r"))==NULL)
 	{
@@ -1717,6 +1785,10 @@ void load_system_config(void)
 			{
 				strcpy(system_configuration[0].pager, temporary_line);
 			}
+			if (strcmp(config_line,"ftnmail")==0)
+			{
+				strcpy(system_configuration[0].ftnmail, temporary_line);
+			}
 			if (strcmp(config_line,"anykey")==0)
 			{
 				strcpy(system_configuration[0].anykey, temporary_line);
@@ -1769,6 +1841,29 @@ void load_system_config(void)
 	} while(feof(system_config)==0);
 
 	fclose(system_config);
+
+	/* Sanitize all string config values */
+	sanitize_string(system_configuration[0].name);
+	sanitize_string(system_configuration[0].sysop);
+	sanitize_string(system_configuration[0].contact);
+	sanitize_string(system_configuration[0].hostname);
+	sanitize_string(system_configuration[0].botstopper);
+	sanitize_string(system_configuration[0].needlogin);
+	sanitize_string(system_configuration[0].closed);
+	sanitize_string(system_configuration[0].pager);
+	sanitize_string(system_configuration[0].ftnmail);
+	sanitize_string(system_configuration[0].anykey);
+	sanitize_string(system_configuration[0].chatstart);
+	sanitize_string(system_configuration[0].chatend);
+	sanitize_string(system_configuration[0].prelogon);
+	sanitize_string(system_configuration[0].postlogon);
+	sanitize_string(system_configuration[0].logoff);
+	sanitize_string(system_configuration[0].welcome);
+	sanitize_string(system_configuration[0].newuser);
+	sanitize_string(system_configuration[0].timeup);
+	sanitize_string(system_configuration[0].lockedout);
+	sanitize_string(system_configuration[0].closedsys);
+	sanitize_string(system_configuration[0].aftermail);
 }
 
 void load_line_config(void)
@@ -1777,6 +1872,8 @@ void load_line_config(void)
 
 	char config_line[250];
 	char *temporary_line;
+	int block_count = 0;
+	int in_block = 0;
 
 	/* Temporary storage for parsing before we know if enabled */
 	char temp_line[4] = "";
@@ -1784,93 +1881,144 @@ void load_line_config(void)
 	char temp_botstopper[128] = "";
 	char temp_hello[256] = "";
 
+	debug_printf("load_line_config: Opening <Converse$Dir>.Config.Lines\n");
+
 	if ((line_config=fopen("<Converse$Dir>.Config.Lines","r"))==NULL)
 	{
+		debug_printf("load_line_config: ERROR - Failed to open config file\n");
 		display_error_dialog(1, error_cantfindlineconfig);
 	}
 
-	do
-  	{
-		if(line_configurations>32)
-    	{
-      		display_error_dialog(1, error_toomanylines);
-    	}
+	debug_printf("load_line_config: Config file opened successfully\n");
 
-		/* Reset temporary storage for each block */
-		temp_line[0] = '\0';
-		temp_enabled[0] = '\0';
-		temp_botstopper[0] = '\0';
-		temp_hello[0] = '\0';
-
-    	config_line[0]=0;
-    	fgets(config_line, 120, line_config);
-
-		do
+	while (fgets(config_line, sizeof(config_line), line_config) != NULL)
+	{
+		if(line_configurations > 32)
 		{
-			fgets(config_line, 120, line_config);
-			if (config_line[strlen(config_line)-1]<32)
-			{
-          		config_line[strlen(config_line)-1]=0;
-			}
-        	while(config_line[strlen(config_line)-1]==32)
-			{
-				config_line[strlen(config_line)-1]=0;
-			}
-			/* Find first space or tab as delimiter */
-          	if ((temporary_line=strchr(config_line,' '))!=NULL)
-			{
-          		*temporary_line++=0; 
-			}
-			else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
-			{
-          		*temporary_line++=0; 
-			} 
-			else
-			{
-          		temporary_line="";
-			}
-			/* Skip any whitespace (spaces or tabs) */
-        	while(*temporary_line==' ' || *temporary_line=='\t')
-			{
-				temporary_line++;
-			}
-
-			if (strcmp(config_line,"line")==0)
-			{
-				strncpy(temp_line, temporary_line, sizeof(temp_line) - 1);
-				temp_line[sizeof(temp_line) - 1] = '\0';
-			}
-			if (strcmp(config_line,"enabled")==0)
-			{
-				strncpy(temp_enabled, temporary_line, sizeof(temp_enabled) - 1);
-				temp_enabled[sizeof(temp_enabled) - 1] = '\0';
-			}
-			if (strcmp(config_line,"botstopper")==0)
-			{
-				strncpy(temp_botstopper, temporary_line, sizeof(temp_botstopper) - 1);
-				temp_botstopper[sizeof(temp_botstopper) - 1] = '\0';
-			}
-			if (strcmp(config_line,"hello")==0)
-			{
-				strncpy(temp_hello, temporary_line, sizeof(temp_hello) - 1);
-				temp_hello[sizeof(temp_hello) - 1] = '\0';
-			}
-		} while(feof(line_config)==0 && strcmp(config_line,"end")!=0);
-
-		/* Only add line if enabled */
-		if (str_casecmp(temp_enabled, "yes") == 0)
-		{
-			strcpy(line_configuration[line_configurations].line, temp_line);
-			strcpy(line_configuration[line_configurations].enabled, temp_enabled);
-			strcpy(line_configuration[line_configurations].botstopper, temp_botstopper);
-			strcpy(line_configuration[line_configurations].hello, temp_hello);
-			line_configurations++;
+			debug_printf("load_line_config: ERROR - Too many lines (>32)\n");
+			display_error_dialog(1, error_toomanylines);
 		}
-	} while(feof(line_config)==0);
+
+		/* Strip trailing control characters and spaces */
+		while (strlen(config_line) > 0 && config_line[strlen(config_line)-1] < 32)
+		{
+			config_line[strlen(config_line)-1] = 0;
+		}
+		while (strlen(config_line) > 0 && config_line[strlen(config_line)-1] == 32)
+		{
+			config_line[strlen(config_line)-1] = 0;
+		}
+
+		/* Skip empty lines and comments */
+		if (config_line[0] == '\0' || config_line[0] == ';')
+		{
+			continue;
+		}
+
+		/* Find first space or tab as delimiter */
+		if ((temporary_line=strchr(config_line,' '))!=NULL)
+		{
+			*temporary_line++=0; 
+		}
+		else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
+		{
+			*temporary_line++=0; 
+		} 
+		else
+		{
+			temporary_line="";
+		}
+
+		/* Skip any whitespace (spaces or tabs) */
+		while(*temporary_line==' ' || *temporary_line=='\t')
+		{
+			temporary_line++;
+		}
+
+		/* Check for block start */
+		if (strcmp(config_line, "start") == 0)
+		{
+			/* Reset temporary storage for new block */
+			temp_line[0] = '\0';
+			temp_enabled[0] = '\0';
+			temp_botstopper[0] = '\0';
+			temp_hello[0] = '\0';
+			in_block = 1;
+			block_count++;
+			debug_printf("load_line_config: Parsing block %d\n", block_count);
+			continue;
+		}
+
+		/* Check for block end */
+		if (strcmp(config_line, "end") == 0)
+		{
+			if (in_block)
+			{
+				/* Sanitize temp values before use */
+				sanitize_string(temp_line);
+				sanitize_string(temp_enabled);
+				sanitize_string(temp_botstopper);
+				sanitize_string(temp_hello);
+
+				/* Only add line if enabled */
+				if (str_casecmp(temp_enabled, "yes") == 0)
+				{
+					debug_printf("load_line_config: Adding line %s (index %d) - ENABLED\n", 
+					             temp_line, line_configurations);
+					strcpy(line_configuration[line_configurations].line, temp_line);
+					strcpy(line_configuration[line_configurations].enabled, temp_enabled);
+					strcpy(line_configuration[line_configurations].botstopper, temp_botstopper);
+					strcpy(line_configuration[line_configurations].hello, temp_hello);
+					line_configurations++;
+				}
+				else
+				{
+					debug_printf("load_line_config: Skipping line %s - not enabled (enabled='%s')\n", 
+					             temp_line[0] ? temp_line : "?", temp_enabled);
+				}
+				in_block = 0;
+			}
+			continue;
+		}
+
+		/* Parse block content only if we're inside a block */
+		if (!in_block)
+		{
+			continue;
+		}
+
+		if (strcmp(config_line,"line")==0)
+		{
+			strncpy(temp_line, temporary_line, sizeof(temp_line) - 1);
+			temp_line[sizeof(temp_line) - 1] = '\0';
+			debug_printf("load_line_config:   line = '%s'\n", temp_line);
+		}
+		else if (strcmp(config_line,"enabled")==0)
+		{
+			strncpy(temp_enabled, temporary_line, sizeof(temp_enabled) - 1);
+			temp_enabled[sizeof(temp_enabled) - 1] = '\0';
+			debug_printf("load_line_config:   enabled = '%s'\n", temp_enabled);
+		}
+		else if (strcmp(config_line,"botstopper")==0)
+		{
+			strncpy(temp_botstopper, temporary_line, sizeof(temp_botstopper) - 1);
+			temp_botstopper[sizeof(temp_botstopper) - 1] = '\0';
+			debug_printf("load_line_config:   botstopper = '%s'\n", temp_botstopper);
+		}
+		else if (strcmp(config_line,"hello")==0)
+		{
+			strncpy(temp_hello, temporary_line, sizeof(temp_hello) - 1);
+			temp_hello[sizeof(temp_hello) - 1] = '\0';
+			debug_printf("load_line_config:   hello = '%s'\n", temp_hello);
+		}
+	}
 
 	fclose(line_config);
 
+	debug_printf("load_line_config: Finished - %d enabled lines configured\n", line_configurations);
+
 	if (line_configurations == 0) {
+		debug_printf("load_line_config: ERROR - No lines defined\n");
 		display_error_dialog(1, error_nolinesdefined);
 	}
 }
@@ -1952,6 +2100,7 @@ int main(void) {
 		}
 	}
 	launch_line_tasks();
+	launch_ftn_task();
 
 	create_line_icons();
 	create_listener();

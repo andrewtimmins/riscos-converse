@@ -71,6 +71,9 @@ enum
 #define SWI_SUPPORT_FTN     0x5AA86
 #define SWI_FILER_LOGGING   0x5AA40
 
+/* Wimp message from Converse Server */
+#define MESSAGE_LINE_BROADCAST  0x5AA00
+
 /* ******************************************************************************************************************************************************** */
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
@@ -810,6 +813,30 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     return Desk_bool_TRUE;
 }
 
+static Desk_bool wimp_handle_broadcast_message(Desk_event_pollblock *event, void *ref)
+{
+    int reason;
+
+    Desk_UNUSED(ref);
+
+    if (event == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    reason = event->data.message.data.words[0];
+
+    /* Reason 0 = quit request from Server */
+    if (reason == 0)
+    {
+        debug_printf("FTN Mailer: Received shutdown broadcast from Server");
+        wimp.quit = Desk_bool_TRUE;
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Wimp Setup                                                                                                                                               */
 /* ******************************************************************************************************************************************************** */
@@ -876,6 +903,10 @@ int main(int argc, char *argv[])
                      wimp_handle_window_close, NULL);
     Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_poll, NULL);
+
+    /* Register for shutdown broadcast from Server */
+    Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_BROADCAST, Desk_event_ANY,
+                        wimp_handle_broadcast_message, NULL);
 
     /* Initialise mailer */
     mailer_initialise();

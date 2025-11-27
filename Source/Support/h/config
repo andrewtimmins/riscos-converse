@@ -33,6 +33,7 @@ typedef enum
 #define CONFIG_KEY_NEEDLOGIN     "needlogin"
 #define CONFIG_KEY_CLOSED        "closed"
 #define CONFIG_KEY_PAGER         "pager"
+#define CONFIG_KEY_FTNMAIL       "ftnmail"
 #define CONFIG_KEY_ANYKEY        "anykey"
 #define CONFIG_KEY_CHATSTART     "chatstart"
 #define CONFIG_KEY_CHATEND       "chatend"
@@ -60,6 +61,7 @@ typedef struct
     char needlogin[CONFIG_FLAG_LEN];
     char closed[CONFIG_FLAG_LEN];
     char pager[CONFIG_FLAG_LEN];
+    char ftnmail[CONFIG_FLAG_LEN];
     char anykey[CONFIG_PATH_LEN];
     char chatstart[CONFIG_PATH_LEN];
     char chatend[CONFIG_PATH_LEN];

@@ -43,3 +43,7 @@ error.12: You need to define at least 1 door in the door configuration file.
 # Door Messages
 door.1: Unable to find door, please check path.
 door.2: Door is not responding.
+
+# FTN Mailer Messages
+ftn.ibmt: FTN Mailer
+ftn.ibm: >Info, Status, Poll Now,Quit

@@ -13,8 +13,8 @@
 /* ******************************************************************************************************************************************************** */
 
 #define MAILER_VERSION              "0.01"
-#define MAILER_NAME                 "Converse FTN Mailer"
-#define MAILER_TASK_NAME            "FTN Mailer"
+#define MAILER_NAME                 "Converse"
+#define MAILER_TASK_NAME            "Converse FTN"
 
 /* BinkP default port */
 #define BINKP_DEFAULT_PORT          24554
