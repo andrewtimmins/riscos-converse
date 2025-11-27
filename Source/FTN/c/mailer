@@ -54,6 +54,7 @@
 
 WIMP_STATE wimp;
 MAILER_STATE mailer;
+Desk_dialog2_block *proginfo_window;
 
 /* Menu entries */
 enum
@@ -837,6 +838,18 @@ static Desk_bool wimp_handle_broadcast_message(Desk_event_pollblock *event, void
     return Desk_bool_FALSE;
 }
 
+static Desk_bool wimp_open_proginfo_window(Desk_event_pollblock *event, void *ref)
+{
+    if (event->data.message.data.menuwarn.selection[0] != ICONBAR_MENU_INFO)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+
+    return Desk_bool_TRUE;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Wimp Setup                                                                                                                                               */
 /* ******************************************************************************************************************************************************** */
@@ -848,8 +861,12 @@ static void create_iconbar_icon(void)
 
 static void create_iconbar_menu(void)
 {
-    wimp.iconbar_menu_handle = Desk_Menu_New(MAILER_TASK_NAME,
-        ">Info,Status,Poll Now,Quit");
+    char iconbar_menu[100];
+    char iconbar_menu_title[30];
+
+    Desk_Msgs_Lookup("ftn.ibmt", iconbar_menu_title, 30);
+    Desk_Msgs_Lookup("ftn.ibm", iconbar_menu, 100);
+    wimp.iconbar_menu_handle = Desk_Menu_New(iconbar_menu_title, iconbar_menu);
 }
 
 static void poll_idle(void)
@@ -892,7 +909,12 @@ int main(int argc, char *argv[])
     /* Create UI elements */
     create_iconbar_icon();
     create_iconbar_menu();
+    proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
+
+    /* Register menu warning for proginfo */
+    Desk_Menu_Warn(wimp.iconbar_menu_handle, ICONBAR_MENU_INFO, Desk_bool_TRUE,
+                   wimp_open_proginfo_window, (void *)proginfo_window);
 
     /* Register event handlers */
     Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, Desk_event_ANY,

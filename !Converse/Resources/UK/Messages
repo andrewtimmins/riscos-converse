@@ -1,9 +1,9 @@
 # Server Messages
-server.ibmt: Converse
+server.ibmt: Converse BBS
 server.ibm: >Info,>System Info,User Editor,Quit
 server.mmt:Misc
 server.mm:Reload
-server.swmt: Converse
+server.swmt: Converse BBS
 server.swm: Line Info, User Info, Disconnect
 
 server.wait:Waiting for user...
@@ -22,7 +22,7 @@ server.nores:Resolver not loaded:
 server.uatr:Unable to resolve:
 
 # User Editor Messages
-usered.ibmt: Converse
+usered.ibmt: Converse BBS
 usered.ibm: Info,Quit
 usered.nouf: User file not found, creating new.
 
@@ -45,5 +45,5 @@ door.1: Unable to find door, please check path.
 door.2: Door is not responding.
 
 # FTN Mailer Messages
-ftn.ibmt: FTN Mailer
+ftn.ibmt: Converse FTN
 ftn.ibm: >Info, Status, Poll Now,Quit
