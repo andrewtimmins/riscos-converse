@@ -21,6 +21,7 @@
 #include "filebase.h"
 #include "debug.h"
 #include "iconnames.h"
+#include "main.h"
 
 #define PIPES_SWI_BASE 0x5AA00
 
@@ -97,10 +98,30 @@
 #endif
 
 #define DOOR_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
+#define BOTSTOPPER_TIMEOUT_SECS    30
+#define BOTSTOPPER_CHAR            '*'
 #define SCRIPT_ENTRY_PATH "<Converse$Dir>.BBS.Start"
 
 #define SWI_OS_READMONOTONICTIME 0x00000042
 #define POLL_IDLE_DELAY 1  /* centiseconds between null polls (10ms) */
+
+/* ConverseBBS Support module - LineConfig SWI */
+#define SWI_CONVERSEBBS_LINECONFIG   0x5AA83
+
+/* LineConfig reason codes and fields */
+#define LINECONFIG_REASON_GET        1
+#define LINECONFIG_FIELD_ENABLED     0
+#define LINECONFIG_FIELD_BOTSTOPPER  1
+#define LINECONFIG_FIELD_HELLO       2
+
+/* Botstopper states */
+typedef enum
+{
+    BOTSTOPPER_STATE_INACTIVE = 0,  /* Not in botstopper mode */
+    BOTSTOPPER_STATE_WAITING,       /* Waiting for user to type ** */
+    BOTSTOPPER_STATE_PASSED,        /* User passed the challenge */
+    BOTSTOPPER_STATE_FAILED         /* User timed out or failed */
+} BOTSTOPPER_STATE;
 
 typedef struct
 {
@@ -122,6 +143,10 @@ typedef struct
     clock_t arcbbs_door_launch_deadline;
     clock_t arcbbs_poll_tick;
     int arcbbs_requested_door_number;
+    /* Botstopper state */
+    BOTSTOPPER_STATE botstopper_state;
+    time_t botstopper_deadline;
+    int botstopper_star_count;
     /* Script engine */
     script_state script;
     /* Filebase session */
@@ -153,7 +178,15 @@ static void update_main_window_title(line_task_state *state);
 static void wait_for_pipe_space(void);
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref);
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte);
+static void botstopper_start(line_task_state *state);
+static void botstopper_process(line_task_state *state);
+static int botstopper_handle_byte(line_task_state *state, unsigned char byte);
+static int config_get_botstopper_enabled(void);
+static const char *config_get_prelogon_script(void);
+static const char *lineconfig_get_hello(int line_id);
+static const char *lineconfig_get_botstopper(int line_id);
 static void script_start_session(line_task_state *state);
+static void script_start_prelogon(line_task_state *state);
 static void script_stop_session(line_task_state *state);
 static void script_print_time(line_task_state *state);
 static void script_print_line_info(line_task_state *state);
@@ -266,6 +299,9 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     state->control_stage = 0;
     state->control_code = 0;
     state->quit_requested = Desk_bool_FALSE;
+    state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
+    state->botstopper_deadline = 0;
+    state->botstopper_star_count = 0;
     door_reset_state(state);
     arcbbs_door_reset_state(state);
 
@@ -397,6 +433,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
     Desk_UNUSED(event);
 
     process_server_stream(state);
+    botstopper_process(state);
     door_process(state);
     arcbbs_door_process(state);
     script_process(&state->script);
@@ -557,7 +594,17 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             state->session_active = 1;
             log_line_event(state->line_id, "Session connected");
             pipes_send_welcome(state);
-            script_start_session(state);
+            
+            /* Check if botstopper is enabled globally */
+            if (config_get_botstopper_enabled())
+            {
+                botstopper_start(state);
+            }
+            else
+            {
+                /* No botstopper - go straight to prelogon script */
+                script_start_prelogon(state);
+            }
             continue;
         }
 
@@ -568,6 +615,7 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
                 pipes_output_write_string(state->line_id, "\r\n[LINETASK CLOSED]\r\n");
             }
             state->session_active = 0;
+            state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
             if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
             {
                 door_close_session(state, "\r\n[Door session ended]\r\n");
@@ -1015,6 +1063,16 @@ static int arcbbs_read_output(int line_id)
 
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
 {
+    /* Check if botstopper is active first */
+    if (state->botstopper_state == BOTSTOPPER_STATE_WAITING)
+    {
+        if (botstopper_handle_byte(state, byte))
+        {
+            /* Botstopper consumed the byte */
+            return;
+        }
+    }
+
     if (state->door_active != Desk_bool_FALSE)
     {
         door_send_user_byte(state, byte);
@@ -1039,6 +1097,251 @@ static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
     }
 
     (void)script_handle_user_byte(&state->script, byte);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Configuration Helpers                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if botstopper is enabled globally (from System config).
+ * Returns 1 if enabled, 0 if disabled.
+ */
+static int config_get_botstopper_enabled(void)
+{
+    _kernel_swi_regs regs;
+    const char *value;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"botstopper";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    value = (const char *)regs.r[0];
+    if (value == NULL)
+    {
+        return 0;
+    }
+
+    /* Check for "yes", "1", "on", "true" */
+    if (value[0] == 'y' || value[0] == 'Y' ||
+        value[0] == '1' ||
+        value[0] == 'o' || value[0] == 'O' ||
+        value[0] == 't' || value[0] == 'T')
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
+ * Get the prelogon script path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_prelogon_script(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"prelogon";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
+ * Get the hello message for a specific line.
+ * Returns pointer to string or NULL.
+ */
+static const char *lineconfig_get_hello(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINECONFIG_REASON_GET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINECONFIG_FIELD_HELLO;
+    if (_kernel_swi(SWI_CONVERSEBBS_LINECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
+ * Get the botstopper text for a specific line.
+ * Returns pointer to string or NULL.
+ */
+static const char *lineconfig_get_botstopper(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINECONFIG_REASON_GET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINECONFIG_FIELD_BOTSTOPPER;
+    if (_kernel_swi(SWI_CONVERSEBBS_LINECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Botstopper Challenge                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Start the botstopper challenge.
+ * Displays hello message and botstopper text, then waits for user to type ** within timeout.
+ */
+static void botstopper_start(line_task_state *state)
+{
+    const char *hello;
+    const char *botstopper_text;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Get hello message for this line */
+    hello = lineconfig_get_hello(state->line_id);
+    if (hello != NULL && hello[0] != '\0')
+    {
+        pipes_output_write_string(state->line_id, "\r\n");
+        pipes_output_write_string(state->line_id, hello);
+        pipes_output_write_string(state->line_id, "\r\n");
+    }
+
+    /* Get botstopper challenge text for this line */
+    botstopper_text = lineconfig_get_botstopper(state->line_id);
+    if (botstopper_text != NULL && botstopper_text[0] != '\0')
+    {
+        pipes_output_write_string(state->line_id, "\r\n");
+        pipes_output_write_string(state->line_id, botstopper_text);
+        pipes_output_write_string(state->line_id, "\r\n\r\n");
+    }
+
+    /* Set up challenge state */
+    state->botstopper_state = BOTSTOPPER_STATE_WAITING;
+    state->botstopper_deadline = time(NULL) + BOTSTOPPER_TIMEOUT_SECS;
+    state->botstopper_star_count = 0;
+
+    log_line_event(state->line_id, "Botstopper challenge started");
+}
+
+/*
+ * Process botstopper timeout.
+ * Called from null poll to check if user has timed out.
+ */
+static void botstopper_process(line_task_state *state)
+{
+    if (state == NULL || state->botstopper_state != BOTSTOPPER_STATE_WAITING)
+    {
+        return;
+    }
+
+    /* Check for timeout */
+    if (time(NULL) >= state->botstopper_deadline)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Botstopper timeout - disconnecting]\r\n");
+        log_line_event(state->line_id, "Botstopper timeout");
+        state->botstopper_state = BOTSTOPPER_STATE_FAILED;
+        
+        /* Force disconnect */
+        script_host_force_disconnect(state);
+    }
+}
+
+/*
+ * Handle user byte during botstopper challenge.
+ * Returns 1 if the byte was consumed, 0 otherwise.
+ */
+static int botstopper_handle_byte(line_task_state *state, unsigned char byte)
+{
+    if (state == NULL || state->botstopper_state != BOTSTOPPER_STATE_WAITING)
+    {
+        return 0;
+    }
+
+    /* Check if user typed the botstopper character */
+    if (byte == BOTSTOPPER_CHAR)
+    {
+        state->botstopper_star_count++;
+        
+        /* Echo the character */
+        pipes_output_write_block(state->line_id, (const char *)&byte, 1);
+
+        /* Check if we have enough stars */
+        if (state->botstopper_star_count >= 2)
+        {
+            pipes_output_write_string(state->line_id, "\r\n\r\n[Access granted]\r\n\r\n");
+            log_line_event(state->line_id, "Botstopper passed");
+            state->botstopper_state = BOTSTOPPER_STATE_PASSED;
+            
+            /* Start the prelogon script */
+            script_start_prelogon(state);
+        }
+    }
+    else
+    {
+        /* Wrong character - reset star count */
+        state->botstopper_star_count = 0;
+    }
+
+    return 1;  /* Always consume bytes during botstopper */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Script Control                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Start the prelogon script (after botstopper or if botstopper is disabled).
+ */
+static void script_start_prelogon(line_task_state *state)
+{
+    const char *prelogon_path;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Get prelogon script path from config */
+    prelogon_path = config_get_prelogon_script();
+    
+    debug_printf("script_start_prelogon: prelogon_path=%s", 
+                 prelogon_path ? prelogon_path : "(null)");
+    
+    if (prelogon_path != NULL && prelogon_path[0] != '\0')
+    {
+        log_line_event(state->line_id, "Starting prelogon script");
+        if (!script_start(&state->script, prelogon_path))
+        {
+            const char *error = state->script.last_error[0] != '\0' ? state->script.last_error : "Script failed";
+            char message[192];
+            snprintf(message, sizeof(message), "\r\n[Unable to start prelogon script: %s]\r\n", error);
+            pipes_output_write_string(state->line_id, message);
+            /* Fall back to Start script */
+            script_start_session(state);
+            return;
+        }
+        script_process(&state->script);
+    }
+    else
+    {
+        /* No prelogon script - fall back to default Start script */
+        log_line_event(state->line_id, "No prelogon script, starting default");
+        script_start_session(state);
+    }
 }
 
 static void script_start_session(line_task_state *state)

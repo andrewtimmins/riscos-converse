@@ -110,7 +110,9 @@
     static Desk_dialog2_block *systeminfo_window;
     static Desk_window_handle main_window;
     
+    static char app_version ("0.01");
     static char app_compiled[]=__DATE__" at "__TIME__;
+    static char small_app_compiled[]=__DATE__" ["__TIME__"];
 
     static char waiting_user[100];
     static char user_activity[100];
