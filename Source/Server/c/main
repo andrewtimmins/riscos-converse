@@ -144,6 +144,8 @@ static void send_line_task_view_request(int line_id);
 #define MESSAGE_LINE_REGISTER   (MESSAGE_LINE_BASE + 4)
 #define LINE_CONTROL_REASON_LOGOFF 1
 
+#define SWI_OS_READMONOTONICTIME 0x00000042
+#define POLL_IDLE_DELAY 1  /* centiseconds between null polls (10ms) */
 
 
 enum
@@ -156,6 +158,21 @@ enum
 	MAIN_WINDOW_COLUMN_ACTION,
 	MAIN_WINDOW_COLUMN_VIEW
 };
+
+static void poll_idle(void)
+{
+	_kernel_swi_regs regs;
+	Desk_event_pollblock event;
+	int earliest;
+
+	/* Get current monotonic time and add delay */
+	_kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+	earliest = regs.r[0] + POLL_IDLE_DELAY;
+
+	/* Poll with idle time - won't return null events until 'earliest' */
+	Desk_Wimp_PollIdle(Desk_Event_mask, &event, earliest);
+	Desk_Event_Process(&event);
+}
 
 static int main_window_icon_index(int line_id, int column)
 {
@@ -1772,7 +1789,7 @@ int main(void) {
 	create_listener();
 	atexit(destroy_listener);
 
-	while(wimp.quit == Desk_bool_FALSE) Desk_Event_Poll();
+	while(wimp.quit == Desk_bool_FALSE) poll_idle();
 
  	Desk_Template_ClearAll();
 	return(0);

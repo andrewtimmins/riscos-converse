@@ -11,11 +11,6 @@ Set File$Type_EEE Converse
 RMEnsure ConverseFiler 0.01 RMLoad <Converse$Dir>.Resources.Filer
 RMEnsure ConversePipes 0.01 RMLoad <Converse$Dir>.Resources.Pipes
 
-Set Converse$Loaded 1
-RMEnsure ConverseServer 0.01 Set Converse$Loaded 0
-If "<Converse$Loaded>" = "1" Then RMKill ConverseServer
-Unset Converse$Loaded
-
 WimpSlot -Min 64k -Max 64k
 Run <Converse$Dir>.Resources.ResFind Converse
 

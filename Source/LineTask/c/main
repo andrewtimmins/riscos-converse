@@ -59,6 +59,9 @@
 #define DOOR_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
 #define SCRIPT_ENTRY_PATH "<Converse$Dir>.BBS.Start"
 
+#define SWI_OS_READMONOTONICTIME 0x00000042
+#define POLL_IDLE_DELAY 1  /* centiseconds between null polls (10ms) */
+
 typedef struct
 {
     int line_id;
@@ -118,6 +121,22 @@ static void script_host_report_activity(void *context, const char *text);
 static int script_host_get_line_id(void *context);
 static int script_host_get_task_handle(void *context);
 static void log_line_event(int line_id, const char *message);
+static void poll_idle(void);
+
+static void poll_idle(void)
+{
+    _kernel_swi_regs regs;
+    Desk_event_pollblock event;
+    int earliest;
+
+    /* Get current monotonic time and add delay */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    earliest = regs.r[0] + POLL_IDLE_DELAY;
+
+    /* Poll with idle time - won't return null events until 'earliest' */
+    Desk_Wimp_PollIdle(Desk_Event_mask, &event, earliest);
+    Desk_Event_Process(&event);
+}
 
 int main(int argc, char **argv)
 {
@@ -142,7 +161,7 @@ int main(int argc, char **argv)
 
     while (task_state.quit_requested == Desk_bool_FALSE)
     {
-        Desk_Event_Poll();
+        poll_idle();
     }
 
     log_line_event(task_state.line_id, "LineTask shutting down");
