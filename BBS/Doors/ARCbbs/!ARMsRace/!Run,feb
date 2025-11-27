@@ -1,0 +1,3 @@
+Set ARMsRace$Dir <Obey$Dir>
+wimpslot -min 128k -max 128k
+IF "%0"="-scores" THEN run <ARMsRace$Dir>.scores ELSE run <ARMsRace$Dir>.!Runimage

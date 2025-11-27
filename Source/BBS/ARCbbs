@@ -1,0 +1,72 @@
+{
+    goto arcbbs_menu
+
+    /* ARCbbs Menu */
+    label arcbbs_menu
+    cls
+    fgbg 7 0
+    doing `ARCbbs Menu`
+    type `<Converse$Dir>.BBS.ANSI.Header`
+    type `<Converse$Dir>.BBS.Menus.ARCbbs`
+
+    print `\r\nEnter choice (1-5): `
+    prompt choice char echo
+
+    if choice == `A` goto launch_advertise
+    if choice == `a` goto launch_advertise
+    if choice == `B` goto launch_storystor
+    if choice == `b` goto launch_storystor
+    if choice == `C` goto launch_virtualcafe
+    if choice == `c` goto launch_virtualcafe
+    if choice == `D` goto launch_triv
+    if choice == `d` goto launch_triv
+    if choice == `E` goto launch_armsrace
+    if choice == `e` goto launch_armsrace
+    if choice == `W` goto launch_snoop
+    if choice == `w` goto launch_snoop
+
+    if choice == `X` goto main_menu
+    if choice == `x` goto main_menu
+
+    print `\r\nUnknown selection '%{choice}', please try again.\r\n`
+    goto arcbbs_menu
+
+    label launch_advertise
+    doing `Playing Advertise...`
+    call arcbbsdoor 4 `<Converse$Dir>.BBS.Doors.ARCbbs.!Advertise %{line}`
+    anykey temp
+    goto arcbbs_menu
+
+    label launch_storystor
+    doing `Playing Story Stor...`
+    call arcbbsdoor 200 `<Converse$Dir>.BBS.Doors.ARCbbs.!StoryStor %{line}`
+    anykey temp
+    goto arcbbs_menu
+
+    label launch_virtualcafe
+    doing `Talking in Virtual Cafe...`
+    call arcbbsdoor 15 `<Converse$Dir>.BBS.Doors.ARCbbs.!VirtlCafe %{line}`
+    anykey temp
+    goto arcbbs_menu
+
+    label launch_triv
+    doing `Playing Trivial...`
+    call arcbbsdoor 6 `<Converse$Dir>.BBS.Doors.ARCbbs.!TrivDoor %{line}`
+    anykey temp
+    goto arcbbs_menu
+
+    label launch_armsrace
+    doing `Playing Arms Race...`
+    call arcbbsdoor 139 `<Converse$Dir>.BBS.Doors.ARCbbs.!ArmsRace %{line}`
+    anykey temp
+    goto arcbbs_menu
+
+    label launch_snoop
+    doing `Snooping...`
+    call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126`
+    anykey temp
+    goto arcbbs_menu
+
+    label main_menu
+    script `<Converse$Dir>.BBS.Start`
+}

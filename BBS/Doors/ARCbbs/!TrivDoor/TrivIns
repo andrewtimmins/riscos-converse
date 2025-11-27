@@ -1,0 +1,22 @@
+{cls bfgbg rb}   ___  ___  ___          ___          ___  ___  ___  ___  ___  ___  ___  ___{eol}
+  /__/  /   /    /_ /     /   /\ /    /__/ /__/ /__/ /__/ /  /  /   /__  /__{eol}
+ / \  _/_  /__  /  /    _/_  /  \    /    /  / / \  /  / /__/ _/_  ___/ /__{eol}
+{eol}
+{fgbg ry}                                  Trivia Game{eol}
+{fgbg cn}
+                         Welcome to the Trivial quiz game{fg w}
+
+     Initially you will be asked what you wish to gamble for:
+
+           a) Your upload/download ratio
+           b) Your online time
+           c) Not gamble for anything except a high score{fg g}
+
+  Everytime you answer a question correctly your score increases by 1 point
+  For scores below 5: You lose 1 download for each point below 5 or
+                      lose 5 minutes online time for each point below 5
+  For scores above 5: You gain 1 download for each point above 5 or
+                      gain 5 minutes online time for each point above 5{fg r}
+
+  NB: Don't worry you won't end up with a negative ratio or online time
+           q quits the game without affecting your ratios{_>0023}

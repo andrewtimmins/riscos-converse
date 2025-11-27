@@ -1,0 +1,878 @@
+/* ******************************************************************************************************************************************************** */
+/* ARCbbsDoors Emulator Module - Buffer Management                                                                                                          */
+/*                                                                                                                                                          */
+/* Manages per-line circular buffers for input (host->door) and output (door->host) data.                                                                   */
+/* Also manages the status byte per line which controls the door handshake protocol.                                                                        */
+/*                                                                                                                                                          */
+/* Original ARCbbsDoors API (SWI base 0x41040):                                                                                                             */
+/*   0x41040 ReadStatus    - Read status byte                                                                                                               */
+/*   0x41041 WriteStatus   - Write status byte                                                                                                              */
+/*   0x41042 SendRequest   - Send request block                                                                                                             */
+/*   0x41043 GetReply      - Get reply block                                                                                                                */
+/*   0x41046 InputStatus   - Get bytes waiting in input buffer                                                                                              */
+/*   0x41047 InputRead     - Read byte from input buffer                                                                                                    */
+/*   0x41048 OutputStatus  - Get bytes free in output buffer                                                                                                */
+/*   0x41049 OutputWrite   - Write byte to output buffer                                                                                                    */
+/*   0x4104A ClearInput    - Clear input buffer                                                                                                             */
+/*   0x4104B ClearOutput   - Clear output buffer                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "buffer.h"
+#include "debug.h"
+
+static LINE_BUFFER line_buffers[ARCBBS_MAX_LINES];
+
+/* Request/reply buffers for the protocol (256 bytes per line) */
+static unsigned char request_buffers[ARCBBS_MAX_LINES][256];
+static unsigned char reply_buffers[ARCBBS_MAX_LINES][256];
+static int reply_ready[ARCBBS_MAX_LINES];
+
+/* Static helpers */
+static int buffer_valid_line(int line);
+static int buffer_input_bytes_available(const LINE_BUFFER *buf);
+static int buffer_output_bytes_free(const LINE_BUFFER *buf);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void buffer_initialise(void)
+{
+    int i;
+
+    for (i = 0; i < ARCBBS_MAX_LINES; i++)
+    {
+        memset(&line_buffers[i], 0, sizeof(LINE_BUFFER));
+        line_buffers[i].status = ARCBBS_STATUS_IDLE;
+        line_buffers[i].active = 0;
+        memset(request_buffers[i], 0, 256);
+        memset(reply_buffers[i], 0, 256);
+        reply_ready[i] = 0;
+    }
+}
+
+void buffer_finalise(void)
+{
+    /* Nothing to clean up - static buffers */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handlers - Original ARCbbsDoors API                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * ARCbbsDoors_ReadStatus (0x41040)
+ * Entry: R0 = line number
+ * Exit:  R0 = status byte
+ */
+void buffer_swi_readstatus(_kernel_swi_regs *r)
+{
+    int line;
+    int result;
+    static int debug_count = 0;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line))
+    {
+        debug_printf("ARCbbs ReadStatus: INVALID line=%d\n", line);
+        r->r[0] = 0;
+        return;
+    }
+
+    result = line_buffers[line].status;
+
+    /* Debug: log first 30 calls */
+    if (debug_count < 30)
+    {
+        debug_printf("ARCbbs ReadStatus: line=%d status=%d active=%d\n", 
+                     line, result, line_buffers[line].active);
+        debug_count++;
+    }
+
+    r->r[0] = result;
+}
+
+/*
+ * ARCbbsDoors_WriteStatus (0x41041)
+ * Entry: R0 = line number
+ *        R1 = new status byte
+ */
+void buffer_swi_writestatus(_kernel_swi_regs *r)
+{
+    int line;
+    int new_status;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+    new_status = r->r[1] & 0xFF;
+
+    if (!buffer_valid_line(line))
+    {
+        debug_printf("ARCbbs WriteStatus: INVALID line=%d\n", line);
+        return;
+    }
+
+    debug_printf("ARCbbs WriteStatus: line=%d old=%d new=%d\n", 
+                 line, line_buffers[line].status, new_status);
+
+    line_buffers[line].status = (unsigned char)new_status;
+}
+
+/* Forward declaration for request processing */
+static void process_request(int line);
+
+/*
+ * ARCbbsDoors_SendRequest (0x41042)
+ * Entry: R0 = line number
+ *        R1 = pointer to 256-byte request block
+ *
+ * The request block format is:
+ *   0-3:   Request number (word)
+ *   4-255: Request-specific data
+ */
+void buffer_swi_sendrequest(_kernel_swi_regs *r)
+{
+    int line;
+    int request_num;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || r->r[1] == 0)
+    {
+        return;
+    }
+
+    /* Copy request block */
+    memcpy(request_buffers[line], (void *)r->r[1], 256);
+    
+    /* Get request number from first word */
+    request_num = *((int *)request_buffers[line]);
+    
+    debug_printf("ARCbbs SendRequest: line=%d request=%d\n", line, request_num);
+
+    /* Process the request immediately and generate reply */
+    process_request(line);
+    
+    /* Mark reply as ready */
+    reply_ready[line] = 1;
+}
+
+/*
+ * ARCbbsDoors_GetReply (0x41043)
+ * Entry: R0 = line number
+ *        R1 = pointer to 256-byte buffer for reply
+ * Exit:  R0 = -1 if no reply yet (carry set), 0 if reply ready (carry clear)
+ */
+void buffer_swi_getreply(_kernel_swi_regs *r)
+{
+    int line;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    if (!reply_ready[line])
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    /* Copy reply to caller's buffer */
+    if (r->r[1] != 0)
+    {
+        memcpy((void *)r->r[1], reply_buffers[line], 256);
+    }
+    
+    reply_ready[line] = 0;
+    r->r[0] = 0;
+}
+
+/*
+ * ARCbbsDoors_InputStatus (0x41046)
+ * Entry: R0 = line number
+ * Exit:  R0 = bytes WAITING (used) in input buffer
+ */
+void buffer_swi_inputstatus(_kernel_swi_regs *r)
+{
+    int line;
+    int bytes;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        r->r[0] = 0;
+        return;
+    }
+
+    bytes = buffer_input_bytes_available(&line_buffers[line]);
+    r->r[0] = bytes;
+}
+
+/*
+ * ARCbbsDoors_InputRead (0x41047)
+ * Entry: R0 = line number
+ * Exit:  R0 = next byte, or -1 if nothing to read
+ */
+void buffer_swi_inputread(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+    unsigned char byte;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    buf = &line_buffers[line];
+
+    /* Check if buffer is empty */
+    if (buf->input_read == buf->input_write)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    /* Read byte from input buffer */
+    byte = buf->input[buf->input_read];
+    buf->input_read = (buf->input_read + 1) % ARCBBS_BUFFER_SIZE;
+
+    r->r[0] = byte;
+}
+
+/*
+ * ARCbbsDoors_OutputStatus (0x41048)
+ * Entry: R0 = line number
+ * Exit:  R0 = bytes FREE (unused) in output buffer
+ */
+void buffer_swi_outputstatus(_kernel_swi_regs *r)
+{
+    int line;
+    int bytes_free;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        r->r[0] = 0;
+        return;
+    }
+
+    bytes_free = buffer_output_bytes_free(&line_buffers[line]);
+    r->r[0] = bytes_free;
+}
+
+/*
+ * ARCbbsDoors_OutputWrite (0x41049)
+ * Entry: R0 = line number
+ *        R1 = byte to write
+ */
+void buffer_swi_outputwrite(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+    int next_write;
+    static int debug_count = 0;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    /* Debug first few calls */
+    if (debug_count < 10)
+    {
+        debug_printf("ARCbbs OutputWrite: line=%d byte=%d('%c')\n", 
+                     line, r->r[1] & 0xFF, (r->r[1] & 0xFF) >= 32 ? r->r[1] & 0xFF : '?');
+        debug_count++;
+    }
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        debug_printf("ARCbbs OutputWrite: REJECTED line=%d valid=%d active=%d\n",
+                     line, buffer_valid_line(line), 
+                     buffer_valid_line(line) ? line_buffers[line].active : -1);
+        return;
+    }
+
+    buf = &line_buffers[line];
+
+    /* Check if buffer is full */
+    next_write = (buf->output_write + 1) % ARCBBS_BUFFER_SIZE;
+    if (next_write == buf->output_read)
+    {
+        /* Buffer full - drop byte */
+        return;
+    }
+
+    /* Write byte to output buffer */
+    buf->output[buf->output_write] = (unsigned char)(r->r[1] & 0xFF);
+    buf->output_write = next_write;
+}
+
+/*
+ * ARCbbsDoors_ClearInput (0x4104A)
+ * Entry: R0 = line number
+ */
+void buffer_swi_clearinput(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        return;
+    }
+
+    buf = &line_buffers[line];
+    buf->input_read = 0;
+    buf->input_write = 0;
+}
+
+/*
+ * ARCbbsDoors_ClearOutput (0x4104B)
+ * Entry: R0 = line number
+ */
+void buffer_swi_clearoutput(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        return;
+    }
+
+    buf = &line_buffers[line];
+    buf->output_read = 0;
+    buf->output_write = 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Extended SWIs for Host (LineTask) Use                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * ARCbbsDoors_HostWrite (0x4104C)
+ * Entry: R0 = line number
+ *        R1 = byte to write
+ * Exit:  R0 = 0 on success, -1 if buffer full
+ *
+ * Host writes a byte to the door's input buffer.
+ */
+void buffer_swi_hostwrite(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+    int next_write;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    buf = &line_buffers[line];
+
+    /* Check if buffer is full */
+    next_write = (buf->input_write + 1) % ARCBBS_BUFFER_SIZE;
+    if (next_write == buf->input_read)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    /* Write byte to input buffer (host->door) */
+    buf->input[buf->input_write] = (unsigned char)(r->r[1] & 0xFF);
+    buf->input_write = next_write;
+
+    r->r[0] = 0;
+}
+
+/*
+ * ARCbbsDoors_HostRead (0x4104D)
+ * Entry: R0 = line number
+ * Exit:  R0 = byte read, or -1 if buffer empty
+ *
+ * Host reads a byte from the door's output buffer.
+ */
+void buffer_swi_hostread(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+    unsigned char byte;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    buf = &line_buffers[line];
+
+    /* Check if buffer is empty */
+    if (buf->output_read == buf->output_write)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    /* Read byte from output buffer (door->host) */
+    byte = buf->output[buf->output_read];
+    buf->output_read = (buf->output_read + 1) % ARCBBS_BUFFER_SIZE;
+
+    r->r[0] = byte;
+}
+
+/*
+ * ARCbbsDoors_Activate (0x4104E)
+ * Entry: R0 = line number
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void buffer_swi_activate(_kernel_swi_regs *r)
+{
+    int line;
+    LINE_BUFFER *buf;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line))
+    {
+        debug_printf("ARCbbs Activate: INVALID line=%d\n", line);
+        r->r[0] = -1;
+        return;
+    }
+
+    buf = &line_buffers[line];
+
+    /* Clear buffers */
+    buf->input_read = 0;
+    buf->input_write = 0;
+    buf->output_read = 0;
+    buf->output_write = 0;
+    buf->status = ARCBBS_STATUS_IDLE;
+    buf->active = 1;
+
+    debug_printf("ARCbbs Activate: line=%d OK\n", line);
+    r->r[0] = 0;
+}
+
+/*
+ * ARCbbsDoors_Deactivate (0x4104F)
+ * Entry: R0 = line number
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void buffer_swi_deactivate(_kernel_swi_regs *r)
+{
+    int line;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    line = r->r[0];
+
+    if (!buffer_valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    line_buffers[line].active = 0;
+    line_buffers[line].status = ARCBBS_STATUS_IDLE;
+
+    r->r[0] = 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access for CLI Commands                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+const LINE_BUFFER *buffer_get(int line)
+{
+    if (!buffer_valid_line(line))
+    {
+        return NULL;
+    }
+
+    return &line_buffers[line];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Buffer Operations for LineTask Integration                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+int buffer_write_input(int line, const unsigned char *data, int count)
+{
+    LINE_BUFFER *buf;
+    int written = 0;
+    int next_write;
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active || data == NULL || count <= 0)
+    {
+        return 0;
+    }
+
+    buf = &line_buffers[line];
+
+    while (written < count)
+    {
+        next_write = (buf->input_write + 1) % ARCBBS_BUFFER_SIZE;
+        if (next_write == buf->input_read)
+        {
+            break;
+        }
+
+        buf->input[buf->input_write] = data[written++];
+        buf->input_write = next_write;
+    }
+
+    return written;
+}
+
+int buffer_read_output(int line, unsigned char *data, int max_count)
+{
+    LINE_BUFFER *buf;
+    int read_count = 0;
+
+    if (!buffer_valid_line(line) || !line_buffers[line].active || data == NULL || max_count <= 0)
+    {
+        return 0;
+    }
+
+    buf = &line_buffers[line];
+
+    while (read_count < max_count && buf->output_read != buf->output_write)
+    {
+        data[read_count++] = buf->output[buf->output_read];
+        buf->output_read = (buf->output_read + 1) % ARCBBS_BUFFER_SIZE;
+    }
+
+    return read_count;
+}
+
+int buffer_set_status(int line, unsigned char status)
+{
+    if (!buffer_valid_line(line))
+    {
+        return -1;
+    }
+
+    line_buffers[line].status = status;
+    return 0;
+}
+
+int buffer_get_status_value(int line)
+{
+    if (!buffer_valid_line(line))
+    {
+        return -1;
+    }
+
+    return line_buffers[line].status;
+}
+
+int buffer_activate_line(int line)
+{
+    LINE_BUFFER *buf;
+
+    if (!buffer_valid_line(line))
+    {
+        return -1;
+    }
+
+    buf = &line_buffers[line];
+
+    buf->input_read = 0;
+    buf->input_write = 0;
+    buf->output_read = 0;
+    buf->output_write = 0;
+    buf->status = ARCBBS_STATUS_IDLE;
+    buf->active = 1;
+
+    return 0;
+}
+
+int buffer_deactivate_line(int line)
+{
+    if (!buffer_valid_line(line))
+    {
+        return -1;
+    }
+
+    line_buffers[line].active = 0;
+    line_buffers[line].status = ARCBBS_STATUS_IDLE;
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Request/Reply Protocol Processing                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Process a request and generate a reply.
+ * Request codes:
+ *   0   = Read general user information
+ *   1   = Read user address etc
+ *   100-199 = Write operations (no reply needed)
+ *   200 = Start download
+ */
+static void process_request(int line)
+{
+    int request_num;
+    unsigned char *reply;
+    time_t now;
+    
+    if (!buffer_valid_line(line))
+    {
+        return;
+    }
+    
+    request_num = *((int *)request_buffers[line]);
+    reply = reply_buffers[line];
+    
+    /* Clear reply buffer */
+    memset(reply, 0, 256);
+    
+    now = time(NULL);
+    
+    switch (request_num)
+    {
+        case 0:
+            /* Request 0: Read general user information */
+            /* Provide sensible defaults for a guest/test user */
+            debug_printf("ARCbbs Request 0: Read general user info\n");
+            
+            /* w0: usernumber */
+            *((int *)(reply + 0)) = 1;
+            /* w4: time of first logon */
+            *((int *)(reply + 4)) = (int)now;
+            /* w8: time of last logon */
+            *((int *)(reply + 8)) = (int)now;
+            /* w12: amount of private mail waiting */
+            *((int *)(reply + 12)) = 0;
+            /* w16: pointer to start of mail linked-list */
+            *((int *)(reply + 16)) = 0;
+            /* w20: pointer to end of mail linked-list */
+            *((int *)(reply + 20)) = 0;
+            /* w24: [messagebase] highest message # read */
+            *((int *)(reply + 24)) = 0;
+            /* w28: [filebase] highest message # read */
+            *((int *)(reply + 28)) = 0;
+            /* w32: terminal type (0=tty, 1=vt52, 2=vt100, 3=ansi) */
+            *((int *)(reply + 32)) = 3; /* ANSI */
+            /* w36: message flags */
+            *((int *)(reply + 36)) = 0;
+            /* w40: file flags */
+            *((int *)(reply + 40)) = 0;
+            /* w44: user flags */
+            *((int *)(reply + 44)) = 0;
+            /* w48: up/download ratio */
+            *((int *)(reply + 48)) = 0;
+            /* w52: userlevel */
+            *((int *)(reply + 52)) = 100;
+            /* w56: number of logons */
+            *((int *)(reply + 56)) = 1;
+            /* w60: number of uploads */
+            *((int *)(reply + 60)) = 0;
+            /* w64: number of downloads */
+            *((int *)(reply + 64)) = 0;
+            /* w68: time allowed online per day (minutes) */
+            *((int *)(reply + 68)) = 60;
+            /* w72: time used today (minutes) */
+            *((int *)(reply + 72)) = 0;
+            /* w76: fidonet credit */
+            *((int *)(reply + 76)) = 0;
+            /* w80: fidonet flags */
+            *((int *)(reply + 80)) = 0;
+            /* w84: current conference # */
+            *((int *)(reply + 84)) = 0;
+            /* w88: current filebase # */
+            *((int *)(reply + 88)) = 0;
+            /* w92-100: outbox pointers (unused) */
+            /* 104: Bitset of conferences/filebases (64 bytes) - leave as 0 */
+            /* w168: Time used on this call (seconds) */
+            *((int *)(reply + 168)) = 0;
+            /* w172: Time left for this call (seconds) */
+            *((int *)(reply + 172)) = 3600; /* 1 hour */
+            /* w176: Time allocated for this call (seconds) */
+            *((int *)(reply + 176)) = 3600;
+            /* w180: Speed of connection */
+            *((int *)(reply + 180)) = 115200;
+            /* b184: ARQ information */
+            reply[184] = 0;
+            /* b185: Call rate */
+            reply[185] = 'a';
+            /* b186: Page length */
+            reply[186] = 24;
+            /* s187: username (31 bytes max) */
+            strncpy((char *)(reply + 187), "Guest", 30);
+            reply[217] = '\0';
+            break;
+            
+        case 1:
+            /* Request 1: Read user address etc */
+            debug_printf("ARCbbs Request 1: Read user address\n");
+            
+            /* s0: username */
+            strncpy((char *)(reply + 0), "Guest", 30);
+            /* s31: real name */
+            strncpy((char *)(reply + 31), "Guest User", 30);
+            /* s62: address (1) */
+            strncpy((char *)(reply + 62), "", 30);
+            /* s93: address (2) */
+            strncpy((char *)(reply + 93), "", 30);
+            /* s124: address (3) */
+            strncpy((char *)(reply + 124), "", 30);
+            /* s155: address (4) */
+            strncpy((char *)(reply + 155), "", 30);
+            /* s186: postcode */
+            strncpy((char *)(reply + 186), "", 10);
+            /* s197: telephone # */
+            strncpy((char *)(reply + 197), "", 30);
+            break;
+            
+        default:
+            /* Unknown or write request (100-199) - no reply data needed */
+            if (request_num >= 100 && request_num < 200)
+            {
+                debug_printf("ARCbbs Request %d: Write operation (ignored)\n", request_num);
+            }
+            else
+            {
+                debug_printf("ARCbbs Request %d: Unknown request\n", request_num);
+            }
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static int buffer_valid_line(int line)
+{
+    return (line >= 0 && line < ARCBBS_MAX_LINES);
+}
+
+static int buffer_input_bytes_available(const LINE_BUFFER *buf)
+{
+    if (buf == NULL)
+    {
+        return 0;
+    }
+
+    if (buf->input_write >= buf->input_read)
+    {
+        return buf->input_write - buf->input_read;
+    }
+    else
+    {
+        return ARCBBS_BUFFER_SIZE - buf->input_read + buf->input_write;
+    }
+}
+
+static int buffer_output_bytes_free(const LINE_BUFFER *buf)
+{
+    int used;
+
+    if (buf == NULL)
+    {
+        return 0;
+    }
+
+    if (buf->output_write >= buf->output_read)
+    {
+        used = buf->output_write - buf->output_read;
+    }
+    else
+    {
+        used = ARCBBS_BUFFER_SIZE - buf->output_read + buf->output_write;
+    }
+
+    return ARCBBS_BUFFER_SIZE - used - 1;
+}

@@ -1,0 +1,231 @@
+/* ******************************************************************************************************************************************************** */
+/* ARCbbsDoors Emulator Module                                                                                                                              */
+/*                                                                                                                                                          */
+/* This module emulates the ARCbbsDoors SWI interface (chunk base 0x41040) to allow legacy                                                                  */
+/* ARCbbs doors to run on Converse BBS. The emulator provides the same SWI API that ARCbbs                                                                  */
+/* doors expect, but internally bridges I/O to the Converse Pipes module.                                                                                   */
+/*                                                                                                                                                          */
+/* Protocol:                                                                                                                                                */
+/*   1. LineTask sets status byte to door request code (1-254) when launching an ARCbbs door                                                                */
+/*   2. Door polls GetStatus until it sees 255 (active), then proceeds                                                                                      */
+/*   3. Door uses GetByte/PutByte/GetLine/PutLine for I/O                                                                                                   */
+/*   4. When door exits, it sets status back to 0 (idle)                                                                                                    */
+/*   5. LineTask detects status=0 and knows door has finished                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "kernel.h"
+
+#include "arcbbshdr.h"
+#include "arcbbs.h"
+#include "buffer.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Module Entry Points                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+    UNUSED(cmd_tail);
+    UNUSED(podule_base);
+    UNUSED(pw);
+
+    buffer_initialise();
+
+    return NULL;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+    UNUSED(fatal);
+    UNUSED(podule);
+    UNUSED(pw);
+
+    buffer_finalise();
+
+    return NULL;
+}
+
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    UNUSED(service_number);
+    UNUSED(r);
+    UNUSED(pw);
+}
+
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+    static int swi_debug_count = 0;
+    UNUSED(pw);
+
+    if (r == NULL)
+    {
+        return NULL;
+    }
+
+    /* Debug: log all SWI calls */
+    if (swi_debug_count < 30)
+    {
+        debug_printf("ARCbbs SWI: swi_no=%d R0=%d R1=%d\n", swi_no, r->r[0], r->r[1]);
+        swi_debug_count++;
+    }
+
+    switch ((ARCBBS_SWI)swi_no)
+    {
+        case SWI_READSTATUS:
+            buffer_swi_readstatus(r);
+            break;
+
+        case SWI_WRITESTATUS:
+            buffer_swi_writestatus(r);
+            break;
+
+        case SWI_SENDREQUEST:
+            buffer_swi_sendrequest(r);
+            break;
+
+        case SWI_GETREPLY:
+            buffer_swi_getreply(r);
+            break;
+
+        case SWI_RESERVED_4:
+        case SWI_RESERVED_5:
+            /* Reserved - return error */
+            r->r[0] = -1;
+            break;
+
+        case SWI_INPUTSTATUS:
+            buffer_swi_inputstatus(r);
+            break;
+
+        case SWI_INPUTREAD:
+            buffer_swi_inputread(r);
+            break;
+
+        case SWI_OUTPUTSTATUS:
+            buffer_swi_outputstatus(r);
+            break;
+
+        case SWI_OUTPUTWRITE:
+            buffer_swi_outputwrite(r);
+            break;
+
+        case SWI_CLEARINPUT:
+            buffer_swi_clearinput(r);
+            break;
+
+        case SWI_CLEAROUTPUT:
+            buffer_swi_clearoutput(r);
+            break;
+
+        case SWI_HOSTWRITE:
+            buffer_swi_hostwrite(r);
+            break;
+
+        case SWI_HOSTREAD:
+            buffer_swi_hostread(r);
+            break;
+
+        case SWI_ACTIVATE:
+            buffer_swi_activate(r);
+            break;
+
+        case SWI_DEACTIVATE:
+            buffer_swi_deactivate(r);
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+
+    return NULL;
+}
+
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+    UNUSED(arg_string);
+    UNUSED(argc);
+    UNUSED(pw);
+
+    switch ((ARCBBS_COMMAND)cmd_no)
+    {
+        case CMD_STATUS:
+        {
+            const LINE_BUFFER *buf;
+            int line;
+            int active_count = 0;
+
+            puts("ARCbbsDoors Emulator Line Status:\n");
+            puts("Line | Active | Status | Input Bytes | Output Bytes");
+            puts("-----+--------+--------+-------------+-------------");
+
+            for (line = 0; line < ARCBBS_MAX_LINES; line++)
+            {
+                buf = buffer_get(line);
+                if (buf == NULL)
+                {
+                    continue;
+                }
+
+                if (buf->active)
+                {
+                    int input_bytes;
+                    int output_bytes;
+
+                    /* Calculate bytes in input buffer */
+                    if (buf->input_write >= buf->input_read)
+                    {
+                        input_bytes = buf->input_write - buf->input_read;
+                    }
+                    else
+                    {
+                        input_bytes = ARCBBS_BUFFER_SIZE - buf->input_read + buf->input_write;
+                    }
+
+                    /* Calculate bytes in output buffer */
+                    if (buf->output_write >= buf->output_read)
+                    {
+                        output_bytes = buf->output_write - buf->output_read;
+                    }
+                    else
+                    {
+                        output_bytes = ARCBBS_BUFFER_SIZE - buf->output_read + buf->output_write;
+                    }
+
+                    printf("%4d | %6s | %6d | %11d | %11d\n",
+                           line,
+                           buf->active ? "Yes" : "No",
+                           buf->status,
+                           input_bytes,
+                           output_bytes);
+
+                    active_count++;
+                }
+            }
+
+            puts("-----+--------+--------+-------------+-------------");
+            printf("Active lines: %d\n\n", active_count);
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point (for module-is-runnable)                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+int main(int argc, char *argv[])
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    return 0;
+}

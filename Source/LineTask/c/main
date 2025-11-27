@@ -18,6 +18,7 @@
 #include "C:Desk.Window.h"
 #include "C:Desk.WimpSWIs.h"
 #include "script.h"
+#include "debug.h"
 
 #define PIPES_SWI_BASE 0x5AA00
 
@@ -54,6 +55,24 @@
 #define SWI_CONVERSEBBS_CONFIG       0x5AA80
 #define SWI_CONVERSEBBS_LINE         0x5AA81
 #define SWI_CONVERSEBBS_ACTIVITY     0x5AA82
+
+/* ARCbbsDoors emulator SWIs - matches original API */
+#define ARCBBS_SWI_BASE              0x41040
+#define SWI_ARCBBSDOORS_READSTATUS   (ARCBBS_SWI_BASE + 0)   /* ReadStatus */
+#define SWI_ARCBBSDOORS_WRITESTATUS  (ARCBBS_SWI_BASE + 1)   /* WriteStatus */
+/* SWIs 2-5 are SendRequest, GetReply, Reserved, Reserved */
+/* SWIs 6-11 are InputStatus, InputRead, OutputStatus, OutputWrite, ClearInput, ClearOutput */
+#define SWI_ARCBBSDOORS_HOSTWRITE    (ARCBBS_SWI_BASE + 12)  /* Extended: Host writes to door input */
+#define SWI_ARCBBSDOORS_HOSTREAD     (ARCBBS_SWI_BASE + 13)  /* Extended: Host reads from door output */
+#define SWI_ARCBBSDOORS_ACTIVATE     (ARCBBS_SWI_BASE + 14)  /* Extended: Activate line */
+#define SWI_ARCBBSDOORS_DEACTIVATE   (ARCBBS_SWI_BASE + 15)  /* Extended: Deactivate line */
+
+/* ARCbbsDoors status byte values */
+#define ARCBBS_STATUS_IDLE           0
+#define ARCBBS_STATUS_ACTIVE         255
+
+/* Door request code - any value 1-254 can be used to indicate a door launch request */
+#define ARCBBS_STATUS_REQUEST        1
 
 /* Line state reason codes and field indices */
 #define LINE_REASON_GET              1
@@ -95,6 +114,12 @@ typedef struct
     char *door_output_buffer;
     clock_t door_next_ack_tick;
     clock_t door_launch_deadline;
+    /* ARCbbs door state */
+    Desk_bool arcbbs_door_active;
+    Desk_bool arcbbs_door_launch_pending;
+    clock_t arcbbs_door_launch_deadline;
+    clock_t arcbbs_poll_tick;
+    int arcbbs_requested_door_number;
     script_state script;
 } line_task_state;
 
@@ -103,6 +128,7 @@ static Desk_window_handle main_window_handle;
 
 static char app_compiled[]=__DATE__" at "__TIME__;
 
+static int pipes_input_read_byte(int line_id);
 static int pipes_input_read_block(int line_id, char *buffer, int length);
 static int pipes_output_write_block(int line_id, const char *buffer, int length);
 static void pipes_output_write_string(int line_id, const char *string);
@@ -130,8 +156,18 @@ static void door_send_acknowledgement(line_task_state *state);
 static void door_queue_output(line_task_state *state, const char *text, size_t length);
 static void door_flush_output(line_task_state *state);
 static void door_close_session(line_task_state *state, const char *message);
+static void arcbbs_door_reset_state(line_task_state *state);
+static void arcbbs_door_process(line_task_state *state);
+static void arcbbs_door_close_session(line_task_state *state, const char *message);
+static int arcbbs_activate_line(int line_id);
+static int arcbbs_deactivate_line(int line_id);
+static int arcbbs_set_status(int line_id, unsigned char status);
+static int arcbbs_get_status(int line_id);
+static int arcbbs_write_input(int line_id, unsigned char byte);
+static int arcbbs_read_output(int line_id);
 static void script_host_write(void *context, const char *text);
 static void script_host_launch_door(void *context, const char *command_line);
+static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line);
 static void script_host_report_time(void *context);
 static void script_host_report_line_info(void *context);
 static void script_host_request_disconnect(void *context);
@@ -220,6 +256,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     state->control_code = 0;
     state->quit_requested = Desk_bool_FALSE;
     door_reset_state(state);
+    arcbbs_door_reset_state(state);
 
     {
         script_host host;
@@ -227,6 +264,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.context = state;
         host.write_text = script_host_write;
         host.launch_door = script_host_launch_door;
+        host.launch_arcbbs_door = script_host_launch_arcbbs_door;
         host.report_time = script_host_report_time;
         host.report_line_info = script_host_report_line_info;
         host.request_disconnect = script_host_request_disconnect;
@@ -340,6 +378,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
 
     process_server_stream(state);
     door_process(state);
+    arcbbs_door_process(state);
     script_process(&state->script);
     return Desk_bool_TRUE;
 }
@@ -513,6 +552,10 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             {
                 door_close_session(state, "\r\n[Door session ended]\r\n");
             }
+            if (state->arcbbs_door_active != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE)
+            {
+                arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
+            }
             log_line_event(state->line_id, "Session disconnected");
             script_stop_session(state);
             continue;
@@ -522,6 +565,19 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
         handle_plain_server_byte(state, state->control_code);
         handle_plain_server_byte(state, PIPE_CONTROL_TOKEN);
     }
+}
+
+static int pipes_input_read_byte(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_READ, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
 }
 
 static int pipes_input_read_block(int line_id, char *buffer, int length)
@@ -750,6 +806,189 @@ static void door_close_session(line_task_state *state, const char *message)
     script_notify_door_closed(&state->script);
 }
 
+/*
+ * ARCbbsDoors emulator integration
+ * ---------------------------------
+ * Unlike RiscBBS doors which use Wimp messages, ARCbbs doors use a shared buffer
+ * with status byte polling. The protocol is:
+ *   1. LineTask sets status to a request code (1-254) and launches the door
+ *   2. Door polls GetStatus until it sees 255 (active)
+ *   3. Door uses GetByte/PutByte for I/O
+ *   4. When door exits, it sets status to 0 (idle)
+ *   5. LineTask detects status=0 and knows door has finished
+ */
+
+static void arcbbs_door_reset_state(line_task_state *state)
+{
+    state->arcbbs_door_active = Desk_bool_FALSE;
+    state->arcbbs_door_launch_pending = Desk_bool_FALSE;
+    state->arcbbs_door_launch_deadline = 0;
+    state->arcbbs_poll_tick = 0;
+    state->arcbbs_requested_door_number = 0;
+
+    /* Deactivate line in ARCbbsDoors module */
+    arcbbs_deactivate_line(state->line_id);
+}
+
+static void arcbbs_door_process(line_task_state *state)
+{
+    int status;
+
+    /* If door is active, bridge I/O */
+    if (state->arcbbs_door_active != Desk_bool_FALSE)
+    {
+        int byte;
+        int output_count = 0;
+        int input_count = 0;
+        static int debug_poll_count = 0;
+
+        /* Check if door has finished (status back to 0) */
+        status = arcbbs_get_status(state->line_id);
+        if (status == ARCBBS_STATUS_IDLE)
+        {
+            debug_printf("LineTask ARCbbs: door finished (status=0)\n");
+            arcbbs_door_close_session(state, "\r\n[ARCbbs door finished]\r\n");
+            return;
+        }
+
+        /* Debug: log polling status periodically */
+        if (debug_poll_count < 5)
+        {
+            debug_printf("LineTask ARCbbs: polling line=%d status=%d\n", state->line_id, status);
+            debug_poll_count++;
+        }
+
+        /* Read output from door and send to pipe (door->user) */
+        while (output_count < PIPE_TRANSFER_CHUNK && (byte = arcbbs_read_output(state->line_id)) >= 0)
+        {
+            char ch = (char)byte;
+            pipes_output_write_block(state->line_id, &ch, 1);
+            output_count++;
+        }
+
+        /* Debug: log if we got output */
+        if (output_count > 0)
+        {
+            debug_printf("LineTask ARCbbs: read %d bytes from door output\n", output_count);
+        }
+
+        /* Read input from pipe and send to door (user->door) */
+        while (input_count < PIPE_TRANSFER_CHUNK)
+        {
+            byte = pipes_input_read_byte(state->line_id);
+            if (byte < 0)
+            {
+                break;
+            }
+            if (arcbbs_write_input(state->line_id, (unsigned char)byte) != 0)
+            {
+                /* ARCbbs input buffer full - stop for now */
+                break;
+            }
+            input_count++;
+        }
+
+        /* Debug: log if we sent input */
+        if (input_count > 0)
+        {
+            debug_printf("LineTask ARCbbs: wrote %d bytes to door input\n", input_count);
+        }
+    }
+}
+
+static void arcbbs_door_close_session(line_task_state *state, const char *message)
+{
+    if (message != NULL)
+    {
+        pipes_output_write_string(state->line_id, message);
+    }
+
+    arcbbs_door_reset_state(state);
+    script_notify_door_closed(&state->script);
+}
+
+/* ARCbbsDoors SWI wrappers */
+
+static int arcbbs_activate_line(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_ARCBBSDOORS_ACTIVATE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return (regs.r[0] == 0) ? 0 : -1;
+}
+
+static int arcbbs_deactivate_line(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_ARCBBSDOORS_DEACTIVATE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return (regs.r[0] == 0) ? 0 : -1;
+}
+
+static int arcbbs_set_status(int line_id, unsigned char status)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = status;
+    if (_kernel_swi(SWI_ARCBBSDOORS_WRITESTATUS, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int arcbbs_get_status(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_ARCBBSDOORS_READSTATUS, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int arcbbs_write_input(int line_id, unsigned char byte)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = byte;
+    if (_kernel_swi(SWI_ARCBBSDOORS_HOSTWRITE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return (regs.r[0] == 0) ? 0 : -1;
+}
+
+static int arcbbs_read_output(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_ARCBBSDOORS_HOSTREAD, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0]; /* Returns byte or -1 if empty */
+}
+
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
 {
     if (state->door_active != Desk_bool_FALSE)
@@ -758,7 +997,19 @@ static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
         return;
     }
 
+    if (state->arcbbs_door_active != Desk_bool_FALSE)
+    {
+        /* Write user input to ARCbbsDoors input buffer */
+        arcbbs_write_input(state->line_id, byte);
+        return;
+    }
+
     if (state->door_launch_pending != Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    if (state->arcbbs_door_launch_pending != Desk_bool_FALSE)
     {
         return;
     }
@@ -905,6 +1156,83 @@ static void script_host_launch_door(void *context, const char *command_line)
     state->door_launch_pending = Desk_bool_TRUE;
     state->door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
     pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
+}
+
+static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->session_active == 0)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[ARCbbs door unavailable until connected]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->door_active != Desk_bool_FALSE || state->arcbbs_door_active != Desk_bool_FALSE)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[A door is already running]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->door_launch_pending != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[A door launch is already pending]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (command_line == NULL || *command_line == '\0')
+    {
+        pipes_output_write_string(state->line_id, "\r\n[ARCbbs door command missing]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    /* Validate door number (1-254) */
+    if (door_number < 1 || door_number > 254)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Invalid door number]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    /* Activate the line in ARCbbsDoors module */
+    if (arcbbs_activate_line(state->line_id) != 0)
+    {
+        debug_printf("LineTask ARCbbs: activate failed for line %d\n", state->line_id);
+        pipes_output_write_string(state->line_id, "\r\n[ARCbbsDoors module not available]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    debug_printf("LineTask ARCbbs: activated line %d\n", state->line_id);
+
+    /* Store the door number we're requesting */
+    state->arcbbs_requested_door_number = door_number;
+
+    /* Set status to door number (1-254) - door polls for its number, then writes 255 to accept */
+    arcbbs_set_status(state->line_id, (unsigned char)door_number);
+    debug_printf("LineTask ARCbbs: set status to %d (door number) BEFORE launch\n", door_number);
+
+    debug_printf("LineTask ARCbbs: launching '%s'\n", command_line);
+
+    /* Launch the door */
+    Desk_Wimp_StartTask(command_line);
+
+    /* Mark as active immediately */
+    state->arcbbs_door_active = Desk_bool_TRUE;
+    state->arcbbs_door_launch_pending = Desk_bool_FALSE;
+    state->arcbbs_door_launch_deadline = 0;
+
+    debug_printf("LineTask ARCbbs: door launched, active=TRUE\n");
+    pipes_output_write_string(state->line_id, "\r\n[Launching ARCbbs door]\r\n");
 }
 
 static void script_host_report_time(void *context)

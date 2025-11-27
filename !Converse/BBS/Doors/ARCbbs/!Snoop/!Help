@@ -1,0 +1,17 @@
+!Snoop - a Real Time online user door for ARCbbs 1.64
+
+OSCLI "WimpTask SCSI::5.$.BBS.Doors.!Snoop.!Run -door 126"
+DOOR 126
+
+replace 126 by your chosen door number
+
+Recent changes
+--------------
+
+ANSI art supplied by Paul Wheatley (Cob) of Quantum.
+
+Now only updates display when user status changes.
+
+____________________________________________________________________________
+
+Designed and written in ARM machine code by Richard Sargeant, © 1995

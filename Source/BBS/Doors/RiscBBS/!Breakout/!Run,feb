@@ -1,0 +1,7 @@
+| !Run file for RiscBBS !Breakout 
+|
+| !Breakout written by Carl Declerck (c)1990
+|
+Set Breakout$Dir <Obey$Dir>
+WimpSlot -Min 64k -Max 64k
+Run <Obey$Dir>.!RunImage %*0

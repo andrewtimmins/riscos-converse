@@ -9,6 +9,7 @@ typedef struct script_host
     void *context;
     void (*write_text)(void *context, const char *text);
     void (*launch_door)(void *context, const char *command_line);
+    void (*launch_arcbbs_door)(void *context, int door_number, const char *command_line);
     void (*report_time)(void *context);
     void (*report_line_info)(void *context);
     void (*request_disconnect)(void *context);

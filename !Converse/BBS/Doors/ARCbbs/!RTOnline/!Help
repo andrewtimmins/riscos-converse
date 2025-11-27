@@ -1,0 +1,52 @@
+      __ ___  ______ ____         __ _            
+     / // _ \/_  __// __ \ ___   / /(_)___  ___ 
+    /_// _, / / /  / /_/ // _ \ / // // _ \/ -_)
+   (_)/_/ |_|/_/   \____//_//_//_//_//_//_/\__/ 
+                                                     
+   Real Time Online Users Door for ARCbbs/ArmBBS
+
+        A Dizzy Wizard Software Production
+
+               Written by Ben Ingram
+
+         v0.10ß (04/06/1995) beta release 
+___________________________________________________
+
+ Written in C and Assembler using Acorn Desktop C 
+       and Acorn Desktop Assembler packages
+___________________________________________________
+
+
+Introduction:
+     
+     This door is similar to the Online command 
+     used by ARCbbs/ArmBBS bulletin packages in 
+     operation with one amendment.  This door 
+     updates the user information while you wait.  
+     It was written with a combination of C and 
+     Assembler to achieve high speed running and 
+     also allowing the bulletin board to run as 
+     fast as possible.
+
+Installation:
+     
+     This door can be installed in the usual 
+     fashion than either your ARCbbs/ArmBBS doors 
+     are installed.
+
+History:
+
+     v0.10  -  Current Release
+
+Contact:
+
+     Ben Ingram
+     54 Tunstall Avenue
+     Billingham
+     Cleveland
+     TS23 3SP
+
+randall@digibank.demon.co.uk
+
+Please report any bugs you may find.  It's highly
+likely because I did this door in about an hour.

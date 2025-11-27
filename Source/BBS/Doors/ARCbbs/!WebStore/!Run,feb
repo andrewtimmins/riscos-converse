@@ -1,0 +1,9 @@
+Set Webstore$Dir <Obey$Dir>
+Iconsprites <Webstore$Dir>.!Sprites
+WimpSlot -Min 64k -Max 64k
+RMEnsure ABCLibrary 0.00 RMLoad System:Modules.ABCLib
+RMEnsure ABCLibrary 0.00 Error You need the ABC Library for this program
+
+IF "<Webstore$running>" = "yes" THEN Run <Webstore$Dir>.!RunImage -WAIT
+
+IF "<Webstore$running>" = "" THEN Run <Webstore$Dir>.!RunImage

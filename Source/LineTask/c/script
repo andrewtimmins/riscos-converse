@@ -670,11 +670,34 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         if (arg_text != NULL)
         {
             arg_text = script_trim(arg_text);
-            if (!script_parse_backtick_string(arg_text, &consumed, &value_string))
+
+            /* For arcbbsdoor, parse door number first, then command */
+            if (action != NULL && script_stringcasecmp(action, "arcbbsdoor") == 0)
             {
-                value_string = script_duplicate_string(arg_text);
+                char *door_num = strtok(arg_text, " \t");
+                char *cmd_text = strtok(NULL, "");
+
+                instruction->arg2 = script_duplicate_string(door_num != NULL ? door_num : "1");
+
+                if (cmd_text != NULL)
+                {
+                    cmd_text = script_trim(cmd_text);
+                    if (!script_parse_backtick_string(cmd_text, &consumed, &value_string))
+                    {
+                        value_string = script_duplicate_string(cmd_text);
+                    }
+                    instruction->arg3 = value_string;
+                }
             }
-            instruction->arg2 = value_string;
+            else
+            {
+                /* Standard call: arg2 is the command */
+                if (!script_parse_backtick_string(arg_text, &consumed, &value_string))
+                {
+                    value_string = script_duplicate_string(arg_text);
+                }
+                instruction->arg2 = value_string;
+            }
         }
         return 1;
     }
@@ -1106,6 +1129,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
                     script_expand_macros(state, command, buffer, sizeof(buffer));
                     state->host.launch_door(state->host.context, buffer);
+                    state->status = SCRIPT_STATUS_WAIT_DOOR;
+                }
+            }
+            else if (script_stringcasecmp(action, "arcbbsdoor") == 0)
+            {
+                if (state->host.launch_arcbbs_door != NULL)
+                {
+                    char num_buffer[16];
+                    char cmd_buffer[256];
+                    const char *door_num_str = instruction->arg2 != NULL ? instruction->arg2 : "1";
+                    const char *command = instruction->arg3 != NULL ? instruction->arg3 : "";
+                    int door_number;
+                    script_expand_macros(state, door_num_str, num_buffer, sizeof(num_buffer));
+                    script_expand_macros(state, command, cmd_buffer, sizeof(cmd_buffer));
+                    door_number = atoi(num_buffer);
+                    if (door_number < 1) door_number = 1;
+                    if (door_number > 254) door_number = 254;
+                    state->host.launch_arcbbs_door(state->host.context, door_number, cmd_buffer);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }

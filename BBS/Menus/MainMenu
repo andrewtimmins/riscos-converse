@@ -1,0 +1,16 @@
+{fgbg 6 0}
+Main Menu
+-=-=-=-=-
+{fgbg 7 0}
+ [{fg 3 }1{fg 7}] Show ANSI Artwork Demo         [{fg 2 }A{fg 7}] Fortune Cookie
+ [{fg 3 }2{fg 7}] Connection Status              [{fg 2 }B{fg 7}] Purity Test
+ [{fg 3 }3{fg 7}] Display Demo Message           [{fg 2 }C{fg 7}] Play Breakout
+                                    [{fg 2 }D{fg 7}] Play Tetris
+                                    [{fg 2 }E{fg 7}] Spray Wall
+ [{fg 3 }4{fg 7}] Read The News                  [{fg 2 }W{fg 7}] Who's Online?
+ [{fg 3 }5{fg 7}] ARCbbsDoors Test               [{fg 2 }6{fg 7}] Snake Game
+ [{fg 5 }S{fg 7}] Chat with the Sysop
+
+ [{fg 1 }X{fg 7 }] Disconnect
+
+{fgbg 3 0}

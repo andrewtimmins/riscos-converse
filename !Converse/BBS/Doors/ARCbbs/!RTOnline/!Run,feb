@@ -1,0 +1,6 @@
+| !RTOnline
+| RealTime Online  © 1995 Ben Ingram
+Iconsprites <Obey$Dir>.!Sprites
+WimpSlot -min 16k -max 16k
+Run <Obey$Dir>.!RunImage
+ 

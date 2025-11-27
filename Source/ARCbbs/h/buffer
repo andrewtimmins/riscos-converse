@@ -1,0 +1,56 @@
+/* ******************************************************************************************************************************************************** */
+/* ARCbbsDoors Emulator Module - Buffer Management                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef BUFFER_H
+#define BUFFER_H
+
+#include "kernel.h"
+#include "arcbbs.h"
+
+/* Per-line buffer state structure */
+typedef struct
+{
+    unsigned char input[ARCBBS_BUFFER_SIZE];    /* Input buffer (host->door) */
+    unsigned char output[ARCBBS_BUFFER_SIZE];   /* Output buffer (door->host) */
+    int input_read;                              /* Read position in input buffer */
+    int input_write;                             /* Write position in input buffer */
+    int output_read;                             /* Read position in output buffer */
+    int output_write;                            /* Write position in output buffer */
+    unsigned char status;                        /* Status byte: 0=idle, 255=active, 1-254=request */
+    int active;                                  /* Is this line slot in use? */
+} LINE_BUFFER;
+
+/* Initialisation and finalisation */
+void buffer_initialise(void);
+void buffer_finalise(void);
+
+/* SWI handlers - match original ARCbbsDoors API */
+void buffer_swi_readstatus(_kernel_swi_regs *r);
+void buffer_swi_writestatus(_kernel_swi_regs *r);
+void buffer_swi_sendrequest(_kernel_swi_regs *r);
+void buffer_swi_getreply(_kernel_swi_regs *r);
+void buffer_swi_inputstatus(_kernel_swi_regs *r);
+void buffer_swi_inputread(_kernel_swi_regs *r);
+void buffer_swi_outputstatus(_kernel_swi_regs *r);
+void buffer_swi_outputwrite(_kernel_swi_regs *r);
+void buffer_swi_clearinput(_kernel_swi_regs *r);
+void buffer_swi_clearoutput(_kernel_swi_regs *r);
+/* Extended SWIs for host (LineTask) use */
+void buffer_swi_hostwrite(_kernel_swi_regs *r);
+void buffer_swi_hostread(_kernel_swi_regs *r);
+void buffer_swi_activate(_kernel_swi_regs *r);
+void buffer_swi_deactivate(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const LINE_BUFFER *buffer_get(int line);
+
+/* Buffer operations for LineTask integration */
+int buffer_write_input(int line, const unsigned char *data, int count);
+int buffer_read_output(int line, unsigned char *data, int max_count);
+int buffer_set_status(int line, unsigned char status);
+int buffer_get_status_value(int line);
+int buffer_activate_line(int line);
+int buffer_deactivate_line(int line);
+
+#endif

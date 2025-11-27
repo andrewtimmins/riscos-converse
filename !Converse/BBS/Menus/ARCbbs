@@ -1,0 +1,12 @@
+{fgbg 6 0}
+ARCbbs Doors Menu
+-=-=-=-=-=-=-=-=-
+{fgbg 7 0}
+
+ [{fg 3 }A{fg 7}] Advertise                  [{fg 2 }B{fg 7}] Story Stor
+ [{fg 3 }C{fg 7}] Virtual Cafe               [{fg 2 }D{fg 7}] Trivial
+ [{fg 3 }E{fg 7}] ARMs Race                  [{fg 2 }F{fg 7}] Snoop
+
+ [{fg 1 }X{fg 7 }] Back to Main Menu
+
+{fgbg 3 0}

@@ -1,0 +1,22 @@
+[0m[0;44;1mננ Help on VirtualCafe נננננננננננננננננננננננננננננננננננננננננננננננננננננננננ[0;30;1m[0K
+[0;33;1m Virtual Cafe is a split screen chat door for up to 4 users.
+
+[0m [0;33;1mDuring chat the following key combinations perform special functions:
+
+  [0;1mCTRL P [0;33;1m: If there are other users online this lists their ports and usernames
+[0m[11C[0;33;1mTo page another user enter their port number and press [0;1mRETURN[0;33;1m.
+[0m[11C[0;33;1mTo abort paging press [0;1mRETURN [0;33;1mwithout entering a port number.
+
+  [0;1mCTRL R [0;33;1m: Redraws your 'window'
+
+[0m  [0;1mCTRL U [0;33;1m: Redraws the entire screen.
+
+  [0;1mCTRL C [0;33;1m: Exits chat.
+
+ Virtual Cafe displays your online time in the top of your window, and warns
+ when you begin to run out of time.  You will be returned to the BBS when your
+ time left is less than 3 minutes.
+
+
+
+[0;44;1mננ Press a key נננננננננננננננננננננננננננננננננננננננננננננננננננננננננננננננננ

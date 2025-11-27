@@ -1,0 +1,35 @@
+;         Config file for TrivDoor © Richard Paddle
+;ONE space between keyword and parameter please
+;
+;         DoorNumber - number of door to be called
+;
+DoorNumber 6
+;        
+;         Gambling options ON or OFF
+;
+Gamble ON
+;           
+;         Multiplying factors for Up/down load times
+;ie: If score 3=2 less than Confdivide then
+;New online=Confdivide(5)-score(3)*OnlineConf(5)
+;
+Confdivide 5
+UpdownConf 1
+OnlineConf 5 
+;
+;         Number of questions per topic
+;
+General 10
+Music 11
+People 12
+Places 10
+Science 10
+Sport 10
+;
+;         QuitDelay - time in cS before app. quits after display is done
+;
+QuitDelay 200
+;
+;         End must be present
+;
+End

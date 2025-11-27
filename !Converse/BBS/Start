@@ -1,4 +1,6 @@
 {
+    goto main_menu
+
     /* Main Menu */
     label main_menu
     cls
@@ -13,20 +15,23 @@
     if choice == `1` goto ansi_artwork
     if choice == `2` goto connection_status
     if choice == `3` goto demo_message
-    if choice == `4` goto launch_news
-
-    if choice == `A` goto launch_cookie
-    if choice == `B` goto launch_purity
-    if choice == `C` goto launch_breakout
-    if choice == `D` goto launch_tetris
-    if choice == `E` goto launch_spraywall
-    if choice == `W` goto whos_online
+    if choice == `4` goto whos_online
+    if choice == `5` goto arcbbs_doors
+    if choice == `6` goto riscbbs_doors
 
     if choice == `S` goto chat_sysop
+    if choice == `s` goto chat_sysop
     if choice == `X` goto end_session
+    if choice == `x` goto end_session
 
     print `\r\nUnknown selection '%{choice}', please try again.\r\n`
     goto main_menu
+
+    label arcbbs_doors
+    script `<Converse$Dir>.BBS.ARCbbs`
+
+    label riscbbs_doors
+    script `<Converse$Dir>.BBS.RiscBBS`
 
     label ansi_artwork
     doing `ANSI Artwork`
@@ -62,38 +67,6 @@
     fgbg 7 0
     online
     anykey temp
-    goto main_menu
-
-    label launch_news
-    doing `Reading News...`
-    call door `<Converse$Dir>.BBS.Doors.!News %{t_handle}`
-    anykey temp
-    goto main_menu
-
-    label launch_cookie
-    doing `Playing Cookie...`
-    call door `<Converse$Dir>.BBS.Doors.!Cookie -server %{t_handle} -door`
-    anykey temp
-    goto main_menu
-
-    label launch_purity
-    doing `Playing Purity...`
-    call door `<Converse$Dir>.BBS.Doors.!Purity %{t_handle}`
-    goto main_menu
-
-    label launch_breakout
-    doing `Playing Breakout...`
-    call door `<Converse$Dir>.BBS.Doors.!Breakout %{t_handle}`
-    goto main_menu
-
-    label launch_tetris
-    doing `Playing Tetris...`
-    call door `<Converse$Dir>.BBS.Doors.!Tetris %{t_handle}`
-    goto main_menu
-
-    label launch_spraywall
-    doing `Playing Spraywall...`
-    call door `<Converse$Dir>.BBS.Doors.!Wall %{t_handle}`
     goto main_menu
 
     label chat_sysop

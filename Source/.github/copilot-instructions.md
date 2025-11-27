@@ -273,3 +273,103 @@ void log_ftn(char *entry);
 - **Activity (0x5AA82)**:
   - 0 (Set): R1=Line, R2=TextPtr
   - 1 (Get): R1=Line -> R0=TextPtr
+
+## ARCbbsDoors Emulator Module
+
+### Overview
+The ARCbbsDoors emulator (`ARCbbs/`) provides compatibility with legacy ARCbbs doors. It implements the original ARCbbsDoors SWI interface (chunk base `0x41040`) so that doors written for ARCbbs can run on Converse BBS.
+
+### Architecture
+- **Source**: `ARCbbs/c/arcbbs` (SWI handler), `ARCbbs/c/buffer` (buffer management)
+- **CMHG**: `ARCbbs/cmhg/arcbbsHdr`
+- **Max Lines**: 32 (matches Converse)
+- **Buffer Size**: 1KB per direction per line
+
+### Door Protocol
+The ARCbbs door protocol uses three communication mechanisms:
+
+1. **Status Byte** - Handshake control:
+   - `0` = Idle / disconnect request
+   - `1-254` = Door number (request pending)
+   - `255` = Door active
+
+2. **Request/Reply Protocol** - Doors query user data via 256-byte request blocks
+3. **Input/Output Buffers** - 1KB circular buffers for terminal I/O
+
+### Door Lifecycle
+1. LineTask sets status to door number (1-254) and launches the door
+2. Door polls `ReadStatus` looking for its door number
+3. Door finds its number, writes `255` to accept the connection
+4. Door uses `InputRead`/`OutputWrite` for I/O and `SendRequest`/`GetReply` for user data
+5. When finished, door writes `0` to status
+6. LineTask detects status=0 and resumes script execution
+
+### Script Integration
+Use `call arcbbsdoor <door_number> <command>` in scripts:
+```
+call arcbbsdoor 4 `<Converse$Dir>.BBS.Doors.ARCbbs.!SnakeDoor %{line}`
+```
+The door number must match the door's configured `DoorNumber` (usually in its `Config` file).
+
+### ARCbbsDoors SWI Reference (Base 0x41040)
+
+| Offset | Name | Entry | Exit |
+|--------|------|-------|------|
+| 0 | ReadStatus | R0=line | R0=status byte |
+| 1 | WriteStatus | R0=line, R1=status | — |
+| 2 | SendRequest | R0=line, R1=ptr to 256-byte request | — |
+| 3 | GetReply | R0=line, R1=ptr to 256-byte buffer | R0=0 if ready, -1 if not |
+| 4-5 | Reserved | — | — |
+| 6 | InputStatus | R0=line | R0=bytes waiting |
+| 7 | InputRead | R0=line | R0=byte or -1 |
+| 8 | OutputStatus | R0=line | R0=bytes free |
+| 9 | OutputWrite | R0=line, R1=byte | — |
+| 10 | ClearInput | R0=line | — |
+| 11 | ClearOutput | R0=line | — |
+| 12 | HostWrite | R0=line, R1=byte | R0=0/-1 |
+| 13 | HostRead | R0=line | R0=byte or -1 |
+| 14 | Activate | R0=line | R0=0/-1 |
+| 15 | Deactivate | R0=line | R0=0/-1 |
+
+SWIs 12-15 are extensions for LineTask (host) use, not part of the original ARCbbs API.
+
+### Request/Reply Protocol
+Doors use `SendRequest` to query information. The request block format:
+- Bytes 0-3: Request number (word)
+- Bytes 4-255: Request-specific data
+
+**Request 0 - Read General User Information** (reply format):
+| Offset | Type | Description |
+|--------|------|-------------|
+| w0 | int | User number |
+| w4 | int | Time of first logon |
+| w8 | int | Time of last logon |
+| w32 | int | Terminal type (0=tty, 1=vt52, 2=vt100, 3=ansi) |
+| w52 | int | User level |
+| w172 | int | Time left for call (seconds) |
+| w176 | int | Time allocated for call (seconds) |
+| w180 | int | Connection speed |
+| b186 | byte | Page length |
+| s187 | string | Username (31 bytes max) |
+
+**Request 1 - Read User Address** (reply format):
+| Offset | Type | Description |
+|--------|------|-------------|
+| s0 | string | Username |
+| s31 | string | Real name |
+| s62-s155 | strings | Address lines 1-4 |
+| s186 | string | Postcode |
+| s197 | string | Telephone |
+
+**Requests 100-199** - Write operations (no reply):
+- 100: Write uploads count
+- 101: Write downloads count
+- 102: Write ratio
+- 103: Write time for call (seconds)
+- 104: Write time per day (minutes)
+- 105: Write user level
+
+### CLI Commands
+| Command | Description |
+|---------|-------------|
+| `*ARCbbsDoors_Status` | Show status of all active ARCbbs door lines |

@@ -1,0 +1,4 @@
+IconSprites <Obey$Dir>.!Sprites
+Set Snoop$Dir <Obey$Dir>
+WimpSlot -min 4k -max 4k
+Run <Obey$Dir>.!RunImage %*0

@@ -1,0 +1,65 @@
+ARMs Race v0.52
+
+Introduction
+	ARMs Race is a new online game. In it, you play a sysop, starting
+with a BBC micro and a single 1200 bps modem, trying to make your BBS grow.
+It allows users to save games, so they can come back and play again, and
+enter into competition with each other.
+
+Installation
+	ARMs Race is an ArcBBS door, number 139. It should be called like any
+other door. It would be a good idea if, from the same menu, you give the
+option of downloading the instructions. To get hiscores, the paramater
+"-scores" should be put on the end of the line running the program.
+	Once installed, ARMs Race pretty much takes care of itself. The only
+thing you will need to do is watch out for later versions, which can be
+collected from Northern ARM, and Arcade.
+	When you collect a newer version, the file "Games" should be copied
+into the new version, to keep the saved games. Most versions will be able to
+handle games saved from earlier ones.
+
+Legal Bits
+	ARMs Race is shareware, in the true sense. You have a full version.
+However, if you use ARMs Race on your BBS for more than two weeks, you should
+send £5 to:
+	Tom Lawton
+	19 Park View Crescent
+	Roundhay
+	Leeds
+	LS8 2ES
+
+	This will allow me to spend more time working on later versions, and
+will give your voice more weight when asking for changes and alterations.
+
+	The author does not accept responsibility for any damage or loss
+caused by ARMs Race.
+
+
+	If you do have any ideas, suggestions etc., send them to me at the
+above address, fidonet 2:250/372.2 or tolawton@arcade.demon.co.uk. I will be
+unavailable for the whole of August, but after that, new versions should
+start pouring out.
+
+	ARMs Race was compiled using RiscBasic, available from Silicon Vision.
+
+Thanks to:
+	Chris Jackson - for testing it, and never moving from his computer.
+	
+	Alex Howarth - for helping with suggestions etc.
+	
+	Keith Hall - for ArmBBS.
+	
+	Robbie Record - for making sheep jokes.
+	
+	Ian Clemmence - for trying hard not to laugh when I fell in the lake.
+	
+	Jonathan Potts - for constantly complaining about BT (they've fixed
+the line now)
+
+	Anna Zoltowski - for the lightbulbs.
+	
+	Oliver Jones - for breeding maggots in his locker.
+	
+	Radio Aire - for (hopefully) sponsoring my BBS, and for the music.
+	
+	Holmes - for learning how to sing (samples available on request)
