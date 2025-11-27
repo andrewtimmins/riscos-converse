@@ -45,6 +45,7 @@
 #define LINE_CONTROL_MESSAGE     (LINE_MESSAGE_BASE + 2)
 #define LINE_TASK_OPEN_WINDOW_MESSAGE (LINE_MESSAGE_BASE + 3)
 #define LINE_TASK_REGISTER_MESSAGE (LINE_MESSAGE_BASE + 4)
+#define LINE_USER_MESSAGE        (LINE_MESSAGE_BASE + 5)
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 #define LINE_ACTIVITY_MAX_TEXT   96
@@ -235,6 +236,7 @@ static int script_host_authenticate_user(void *context, const char *username, co
 static void script_host_start_postlogon(void *context);
 static void script_host_start_newuser(void *context);
 static void log_line_event(int line_id, const char *message);
+static void send_user_message(int line_id, const char *real_name);
 static void poll_idle(void);
 
 static void poll_idle(void)
@@ -250,6 +252,31 @@ static void poll_idle(void)
     /* Poll with idle time - won't return null events until 'earliest' */
     Desk_Wimp_PollIdle(Desk_Event_mask, &event, earliest);
     Desk_Event_Process(&event);
+}
+
+/* Send user name message to Server to update the status window user column.
+ * Pass NULL or empty string to reset to waiting state.
+ */
+static void send_user_message(int line_id, const char *real_name)
+{
+    Desk_message_block message;
+    
+    memset(&message, 0, sizeof(message));
+    message.header.size = sizeof(Desk_message_header) + 4 + 100;  /* word for line_id + name buffer */
+    message.header.action = (Desk_message_action)LINE_USER_MESSAGE;
+    message.data.words[0] = line_id;
+    
+    if (real_name != NULL && real_name[0] != '\0')
+    {
+        strncpy((char *)&message.data.bytes[4], real_name, 96);
+        message.data.bytes[99] = '\0';
+    }
+    else
+    {
+        message.data.bytes[4] = '\0';  /* Empty string to reset */
+    }
+    
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
 }
 
 int main(int argc, char **argv)
@@ -647,6 +674,8 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             state->user_id = 0;
             state->user_accesslevel = 0;
             state->user_keys[0] = '\0';
+            /* Reset user display in Server status window */
+            send_user_message(state->line_id, NULL);
             log_line_event(state->line_id, "Session disconnected");
             script_stop_session(state);
             continue;
@@ -1734,6 +1763,9 @@ static void script_host_force_disconnect(void *context)
         return;
     }
 
+    /* Reset user display in Server status window */
+    send_user_message(state->line_id, NULL);
+
     memset(&message, 0, sizeof(message));
     message.header.size = 32;
     message.header.action = (Desk_message_action)LINE_CONTROL_MESSAGE;
@@ -1842,18 +1874,18 @@ static void script_host_report_online_users(void *context)
         }
 
         /* Look up user from Filer userdb */
-        strcpy(username, "Guest");
         if (user_id > 0)
         {
-            regs.r[0] = FILER_USERDB_CMD_SEARCH;
-            regs.r[1] = user_id;
-            if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) == NULL && regs.r[0] != 0)
+            _kernel_swi_regs filer_regs;
+            filer_regs.r[0] = FILER_USERDB_CMD_SEARCH;
+            filer_regs.r[1] = user_id;
+            if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &filer_regs, &filer_regs) == NULL && filer_regs.r[0] != 0)
             {
                 /* USER_RECORD returned:
                  * - realname at offset 36 (64 bytes)
                  * - user_flags.sysop at offset 600 (int)
                  */
-                char *record_bytes = (char *)regs.r[0];
+                char *record_bytes = (char *)filer_regs.r[0];
                 char realname[64];
                 int is_sysop;
 
@@ -1892,6 +1924,10 @@ static void script_host_report_online_users(void *context)
             {
                 snprintf(username, sizeof(username), "User #%d", user_id);
             }
+        }
+        else
+        {
+            strcpy(username, "Guest");
         }
 
         /* Get connect time */
@@ -2063,12 +2099,15 @@ static int script_host_authenticate_user(void *context, const char *username, co
          *   - accesslevel is 15 ints (60 bytes) into USER_FLAGS = offset 640
          */
         #define USER_RECORD_OFFSET_ID          0
+        #define USER_RECORD_OFFSET_REALNAME    36
         #define USER_RECORD_OFFSET_KEYS        196
         #define USER_RECORD_OFFSET_ACCESSLEVEL 640
         
         char *record_bytes = (char *)regs.r[1];
+        const char *realname;
         
         user_id = *((int *)(record_bytes + USER_RECORD_OFFSET_ID));
+        realname = record_bytes + USER_RECORD_OFFSET_REALNAME;
         keys = record_bytes + USER_RECORD_OFFSET_KEYS;
         access_level = *((int *)(record_bytes + USER_RECORD_OFFSET_ACCESSLEVEL));
         
@@ -2087,6 +2126,9 @@ static int script_host_authenticate_user(void *context, const char *username, co
         state->user_accesslevel = access_level;
         strncpy(state->user_keys, keys, sizeof(state->user_keys) - 1);
         state->user_keys[sizeof(state->user_keys) - 1] = '\0';
+        
+        /* Send user name to Server to update status window */
+        send_user_message(state->line_id, realname);
         
         snprintf(log_msg, sizeof(log_msg), "User '%s' logged in (id=%d, level=%d)", username, user_id, access_level);
         log_line_event(state->line_id, log_msg);

@@ -1,0 +1,37 @@
+do mkdir -p o
+do mkdir -p od
+do mkdir -p oz
+do mkdir -p aof
+do mkdir -p linked
+Touch o._dirs
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.main c.main
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"h.main", line 113: Error: expected ')' or ',' - inserted ')' before "0.01"
+"h.main", line 113: Error: function prototype formal <missing> needs type or class - 'int' assumed
+"h.main", line 113: Error: expected ';' or ',' - inserted ';' before "0.01"
+"h.main", line 113: Serious error: Expecting <declarator> or <type> but found "0.01"
+"h.main", line 115: Serious error: quote (") inserted before newline
+"h.main", line 117: Error: expected ';' or ',' - inserted ';' before 'static'
+"c.main", line 254: Warning: unused earlier static declaration of 'launch_line_tasks'
+"c.main", line 269: Warning: unused earlier static declaration of 'launch_ftn_task'
+"c.main", line 293: Warning: unused earlier static declaration of 'main_window_icon_to_line'
+"c.main", line 323: Warning: unused earlier static declaration of 'send_line_task_view_request'
+"c.main", line 347: Warning: unused earlier static declaration of 'support_push_config'
+"c.main", line 485: Warning: unused earlier static declaration of 'support_push_line_config'
+"c.main", line 513: Warning: unused earlier static declaration of 'support_set_line_configured'
+"c.main", line 524: Warning: unused earlier static declaration of 'support_set_line_connected'
+"c.main", line 535: Warning: unused earlier static declaration of 'support_set_line_hostname'
+"c.main", line 546: Warning: unused earlier static declaration of 'support_set_line_connect_time'
+"c.main", line 557: Warning: unused earlier static declaration of 'support_set_activity'
+"c.main", line 1296: Warning: unused earlier static declaration of 'pipes_input_status'
+"c.main", line 1309: Warning: unused earlier static declaration of 'pipes_input_write_block'
+"c.main", line 1324: Warning: unused earlier static declaration of 'pipes_output_read_block'
+"c.main", line 1517: Warning: unused earlier static declaration of 'telnet_handle_option'
+"c.main", line 2131: Warning: static 'small_app_compiled' declared but not used
+"c.main", line 2131: Warning: static 'app_compiled' declared but not used
+"c.main", line 2131: Warning: static 'app_version' declared but not used
+c.main: 18 warnings, 4 errors, 2 serious errors
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+

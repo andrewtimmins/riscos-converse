@@ -6,7 +6,7 @@ server.mm:Reload
 server.swmt: Converse BBS
 server.swm: Line Info, User Info, Disconnect
 
-server.wait:Waiting for user...
+server.wait:Waiting...
 server.nact:-----
 server.host:-----
 server.time:--:--

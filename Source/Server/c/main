@@ -60,6 +60,7 @@ Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_register_message(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_line_user_message(Desk_event_pollblock *event, void *ref);
 
 void display_error_dialog(int isFatal, const char *stringFormat, ...);
 
@@ -236,6 +237,7 @@ static int str_casecmp(const char *s1, const char *s2)
 #define MESSAGE_LINE_CONTROL    (MESSAGE_LINE_BASE + 2)
 #define MESSAGE_LINE_VIEW_WINDOW (MESSAGE_LINE_BASE + 3)
 #define MESSAGE_LINE_REGISTER   (MESSAGE_LINE_BASE + 4)
+#define MESSAGE_LINE_USER       (MESSAGE_LINE_BASE + 5)
 #define LINE_CONTROL_REASON_LOGOFF 1
 
 #define SWI_OS_READMONOTONICTIME 0x00000042
@@ -838,6 +840,52 @@ Desk_bool wimp_handle_line_register_message(Desk_event_pollblock *event, void *r
 	}
 
 	line_task_handles[line_id] = event->data.message.header.sender;
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_line_user_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+	const char *username;
+	char display_name[100];
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	if (line_configurations <= 1)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	if (line_id < 0 || line_id >= line_configurations)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	username = (const char *)&event->data.message.data.bytes[4];
+	if (username == NULL || *username == '\0')
+	{
+		/* Empty username means reset to waiting */
+		strncpy(display_name, waiting_user, sizeof(display_name) - 1);
+		display_name[sizeof(display_name) - 1] = '\0';
+	}
+	else
+	{
+		strncpy(display_name, username, sizeof(display_name) - 1);
+		display_name[sizeof(display_name) - 1] = '\0';
+	}
+
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_USER),
+		display_name);
+
+	line_task_handles[line_id] = event->data.message.header.sender;
+
 	return Desk_bool_TRUE;
 }
 
@@ -1470,6 +1518,9 @@ static void close_line_connection(int line_id)
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
 		"----");
 	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_USER),
+		waiting_user);
+	Desk_Icon_SetText(main_window,
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
 		user_activity);
 	Desk_Icon_SetText(main_window,
@@ -2044,6 +2095,16 @@ int main(void) {
 	Desk_Msgs_Lookup("server.wait", waiting_user, 100);
 	Desk_Msgs_Lookup("server.nact", user_activity, 100);
 
+	/* Fallback if Messages file tokens are missing */
+	if (waiting_user[0] == '\0')
+	{
+		strcpy(waiting_user, "Waiting...");
+	}
+	if (user_activity[0] == '\0')
+	{
+		strcpy(user_activity, "----");
+	}
+
 	Desk_Msgs_Lookup("error.1", error_bind, 100);
 	Desk_Msgs_Lookup("error.2", error_listen, 100);
 	Desk_Msgs_Lookup("error.3", error_busy, 100);
@@ -2060,6 +2121,7 @@ int main(void) {
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_ACTIVITY, Desk_event_ANY, wimp_handle_line_activity_message, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_CONTROL, Desk_event_ANY, wimp_handle_line_control_message, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_REGISTER, Desk_event_ANY, wimp_handle_line_register_message, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_USER, Desk_event_ANY, wimp_handle_line_user_message, NULL);
 	Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
 	Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
   	Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, wimp_handle_window_close, NULL);
