@@ -583,12 +583,87 @@ void binkp_handle_frame(MAILER_SESSION *session, BINKP_FRAME *frame)
 /* File Transfer Implementation                                                                                                                             */
 /* ******************************************************************************************************************************************************** */
 
+static void ensure_directory_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    /* OS_File 8 = Create directory */
+    regs.r[0] = 8;
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;  /* Default number of entries */
+    _kernel_swi(OS_File, &regs, &regs);
+}
+
+/*
+ * Convert DOS-style filename (name.ext) to RISC OS style (nameEXT)
+ * e.g., "138D7378.pkt" -> "138D7378pkt"
+ */
+static void filename_dos_to_riscos(const char *dos_name, char *riscos_name, size_t size)
+{
+    const char *dot;
+    size_t base_len;
+
+    dot = strrchr(dos_name, '.');
+    if (dot != NULL && dot != dos_name)
+    {
+        /* Copy base name */
+        base_len = dot - dos_name;
+        if (base_len >= size) base_len = size - 1;
+        strncpy(riscos_name, dos_name, base_len);
+        riscos_name[base_len] = '\0';
+
+        /* Append extension without dot */
+        strncat(riscos_name, dot + 1, size - strlen(riscos_name) - 1);
+    }
+    else
+    {
+        /* No extension, just copy */
+        strncpy(riscos_name, dos_name, size - 1);
+        riscos_name[size - 1] = '\0';
+    }
+}
+
+/*
+ * Convert RISC OS filename (nameEXT) to DOS-style (name.ext)
+ * Assumes last 3 characters are the extension if filename is > 3 chars
+ * e.g., "138D7378pkt" -> "138D7378.pkt"
+ */
+static void filename_riscos_to_dos(const char *riscos_name, char *dos_name, size_t size)
+{
+    size_t len = strlen(riscos_name);
+
+    if (len > 3)
+    {
+        /* Insert dot before last 3 characters */
+        size_t base_len = len - 3;
+        if (base_len >= size - 4) base_len = size - 5;
+
+        strncpy(dos_name, riscos_name, base_len);
+        dos_name[base_len] = '.';
+        strncpy(dos_name + base_len + 1, riscos_name + len - 3, 3);
+        dos_name[base_len + 4] = '\0';
+    }
+    else
+    {
+        /* Too short for extension, just copy */
+        strncpy(dos_name, riscos_name, size - 1);
+        dos_name[size - 1] = '\0';
+    }
+}
+
 void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset)
 {
     char path[MAILER_PATH_SIZE];
+    char riscos_filename[MAILER_PATH_SIZE];
 
-    /* Build temp path in inbound.tmp */
-    snprintf(path, sizeof(path), "%s.%s", mailer.temp_inbound, filename);
+    /* Convert DOS filename to RISC OS format */
+    filename_dos_to_riscos(filename, riscos_filename, sizeof(riscos_filename));
+
+    /* Ensure temp inbound directory exists */
+    ensure_directory_exists(mailer.temp_inbound);
+
+    /* Build temp path using RISC OS filename */
+    snprintf(path, sizeof(path), "%s.%s", mailer.temp_inbound, riscos_filename);
 
     session->recv_file.file = fopen(path, offset > 0 ? "ab" : "wb");
     if (session->recv_file.file == NULL)
@@ -598,6 +673,7 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
         return;
     }
 
+    /* Store original DOS filename for protocol responses, RISC OS name for local path */
     strncpy(session->recv_file.filename, filename, sizeof(session->recv_file.filename) - 1);
     strncpy(session->recv_file.local_path, path, sizeof(session->recv_file.local_path) - 1);
     session->recv_file.size = size;
@@ -605,7 +681,7 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     session->recv_file.offset = offset;
     session->recv_file.state = TRANSFER_STATE_RECEIVING;
 
-    debug_printf("binkp: Receiving %s (%ld bytes)", filename, size);
+    debug_printf("binkp: Receiving %s as %s (%ld bytes)", filename, riscos_filename, size);
 }
 
 void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data, int length)
@@ -630,6 +706,7 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
 {
     FILE_TRANSFER *ft = &session->recv_file;
     char final_path[MAILER_PATH_SIZE];
+    char riscos_filename[MAILER_PATH_SIZE];
 
     if (ft->file != NULL)
     {
@@ -637,15 +714,21 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
         ft->file = NULL;
     }
 
+    /* Ensure inbound directory exists */
+    ensure_directory_exists(mailer.inbound_path);
+
+    /* Convert DOS filename to RISC OS format for final path */
+    filename_dos_to_riscos(ft->filename, riscos_filename, sizeof(riscos_filename));
+
     /* Move from temp to final inbound */
-    snprintf(final_path, sizeof(final_path), "%s.%s", mailer.inbound_path, ft->filename);
+    snprintf(final_path, sizeof(final_path), "%s.%s", mailer.inbound_path, riscos_filename);
 
     /* Rename temp file to final location */
     rename(ft->local_path, final_path);
 
-    debug_printf("binkp: Received %s (%ld bytes)", ft->filename, ft->size);
+    debug_printf("binkp: Received %s as %s (%ld bytes)", ft->filename, riscos_filename, ft->size);
 
-    /* Acknowledge receipt */
+    /* Acknowledge receipt using original DOS filename */
     binkp_send_got(session, ft->filename, ft->size, ft->mtime);
 
     ft->state = TRANSFER_STATE_IDLE;
@@ -657,7 +740,8 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
     FILE_TRANSFER *ft = &session->send_file;
     _kernel_swi_regs regs;
     long fsize;
-    const char *filename;
+    const char *riscos_filename;
+    char dos_filename[MAILER_PATH_SIZE];
 
     /* Get file size */
     regs.r[0] = 17;
@@ -672,9 +756,12 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
 
     fsize = regs.r[4];
 
-    /* Extract filename */
-    filename = strrchr(path, '.');
-    filename = filename ? filename + 1 : path;
+    /* Extract RISC OS filename (leaf name after last dot in path) */
+    riscos_filename = strrchr(path, '.');
+    riscos_filename = riscos_filename ? riscos_filename + 1 : path;
+
+    /* Convert RISC OS filename to DOS format for remote end */
+    filename_riscos_to_dos(riscos_filename, dos_filename, sizeof(dos_filename));
 
     ft->file = fopen(path, "rb");
     if (ft->file == NULL)
@@ -683,17 +770,18 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
         return;
     }
 
-    strncpy(ft->filename, filename, sizeof(ft->filename) - 1);
+    /* Store DOS filename for protocol, local path for file access */
+    strncpy(ft->filename, dos_filename, sizeof(ft->filename) - 1);
     strncpy(ft->local_path, path, sizeof(ft->local_path) - 1);
     ft->size = fsize;
     ft->mtime = time(NULL);  /* TODO: Get actual file time */
     ft->offset = 0;
     ft->state = TRANSFER_STATE_SENDING;
 
-    /* Send M_FILE header */
-    binkp_send_file(session, ft->filename, ft->size, ft->mtime, 0);
+    /* Send M_FILE header with DOS filename */
+    binkp_send_file(session, dos_filename, ft->size, ft->mtime, 0);
 
-    debug_printf("binkp: Sending %s (%ld bytes)", filename, fsize);
+    debug_printf("binkp: Sending %s as %s (%ld bytes)", riscos_filename, dos_filename, fsize);
 }
 
 void binkp_send_file_data(MAILER_SESSION *session)

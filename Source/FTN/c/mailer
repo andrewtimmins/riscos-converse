@@ -271,8 +271,8 @@ void mailer_load_config(void)
         strcpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound");
     }
 
-    /* Set temp inbound path */
-    snprintf(mailer.temp_inbound, sizeof(mailer.temp_inbound), "%s.tmp", mailer.inbound_path);
+    /* Set temp inbound path - use Temp subdirectory (RISC OS doesn't support .tmp) */
+    snprintf(mailer.temp_inbound, sizeof(mailer.temp_inbound), "%s.Temp", mailer.inbound_path);
 
 }
 
@@ -701,6 +701,27 @@ void mailer_poll_outbound(void)
 /* Initialisation                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
 
+static void ensure_directory_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    /* OS_File 8 = Create directory */
+    regs.r[0] = 8;
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;  /* Default number of entries */
+    _kernel_swi(OS_File, &regs, &regs);
+}
+
+static void mailer_create_directories(void)
+{
+    /* Ensure all FTN directories exist */
+    ensure_directory_exists(mailer.inbound_path);
+    ensure_directory_exists(mailer.outbound_path);
+    ensure_directory_exists(mailer.temp_inbound);
+
+    debug_printf("mailer: Created directories");
+}
+
 void mailer_initialise(void)
 {
     memset(&mailer, 0, sizeof(mailer));
@@ -713,6 +734,7 @@ void mailer_initialise(void)
     timer_initialise();
     queue_initialise();
     mailer_load_config();
+    mailer_create_directories();
 }
 
 void mailer_finalise(void)
