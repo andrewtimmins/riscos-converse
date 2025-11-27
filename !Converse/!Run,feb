@@ -4,6 +4,9 @@
 Set Converse$Dir <Obey$Dir>
 Set Converse$Path <Converse$Dir>.
 
+Set ARCbbs$text <Converse$Dir>.Temp
+Set ARCbbsA$text <Converse$Dir>.Temp
+
 IconSprites <Converse$Dir>.!Sprites
 Set File$Type_120 ANSI
 Set File$Type_EEE Converse

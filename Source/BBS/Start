@@ -71,7 +71,7 @@
 
     label chat_sysop
     doing `Chatting with Sysop...`
-    call door `<Converse$Dir>.BBS.Doors.!NxChat[R] -door %{t_handle} ANSI`
+    call arcbbsdoor 101 `<Converse$Dir>.BBS.Doors.ARCbbs.!Natter %{line}`
     goto main_menu
 
     label end_session

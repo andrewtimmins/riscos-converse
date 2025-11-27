@@ -1,0 +1,8 @@
+| !Run file for !Natter
+| © 1994 Chris Jackson
+| Version: 1.16
+Set Natter$Dir <Obey$Dir>
+Set Natter$164 Yep!
+RMEnsure DoorModule 0.07 Unset Natter$164
+Wimpslot 104k 104k
+Run <Natter$Dir>.!RunImage %*0

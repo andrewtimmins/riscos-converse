@@ -1,6 +1,0 @@
-| <RiscBBS$Dir>.SubTasks.!News.!Boot
-| !Boot file for Newspaper Door
-| written by B.S.Gibson for !RiscBBS 1.01
-|
-Set News$Dir <Obey$Dir>
-IconSprites <News$Dir>.!Sprites

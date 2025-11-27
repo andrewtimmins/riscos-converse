@@ -1,7 +1,0 @@
-| <RiscBBS$Dir>.SubTasks.!News.!Run
-| !Run file for Newspaper door
-| written by B.S.Gibson for !RiscBBS 1.01
-Set News$Dir <Obey$Dir>
-IconSprites <News$Dir>.!Sprites
-WimpSlot -min 64k -max 64k
-<News$Dir>.!RunImage %*0

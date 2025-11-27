@@ -1,0 +1,20 @@
+Door:101
+Sysop:Andy Timmins
+Screen:ANSIFade
+Excuse:My eyes hurt!
+RandomExcuse:N
+ChatType:1
+Reason:Y
+Beep:Y
+CtrlG:N
+AskQuit:Y
+Highlights:Y
+Ports:YYYYNNNNNYNNNNNNNNNNNNNNNNNNNNNNYYNN
+Templates:Normal
+UsePageOff:N
+PageOff:2330
+PageOn:1430
+SetTime:N
+Fontname:SystemFont
+Fontwidth:0
+Fontheight:0

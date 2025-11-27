@@ -1,0 +1,221 @@
+-------------------------------------------------------------------------------
+- READ THE BRIEF NOTES AT THE BOTTOM OF THE TEXT TO GET INTO THIS APP QUICKLY -
+-------------------------------------------------------------------------------
+    Name: !Natter
+ Purpose: Erm.... Nattering?
+  Author: Chris Jackson
+ Version: V1.41 (Gammon) ;-)
+
+
+Introduction
+ииииииииииии
+This application was written so that the doobs (The infamous memory waster) could be disposed of. With just this application, this statement isn't quite true as there are some `doobs` that are used on quite a few BBSs (Which are quite popular, like GlobalWar etc.), but I might just get around to fixing TheDoobs to work without this memory wasting module, and ANSI display (arghhhh!)... So that you can use this chatter to chat, and then the small section of the doobs to deal with the remaining doobs that users like.
+
+This application aims to be a replacment for the well known Earache split screen chat by `SICK`. It is written in BASIC V (As is Earache) but has one significant difference; It works in a window at the sysop's end, so he doesn't have to view an off-putting ANSI display (The amount of hours a sysop put's into typing in sysop chat, it needs to look nice!!!)...
+
+At the moment, the chat is quite basic, it allows only a small sub-set of the facilities I wanted it to offer when I first drempt up the idea, but slowly the ideas are coming to the application, and hopefully when everything is there, it will work 100% (With no crashes etc.)...
+
+
+In use
+ииииии
+At the moment, this door has still probably got some bugs in. However, I have tried to test it thoroughly, and it didn't have (m)any bugs (That I knew of) when it was uploaded. However, to get around distribution of buggy version, I would appreciate it if you didn't give this copy to ANYONE else. If someone wants it, tell them to get in touch with me, don't give them a potentially old copy of Natter (So that they can say `Uh.. This Natter thing...` etc.)
+
+If you have been given an old version of Natter, then please get in contact with me, so you can recieve a new version.
+
+Most of the application should be self-explanatory, there are only a few options from the iconbar menu, and these use fairly obvious words to describe their functions. However, here is a list of the functions of each of the menu items;
+
+  /--------------\
+  |    Natter    |
+  |--------------|
+  | Info       > | Goes to the standard RISC OS `About this program` box.
+  | Request    > |
+  | Force      > |
+  | Preferences..|
+  | Ports..      |
+  | Excuse..     |
+  |--------------|
+  | Save Settings|
+  | Quit         |
+  |______________|
+
+
+Request
+иииииии
+  This `sub-menu` shows what will happen to the user when he/she pages you. There are three options;
+   __________
+  | Request  |
+  |__________|
+  | Chat     |
+  | Excuse   |
+  | Disable  |
+  |__________|
+
+   Chat - When this option is ticked, Natter will attempt to connect a chat
+           between the sysop and user. This is done by creating a window in the
+           centre of the screen `paging` the sysop
+
+ Excuse - When this option is ticked, Natter will send a pre-defined excuse
+           string (See below how to set/use this facility). This is useful to
+           use when, say, you are going out, and will be back in X minutes.
+
+Disable - When this option is ticked, Natter will send a pre-defined screen
+           informing the user that the chat is turned off, and maybe he should
+           try again later. (See below `Ansi `Screens`` for more info)...
+
+When you set these options (In the usual RISC OS manner), you will need to save them (In the same way as Natter usually saves configuration settings).
+
+
+Force
+иииии
+  This option produces a sub-menu to the right hand side. In this menu there is a list of ports that are available to Natter (Ones which are configured) and if you click on one of these, it will simply try to force a connection of the chat door to the port (So you can chat to the user).
+
+  If the port is busy (ie. The user is in a door or is downloading) then Natter will attempt to send a broadcast message, in the hope that the user could be using a door (and if so is compatible with the door broadcast messages). The user could be downloading a file, in which case it is impossible for the sysop to force a chat.
+
+  In a future version, I hope to add a way of sending a mail to the user. So that the user will definately `hear` the force door request, as `You have new mail!` will appear in the top corner of his/her screen (as long as the user isn't downloading).
+
+Preferences
+иииииииииии
+  Clicking on this menu option will produce a window with many options to change the performance of Natter, to suit your needs. Options like setting the sysop's name and the door number are compulsory when you install the application, but the rest can be done by `fine-tweaking` when you are using the application on a day-to-day basis.
+
+
+Excuse
+ииииии
+  Clicking on this option produces a window which allows you to select an excuse (Which is shown when the user tries to page you, but you have the Request>Excuse option ticked)... You can select an option from the list that can be produced by clicking on the `to-menu` button, or you can edit the icon in the usual way. If you don't really want to enter a reason, but still want an excuse, you can click on the `Random` radio button, in which case the rest of the window will be dimmed out, and the excuse shown to the user will be at random from the list available.
+
+  There are quite a few excuses already defined. Some of them are quite, erm...funny (?), but if you want to delete some of them, that is fine by me, some of your users could feel that some of them should be taken off anyway (Especially if they are train spotters/Anorak designers etc.)... :-)
+
+  If you would like to send an excuse to the user, that say you are out at a computer show, but you'll be back by 2:00pm, you can bring the excuse window up, and type the message in (upto 256 chars).
+
+  To define an excuse that will be used a lot by you (eg. `I am paying the BT bill` :-) ) simply load up the file !Natter.Excuses, and put it in where you want it.
+
+  Please take note however: You are allowed a maximum of 2000 chars worth of Excuses, anything more than this would crash previous versions of Natter, but this version will report that you have too many. (It will also cut the available ones to just less than 2000 in total length)..
+
+ANSI `Screens`
+ииииииииииииии
+  Different ANSI screens are allowed to be used in the chat and other places. These can be changed to give a look that fits into your BBS better. The main thing is that the typing areas are fixed in the same format.
+  * User - Top half
+  * Sysop - Bottom half
+
+  Don't be frightened to experiment with the ANSI screens (Remember: The copy of Natter is YOURS!), just keep a copy of the original archive, so that you can copy the original ANSI layouts over the ones you designed. By all means use a package like TrueAnsi to design a screen, but remember to save it as an ANSI screen!
+
+  If you would like to create your OWN layout, to match with your system, for example, then simply go into the directory !Natter.Screens.Layout and copy one of the directories as the name of the layout you want it to be called in the pull down menu. Then, simply edit the files inside the directory. They each do seperate things, hence:
+
+    After - These are the characters sent After and before the user's
+   Before    name has been displayed. The top line can contain ANY codes, such
+             as ANSI etc., and the line below must contain the length of the
+             resultant text (eg. The text displayed after the ANSI codes have
+             been dealt with.
+
+   Screen - This is the screen that will be sent   
+
+
+  Even though you are allowed to change most of the ANSI texts, there are various texts that you mustn't change/delete to stay within the licence terms of this software. Basically, these are ANY which mention my name and the copyright, you can change anything around the name and copyright, but it needs to stay intact.
+
+Highlight
+иииииииии
+The highlight function DOESN'T work in this version. It NEARLY works, but there are still a few minor bugs with the positioning of the words, and I thought that users chatting would get confused when the words `moved` so I decided to omit it from the version. Please note however the highlight icon will still click on and off in the configure window.
+
+Fonts
+иииии
+As I use a RiscPC, I found that the text looked stupid when displayed in the chat window, I decided to allow fonts if the sysop so wishes. This allows two things;
+  * Sysops with multisyncs to look at a nicer chat!
+  * Sysops with RiscPCs to see all of the text!
+  * Sysops with low-res monitors the perfect chance to complain! ;-)
+
+Using fonts in windows, I would reccomend the use of `Corpus.Bold` at 10.9 high, 12 wide. You could use homerton or one of the others, but it needs to be a font which is fixed size per letter, so that typing doesn't disappear off the side.
+
+
+Config mode
+иииииииииии
+  As systems who have many callers (and the lines are often engaged), I have added a special mode for configuring !Natter. Instead of simply double-clicking the application (Which would do the same as running it through WimpTask, and hence would lead the door into difficulties if a user tried to page you), you double-click with ALT held down. This will then put the door into a mode where it will be stuck in the initial polling loop, and won't look for any door requests, and you will be able to configure the door (eg. set the ports, set the sysop name etc.) without worrying about someone attempting to page you.
+  You can see that Natter is in this mode, as the icon is `greyed-out`. It will also show a `greyed-out` icon like this if there are no-ports configured.
+  Once you have setup everything you want, simply select the item `Save Settings` from the iconbar menu.
+
+The usage license
+иииииииииииииииии
+To use this chatting application door on your system, you must comply with the following rules;
+  1) You MUST NOT remove my name from anywhere in this program.
+  2) You MUST NOT remove the copyright messages from anywhere in this program.
+  3) You MUST NOT change any part of the program (other than the ANSI screens)
+      withput my prior knowledge and consent.
+  4) You MUST NOT remove the following from the highlights list;
+      i) Chris
+     ii) Jackson
+    iii) Northern
+     iv) Arm
+      v) BBS
+     vi) 01274
+    vii) 530831
+  5) You MUST NOT give this door to anyone else without my prior knowledge and
+      consent.
+
+  If you break any of these rules you are not allowed to use this door on your system any longer.
+
+In chat
+иииииии
+  Whilst chatting there are various things you can do apart from chatting to the user. You can spool the input or output, quit the user (in two ways, explained below) and you can spool files to the user. (Soon you'll be able to ZModem transfer too, hopefully!)...
+  There are two types of quitting from the chat that the sysop can do. He can press `Quit User` which does the same as the user pressing Ctrl C or Ctrl D, and he can do `Back to BBS` which forces the user back to the BBS. They both have their adantages and disadvantages. Generally, use Back to BBS when the user is finding it difficult to quit. It is the easiest way out, as it sends the user straight back to the BBS.
+  Dragging a file to the chat window will spool it as if the sysop was typing it in. It isn't the best way to send text (The best way is by file through the file areas, but it is OK if it is short, and contains something useful in, which you want to demonstrate to the user.
+  In the next version I hope to have incorporated a rudimentary file transfer facility that will allow the sysop to send files to the user and vice-versa. This will be the ZModem protocol.
+
+Logfile
+иииииии
+  I have included a way of logging what is happening to Natter. This simply logs things such as users entering the door, the sysop attempting to force a user into a door and such like. This should not be mixed up with the `ErrorLog` file, which when present, will make the icon slightly different.
+
+Thanx to?
+иииииииии
+
+  I have to thank John Stonier for testing this Natter door on his BBS. Without his help, this door would never have been possible (Well, it would, but it wouldn't work, lets put it like that ;-)...
+  Also, thanks to the many users that have come on my BBS, and complained that the ArmBBS version of the door (Not released) goes all over the place! (I'm looking into it :-) )....
+
+Contacting me
+иииииииииииии
+You can contact me at the following places;
+
+Snail mail -
+    15, Red Beck Vale
+    Shipley
+    West Yorkshire
+    BD18 3BN
+    England (For all you folks out in Ozy, and Norway!)
+
+EMail - cjackson@digibank.demon.co.uk
+        `Chris Jackson` (#1) on The Northern ARM BBS      << Quickest
+                             (01274) 530831               << Quickest
+
+        `Chris Jackson` on Digital Databank
+                        (01707) 323531/(01707) 329306
+        `AAUC` on Arcade
+                        (081) 654 2212/(081) 655 4412
+
+Telephone - (01274) 596407
+
+BBS - Phone 01274 530831 to access my 24Hr Archimedes BBS (The Northern ARM BBS). It is run on ArmBBS with the space left on my Hard Drive as filebase storage. Two CDs supplement this, making up the total storage space plus PD already there (600Mb) to 600+210=810Mb! Call now with your modem setup for 8N1, at upto 14k4...
+
+Thanx.
+ _
+(_ hris Jackson.
+
+Development
+
+-- Decided to start a `previous-versions` list. Richard Murray will enjoy  --
+--         reading some `new` features to add to his chat appie ;-)        --
+-----------------------------------------------------------------------------
+
+Version 1.41
+
+Run !Natter with parameter `-c` it will go into `config` mode (same as pressing ALT and d/clicking).. Good for folks like John Stonier who have the memory to waste by leaving the application loaded so they can quickly configure it. ;-)
+
+Version 1.43
+_ _ _ _
+Forcing a chat with !Natter when in config mode will no longer quit after the chat has been done, so force chats can be started by the configure-mode `chat` application. Neat eh?
+
+_ _ _ _
+If a user drops carrier whilst paging the sysop, the application will quit.
+
+_ _ _ _
+If for some reason the pager has been loaded for longer than 15 minutes (15*60*100 = 90 000 centisecs) (If the server is ever caught out by a user dropping carrier), it will automatically quit. It will _NOT_ set the status byte to 0, as in this time there could've been another user logon, and he might just be in a door ;-)
+_ _ _ _
+
+ArmBBS sysops, note that when you return users after a `force`d connection, please remember to redisplay the menu (by pressing `?`).. as if you don't it just leave's the user with a blank screen..
+--

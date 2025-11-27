@@ -1,3 +1,0 @@
-Set VirtlCafe$Dir <Obey$Dir>
-Wimpslot  -min 128k -max 128k
-Run <VirtlCafe$Dir>.!RunImage %*0

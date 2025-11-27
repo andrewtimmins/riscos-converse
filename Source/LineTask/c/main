@@ -847,7 +847,7 @@ static void arcbbs_door_process(line_task_state *state)
         if (status == ARCBBS_STATUS_IDLE)
         {
             debug_printf("LineTask ARCbbs: door finished (status=0)\n");
-            arcbbs_door_close_session(state, "\r\n[ARCbbs door finished]\r\n");
+            arcbbs_door_close_session(state, "");
             return;
         }
 
