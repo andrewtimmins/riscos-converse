@@ -27,9 +27,7 @@
 
     print `\r\nUnknown selection '%{choice}', please try again.\r\n`
     goto main_menu
-}
 
-{
     label ansi_artwork
     doing `ANSI Artwork`
     cls
@@ -37,9 +35,7 @@
     type `<Converse$Dir>.BBS.Art.Demo`
     anykey temp
     goto main_menu
-}
 
-{
     label connection_status
     doing `Connection status`
     print `\r\n[Live Status]\r\n`
@@ -49,9 +45,7 @@
     call lineinfo
     anykey temp
     goto main_menu
-}
 
-{
     label demo_message
     doing `Demo message`
     fgbg 2 0
@@ -59,9 +53,7 @@
     fgbg 7 0
     anykey temp
     goto main_menu
-}
 
-{
     label whos_online
     doing `Viewing online users`
     cls
@@ -71,63 +63,45 @@
     online
     anykey temp
     goto main_menu
-}
 
-{
     label launch_news
     doing `Reading News...`
     call door `<Converse$Dir>.BBS.Doors.!News %{t_handle}`
     anykey temp
     goto main_menu
-}
 
-{
     label launch_cookie
     doing `Playing Cookie...`
     call door `<Converse$Dir>.BBS.Doors.!Cookie -server %{t_handle} -door`
     anykey temp
     goto main_menu
-}
 
-{
     label launch_purity
     doing `Playing Purity...`
     call door `<Converse$Dir>.BBS.Doors.!Purity %{t_handle}`
     goto main_menu
-}
 
-{
     label launch_breakout
     doing `Playing Breakout...`
     call door `<Converse$Dir>.BBS.Doors.!Breakout %{t_handle}`
     goto main_menu
-}
 
-{
     label launch_tetris
     doing `Playing Tetris...`
     call door `<Converse$Dir>.BBS.Doors.!Tetris %{t_handle}`
     goto main_menu
-}
 
-{
     label launch_spraywall
     doing `Playing Spraywall...`
     call door `<Converse$Dir>.BBS.Doors.!Wall %{t_handle}`
     goto main_menu
-}
 
-{
     label chat_sysop
     doing `Chatting with Sysop...`
     call door `<Converse$Dir>.BBS.Doors.!NxChat[R] -door %{t_handle} ANSI`
     goto main_menu
-}
 
-{
     label end_session
     logoff
     return
 }
-
-
