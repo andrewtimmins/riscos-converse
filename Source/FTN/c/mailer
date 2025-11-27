@@ -663,6 +663,7 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     session->direction = SESSION_DIR_OUTBOUND;
     session->state = SESSION_STATE_CONNECTING;
     session->remote_addr = *addr;
+    session->target_addr = *addr;  /* Save target for password lookup */
     session->connect_time = time(NULL);
     session->last_activity = session->connect_time;
     strncpy(session->remote_hostname, hostname, sizeof(session->remote_hostname) - 1);

@@ -106,7 +106,8 @@ typedef struct
     SESSION_DIRECTION direction;
     
     /* Remote node info */
-    FTN_ADDR remote_addr;
+    FTN_ADDR remote_addr;           /* Address reported by remote in M_ADR */
+    FTN_ADDR target_addr;           /* For outbound: address we're calling (for password lookup) */
     char remote_sysop[64];
     char remote_system[64];
     char remote_location[64];

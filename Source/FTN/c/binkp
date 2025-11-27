@@ -301,6 +301,16 @@ void binkp_send_handshake(MAILER_SESSION *session)
 
     if (session->direction == SESSION_DIR_OUTBOUND)
     {
+        const char *pwd;
+
+        /* Look up password for the node we're calling (target_addr, not remote_addr) */
+        pwd = binkp_get_password_for_node(&session->target_addr);
+        strncpy(session->password, pwd, sizeof(session->password) - 1);
+        session->password[sizeof(session->password) - 1] = '\0';
+
+        debug_printf("binkp: Using password '%s' for outbound session", 
+                     session->password[0] ? "****" : "(empty)");
+
         /* We initiated, send password */
         session->state = SESSION_STATE_WAIT_OK;
         binkp_send_pwd(session);
@@ -383,6 +393,10 @@ void binkp_handle_adr(MAILER_SESSION *session, const char *data)
     debug_printf("binkp: Remote address: %d:%d/%d.%d",
                  session->remote_addr.zone, session->remote_addr.net,
                  session->remote_addr.node, session->remote_addr.point);
+
+    mailer_log("Remote address: %d:%d/%d.%d",
+               session->remote_addr.zone, session->remote_addr.net,
+               session->remote_addr.node, session->remote_addr.point);
 }
 
 void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
@@ -390,7 +404,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
     const char *expected;
     int secure = 0;
 
-    debug_printf("binkp: << M_PWD (hidden)");
+    debug_printf("binkp: << M_PWD (hidden) state=%d", session->state);
 
     /* Look up expected password for this node */
     expected = binkp_get_password_for_node(&session->remote_addr);
@@ -398,6 +412,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
     if (expected == NULL || *expected == '\0')
     {
         /* No password required */
+        debug_printf("binkp: No password required, sending M_OK");
         session->authenticated = 1;
         binkp_send_ok(session, 0);
         session->state = SESSION_STATE_AUTHENTICATED;
@@ -423,38 +438,49 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         /* Plain password */
         if (strcmp(data, expected) == 0)
         {
+            debug_printf("binkp: Password matched, sending M_OK");
             session->authenticated = 1;
             binkp_send_ok(session, 0);
             session->state = SESSION_STATE_AUTHENTICATED;
         }
         else
         {
+            debug_printf("binkp: Password mismatch");
             binkp_send_err(session, "Bad password");
             session->state = SESSION_STATE_ERROR;
         }
     }
+
+    debug_printf("binkp: After M_PWD handling, state=%d", session->state);
 }
 
 void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 {
-    debug_printf("binkp: << M_OK %s", data);
+    debug_printf("binkp: << M_OK %s (state=%d)", data, session->state);
+
+    mailer_log("Session established, remote reports \"%s\"", 
+               strstr(data, "secure") ? "secure" : "non-secure");
 
     session->authenticated = 1;
     session->state = SESSION_STATE_AUTHENTICATED;
 
     /* Start file transfer phase */
     binkp_check_for_files(session);
+    
+    debug_printf("binkp: After M_OK handling, state=%d", session->state);
 }
 
 void binkp_handle_err(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_ERR %s", data);
+    mailer_log("Session error: %s", data);
     session->state = SESSION_STATE_ERROR;
 }
 
 void binkp_handle_bsy(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_BSY %s", data);
+    mailer_log("Remote busy: %s", data);
     session->state = SESSION_STATE_CLOSING;
 }
 
@@ -468,6 +494,9 @@ void binkp_handle_eob(MAILER_SESSION *session)
     if (session->local_eob && session->remote_eob)
     {
         debug_printf("binkp: Session complete");
+        mailer_log("Session complete (sent %d files/%ld bytes, recv %d files/%ld bytes)",
+                   session->files_sent, session->bytes_sent,
+                   session->files_received, session->bytes_received);
         session->state = SESSION_STATE_CLOSING;
     }
 }
@@ -481,7 +510,16 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
     char filename[128];
     long size, mtime, offset;
 
-    debug_printf("binkp: << M_FILE %s", data);
+    debug_printf("binkp: << M_FILE %s (state=%d)", data, session->state);
+
+    /* If we receive a file, we're implicitly authenticated */
+    if (session->state != SESSION_STATE_AUTHENTICATED && 
+        session->state != SESSION_STATE_TRANSFER)
+    {
+        debug_printf("binkp: Received M_FILE while in state %d, forcing AUTHENTICATED", session->state);
+        session->authenticated = 1;
+        session->state = SESSION_STATE_AUTHENTICATED;
+    }
 
     /* Parse: filename size time offset */
     if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) >= 3)
@@ -498,7 +536,6 @@ void binkp_handle_got(MAILER_SESSION *session, const char *data)
     if (session->send_file.state == TRANSFER_STATE_SENDING)
     {
         binkp_finish_send_file(session);
-        session->files_sent++;
 
         /* Check for more files to send */
         binkp_check_for_files(session);
@@ -682,6 +719,7 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     session->recv_file.state = TRANSFER_STATE_RECEIVING;
 
     debug_printf("binkp: Receiving %s as %s (%ld bytes)", filename, riscos_filename, size);
+    mailer_log("Receiving: %s (%ld bytes)", filename, size);
 }
 
 void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data, int length)
@@ -733,6 +771,8 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
 
     ft->state = TRANSFER_STATE_IDLE;
     session->files_received++;
+
+    mailer_log("Received: %s (%ld bytes)", ft->filename, ft->size);
 }
 
 void binkp_start_send_file(MAILER_SESSION *session, const char *path)
@@ -782,6 +822,7 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
     binkp_send_file(session, dos_filename, ft->size, ft->mtime, 0);
 
     debug_printf("binkp: Sending %s as %s (%ld bytes)", riscos_filename, dos_filename, fsize);
+    mailer_log("Sending: %s (%ld bytes)", dos_filename, fsize);
 }
 
 void binkp_send_file_data(MAILER_SESSION *session)
@@ -836,6 +877,8 @@ void binkp_finish_send_file(MAILER_SESSION *session)
     ft->state = TRANSFER_STATE_IDLE;
 
     debug_printf("binkp: Sent %s successfully", ft->filename);
+    mailer_log("Sent: %s (%ld bytes)", ft->filename, ft->size);
+    session->files_sent++;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -914,9 +957,67 @@ void binkp_compute_cram_response(const char *challenge, const char *password, ch
     snprintf(response, size, "CRAM-MD5-TODO");
 }
 
+/*
+ * Look up session password for a remote FTN address.
+ * Searches uplink configurations for a matching address.
+ * Returns pointer to static password buffer, or empty string if not found.
+ */
 const char *binkp_get_password_for_node(const FTN_ADDR *addr)
 {
-    /* TODO: Look up password from uplink config via Support SWI */
-    (void)addr;
+    _kernel_swi_regs regs;
+    int i;
+    char addr_str[64];
+    static char password[32];
+
+    /* Format address for comparison */
+    ftn_addr_to_string(addr, addr_str, sizeof(addr_str));
+
+    debug_printf("binkp: Looking up password for %s", addr_str);
+
+    /* Get uplink count */
+    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
+    if (_kernel_swi(0x5AA86, &regs, &regs) != NULL)
+    {
+        debug_printf("binkp: Failed to get uplink count");
+        return "";
+    }
+
+    /* Search through uplinks */
+    for (i = 1; i <= regs.r[0]; i++)
+    {
+        _kernel_swi_regs r2;
+
+        r2.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
+        r2.r[1] = i;
+        if (_kernel_swi(0x5AA86, &r2, &r2) == NULL && r2.r[0] != 0)
+        {
+            /* Uplink config structure */
+            typedef struct
+            {
+                int id;
+                char address[64];
+                char network[64];
+                char password[32];
+                char groups[64];
+            } UPLINK_CFG;
+
+            UPLINK_CFG *uplink = (UPLINK_CFG *)r2.r[0];
+            FTN_ADDR uplink_addr;
+
+            /* Parse uplink address and compare */
+            if (ftn_string_to_addr(uplink->address, &uplink_addr))
+            {
+                if (ftn_addr_match(addr, &uplink_addr))
+                {
+                    debug_printf("binkp: Found password for uplink %d (%s)", i, uplink->address);
+                    strncpy(password, uplink->password, sizeof(password) - 1);
+                    password[sizeof(password) - 1] = '\0';
+                    return password;
+                }
+            }
+        }
+    }
+
+    debug_printf("binkp: No uplink password found for %s", addr_str);
     return "";
 }

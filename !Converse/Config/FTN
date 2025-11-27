@@ -52,15 +52,15 @@ endaddress
 ; ----------------------------------------------------------------------------
 
 uplink 1
-    address         2:2500/1.0
+    address         2:2500/622.0
     network         Fidonet
-    password        
+    password        Hello123$$
     groups          A,B,C
 enduplink
 
 uplink 2
     address         25:44/0.0
     network         Converse
-    password        
+    password        Hello123$$
     groups          A
 enduplink
