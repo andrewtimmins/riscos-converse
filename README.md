@@ -8,6 +8,8 @@ Bring a modern multi-line BBS back to your Archimedes, A7000, or RISC OS Pi. Co
 - **Robust storage**: The ConverseFiler module persists users, messages, and uploads using transaction-style copy/update semantics.
 - **Desktop app**: The server app shows every line at a glance — caller info, live activity text, timers, and quick actions.
 - **Clean OS integration**: Official SWI allocations (`ConversePipes &5AA00`, `ConverseFiler &5AA40`) and matching Wimp messages mean other tools can hook in easily.
+- ** RiscBBS door compatability
+- ** ARCbbs door compatability
 
 ## Contributing
 We welcome fixes to the scripts, new sample doors, and tooling around the SWIs. Please:
