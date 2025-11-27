@@ -1,0 +1,299 @@
+FTN Configuration Guide
+=======================
+
+This guide explains how to configure Converse BBS for FTN (FidoNet Technology
+Network) mail exchange.
+
+
+Prerequisites
+-------------
+Before configuring FTN, you need:
+1. A FidoNet node number from your local network coordinator (NC)
+2. The address and password for your uplink hub
+3. Working TCP/IP networking on your RISC OS system
+
+
+Configuration File
+------------------
+The FTN configuration is stored in:
+  <Converse$Dir>.Resources.Config.FTN
+
+The Server reads this file on startup and pushes values to the Support module,
+where the FTN mailer retrieves them.
+
+
+Basic Configuration
+-------------------
+
+; System Information
+; These values are sent to remote systems during BinkP handshake
+
+sysop               Your Name
+system              Your BBS Name
+location            City, Country
+phone               -Unpublished-
+speed               115200
+flags               CM,XA,V34
+
+  sysop     - Your name as the system operator
+  system    - Name of your BBS
+  location  - Geographic location
+  phone     - Phone number (use -Unpublished- if none)
+  speed     - Connection speed advertised to remote systems
+  flags     - FTN capability flags (CM=Continuous Mail, XA=supports all)
+
+
+Directory Paths
+---------------
+
+inbound             <Converse$Dir>.FTN.Inbound
+outbound            <Converse$Dir>.FTN.Outbound
+netmail             <Converse$Dir>.FTN.Netmail
+badmail             <Converse$Dir>.FTN.Bad
+
+  inbound   - Where incoming packets are stored after successful transfer
+  outbound  - BSO outbound directory for mail to send
+  netmail   - Netmail storage area
+  badmail   - Packets that failed processing
+
+These directories are created automatically if they don't exist.
+
+
+Packet Settings
+---------------
+
+max_packet_size     32768
+
+  max_packet_size - Maximum size for outbound packets in bytes (default 32KB)
+
+
+Network Addresses
+-----------------
+You can define up to 8 network addresses. Each address represents your node
+number in a particular FTN network.
+
+address <id>
+    network         <network_name>
+    zone            <zone_number>
+    net             <net_number>
+    node            <node_number>
+    point           <point_number>
+    type            5d
+    packet_password <optional_password>
+    areafix_password <optional_password>
+endaddress
+
+Example - FidoNet address 2:2500/622:
+
+address 1
+    network         Fidonet
+    zone            2
+    net             2500
+    node            622
+    point           0
+    type            5d
+    packet_password 
+    areafix_password
+endaddress
+
+Fields:
+  id              - Unique identifier (1-8)
+  network         - Name of the network (e.g., Fidonet, Amiganet)
+  zone            - Zone number (1=North America, 2=Europe, 3=Oceania, etc.)
+  net             - Network number within the zone
+  node            - Node number within the network
+  point           - Point number (0 for a full node)
+  type            - Address type: 5d (5-dimensional with domain)
+  packet_password - Password for creating/validating packets (optional)
+  areafix_password- Password for areafix requests (optional)
+
+
+FTN Address Format
+------------------
+FTN addresses are written as: zone:net/node.point@domain
+
+Examples:
+  2:2500/622          - Zone 2, Net 2500, Node 622 (no point)
+  2:2500/622.1        - Point 1 of the above node
+  2:2500/622@fidonet  - With domain specifier
+
+
+Uplink Configuration
+--------------------
+Uplinks define the routing for outbound mail. Each uplink specifies a hub
+system that will forward mail for a particular network.
+
+uplink <id>
+    address         <ftn_address>
+    network         <network_name>
+    password        <session_password>
+    groups          <area_groups>
+enduplink
+
+Example - FidoNet uplink:
+
+uplink 1
+    address         2:2500/0.0
+    network         Fidonet
+    password        SecretPassword123
+    groups          A,B,C
+enduplink
+
+Fields:
+  id        - Unique identifier (1-8)
+  address   - FTN address of your uplink hub
+  network   - Network this uplink serves
+  password  - BinkP session password (must match hub's configuration)
+  groups    - Echo area groups you receive (A-Z, as configured by your hub)
+
+
+Multiple Networks
+-----------------
+You can participate in multiple FTN networks simultaneously. Simply define
+an address and uplink for each network:
+
+; Primary FidoNet address
+address 1
+    network         Fidonet
+    zone            2
+    net             2500
+    node            622
+    point           0
+    type            5d
+endaddress
+
+; Private network address  
+address 2
+    network         MyNetwork
+    zone            99
+    net             1
+    node            100
+    point           0
+    type            5d
+endaddress
+
+; FidoNet uplink
+uplink 1
+    address         2:2500/0.0
+    network         Fidonet
+    password        FidoPassword
+    groups          A,B
+enduplink
+
+; Private network hub
+uplink 2
+    address         99:1/0.0
+    network         MyNetwork
+    password        PrivatePassword
+    groups          A
+enduplink
+
+
+Enabling FTN Mail
+-----------------
+To enable the FTN mailer, set the following in your System configuration:
+  <Converse$Dir>.Resources.Config.System
+
+Add or modify:
+  ftnmail             yes
+
+When ftnmail is set to "yes", the Server will launch the FTN mailer task
+on startup.
+
+
+Port Configuration
+------------------
+The FTN mailer listens on TCP port 24554 (standard BinkP port).
+
+Ensure this port is:
+1. Not blocked by any firewall
+2. Forwarded if behind a NAT router (for incoming connections)
+
+
+Directory Structure
+-------------------
+After configuration, the FTN directories should look like:
+
+<Converse$Dir>.FTN/
+  Inbound/          - Received packets
+    Temp/           - Partially received files
+  Outbound/         - BSO outbound (zone 2 default)
+    001/            - Zone 1 outbound (if used)
+    003/            - Zone 3 outbound (if used)
+  Netmail/          - Netmail storage
+  Bad/              - Failed packets
+
+Note: RISC OS filenames cannot contain dots, so BSO-style filenames like
+"00010002.OUT" become "00010002OUT".
+
+
+Testing Your Configuration
+--------------------------
+1. Start the Converse Server
+2. Check the iconbar for the FTN mailer icon
+3. Click the icon to open the connection log
+4. Use Menu -> Poll to attempt outbound connections
+5. Check <Converse$Dir>.Logs.FTN for activity logs
+
+If connections fail, verify:
+* Your uplink's hostname resolves correctly
+* The session password matches your uplink's records
+* Port 24554 is accessible
+
+
+Troubleshooting
+---------------
+"No uplink for address" - Define an uplink for the target network
+"Password mismatch"     - Check the password in your uplink configuration
+"Connection timeout"    - Verify hostname and port, check network connectivity
+"Session busy"          - Remote system has no free sessions, retry later
+
+
+Security Notes
+--------------
+* Session passwords are transmitted in cleartext (or CRAM-MD5 if supported)
+* Store your configuration file with appropriate permissions
+* Consider using unique passwords for each uplink
+
+
+Complete Example Configuration
+------------------------------
+;
+; FTN Configuration for My BBS
+;
+
+sysop               John Smith
+system              My RISC OS BBS
+location            London, UK
+phone               -Unpublished-
+speed               115200
+flags               CM,XA
+
+inbound             <Converse$Dir>.FTN.Inbound
+outbound            <Converse$Dir>.FTN.Outbound
+netmail             <Converse$Dir>.FTN.Netmail
+badmail             <Converse$Dir>.FTN.Bad
+
+max_packet_size     32768
+
+; My FidoNet node address
+address 1
+    network         Fidonet
+    zone            2
+    net             2500
+    node            999
+    point           0
+    type            5d
+    packet_password MyPacketPwd
+    areafix_password AreafixPwd
+endaddress
+
+; My FidoNet hub
+uplink 1
+    address         2:2500/0.0
+    network         Fidonet
+    password        HubSessionPwd
+    groups          A,B,C,D
+enduplink
+
+; End of configuration

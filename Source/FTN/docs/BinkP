@@ -1,0 +1,289 @@
+BinkP Protocol Reference
+========================
+
+This document describes the BinkP/1.0 protocol as implemented by the
+Converse FTN mailer.
+
+
+Protocol Overview
+-----------------
+BinkP (Binkley Protocol) is a TCP/IP protocol designed for FTN mail
+transfer. It operates on TCP port 24554 by default.
+
+The protocol is frame-based with two frame types:
+* Command frames - Protocol control messages
+* Data frames - File content
+
+
+Frame Format
+------------
+All frames have a 2-byte header:
+
+  Byte 0: High byte of length, bit 7 indicates frame type
+  Byte 1: Low byte of length
+
+  If bit 7 of byte 0 is SET:   Command frame
+  If bit 7 of byte 0 is CLEAR: Data frame
+
+Length = ((byte0 & 0x7F) << 8) | byte1
+
+Maximum frame length is 32767 bytes (0x7FFF).
+
+Command Frame Payload:
+  Byte 0:    Command code
+  Bytes 1+:  Command arguments (ASCII string)
+
+Data Frame Payload:
+  Bytes 0+:  Raw file data
+
+
+Command Codes
+-------------
+  Code  Name    Description
+  ----  ----    -----------
+  0     M_NUL   Information/option exchange
+  1     M_ADR   Present FTN addresses
+  2     M_PWD   Password
+  3     M_FILE  File header
+  4     M_OK    Password accepted
+  5     M_EOB   End of batch
+  6     M_GOT   File received OK
+  7     M_ERR   Fatal error
+  8     M_BSY   System busy
+  9     M_GET   Get file (resume)
+  10    M_SKIP  Skip file
+
+
+M_NUL - Information Exchange
+----------------------------
+Format: M_NUL <key> <value>
+
+Standard keys:
+  SYS <name>      - System name
+  ZYZ <name>      - Sysop name
+  LOC <location>  - Geographic location
+  NDL <flags>     - Nodelist flags
+  TIME <time>     - Local time (RFC 822 format)
+  VER <software>  - Mailer software and version
+  
+Extended options:
+  OPT <options>   - Protocol options (space-separated)
+    MB            - Multiple batch
+    ND            - Non-Destructive mode
+    NR            - Non-Reliable mode
+    CRAM-MD5-xxxx - Challenge for CRAM-MD5 auth
+
+Examples:
+  M_NUL SYS Converse BBS
+  M_NUL ZYZ Andrew Timmins
+  M_NUL VER Converse/0.01
+  M_NUL OPT ND NR
+
+
+M_ADR - Present Addresses
+-------------------------
+Format: M_ADR <addr1> [addr2] [addr3] ...
+
+Each address in zone:net/node.point@domain format.
+Multiple addresses separated by spaces.
+
+Example:
+  M_ADR 2:2500/622@fidonet 25:44/1@converse
+
+
+M_PWD - Password
+----------------
+Format: M_PWD <password>
+
+Plain text password, or CRAM-MD5 response if challenge was sent.
+
+CRAM-MD5 response format:
+  CRAM-MD5-<hex_digest>
+
+The digest is MD5(challenge + password) encoded as hex.
+
+Example:
+  M_PWD MySecretPassword
+  M_PWD CRAM-MD5-a1b2c3d4e5f6...
+
+
+M_FILE - File Header
+--------------------
+Format: M_FILE <name> <size> <time> [offset]
+
+  name    - Filename (8.3 format recommended)
+  size    - File size in bytes (decimal)
+  time    - Unix timestamp (seconds since 1970)
+  offset  - Starting offset for resume (optional, default 0)
+
+Example:
+  M_FILE 00010002.PKT 1234 1732713600 0
+
+
+M_OK - Password Accepted
+------------------------
+Format: M_OK [secure|non-secure]
+
+Sent by answering system after validating password.
+
+  secure     - Password matched, protected session
+  non-secure - No password required/validated
+
+Example:
+  M_OK secure
+
+
+M_EOB - End of Batch
+--------------------
+Format: M_EOB
+
+Signals no more files to send. Both sides must send M_EOB before
+closing the session. Session ends when both M_EOBs exchanged.
+
+
+M_GOT - File Received
+---------------------
+Format: M_GOT <name> <size> <time>
+
+Acknowledges successful receipt of a file. Parameters must match
+the M_FILE that started the transfer.
+
+Example:
+  M_GOT 00010002.PKT 1234 1732713600
+
+
+M_ERR - Fatal Error
+-------------------
+Format: M_ERR <message>
+
+Reports a fatal error. Session will be closed.
+
+Example:
+  M_ERR Password mismatch
+
+
+M_BSY - System Busy
+-------------------
+Format: M_BSY <message>
+
+System cannot accept connection (no free sessions).
+Caller should retry later.
+
+Example:
+  M_BSY No free sessions
+
+
+M_GET - Request File
+--------------------
+Format: M_GET <name> <size> <time> <offset>
+
+Request a file, optionally resuming from offset.
+
+Example:
+  M_GET 00010002.PKT 1234 1732713600 512
+
+
+M_SKIP - Skip File
+------------------
+Format: M_SKIP <name>
+
+Decline a file transfer (already have it, etc).
+
+Example:
+  M_SKIP 00010002.PKT
+
+
+Session Handshake
+-----------------
+
+Answering (inbound) side:
+  1. <- M_NUL options (OPT, SYS, ZYZ, LOC, NDL, TIME, VER)
+  2. <- M_ADR with local addresses
+  3. -> M_NUL options from caller
+  4. -> M_ADR from caller
+  5. -> M_PWD from caller
+  6. <- M_OK or M_ERR
+
+Calling (outbound) side:
+  1. -> Connect to remote
+  2. <- M_NUL options from answering system
+  3. <- M_ADR from answering system
+  4. -> M_NUL options
+  5. -> M_ADR with local addresses
+  6. -> M_PWD
+  7. <- M_OK or M_ERR
+
+
+File Transfer
+-------------
+After authentication, either side may begin sending files:
+
+Sender:
+  1. Send M_FILE header
+  2. Send data frames until complete
+  3. Wait for M_GOT (or M_SKIP to abort)
+
+Receiver:
+  1. Receive M_FILE header
+  2. Open local file
+  3. Receive data frames, write to file
+  4. When complete (offset >= size), send M_GOT
+
+Data frames contain raw file bytes. Frame length indicates bytes
+in that frame. Continue until total bytes received equals file size.
+
+
+Session Termination
+-------------------
+Normal termination:
+  1. Send M_EOB when no more files to send
+  2. Wait for remote M_EOB
+  3. Close TCP connection
+
+Error termination:
+  1. Send M_ERR with reason
+  2. Close TCP connection
+
+
+Implementation Notes
+--------------------
+* All strings are ASCII, null-terminated
+* Addresses are case-insensitive
+* File names should use 8.3 format for compatibility
+* Times are Unix timestamps (UTC)
+* Size and offset are decimal strings
+* Frame length excludes the 2-byte header
+
+
+Error Handling
+--------------
+If any protocol error occurs:
+* Send M_ERR with explanation
+* Close the connection
+* Log the error
+
+Common errors:
+* "Password mismatch" - Authentication failed
+* "Unknown address" - No common address found
+* "File error" - Could not create/write file
+* "Protocol error" - Unexpected frame/command
+
+
+Security Considerations
+-----------------------
+Plain text passwords are vulnerable to interception.
+CRAM-MD5 provides challenge-response authentication:
+
+  1. Answerer sends OPT CRAM-MD5-<challenge>
+  2. Caller computes MD5(challenge + password)
+  3. Caller sends M_PWD CRAM-MD5-<digest>
+  4. Answerer validates digest
+
+This prevents replay attacks but does not encrypt the session.
+
+
+References
+----------
+* BinkP/1.0 specification (FSP-1011)
+* FidoNet Technical Standards (FTS)
+* FSC-0056 - BinkleyTerm Style Outbound (BSO)

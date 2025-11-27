@@ -51,16 +51,37 @@ The workspace includes `SharedLibs` containing:
 - **Filer**: Manages databases (UserDB, FileDB, MsgDB). See detailed architecture below.
 - **Support**: Shared state module (`ConverseBBS`) for configuration and line state. Server pushes config values on startup; LineTask queries them. See Support Module section below.
 - **Server**:
-  - `Server/c/main` drives the listener, sockets, and DeskLib UI (`status` and `doors` windows). Icons for the main status window are created dynamically in rows of six (line number, user, activity, hostname, timer, action) starting at icon index **13**; call `main_window_icon_index(line, column)` instead of hard-coding numbers so layout helpers stay in sync.
+  - `Server/c/main` drives the listener, sockets, and DeskLib UI (`status` and `doors` windows). Icons for the main status window are created dynamically in rows of seven (line number, user, activity, hostname, timer, action, view) starting at icon index **13**; call `main_window_icon_index(line, column)` instead of hard-coding numbers so layout helpers stay in sync.
   - Each main-window row consumes 64 pixels of height, and the window reserves two 64-pixel header rows plus a 10-pixel padding margin. Update `MAIN_WINDOW_TOP_STATIC_ROWS`, `MAIN_WINDOW_PADDING`, or related helpers when adjusting layout.
   - Door window rows follow the same 64-pixel stepping with helper functions for calculating visible rows and extents. Always adjust both extent calculations and icon creation if the geometry changes.
   - Timers use `timer_set`/`timer_action` handles stored as `long`. When refreshing UI state (e.g., connection timelines or resolver text), respect the column assignments noted above so user text and hostname text do not overwrite each other.
-  - The server listens for Wimp message `0x5AA01` (line activity updates) from LineTask. The first word is the line number; the payload is a null-terminated string copied into the activity column. Reject updates for invalid line IDs.
+  - The server listens for several Wimp messages from LineTask (see Wimp Messages section below).
+  - The `waiting_user` and `user_activity` strings are loaded from the Messages file tokens `server.wait` and `server.nact`. Fallback values are provided if the tokens are missing.
 
 - **LineTask / Script Engine**:
   - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
   - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
+  - **Authentication**: The `LOGON` script command prompts for username/password and authenticates via Filer SWI 0x5AA41. On success, it stores user_id, access_level, and keys in the task state, updates the Support module line state, and sends a `MESSAGE_LINE_USER` (0x5AA05) Wimp message to update the Server's status window.
+  - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
   - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
+
+## Wimp Messages (LineTask <-> Server)
+
+The Server and LineTask communicate via Wimp user messages. Message base is `0x5AA00`.
+
+| Message | Value | Direction | Purpose |
+|---------|-------|-----------|---------|
+| `MESSAGE_LINE_BROADCAST` | 0x5AA00 | Server->All | Broadcast to all line tasks (word[0]=reason, 0=quit) |
+| `MESSAGE_LINE_ACTIVITY` | 0x5AA01 | LineTask->Server | Update activity column (word[0]=line, bytes[4..]=text) |
+| `MESSAGE_LINE_CONTROL` | 0x5AA02 | LineTask->Server | Control commands (word[0]=line, word[1]=reason: 1=logoff) |
+| `MESSAGE_LINE_VIEW_WINDOW` | 0x5AA03 | Server->LineTask | Request to open line view window (word[0]=line) |
+| `MESSAGE_LINE_REGISTER` | 0x5AA04 | LineTask->Server | LineTask registering with server (word[0]=line) |
+| `MESSAGE_LINE_USER` | 0x5AA05 | LineTask->Server | Update user column (word[0]=line, bytes[4..]=realname or empty to reset) |
+
+### MESSAGE_LINE_USER Details
+- Sent when user authenticates successfully (contains real name)
+- Sent with empty string when user logs off or disconnects (resets to `waiting_user`)
+- Server updates the user column icon in the status window
 
 ## Filer Module Architecture
 
@@ -124,7 +145,23 @@ typedef struct {
     USER_HISTORY user_history;
     USER_STATS user_stats;
 } USER_RECORD;
+```
 
+**USER_RECORD Field Offsets** (for direct memory access from SWI returns):
+| Field | Offset | Size |
+|-------|--------|------|
+| id | 0 | 4 |
+| username | 4 | 32 |
+| realname | 36 | 64 |
+| email | 100 | 64 |
+| password | 164 | 32 |
+| keys | 196 | 128 |
+| userdir | 324 | 256 |
+| user_flags | 580 | 72 |
+| user_flags.sysop | 600 | 4 |
+| user_flags.accesslevel | 640 | 4 |
+
+```c
 typedef struct {
     int id, type, accesslevel;
     char keys[128], name[64], filebasedir[256];
