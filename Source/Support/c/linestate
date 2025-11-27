@@ -1,0 +1,237 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "linestate.h"
+
+static LINE_STATE line_states[LINESTATE_MAX_LINES];
+
+/* Static helpers */
+static int linestate_valid_line(int line);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void linestate_initialise(void)
+{
+    int i;
+
+    for (i = 0; i < LINESTATE_MAX_LINES; i++)
+    {
+        memset(&line_states[i], 0, sizeof(LINE_STATE));
+    }
+}
+
+void linestate_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handlers                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+void linestate_swi_handler(_kernel_swi_regs *r)
+{
+    LINE_REASON reason;
+    int line;
+    LINE_FIELD field;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (LINE_REASON)r->r[0];
+    line = r->r[1];
+
+    if (!linestate_valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    field = (LINE_FIELD)r->r[2];
+
+    switch (reason)
+    {
+        case LINE_REASON_SET:
+        {
+            switch (field)
+            {
+                case LINE_FIELD_CONFIGURED:
+                    line_states[line].configured = r->r[3];
+                    r->r[0] = 0;
+                    break;
+
+                case LINE_FIELD_CONNECTED:
+                    line_states[line].connected = r->r[3];
+                    /* If disconnecting, clear other state */
+                    if (r->r[3] == 0)
+                    {
+                        line_states[line].user_id = 0;
+                        line_states[line].connect_time = 0;
+                        line_states[line].activity[0] = '\0';
+                        line_states[line].hostname[0] = '\0';
+                    }
+                    r->r[0] = 0;
+                    break;
+
+                case LINE_FIELD_USER_ID:
+                    line_states[line].user_id = r->r[3];
+                    r->r[0] = 0;
+                    break;
+
+                case LINE_FIELD_CONNECT_TIME:
+                    line_states[line].connect_time = (time_t)r->r[3];
+                    r->r[0] = 0;
+                    break;
+
+                case LINE_FIELD_HOSTNAME:
+                {
+                    const char *hostname = (const char *)r->r[3];
+                    if (hostname != NULL)
+                    {
+                        snprintf(line_states[line].hostname, sizeof(line_states[line].hostname), "%s", hostname);
+                    }
+                    else
+                    {
+                        line_states[line].hostname[0] = '\0';
+                    }
+                    r->r[0] = 0;
+                    break;
+                }
+
+                default:
+                    r->r[0] = -1;
+                    break;
+            }
+            break;
+        }
+
+        case LINE_REASON_GET:
+        {
+            switch (field)
+            {
+                case LINE_FIELD_CONFIGURED:
+                    r->r[0] = line_states[line].configured;
+                    break;
+
+                case LINE_FIELD_CONNECTED:
+                    r->r[0] = line_states[line].connected;
+                    break;
+
+                case LINE_FIELD_USER_ID:
+                    r->r[0] = line_states[line].user_id;
+                    break;
+
+                case LINE_FIELD_CONNECT_TIME:
+                    r->r[0] = (int)line_states[line].connect_time;
+                    break;
+
+                case LINE_FIELD_HOSTNAME:
+                    r->r[0] = (int)line_states[line].hostname;
+                    break;
+
+                default:
+                    r->r[0] = -1;
+                    break;
+            }
+            break;
+        }
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+void activity_swi_handler(_kernel_swi_regs *r)
+{
+    ACTIVITY_REASON reason;
+    int line;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (ACTIVITY_REASON)r->r[0];
+    line = r->r[1];
+
+    if (!linestate_valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    switch (reason)
+    {
+        case ACTIVITY_REASON_SET:
+        {
+            const char *text = (const char *)r->r[2];
+            if (text != NULL)
+            {
+                snprintf(line_states[line].activity, sizeof(line_states[line].activity), "%s", text);
+            }
+            else
+            {
+                line_states[line].activity[0] = '\0';
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case ACTIVITY_REASON_GET:
+            r->r[0] = (int)line_states[line].activity;
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+const LINE_STATE *linestate_get(int line)
+{
+    if (!linestate_valid_line(line))
+    {
+        return NULL;
+    }
+
+    return &line_states[line];
+}
+
+int linestate_count_connected(void)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < LINESTATE_MAX_LINES; i++)
+    {
+        if (line_states[i].connected)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static int linestate_valid_line(int line)
+{
+    return (line >= 0 && line < LINESTATE_MAX_LINES);
+}

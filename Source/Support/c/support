@@ -1,0 +1,197 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "kernel.h"
+
+#include "supporthdr.h"
+#include "support.h"
+#include "config.h"
+#include "linestate.h"
+
+/* SWI numbers (offset from chunk base) */
+typedef enum
+{
+    SWI_CONFIG = 0,
+    SWI_LINE = 1,
+    SWI_ACTIVITY = 2
+} SUPPORT_SWI;
+
+/* Command numbers */
+typedef enum
+{
+    CMD_STATUS = 0,
+    CMD_CONFIG = 1
+} SUPPORT_COMMAND;
+
+/* ******************************************************************************************************************************************************** */
+/* Module Entry Points                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+    UNUSED(cmd_tail);
+    UNUSED(podule_base);
+    UNUSED(pw);
+
+    config_initialise();
+    linestate_initialise();
+
+    return NULL;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+    UNUSED(fatal);
+    UNUSED(podule);
+    UNUSED(pw);
+
+    linestate_finalise();
+    config_finalise();
+
+    return NULL;
+}
+
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    UNUSED(service_number);
+    UNUSED(r);
+    UNUSED(pw);
+}
+
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+    UNUSED(pw);
+
+    if (r == NULL)
+    {
+        return NULL;
+    }
+
+    switch ((SUPPORT_SWI)swi_no)
+    {
+        case SWI_CONFIG:
+            config_swi_handler(r);
+            break;
+
+        case SWI_LINE:
+            linestate_swi_handler(r);
+            break;
+
+        case SWI_ACTIVITY:
+            activity_swi_handler(r);
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+
+    return NULL;
+}
+
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+    UNUSED(arg_string);
+    UNUSED(argc);
+    UNUSED(pw);
+
+    switch ((SUPPORT_COMMAND)cmd_no)
+    {
+        case CMD_STATUS:
+        {
+            const LINE_STATE *state;
+            int line;
+            int connected_count = 0;
+
+            puts("ConverseBBS Line Status:\n");
+            puts("Line | Cfg | Conn | User | Connect Time         | Hostname             | Activity");
+            puts("-----+-----+------+------+----------------------+----------------------+----------------------");
+
+            for (line = 0; line < SUPPORT_MAX_LINES; line++)
+            {
+                state = linestate_get(line);
+                if (state == NULL)
+                {
+                    continue;
+                }
+
+                if (state->configured || state->connected)
+                {
+                    char time_str[24];
+
+                    if (state->connected && state->connect_time > 0)
+                    {
+                        struct tm *tm_info = localtime(&state->connect_time);
+                        strftime(time_str, sizeof(time_str), "%d/%m/%Y %H:%M:%S", tm_info);
+                    }
+                    else
+                    {
+                        strcpy(time_str, "-");
+                    }
+
+                    printf("%4d | %3s | %4s | %4d | %-20s | %-20s | %s\n",
+                           line,
+                           state->configured ? "Yes" : "No",
+                           state->connected ? "Yes" : "No",
+                           state->user_id,
+                           time_str,
+                           state->hostname[0] ? state->hostname : "-",
+                           state->activity[0] ? state->activity : "-");
+
+                    if (state->connected)
+                    {
+                        connected_count++;
+                    }
+                }
+            }
+
+            puts("-----+-----+------+------+----------------------+----------------------+----------------------");
+            printf("Connected users: %d\n\n", connected_count);
+            break;
+        }
+
+        case CMD_CONFIG:
+        {
+            const BBS_CONFIG *cfg = config_get();
+
+            puts("ConverseBBS Configuration:\n");
+
+            if (cfg != NULL)
+            {
+                printf("  BBS Name     : %s\n", cfg->bbs_name[0] ? cfg->bbs_name : "(not set)");
+                printf("  Sysop Name   : %s\n", cfg->sysop_name[0] ? cfg->sysop_name : "(not set)");
+                printf("  Max Lines    : %d\n", cfg->max_lines);
+                printf("  Listen Port  : %d\n", cfg->listen_port);
+                printf("  Idle Timeout : %d seconds\n", cfg->idle_timeout);
+                printf("  Script Path  : %s\n", cfg->script_path[0] ? cfg->script_path : "(default)");
+            }
+            else
+            {
+                puts("  Configuration not loaded.");
+            }
+
+            puts("");
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point (for module-is-runnable)                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+int main(int argc, char *argv[])
+{
+    UNUSED(argc);
+    UNUSED(argv);
+    return 0;
+}

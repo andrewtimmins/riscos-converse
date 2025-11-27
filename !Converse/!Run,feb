@@ -8,6 +8,7 @@ IconSprites <Converse$Dir>.!Sprites
 Set File$Type_120 ANSI
 Set File$Type_EEE Converse
 
+RMEnsure ConverseBBS 0.01 RMLoad <Converse$Dir>.Resources.Support
 RMEnsure ConverseFiler 0.01 RMLoad <Converse$Dir>.Resources.Filer
 RMEnsure ConversePipes 0.01 RMLoad <Converse$Dir>.Resources.Pipes
 

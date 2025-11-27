@@ -1,0 +1,255 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "config.h"
+
+#define CONFIG_VALUE_BUFFER 256
+
+static BBS_CONFIG config_data;
+
+/* Static helpers */
+static void config_set_defaults(void);
+static const char *config_get_value(const char *key);
+static void config_set_value(const char *key, const char *value);
+static int config_key_match(const char *key1, const char *key2);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation and Finalisation                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void config_initialise(void)
+{
+    config_set_defaults();
+}
+
+void config_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handler                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+void config_swi_handler(_kernel_swi_regs *r)
+{
+    CONFIG_REASON reason;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (CONFIG_REASON)r->r[0];
+
+    switch (reason)
+    {
+        case CONFIG_REASON_GET:
+        {
+            const char *key = (const char *)r->r[1];
+            const char *value;
+
+            if (key == NULL)
+            {
+                r->r[0] = 0;
+                return;
+            }
+
+            value = config_get_value(key);
+            r->r[0] = (int)value;
+            break;
+        }
+
+        case CONFIG_REASON_SET:
+        {
+            const char *key = (const char *)r->r[1];
+            const char *value = (const char *)r->r[2];
+
+            if (key == NULL)
+            {
+                r->r[0] = -1;
+                return;
+            }
+
+            config_set_value(key, value);
+            r->r[0] = 0;
+            break;
+        }
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Access                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+const BBS_CONFIG *config_get(void)
+{
+    return &config_data;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static void config_set_defaults(void)
+{
+    memset(&config_data, 0, sizeof(config_data));
+
+    snprintf(config_data.bbs_name, sizeof(config_data.bbs_name), "Converse BBS");
+    snprintf(config_data.sysop_name, sizeof(config_data.sysop_name), "Sysop");
+    config_data.max_lines = 4;
+    config_data.listen_port = 2023;
+    config_data.idle_timeout = 300;
+    snprintf(config_data.script_path, sizeof(config_data.script_path), "<Converse$Dir>.BBS");
+}
+
+static char config_value_buffer[CONFIG_VALUE_BUFFER];
+
+static const char *config_get_value(const char *key)
+{
+    if (key == NULL)
+    {
+        return NULL;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_BBS_NAME))
+    {
+        return config_data.bbs_name;
+    }
+    if (config_key_match(key, CONFIG_KEY_SYSOP_NAME))
+    {
+        return config_data.sysop_name;
+    }
+    if (config_key_match(key, CONFIG_KEY_MAX_LINES))
+    {
+        snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.max_lines);
+        return config_value_buffer;
+    }
+    if (config_key_match(key, CONFIG_KEY_LISTEN_PORT))
+    {
+        snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.listen_port);
+        return config_value_buffer;
+    }
+    if (config_key_match(key, CONFIG_KEY_IDLE_TIMEOUT))
+    {
+        snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.idle_timeout);
+        return config_value_buffer;
+    }
+    if (config_key_match(key, CONFIG_KEY_SCRIPT_PATH))
+    {
+        return config_data.script_path;
+    }
+
+    return NULL;
+}
+
+static void config_set_value(const char *key, const char *value)
+{
+    if (key == NULL)
+    {
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_BBS_NAME))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.bbs_name, sizeof(config_data.bbs_name), "%s", value);
+        }
+        else
+        {
+            config_data.bbs_name[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_SYSOP_NAME))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.sysop_name, sizeof(config_data.sysop_name), "%s", value);
+        }
+        else
+        {
+            config_data.sysop_name[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_MAX_LINES))
+    {
+        config_data.max_lines = (value != NULL) ? atoi(value) : 0;
+        if (config_data.max_lines < 0)
+        {
+            config_data.max_lines = 0;
+        }
+        if (config_data.max_lines > 32)
+        {
+            config_data.max_lines = 32;
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_LISTEN_PORT))
+    {
+        config_data.listen_port = (value != NULL) ? atoi(value) : 2023;
+        if (config_data.listen_port <= 0)
+        {
+            config_data.listen_port = 2023;
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_IDLE_TIMEOUT))
+    {
+        config_data.idle_timeout = (value != NULL) ? atoi(value) : 300;
+        if (config_data.idle_timeout < 0)
+        {
+            config_data.idle_timeout = 0;
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_SCRIPT_PATH))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.script_path, sizeof(config_data.script_path), "%s", value);
+        }
+        else
+        {
+            config_data.script_path[0] = '\0';
+        }
+        return;
+    }
+}
+
+static int config_key_match(const char *key1, const char *key2)
+{
+    if (key1 == NULL || key2 == NULL)
+    {
+        return 0;
+    }
+
+    while (*key1 != '\0' && *key2 != '\0')
+    {
+        if (tolower((unsigned char)*key1) != tolower((unsigned char)*key2))
+        {
+            return 0;
+        }
+        key1++;
+        key2++;
+    }
+
+    return (*key1 == '\0' && *key2 == '\0');
+}

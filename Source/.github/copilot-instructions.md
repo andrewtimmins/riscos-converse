@@ -48,7 +48,8 @@ The workspace includes `SharedLibs` containing:
 
 ## Specific Modules
 - **Pipes**: Manages circular buffers (lines 0-31). Uses watermarks (bits 6/7) for flow control.
-- **Filer**: Manages databases (UserDB, FileDB, MsgDB). Uses struct-based flat files with "copy-update-rename" for safety.
+- **Filer**: Manages databases (UserDB, FileDB, MsgDB). See detailed architecture below.
+- **Support**: Shared state module (`ConverseBBS`) for configuration and line state. Server pushes config values on startup; LineTask queries them. See Support Module section below.
 - **Server**:
   - `Server/c/main` drives the listener, sockets, and DeskLib UI (`status` and `doors` windows). Icons for the main status window are created dynamically in rows of six (line number, user, activity, hostname, timer, action) starting at icon index **13**; call `main_window_icon_index(line, column)` instead of hard-coding numbers so layout helpers stay in sync.
   - Each main-window row consumes 64 pixels of height, and the window reserves two 64-pixel header rows plus a 10-pixel padding margin. Update `MAIN_WINDOW_TOP_STATIC_ROWS`, `MAIN_WINDOW_PADDING`, or related helpers when adjusting layout.
@@ -59,6 +60,157 @@ The workspace includes `SharedLibs` containing:
 - **LineTask / Script Engine**:
   - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
   - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
+
+## Filer Module Architecture
+
+### Overview
+The Filer module (`Filer/`) provides persistent storage for user accounts, filebases, and messagebases. It uses struct-based flat files with "copy-update-rename" for atomic updates.
+
+### File Paths (RISC OS system variables)
+| Purpose | Path |
+|---------|------|
+| System Log | `<Converse$Dir>.Logs.System` |
+| Call Log | `<Converse$Dir>.Logs.Calls` |
+| Line Logs | `<Converse$Dir>.Logs.Line_<n>` |
+| FTN Log | `<Converse$Dir>.Logs.FTN` |
+| User Database | `<Converse$Dir>.Resources.Data.UserDB` |
+| User Index | `<Converse$Dir>.Resources.Data.UserIDX` |
+| User Temp DB | `<Converse$Dir>.Resources.Data.TempDB` |
+| Filebase Registry | `<Converse$Dir>.Resources.Data.FileDB` |
+| Filebase Index | `<Converse$Dir>.Resources.Data.FileIDX` |
+| Messagebase Registry | `<Converse$Dir>.Resources.Data.MsgDB` |
+| Messagebase Index | `<Converse$Dir>.Resources.Data.MsgIDX` |
+| Call Count Stats | `<Converse$Dir>.Resources.Data.CallCount` |
+| Filebase Root | `<Converse$Dir>.FileBases` |
+| Messagebase Root | `<Converse$Dir>.MsgBases` |
+
+### Database Layout
+- **Base Registry**: Single flat file containing `FILEBASE_RECORD` or `MESSAGEBASE_RECORD` structs.
+- **Per-Base Structure** (e.g., `<Converse$Dir>.FileBases.0001`):
+  - `FileDB` / `MsgDB` – Item metadata records
+  - `FileIDX` / `MsgIDX` – Next-ID counter (4-byte int)
+  - `AreaDB` – Area metadata records
+  - `AreaIDX` – Next-area-ID counter
+  - `Files/` or `Messages/` – Payload directory with area subdirectories
+- **Payload Grouping**: Files/messages are stored in group directories (`G00`, `G01`, ...) with 60 items per group to respect RISC OS directory limits (max 77 objects).
+
+### Key Data Structures (`h/structs`)
+```c
+typedef struct {
+    int id;
+    char username[32], realname[64], email[64], password[32];
+    char keys[128], userdir[256];
+    USER_FLAGS user_flags;
+    USER_HISTORY user_history;
+    USER_STATS user_stats;
+} USER_RECORD;
+
+typedef struct {
+    int id, type, accesslevel;
+    char keys[128], name[64], filebasedir[256];
+} FILEBASE_RECORD;
+
+typedef struct {
+    int id, filebaseid, accesslevel;
+    char keys[128], name[64];
+} FILEBASE_AREA_RECORD;
+
+typedef struct {
+    int id, filebaseid, filebaseareaid, deleted, accesslevel;
+    char keys[128], name[64], description[256];
+    int uploadedby; time_t uploaddate;
+    long filesize; int downloads;
+} FILE_RECORD;
+
+typedef struct {
+    int id, type, accesslevel;
+    char keys[128], name[64], messagebasedir[256];
+} MESSAGEBASE_RECORD;
+
+typedef struct {
+    int id;
+    char name[64], tag[64];
+    int daystokeep, akause;
+    short areatype; /* LOCAL=0, ECHO=1, NET=2, JUNK=3, OTHER=4, FILE=5, TICK=6 */
+} MESSAGEBASE_AREA;
+
+typedef struct {
+    int id, messagebaseid, messagebaseareaid, type, deleted, accesslevel;
+    char keys[128], subject[256];
+    int sentby, receivedby;
+    FTN_ADDRESS orgaddr, dstaddr;
+    time_t imported, sent, read;
+    int timesread; long bodysize;
+} MESSAGE_RECORD;
+```
+
+### User Authentication
+The `userdb_authenticate()` function returns one of:
+- `FILER_USERDB_AUTH_SUCCESS` (0) – Valid credentials
+- `FILER_USERDB_AUTH_NO_USER` (1) – Username not found
+- `FILER_USERDB_AUTH_BAD_PASSWORD` (2) – Password mismatch
+- `FILER_USERDB_AUTH_LOCKED` (3) – Account locked out
+
+User records are XOR-encrypted at rest; `userdb_encrypt_payload()` / `userdb_decrypt_payload()` toggle the encoding.
+
+### CLI Commands
+| Command | Description |
+|---------|-------------|
+| `*Filer_Status` | Show managed files with existence/size |
+| `*Filer_Stats` | Show database statistics |
+| `*Filer_FileBases list` | List all filebases |
+| `*Filer_FileBases files <base> [area]` | List files in base/area |
+| `*Filer_FileBases upload <base> <area> <path> <name> [desc]` | Import a file |
+| `*Filer_FileBases delete <base> <file>` | Soft-delete a file |
+| `*Filer_FileBases edit <base> <file> <field> <value>` | Edit metadata (name/description/keys/access) |
+| `*Filer_MessageBases list` | List all messagebases |
+| `*Filer_MessageBases messages <base> [area]` | List messages |
+| `*Filer_MessageBases import <base> <area> <path> <type> <subject>` | Import a message |
+| `*Filer_MessageBases delete <base> <msg>` | Soft-delete a message |
+| `*Filer_FileAreas list [base]` | List file areas |
+| `*Filer_MessageAreas list [base]` | List message areas |
+
+### Internal C API (non-SWI)
+```c
+/* Userbase */
+int userdb_add_record(USER_RECORD *record);              /* Returns new ID or 0 */
+int userdb_update_record(int id, USER_RECORD *record);   /* Returns 1 on success */
+USER_RECORD *userdb_search_record(int id);               /* Returns cached ptr or NULL */
+USER_RECORD *userdb_find_username(const char *username);
+USER_RECORD *userdb_authenticate(const char *user, const char *pass, FILER_USERDB_AUTH_RESULT *result);
+int userdb_delete_record(int id);
+
+/* Filebase */
+int filebase_upload_from_host(int base, int area, const char *path, const char *name, const char *desc, int uploader);
+int filebase_delete_file(int base, int file, int remove_payload);
+int filebase_get_file_record(int base, int file, FILE_RECORD *out);
+int filebase_save_file_record(int base, const FILE_RECORD *rec);
+int filebase_iterate_bases(int (*cb)(const FILEBASE_RECORD*, void*), void *ctx);
+int filebase_iterate_areas(int base, int (*cb)(const FILEBASE_AREA_RECORD*, void*), void *ctx);
+int filebase_iterate_files(int base, int (*cb)(const FILE_RECORD*, void*), void *ctx);
+
+/* Messagebase */
+int messagebase_store_from_host(int base, const char *path, MESSAGE_RECORD *template);
+int messagebase_delete_message(int base, int msg, int remove_payload);
+int messagebase_get_message_record(int base, int msg, MESSAGE_RECORD *out);
+int messagebase_save_message_record(int base, const MESSAGE_RECORD *rec);
+int messagebase_iterate_bases(int (*cb)(const MESSAGEBASE_RECORD*, void*), void *ctx);
+int messagebase_iterate_areas(int base, int (*cb)(const MESSAGEBASE_AREA*, void*), void *ctx);
+int messagebase_iterate_messages(int base, int (*cb)(const MESSAGE_RECORD*, void*), void *ctx);
+
+/* Statistics */
+void stats_initialise(void);
+void stats_finalise(void);
+int stats_get_call_totals(int *out);
+int stats_set_call_totals(int total);
+int stats_increment_call_totals(void);
+
+/* Logging */
+void log_system(char *entry);
+void log_line(int line, char *entry);
+void log_call(int line, int user, int status);  /* status: 0=Answered,1=Hungup,2=Aborted,3=Rejected */
+void log_ftn(char *entry);
+```
 
 ## Converse SWI Reference
 
@@ -94,6 +246,7 @@ The workspace includes `SharedLibs` containing:
   - 1 (Update): R1=ID, R2=Record
   - 2 (Delete): R1=ID
   - 3 (Search): R1=ID -> R0=RecordPtr
+  - 4 (Authenticate): R1=Username, R2=Password -> R0=AuthResult, R1=RecordPtr
 - **Messagebase (0x5AA42) & Filebase (0x5AA43)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord
@@ -106,3 +259,17 @@ The workspace includes `SharedLibs` containing:
 - **Statistics (0x5AA44)**:
   - 0 (ReadCallTotals): Returns the persisted system call count in R0. The value lives in `<Converse$Dir>.Resources.CallCount`; the module auto-creates this file with `0` if it is missing.
   - 1 (WriteCallTotals): R1=New total. Persists the value back to `CallCount` and returns 0 on success, -1 on failure. Logging SWI reason 2 automatically increments this total after each call entry.
+
+### Support Module (Base 0x5AA80)
+*Shared state storage for configuration and line status. Server pushes values; LineTask queries them.*
+- **Config (0x5AA80)**:
+  - 0 (Get): R1=Key -> R0=ValuePtr (or 0 if not found)
+  - 1 (Set): R1=Key, R2=Value
+  - Keys: `bbs_name`, `sysop_name`, `max_lines`, `listen_port`, `idle_timeout`, `script_path`
+- **Line (0x5AA81)**:
+  - 0 (Set): R1=Line, R2=Field, R3=Value
+  - 1 (Get): R1=Line, R2=Field -> R0=Value
+  - Fields: 0=configured, 1=connected, 2=user_id, 3=connect_time, 4=hostname
+- **Activity (0x5AA82)**:
+  - 0 (Set): R1=Line, R2=TextPtr
+  - 1 (Get): R1=Line -> R0=TextPtr

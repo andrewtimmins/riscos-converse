@@ -1,0 +1,21 @@
+; ConverseBBS Support Module
+; SWI chunk base: 0x5AA80
+
+date-string:            27 Nov 2025
+title-string:           ConverseBBS
+help-string:            ConverseBBS 0.01 (c) Andrew Timmins
+initialisation-code:    module_initialise
+finalisation-code:      module_finalise
+service-call-handler:   module_service 17
+
+swi-chunk-base-number:  0x5AA80
+swi-handler-code:       module_swi_handler
+swi-decoding-table:     ConverseBBS, Config, Line, Activity
+
+command-keyword-table:  module_command_handler
+  BBS_Status(invalid-syntax: "Syntax: *BBS_Status\n",
+    help-text: "*BBS_Status displays the current state of all configured lines.\n",
+    min-args:0, max-args:0),
+  BBS_Config(invalid-syntax: "Syntax: *BBS_Config\n",
+    help-text: "*BBS_Config displays the current BBS configuration.\n",
+    min-args:0, max-args:0)

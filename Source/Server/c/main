@@ -97,6 +97,14 @@ static void notify_line_tasks_shutdown(void);
 static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column);
 static void send_line_task_view_request(int line_id);
 
+/* ConverseBBS support functions */
+static void support_push_config(void);
+static void support_set_line_configured(int line_id, int configured);
+static void support_set_line_connected(int line_id, int connected);
+static void support_set_line_hostname(int line_id, const char *hostname);
+static void support_set_line_connect_time(int line_id, time_t connect_time);
+static void support_set_activity(int line_id, const char *activity);
+
 #define MAIN_WINDOW_ICON_BASE 13
 #define MAIN_WINDOW_ICONS_PER_LINE 7
 #define MAIN_WINDOW_ICON_HEIGHT 64
@@ -132,6 +140,30 @@ static void send_line_task_view_request(int line_id);
 #define SWI_CONVERSE_PIPES_INPUT_WRITE_BLOCK (PIPES_SWI_BASE + 13)
 #define SWI_CONVERSE_PIPES_OUTPUT_READ_BLOCK (PIPES_SWI_BASE + 14)
 #define SWI_CONVERSE_PIPES_RESET_STATE       (PIPES_SWI_BASE + 10)
+
+/* ConverseBBS Support module SWIs */
+#define SWI_CONVERSEBBS_CONFIG   0x5AA80
+#define SWI_CONVERSEBBS_LINE     0x5AA81
+#define SWI_CONVERSEBBS_ACTIVITY 0x5AA82
+
+/* Config reason codes */
+#define CONFIG_REASON_GET 0
+#define CONFIG_REASON_SET 1
+
+/* Line reason codes */
+#define LINE_REASON_SET 0
+#define LINE_REASON_GET 1
+
+/* Line field indices */
+#define LINE_FIELD_CONFIGURED  0
+#define LINE_FIELD_CONNECTED   1
+#define LINE_FIELD_USER_ID     2
+#define LINE_FIELD_CONNECT_TIME 3
+#define LINE_FIELD_HOSTNAME    4
+
+/* Activity reason codes */
+#define ACTIVITY_REASON_SET 0
+#define ACTIVITY_REASON_GET 1
 
 #define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
 #define PIPE_CONTROL_CONNECT    'C'
@@ -260,6 +292,109 @@ static void send_line_task_view_request(int line_id)
 	message.header.action = (Desk_message_action)MESSAGE_LINE_VIEW_WINDOW;
 	message.data.words[0] = line_id;
 	Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+/* ConverseBBS Support Functions                                                                                                                                                       */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+static void support_push_config(void)
+{
+	_kernel_swi_regs regs;
+	char value_buf[16];
+
+	/* Push bbs_name */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"bbs_name";
+	regs.r[2] = (int)system_configuration[0].name;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push sysop_name */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"sysop_name";
+	regs.r[2] = (int)system_configuration[0].sysop;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push max_lines */
+	snprintf(value_buf, sizeof(value_buf), "%d", line_configurations - 1);
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"max_lines";
+	regs.r[2] = (int)value_buf;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push listen_port (hardcoded to 23 currently) */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"listen_port";
+	regs.r[2] = (int)"23";
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push idle_timeout (30 seconds default) */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"idle_timeout";
+	regs.r[2] = (int)"30";
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	/* Push script_path */
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"script_path";
+	regs.r[2] = (int)"<Converse$Dir>.BBS";
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+}
+
+static void support_set_line_configured(int line_id, int configured)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_CONFIGURED;
+	regs.r[3] = configured;
+	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+static void support_set_line_connected(int line_id, int connected)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_CONNECTED;
+	regs.r[3] = connected;
+	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+static void support_set_line_hostname(int line_id, const char *hostname)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_HOSTNAME;
+	regs.r[3] = (int)hostname;
+	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+static void support_set_line_connect_time(int line_id, time_t connect_time)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_CONNECT_TIME;
+	regs.r[3] = (int)connect_time;
+	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+static void support_set_activity(int line_id, const char *activity)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = ACTIVITY_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = (int)activity;
+	_kernel_swi(SWI_CONVERSEBBS_ACTIVITY, &regs, &regs);
 }
 
 /* *********************************************************************************************************************************************************************************** */
@@ -457,6 +592,9 @@ Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *r
 	Desk_Icon_SetText(main_window,
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
 		(char *)activity);
+
+	/* Update activity in Support module */
+	support_set_activity(line_id, activity);
 
 	line_task_handles[line_id] = event->data.message.header.sender;
 
@@ -965,6 +1103,11 @@ void check_listener(void)
 		strcpy(ip, (char*)inet_ntoa((struct in_addr)saddr.sin_addr));
 	  	strncpy(line_configuration[socket_poll].remote, ip, 128);
 
+		/* Update Support module with connection state */
+		support_set_line_connected(socket_poll, 1);
+		support_set_line_hostname(socket_poll, ip);
+		support_set_line_connect_time(socket_poll, time(NULL));
+
 		// At this point, "mysock" will be != -1 so it will be treated as a live socket and any
 		// other connections will result in busy message followed by a disconnect.
 
@@ -1240,6 +1383,9 @@ static void close_line_connection(int line_id)
 	line_configuration[line_id].timer = 0;
 	strcpy(line_configuration[line_id].remote, "");
 	line_task_handles[line_id] = 0;
+
+	/* Clear Support module line state (setting connected=0 clears other fields) */
+	support_set_line_connected(line_id, 0);
 
 	Desk_Icon_SetText(main_window,
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
@@ -1782,6 +1928,14 @@ int main(void) {
 	load_system_config();
 	load_line_config();
 	load_door_config();
+	support_push_config();
+	{
+		int i;
+		for (i = 0; i < line_configurations - 1; i++)
+		{
+			support_set_line_configured(i, 1);
+		}
+	}
 	launch_line_tasks();
 
 	create_line_icons();

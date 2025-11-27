@@ -1,0 +1,63 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINESTATE_H
+#define LINESTATE_H
+
+#include <time.h>
+
+#include "kernel.h"
+
+#define LINESTATE_MAX_LINES      32
+#define LINESTATE_ACTIVITY_LEN   96
+#define LINESTATE_HOSTNAME_LEN   64
+
+/* Line state reason codes for SWI ConverseBBS_Line (0x5AA81) */
+typedef enum
+{
+    LINE_REASON_SET = 0,        /* R1=line, R2=field, R3=value */
+    LINE_REASON_GET = 1         /* R1=line, R2=field -> R0=value */
+} LINE_REASON;
+
+/* Line state fields */
+typedef enum
+{
+    LINE_FIELD_CONFIGURED = 0,  /* int: is line configured? */
+    LINE_FIELD_CONNECTED = 1,   /* int: active connection? */
+    LINE_FIELD_USER_ID = 2,     /* int: logged-in user ID (0=none) */
+    LINE_FIELD_CONNECT_TIME = 3,/* time_t: when connection started */
+    LINE_FIELD_HOSTNAME = 4     /* char*: remote hostname/IP */
+} LINE_FIELD;
+
+/* Activity reason codes for SWI ConverseBBS_Activity (0x5AA82) */
+typedef enum
+{
+    ACTIVITY_REASON_SET = 0,    /* R1=line, R2=text string */
+    ACTIVITY_REASON_GET = 1     /* R1=line -> R0=text string ptr */
+} ACTIVITY_REASON;
+
+/* Per-line state structure */
+typedef struct
+{
+    int configured;
+    int connected;
+    int user_id;
+    time_t connect_time;
+    char activity[LINESTATE_ACTIVITY_LEN];
+    char hostname[LINESTATE_HOSTNAME_LEN];
+} LINE_STATE;
+
+/* Initialisation and finalisation */
+void linestate_initialise(void);
+void linestate_finalise(void);
+
+/* SWI handlers */
+void linestate_swi_handler(_kernel_swi_regs *r);
+void activity_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const LINE_STATE *linestate_get(int line);
+int linestate_count_connected(void);
+
+#endif

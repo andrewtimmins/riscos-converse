@@ -839,6 +839,12 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "online") == 0)
+    {
+        instruction->type = SCRIPT_CMD_ONLINE;
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -1219,6 +1225,15 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 state->host.force_disconnect(state->host.context);
             }
             state->status = SCRIPT_STATUS_COMPLETED;
+        }
+        break;
+
+        case SCRIPT_CMD_ONLINE:
+        {
+            if (state->host.report_online_users != NULL)
+            {
+                state->host.report_online_users(state->host.context);
+            }
         }
         break;
 

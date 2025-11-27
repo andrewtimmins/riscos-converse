@@ -14,6 +14,7 @@ typedef struct script_host
     void (*request_disconnect)(void *context);
     void (*force_disconnect)(void *context);
     void (*report_activity)(void *context, const char *text);
+    void (*report_online_users)(void *context);
     int (*get_line_id)(void *context);
     int (*get_task_handle)(void *context);
 } script_host;
@@ -50,7 +51,8 @@ typedef enum
     SCRIPT_CMD_POS,
     SCRIPT_CMD_SCRIPT,
     SCRIPT_CMD_DOING,
-    SCRIPT_CMD_LOGOFF
+    SCRIPT_CMD_LOGOFF,
+    SCRIPT_CMD_ONLINE
 } script_command_type;
 
 typedef enum

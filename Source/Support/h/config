@@ -1,0 +1,50 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#include "kernel.h"
+
+#define CONFIG_BBS_NAME_LEN      64
+#define CONFIG_SYSOP_NAME_LEN    32
+#define CONFIG_SCRIPT_PATH_LEN   256
+
+/* Configuration reason codes for SWI ConverseBBS_Config (0x5AA80) */
+typedef enum
+{
+    CONFIG_REASON_GET = 0,       /* R1=key string -> R0=value string ptr (or 0) */
+    CONFIG_REASON_SET = 1        /* R1=key string, R2=value string */
+} CONFIG_REASON;
+
+/* Configuration keys */
+#define CONFIG_KEY_BBS_NAME      "bbs_name"
+#define CONFIG_KEY_SYSOP_NAME    "sysop_name"
+#define CONFIG_KEY_MAX_LINES     "max_lines"
+#define CONFIG_KEY_LISTEN_PORT   "listen_port"
+#define CONFIG_KEY_IDLE_TIMEOUT  "idle_timeout"
+#define CONFIG_KEY_SCRIPT_PATH   "script_path"
+
+/* BBS configuration structure */
+typedef struct
+{
+    char bbs_name[CONFIG_BBS_NAME_LEN];
+    char sysop_name[CONFIG_SYSOP_NAME_LEN];
+    int max_lines;
+    int listen_port;
+    int idle_timeout;
+    char script_path[CONFIG_SCRIPT_PATH_LEN];
+} BBS_CONFIG;
+
+/* Initialisation and finalisation */
+void config_initialise(void);
+void config_finalise(void);
+
+/* SWI handler */
+void config_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access for CLI commands */
+const BBS_CONFIG *config_get(void);
+
+#endif

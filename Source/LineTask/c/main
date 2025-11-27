@@ -50,6 +50,25 @@
 #define FILER_LOG_REASON_LINE        1
 #define SWI_CONVERSE_FILER_LOGGING   (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
 
+/* ConverseBBS Support module SWIs */
+#define SWI_CONVERSEBBS_CONFIG       0x5AA80
+#define SWI_CONVERSEBBS_LINE         0x5AA81
+#define SWI_CONVERSEBBS_ACTIVITY     0x5AA82
+
+/* Line state reason codes and field indices */
+#define LINE_REASON_GET              1
+#define LINE_FIELD_CONFIGURED        0
+#define LINE_FIELD_CONNECTED         1
+#define LINE_FIELD_USER_ID           2
+#define LINE_FIELD_CONNECT_TIME      3
+#define LINE_FIELD_HOSTNAME          4
+
+/* Activity reason codes */
+#define ACTIVITY_REASON_GET          1
+
+/* Max lines to query */
+#define SUPPORT_MAX_LINES            32
+
 #if CLOCKS_PER_SEC < 4
 #define DOOR_ACK_INTERVAL_TICKS 1
 #else
@@ -118,6 +137,7 @@ static void script_host_report_line_info(void *context);
 static void script_host_request_disconnect(void *context);
 static void script_host_force_disconnect(void *context);
 static void script_host_report_activity(void *context, const char *text);
+static void script_host_report_online_users(void *context);
 static int script_host_get_line_id(void *context);
 static int script_host_get_task_handle(void *context);
 static void log_line_event(int line_id, const char *message);
@@ -212,6 +232,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.request_disconnect = script_host_request_disconnect;
         host.force_disconnect = script_host_force_disconnect;
         host.report_activity = script_host_report_activity;
+        host.report_online_users = script_host_report_online_users;
         host.get_line_id = script_host_get_line_id;
         host.get_task_handle = script_host_get_task_handle;
         script_initialise(&state->script, &host);
@@ -590,11 +611,11 @@ static void pipes_send_welcome(line_task_state *state)
 
 static void wait_for_pipe_space(void)
 {
-    _kernel_swi_regs regs;
+    Desk_event_pollblock event;
 
-    memset(&regs, 0, sizeof(regs));
-    regs.r[0] = 1; /* reason 1: wait for key/period to yield time slice */
-    _kernel_swi(SWI_OS_BYTE, &regs, &regs);
+    /* Do a Wimp poll to allow the Server to drain the pipe */
+    Desk_Wimp_Poll(Desk_Event_mask, &event);
+    Desk_Event_Process(&event);
 }
 
 /*
@@ -969,6 +990,113 @@ static void script_host_report_activity(void *context, const char *text)
     {
         log_line_event(state->line_id, payload);
     }
+}
+
+static void script_host_report_online_users(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int line;
+    char output[256];
+    int found_any = 0;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Print header */
+    pipes_output_write_string(state->line_id, "\r\n");
+    pipes_output_write_string(state->line_id, "Port         User            Online        Activity\r\n");
+    pipes_output_write_string(state->line_id, "----         ----            ------        --------\r\n");
+
+    /* Query each line */
+    for (line = 0; line < SUPPORT_MAX_LINES; line++)
+    {
+        int connected = 0;
+        int user_id = 0;
+        time_t connect_time = 0;
+        const char *activity = "Online";
+        int online_mins = 0;
+        int online_secs = 0;
+        const char *username = "Guest";
+
+        /* Check if line is connected */
+        regs.r[0] = LINE_REASON_GET;
+        regs.r[1] = line;
+        regs.r[2] = LINE_FIELD_CONNECTED;
+        err = _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+        if (err != NULL)
+        {
+            /* Module not loaded - bail out */
+            pipes_output_write_string(state->line_id, "[ConverseBBS module not available]\r\n");
+            return;
+        }
+        connected = regs.r[0];
+
+        if (connected == 0)
+        {
+            continue;
+        }
+
+        found_any = 1;
+
+        /* Get user ID */
+        regs.r[0] = LINE_REASON_GET;
+        regs.r[1] = line;
+        regs.r[2] = LINE_FIELD_USER_ID;
+        if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) == NULL)
+        {
+            user_id = regs.r[0];
+        }
+
+        /* Map user_id 0 to "Guest" */
+        username = (user_id == 0) ? "Guest" : "User";
+
+        /* Get connect time */
+        regs.r[0] = LINE_REASON_GET;
+        regs.r[1] = line;
+        regs.r[2] = LINE_FIELD_CONNECT_TIME;
+        if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) == NULL)
+        {
+            connect_time = (time_t)regs.r[0];
+        }
+
+        /* Calculate online duration */
+        if (connect_time != 0)
+        {
+            time_t now = time(NULL);
+            int elapsed = (int)(now - connect_time);
+            if (elapsed < 0) elapsed = 0;
+            online_mins = elapsed / 60;
+            online_secs = elapsed % 60;
+        }
+
+        /* Get activity */
+        regs.r[0] = ACTIVITY_REASON_GET;
+        regs.r[1] = line;
+        if (_kernel_swi(SWI_CONVERSEBBS_ACTIVITY, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            const char *act_ptr = (const char *)regs.r[0];
+            if (act_ptr != NULL && act_ptr[0] != '\0')
+            {
+                activity = act_ptr;
+            }
+        }
+
+        /* Format and output the line */
+        snprintf(output, sizeof(output), "%-12d %-15s %02d:%02d         %s\r\n",
+                 line, username, online_mins, online_secs, activity);
+        pipes_output_write_string(state->line_id, output);
+    }
+
+    if (found_any == 0)
+    {
+        pipes_output_write_string(state->line_id, "No users currently online.\r\n");
+    }
+
+    pipes_output_write_string(state->line_id, "\r\n");
 }
 
 static int script_host_get_line_id(void *context)

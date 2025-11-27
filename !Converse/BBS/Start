@@ -20,6 +20,7 @@
     if choice == `C` goto launch_breakout
     if choice == `D` goto launch_tetris
     if choice == `E` goto launch_spraywall
+    if choice == `W` goto whos_online
 
     if choice == `S` goto chat_sysop
     if choice == `X` goto end_session
@@ -56,6 +57,18 @@
     fgbg 2 0
     print `\r\nHello world. This is a demo message.\r\n`
     fgbg 7 0
+    anykey temp
+    goto main_menu
+}
+
+{
+    label whos_online
+    doing `Viewing online users`
+    cls
+    fgbg 3 6
+    print `\r\n                      Online Users                    \r\n`
+    fgbg 7 0
+    online
     anykey temp
     goto main_menu
 }
