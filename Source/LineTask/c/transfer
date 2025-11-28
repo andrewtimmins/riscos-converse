@@ -1081,6 +1081,12 @@ static int poll_receive(transfer_session *session)
                 }
             }
 
+            /* Reset timeout if we received any data this iteration */
+            if (session->block_pos > 0)
+            {
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+
             if (session->block_pos >= expected_len)
             {
                 /* Block complete - validate */

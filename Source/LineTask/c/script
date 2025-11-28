@@ -1882,17 +1882,12 @@ static void script_execute_instruction(script_state *state, script_instruction *
             int file_id;
             int protocol = 1; /* Default to XMODEM-CRC */
             filebase_session *session = NULL;
-            char debug_msg[256];
 
             /* Expand macros in arguments */
             if (file_id_str != NULL)
             {
                 script_expand_macros(state, file_id_str, expanded_id, sizeof(expanded_id));
                 file_id = atoi(expanded_id);
-                snprintf(debug_msg, sizeof(debug_msg), 
-                    "\r\n[DEBUG: file_id_str='%s' expanded='%s' file_id=%d]\r\n",
-                    file_id_str, expanded_id, file_id);
-                script_write_output(state, debug_msg);
             }
             else
             {

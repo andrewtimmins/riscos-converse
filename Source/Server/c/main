@@ -182,7 +182,7 @@ static int str_casecmp(const char *s1, const char *s2)
 
 #define PIPES_SWI_BASE 0x5AA00
 #define PIPES_BUFFER_CAPACITY 4096
-#define PIPE_TRANSFER_CHUNK 256
+#define PIPE_TRANSFER_CHUNK 1536
 #define LINE_IDLE_TIMEOUT_TICKS ((clock_t)(30 * CLOCKS_PER_SEC))
 
 #define MAIN_WINDOW_HOSTNAME_TEXT_LEN 256
