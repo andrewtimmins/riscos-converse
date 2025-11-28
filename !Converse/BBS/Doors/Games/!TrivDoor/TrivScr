@@ -1,0 +1,12 @@
+{cls,bold 1,fgbg 3 4,cll}
+                           Trivia Game High Scores{cll}
+{cll}
+{tab 16;06}{fgbg 6 0}Number one : {flash 1}Geoffrey Payne{tab 55;06flash 0,fgbg 6 0}53
+{tab 20;07}{fg 2}Second : Flatline{tab 55;07}26
+{tab 21;09}Third : Geoffrey Payne{tab 55;09}25
+{tab 20;11}Fourth : Flatline{tab 55;11}24
+{tab 21;13}Fifth : Flatline{tab 55;13}23
+{tab 16;16}{fg 1}Last score : Yo{tab 55;16}0
+{tab 16;18}{fg 6}Total games to date :{tab 55;18}660
+{tab 12;20 fg 3}Trivia by Richard Paddle @ Rich in Paradise BBS{cll}
+{tab 00;22}

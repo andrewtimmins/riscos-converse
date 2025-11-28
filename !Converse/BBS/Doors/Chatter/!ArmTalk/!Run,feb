@@ -1,0 +1,3 @@
+WimpSlot -min 32k -max 32k
+Set ArmTalk$Dir <Obey$Dir>
+Run <ArmTalk$Dir>.ArmTalk %*0

@@ -1,0 +1,93 @@
+   NAME: !CCDoor
+ AUTHOR: Chris Jackson
+VERSION: V1.00f (7 Mar 1995)
+
+This simple little application updates a litte thing in ARCbbs that shows the cost of your call. It is merely a door with the rates of call charges for Mercury and BT and all the available call rates that are allowed on ARCbbs.
+
+INSTALLATION
+~~~~~~~~~~~~
+Installation is easy; simply drag it to somewhere on your hard disc, maybe in a special `Doors` directory or in the directory that ARCbbs is in.
+
+The configuration is in a type of `maximised` state, but you may wish to change it slightly.
+
+Instead of putting in the `CALLCOST` command, you place in the command to run the task, and then call the door with the `DOOR` command.
+
+This will make the door run, then call it, and then quit. From the sysops point of view, there will be a very quick use of 8k (RiscPC) or 32k (ALL others). Most boards, even though tight on RAM, can spare that amount of RAM for a second or two!
+
+THE USER
+~~~~~~~~
+Basically, though, this benefits the user most. It allows s/he to calculate the cost of the calls by using something that you supply, s/he doesn't need to mess about with phone call cost calculators (although I've heard that ZAnsiDial is going to come with a very easy to use one ;-) ), or worry about their BT bill!
+
+The main thing that is better about this over the code that is supplied with ARCbbs is that it can be used to show call costs from the Mercury network.
+
+I recommend that you place a notice on the board that says about having a new call cost calculator, and that it works with mercury too! This door isn't meant to be a `mass-user` thing where everyone gets excited about it's presence; but it is quite useful, and users should be encouraged to use it.
+
+CONFIG
+~~~~~~
+Load up the !Config file inside the !CCDoor directory. There are various `commands` in which control various aspects of the application...
+
+DOORNUM: - This controls which door request number it should respond to. The default is 100, but this will almost definately be used by someone else. So, simply changes this to any value between 1 and 254.
+
+SHUTDOWN: - This controls the amount of time before the door automatically terminates itself. This is so that if for example the calling of the door didn't work right. Instead of leaving it in the task manager, wasting space, it quits itself. The default for this is 15 seconds. You may wish to change this to something else, but I feel this is about right.
+
+VAT: - This shows the current VAT rate. It is used whilst calcualting the call cost.
+
+After this, there are the call costs. They are made up of four seperate sections which define seperate things.
+
+Character 1, Call rate
+~~~~~~~~~~~~~~~~~~~~~~
+  This is the call rate, it is either L, A or B. The B rate has now been totally abolished, and so I have chosen to change B1 to B, as it will make it much easier! The call rate basically defines the area where the user is calling from, ie. L = Local, A = Upto 35 miles away, B = Over 35 miles away.
+
+Character 2, Week period
+~~~~~~~~~~~~~~~~~~~~~~~~
+  This is the day, or time of the week. It is either `W` or `N`, meaning Weekend or Normal.
+
+Character 3, Time of day
+~~~~~~~~~~~~~~~~~~~~~~~~
+  This is the time of day that the BBS is being used. Most BBSs will only be used after 6, but you never know! D = Daytime, E = Evening.
+
+Character 4, Phone network
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+  This is the phone network that the user is using. This, at the present time, can only be BT or Mercury. B = BT, M = Mercury.
+
+All call variations have to be present, for example BWDB and BWEB must both be present, even though they are both the same rate. 
+
+NOTES
+~~~~~
+
+Some general notes about CCDoor. I have updated the application to work with ARCbbs 1.64, this is basically changing the ports scanned from 0 - 15 in 1.63 to 0 - 35 in 1.64. The old version would work fine on 1.64, but I do appreicate that sysops like to see it working themselves :-)
+
+The `1.64 compatible` version now comes with a `break-down` of the call cost.
+
+--------------------------------------------------------------------------------
+
+  THIS SOFTWARE IS PUBLIC DOMAIN, AND IT HAS BEEN CREATED IN GOOD FAITH. TO USE
+ THIS SOFTWARE THEN, YOU MUST ADHERE TO THE FOLLOWING GUIDLINES;
+
+  * You **MUST NOT** pass on a copy of !CCDoor which you have changed. I think this is reasonable as I don't want `changed` copies being distributed to many people around the country, I would like it to stay the same. If you have a copy that you have played around with a bit, and think that the changes make it a lot better, send it to me, and I will see about including it in futue versions of the software.
+
+  * You **MUST NOT** change the authors name anywhere in this application to anything OTHER than `Chris Jackson`.
+
+  You can contact me at;
+
+Address:
+  Chris Jackson
+  15, Red Beck Vale
+  Shipley
+  West Yorkshire
+  BD18 3BN
+
+Tel:
+  0274 596407
+
+EMail:
+  cjackson@digibank.demon.co.uk
+
+BBS Mail:
+  Northern ARM BBS (01274 530831) `Chris Jackson`/`Sysop` (#1)
+  Digital Databank ((0707) 323531, (0707) 329506) `Chris Jackson` (#473)
+  Arcade ((081) 654 2212) `AAUC`
+
+Thanx...
+
+Chris Jackson.

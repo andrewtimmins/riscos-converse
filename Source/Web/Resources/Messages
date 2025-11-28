@@ -1,0 +1,15 @@
+| Web Server Messages File
+
+| Menu
+web.ibmt:Web
+web.ibm:Info,Quit
+
+| Errors
+web.bind:Failed to bind to port 80
+web.listen:Failed to listen on socket
+
+| Program Info Window
+info.name:Web Server
+info.version:1.00 (28 Nov 2025)
+info.author:Converse BBS
+info.purpose:HTTP Server for Converse BBS

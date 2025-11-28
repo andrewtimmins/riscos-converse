@@ -1,0 +1,6 @@
+| !Run file for !Make20
+| © 1994 Chris Jackson
+| Make a `last 20 users` list from Call_Log
+Set Last20$Dir <Obey$Dir>
+WimpSlot 32k 32k
+Run <Last20$Dir>.!RunImage

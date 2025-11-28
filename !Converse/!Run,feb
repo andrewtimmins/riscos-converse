@@ -4,17 +4,34 @@
 Set Converse$Dir <Obey$Dir>
 Set Converse$Path <Converse$Dir>.
 
-Set ARCbbs$text <Converse$Dir>.Temp
-Set ARCbbsA$text <Converse$Dir>.Temp
-
 IconSprites <Converse$Dir>.!Sprites
 Set File$Type_120 ANSI
-Set File$Type_EEE Converse
+
+RMEnsure UtilityModule 3.70 Error RISC OS 3.70 or higher is required.
+If "<System$Path>" = "" Then Error 0 !System resources cannot be found.
+
+RMEnsure SharedCLibrary 6.23 RMLoad System:Modules.CLib
+RMEnsure SharedCLibrary 6.23 Error 0 Shared C Library 6.23 or higher is requred.
+
+Set Converse$Loaded 1
+RMEnsure ConverseBBS 0.00 Set ArmBBS$Loaded 0
+If "<Converse$Loaded>" = "1" then RMKill ConverseBBS
+If "<Converse$Loaded>" = "1" then RMKill ConverseFiler
+If "<Converse$Loaded>" = "1" then RMKill ConversePipes
+If "<Converse$Loaded>" = "1" then RMKill ARCbbs_Doors
+|If "<Converse$Loaded>" = "1" then RMKill ArmBBS
+|If "<Converse$Loaded>" = "1" then RMKill NewsFlash
+Unset Converse$Loaded
+
+Set ARCbbs$text <Converse$Dir>.Temp
+Set ARCbbsA$text <Converse$Dir>.Temp
 
 RMEnsure ConverseBBS 0.01 RMLoad <Converse$Dir>.Resources.Support
 RMEnsure ConverseFiler 0.01 RMLoad <Converse$Dir>.Resources.Filer
 RMEnsure ConversePipes 0.01 RMLoad <Converse$Dir>.Resources.Pipes
 RMEnsure ARCbbs_Doors 0.01 RMLoad <Converse$Dir>.Resources.ARCbbs
+|RMEnsure ArmBBS 0.01 RMLoad <Converse$Dir>.Resources.ArmBBS
+|RMEnsure NewsFlash 0.01 RMLoad <Converse$Dir>.Resources.NewsFlash
 
 WimpSlot -Min 64k -Max 64k
 Run <Converse$Dir>.Resources.ResFind Converse

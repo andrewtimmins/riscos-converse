@@ -1,0 +1,17 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Debug Header                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef DEBUG_H
+#define DEBUG_H
+
+/* Initialise debug module */
+void debug_initialise(void);
+
+/* Finalise debug module */
+void debug_finalise(void);
+
+/* Print debug message (printf-style) */
+void debug_printf(const char *format, ...);
+
+#endif /* DEBUG_H */

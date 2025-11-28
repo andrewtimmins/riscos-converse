@@ -1,0 +1,9 @@
+|
+| Converse Chat Door
+| © 1995 Ben Ingram
+|
+
+Set Converse$Dir <Obey$Dir>
+Iconsprites <Converse$Dir>.!Sprites
+WimpSlot -min 32k -max 32k
+Run <Converse$Dir>.!RunImage %*0

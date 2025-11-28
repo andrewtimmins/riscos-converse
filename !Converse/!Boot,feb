@@ -6,4 +6,3 @@ Set Converse$Path <Converse$Dir>.
 
 IconSprites <Converse$Dir>.!Sprites
 Set File$Type_120 ANSI
-Set File$Type_EEE Converse

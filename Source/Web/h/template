@@ -1,0 +1,33 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Template Header                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef TEMPLATE_H
+#define TEMPLATE_H
+
+#include <stddef.h>
+
+/* Template tags */
+#define TEMPLATE_TAG_FILEBASE   "{{filebase}}"
+
+/* Process template content, expanding template tags
+ * content: input content buffer
+ * content_len: length of input content
+ * out_len: receives length of output (can be NULL)
+ * Returns: newly allocated buffer with expanded content, or NULL on error
+ * Caller must free() the returned buffer
+ */
+char *template_process(const char *content, long content_len, long *out_len);
+
+/* Check if content contains any template tags
+ * Returns 1 if tags found, 0 if not
+ */
+int template_has_tags(const char *content, long content_len);
+
+/* Generate HTML listing of all filebases
+ * Returns: newly allocated buffer with HTML, or NULL on error
+ * Caller must free() the returned buffer
+ */
+char *template_generate_filebase_listing(long *out_len);
+
+#endif /* TEMPLATE_H */

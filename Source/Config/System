@@ -18,18 +18,20 @@ pager       yes
 
 ftnmail    yes
 
-anykey      <Converse$Dir>.BBS.AnyKey
-chatstart   <Converse$Dir>.BBS.ChatStart
-chatend     <Converse$Dir>.BBS.ChatEnd
+anykey      <Converse$Dir>.BBS.System.AnyKey
+chatstart   <Converse$Dir>.BBS.System.ChatStart
+chatend     <Converse$Dir>.BBS.System.ChatEnd
+protocol    <Converse$Dir>.BBS.System.Protocol
+search      <Converse$Dir>.BBS.System.Search
 
 prelogon    <Converse$Dir>.BBS.Prelogon
 postlogon   <Converse$Dir>.BBS.Postlogon
 logoff      <Converse$Dir>.BBS.Logoff
 newuser     <Converse$Dir>.BBS.NewUser
 
-timeup      <Converse$Dir>.BBS.TimeUp
-lockedout   <Converse$Dir>.BBS.Lockedout
-closedsys   <Converse$Dir>.BBS.ClosedSys
-aftermail   <Converse$Dir>.BBS.AfterMail
+timeup      <Converse$Dir>.BBS.System.TimeUp
+lockedout   <Converse$Dir>.BBS.System.Lockedout
+closedsys   <Converse$Dir>.BBS.System.ClosedSys
+aftermail   <Converse$Dir>.BBS.System.AfterMail
 
 end

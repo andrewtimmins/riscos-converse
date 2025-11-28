@@ -1,8 +1,0 @@
-{report `Newspaper Door`}
-{attr 0 7 cls}Loading Newspaper door...
-{if ANSI=0 goto +noansi}
-{runtask `<RiscBBS$Dir>.SubTasks.!News HANDLE`}
-{wait eof}
-{label noansi}
-The Newspaper door is written for ANSI only.
-{enter}

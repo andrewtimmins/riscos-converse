@@ -1,0 +1,35 @@
+| !Run file for SysOpChat  [v1.63b16 - third general release]
+|
+| Richard Murray, April 1995
+
+| Set directory variable.
+Set SysOpChat$Dir <Obey$Dir>
+
+| Load sprites.
+IconSprites <SysOpChat$Dir>.!Sprites
+
+| Ensure doors module is loaded.
+RMEnsure ArcBBS_Doors 0.04 Error 1 The ArcBBS door module is not loaded...
+
+| Determine which ArcServer is in use. ArmBBS uses ArcBBS_Doors 0.04 (=1.63).
+Set ArcBBS164$DoorModule "Yes"
+RMEnsure ArcBBS_Doors 0.07 Set ArcBBS164$DoorModule "No"
+
+| Set up variables.
+Obey <SysOpChat$Dir>.Variables
+
+| Grab some WimpSlot. You can play with this, but you won't squeeze
+| much more...
+| /* 256K for uncompressed version, 192K for release versions. */
+|WimpSlot -min 256K -max 256K
+|WimpSlot -min 192K -max 192K
+WimpSlot -min 160K -max 160K
+|WimpSlot -min 128K -max 128K
+
+| Run the program!
+Run <SysOpChat$Dir>.!RunImage
+
+| Yes, !Run is held open...
+| Be tidy... Remove the temporary files
+Remove <SysOpChat$Dir>.Debugging
+Remove <SysOpChat$Dir>.UserDetls

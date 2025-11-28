@@ -1,0 +1,502 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Template Module                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "template.h"
+#include "debug.h"
+
+/* Filer SWI numbers */
+#define SWI_FILER_FILEBASE      0x5AA43
+
+/* Filebase commands */
+#define FILER_FILEBASE_CMD_INFO             2
+#define FILER_FILEBASE_CMD_AREA_INFO        7
+#define FILER_FILEBASE_CMD_ENUMERATE_BASES  8
+#define FILER_FILEBASE_CMD_ENUMERATE_AREAS  9
+#define FILER_FILEBASE_CMD_ENUMERATE_FILES  10
+#define FILER_FILEBASE_CMD_FILE_INFO        11
+
+/* Structure sizes from Filer/h/structs */
+#define MAX_KEYS    128
+#define MAX_NAME    64
+#define MAX_DESC    256
+
+/* ******************************************************************************************************************************************************** */
+/* Filebase Structures (matching Filer/h/structs)                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+    char filebasedir[256];
+} FILEBASE_RECORD;
+
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+} FILEBASE_AREA_RECORD;
+
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int filebaseareaid;
+    int deleted;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+    int uploadedby;
+    long uploaddate;
+    char description[MAX_DESC];
+    long filesize;
+    int downloads;
+} FILE_RECORD;
+
+/* ******************************************************************************************************************************************************** */
+/* String Buffer Helper                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    char *data;
+    long length;
+    long capacity;
+} STRING_BUFFER;
+
+static int buffer_init(STRING_BUFFER *buf, long initial_capacity)
+{
+    buf->data = malloc((size_t)initial_capacity);
+    if (buf->data == NULL)
+    {
+        return 0;
+    }
+    buf->data[0] = '\0';
+    buf->length = 0;
+    buf->capacity = initial_capacity;
+    return 1;
+}
+
+static int buffer_append(STRING_BUFFER *buf, const char *str, long len)
+{
+    long new_len;
+    long new_capacity;
+    char *new_data;
+
+    if (len < 0)
+    {
+        len = (long)strlen(str);
+    }
+
+    new_len = buf->length + len;
+    if (new_len + 1 > buf->capacity)
+    {
+        new_capacity = buf->capacity * 2;
+        if (new_capacity < new_len + 1)
+        {
+            new_capacity = new_len + 256;
+        }
+        new_data = realloc(buf->data, (size_t)new_capacity);
+        if (new_data == NULL)
+        {
+            return 0;
+        }
+        buf->data = new_data;
+        buf->capacity = new_capacity;
+    }
+
+    memcpy(buf->data + buf->length, str, (size_t)len);
+    buf->length = new_len;
+    buf->data[buf->length] = '\0';
+    return 1;
+}
+
+static void buffer_free(STRING_BUFFER *buf)
+{
+    if (buf->data != NULL)
+    {
+        free(buf->data);
+        buf->data = NULL;
+    }
+    buf->length = 0;
+    buf->capacity = 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Template Tag Detection                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+int template_has_tags(const char *content, long content_len)
+{
+    const char *p;
+    const char *end;
+
+    if (content == NULL || content_len <= 0)
+    {
+        return 0;
+    }
+
+    end = content + content_len;
+    p = content;
+
+    while (p < end - 2)
+    {
+        if (p[0] == '{' && p[1] == '{')
+        {
+            return 1;
+        }
+        p++;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filebase Enumeration                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/* Callback context for enumeration */
+typedef struct
+{
+    STRING_BUFFER *buf;
+    int base_id;
+    int area_id;
+    int count;
+} ENUM_CONTEXT;
+
+static void format_filesize(long size, char *buffer, size_t buflen)
+{
+    if (size < 1024)
+    {
+        snprintf(buffer, buflen, "%ld B", size);
+    }
+    else if (size < 1024 * 1024)
+    {
+        snprintf(buffer, buflen, "%.1f KB", size / 1024.0);
+    }
+    else
+    {
+        snprintf(buffer, buflen, "%.1f MB", size / (1024.0 * 1024.0));
+    }
+}
+
+static void html_escape(const char *src, char *dst, size_t dst_size)
+{
+    const char *s = src;
+    char *d = dst;
+    char *end = dst + dst_size - 1;
+
+    while (*s && d < end)
+    {
+        switch (*s)
+        {
+            case '<':
+                if (d + 4 <= end)
+                {
+                    strcpy(d, "&lt;");
+                    d += 4;
+                }
+                break;
+            case '>':
+                if (d + 4 <= end)
+                {
+                    strcpy(d, "&gt;");
+                    d += 4;
+                }
+                break;
+            case '&':
+                if (d + 5 <= end)
+                {
+                    strcpy(d, "&amp;");
+                    d += 5;
+                }
+                break;
+            case '"':
+                if (d + 6 <= end)
+                {
+                    strcpy(d, "&quot;");
+                    d += 6;
+                }
+                break;
+            default:
+                *d++ = *s;
+                break;
+        }
+        s++;
+    }
+    *d = '\0';
+}
+
+char *template_generate_filebase_listing(long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int base_id;
+    int area_id;
+    int file_id;
+    char row[1024];
+    char escaped_name[256];
+    char escaped_desc[512];
+    char size_str[32];
+    int base_count = 0;
+
+    if (!buffer_init(&buf, 4096))
+    {
+        return NULL;
+    }
+
+    /* Start HTML */
+    buffer_append(&buf,
+        "<div class=\"filebase-listing\">\n", -1);
+
+    /* Enumerate filebases (base IDs typically start at 1) */
+    for (base_id = 1; base_id <= 100; base_id++)
+    {
+        FILEBASE_RECORD *base_rec;
+        int has_files = 0;
+
+        /* Get filebase info */
+        regs.r[0] = FILER_FILEBASE_CMD_INFO;
+        regs.r[1] = base_id;
+        err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+        if (err != NULL || regs.r[0] == -1)
+        {
+            continue;
+        }
+
+        base_rec = (FILEBASE_RECORD *)(regs.r[0]);
+        if (base_rec == NULL)
+        {
+            continue;
+        }
+
+        base_count++;
+
+        /* Start filebase section */
+        html_escape(base_rec->name, escaped_name, sizeof(escaped_name));
+        snprintf(row, sizeof(row),
+            "  <div class=\"filebase\">\n"
+            "    <h3>%s</h3>\n"
+            "    <table class=\"file-table\">\n"
+            "      <thead>\n"
+            "        <tr>\n"
+            "          <th>Name</th>\n"
+            "          <th>Size</th>\n"
+            "          <th>Description</th>\n"
+            "          <th>Downloads</th>\n"
+            "        </tr>\n"
+            "      </thead>\n"
+            "      <tbody>\n",
+            escaped_name);
+        buffer_append(&buf, row, -1);
+
+        /* Enumerate files in this filebase (file IDs typically start at 1) */
+        for (file_id = 1; file_id <= 1000; file_id++)
+        {
+            FILE_RECORD *file_rec;
+
+            regs.r[0] = FILER_FILEBASE_CMD_FILE_INFO;
+            regs.r[1] = base_id;
+            regs.r[2] = file_id;
+            err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+            if (err != NULL || regs.r[0] == -1)
+            {
+                /* No more files or error - break if we've seen 10 consecutive misses */
+                static int miss_count = 0;
+                miss_count++;
+                if (miss_count > 10)
+                {
+                    miss_count = 0;
+                    break;
+                }
+                continue;
+            }
+
+            file_rec = (FILE_RECORD *)(regs.r[0]);
+            if (file_rec == NULL || file_rec->deleted)
+            {
+                continue;
+            }
+
+            has_files = 1;
+
+            html_escape(file_rec->name, escaped_name, sizeof(escaped_name));
+            html_escape(file_rec->description, escaped_desc, sizeof(escaped_desc));
+            format_filesize(file_rec->filesize, size_str, sizeof(size_str));
+
+            snprintf(row, sizeof(row),
+                "        <tr>\n"
+                "          <td>%s</td>\n"
+                "          <td>%s</td>\n"
+                "          <td>%s</td>\n"
+                "          <td>%d</td>\n"
+                "        </tr>\n",
+                escaped_name,
+                size_str,
+                escaped_desc,
+                file_rec->downloads);
+            buffer_append(&buf, row, -1);
+        }
+
+        if (!has_files)
+        {
+            buffer_append(&buf,
+                "        <tr><td colspan=\"4\"><em>No files available</em></td></tr>\n", -1);
+        }
+
+        /* End filebase section */
+        buffer_append(&buf,
+            "      </tbody>\n"
+            "    </table>\n"
+            "  </div>\n", -1);
+    }
+
+    if (base_count == 0)
+    {
+        buffer_append(&buf, "  <p><em>No filebases available</em></p>\n", -1);
+    }
+
+    /* End HTML */
+    buffer_append(&buf, "</div>\n", -1);
+
+    if (out_len != NULL)
+    {
+        *out_len = buf.length;
+    }
+
+    debug_printf("Template: Generated filebase listing (%ld bytes, %d bases)\n",
+                 buf.length, base_count);
+
+    return buf.data;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Template Processing                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+char *template_process(const char *content, long content_len, long *out_len)
+{
+    STRING_BUFFER buf;
+    const char *p;
+    const char *end;
+    const char *tag_start;
+    const char *tag_end;
+    size_t filebase_tag_len;
+
+    if (content == NULL || content_len <= 0)
+    {
+        return NULL;
+    }
+
+    /* Quick check - if no tags, just duplicate the content */
+    if (!template_has_tags(content, content_len))
+    {
+        char *result = malloc((size_t)content_len + 1);
+        if (result != NULL)
+        {
+            memcpy(result, content, (size_t)content_len);
+            result[content_len] = '\0';
+            if (out_len != NULL)
+            {
+                *out_len = content_len;
+            }
+        }
+        return result;
+    }
+
+    if (!buffer_init(&buf, content_len + 1024))
+    {
+        return NULL;
+    }
+
+    filebase_tag_len = strlen(TEMPLATE_TAG_FILEBASE);
+    p = content;
+    end = content + content_len;
+
+    while (p < end)
+    {
+        /* Look for {{ */
+        tag_start = p;
+        while (tag_start < end - 1 && !(tag_start[0] == '{' && tag_start[1] == '{'))
+        {
+            tag_start++;
+        }
+
+        /* Copy content before tag */
+        if (tag_start > p)
+        {
+            buffer_append(&buf, p, tag_start - p);
+        }
+
+        if (tag_start >= end - 1)
+        {
+            /* No more tags */
+            break;
+        }
+
+        /* Find closing }} */
+        tag_end = tag_start + 2;
+        while (tag_end < end - 1 && !(tag_end[0] == '}' && tag_end[1] == '}'))
+        {
+            tag_end++;
+        }
+
+        if (tag_end >= end - 1)
+        {
+            /* Unclosed tag - copy literally */
+            buffer_append(&buf, tag_start, end - tag_start);
+            break;
+        }
+
+        /* Check for known tags */
+        if ((size_t)(tag_end + 2 - tag_start) == filebase_tag_len &&
+            strncmp(tag_start, TEMPLATE_TAG_FILEBASE, filebase_tag_len) == 0)
+        {
+            /* Replace with filebase listing */
+            char *listing;
+            long listing_len;
+
+            listing = template_generate_filebase_listing(&listing_len);
+            if (listing != NULL)
+            {
+                buffer_append(&buf, listing, listing_len);
+                free(listing);
+            }
+            else
+            {
+                buffer_append(&buf, "<!-- Error generating filebase listing -->", -1);
+            }
+        }
+        else
+        {
+            /* Unknown tag - copy literally */
+            buffer_append(&buf, tag_start, tag_end + 2 - tag_start);
+        }
+
+        p = tag_end + 2;
+    }
+
+    if (out_len != NULL)
+    {
+        *out_len = buf.length;
+    }
+
+    debug_printf("Template: Processed content (%ld -> %ld bytes)\n", content_len, buf.length);
+
+    return buf.data;
+}

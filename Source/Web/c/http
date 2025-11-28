@@ -1,0 +1,582 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - HTTP Module                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "socklib.h"
+
+#include "http.h"
+#include "debug.h"
+
+/* RISC OS filetypes */
+#define FILETYPE_HTML   0xFAF
+#define FILETYPE_CSS    0xF79
+#define FILETYPE_TEXT   0xFFF
+#define FILETYPE_PNG    0xB60
+#define FILETYPE_JPEG   0xC85
+#define FILETYPE_GIF    0x695
+#define FILETYPE_DATA   0xFFD
+
+/* OS_File reason codes */
+#define OSFILE_READ_INFO    17
+#define OSFILE_LOAD         255
+
+/* Forward declarations */
+static const char *local_strnstr(const char *haystack, const char *needle, size_t len);
+static int strcasecmp(const char *s1, const char *s2);
+
+/* ******************************************************************************************************************************************************** */
+/* HTTP Parsing                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+int http_parse_request(const char *buffer, int len, HTTP_REQUEST *req)
+{
+    const char *p;
+    const char *end;
+    const char *line_end;
+    int i;
+
+    if (buffer == NULL || req == NULL || len <= 0)
+    {
+        return -1;
+    }
+
+    /* Clear request structure */
+    memset(req, 0, sizeof(HTTP_REQUEST));
+
+    /* Check for end of headers marker */
+    end = buffer + len;
+    if (local_strnstr(buffer, "\r\n\r\n", len) == NULL &&
+        local_strnstr(buffer, "\n\n", len) == NULL)
+    {
+        /* Request incomplete */
+        return 0;
+    }
+
+    req->complete = 1;
+    p = buffer;
+
+    /* Find end of request line */
+    line_end = p;
+    while (line_end < end && *line_end != '\r' && *line_end != '\n')
+    {
+        line_end++;
+    }
+
+    /* Parse method */
+    i = 0;
+    while (p < line_end && !isspace((unsigned char)*p) && i < HTTP_MAX_METHOD - 1)
+    {
+        req->method[i++] = *p++;
+    }
+    req->method[i] = '\0';
+
+    /* Skip whitespace */
+    while (p < line_end && isspace((unsigned char)*p))
+    {
+        p++;
+    }
+
+    /* Parse path */
+    i = 0;
+    while (p < line_end && !isspace((unsigned char)*p) && i < HTTP_MAX_PATH - 1)
+    {
+        req->path[i++] = *p++;
+    }
+    req->path[i] = '\0';
+
+    /* Skip whitespace */
+    while (p < line_end && isspace((unsigned char)*p))
+    {
+        p++;
+    }
+
+    /* Parse version */
+    i = 0;
+    while (p < line_end && !isspace((unsigned char)*p) && i < HTTP_MAX_VERSION - 1)
+    {
+        req->version[i++] = *p++;
+    }
+    req->version[i] = '\0';
+
+    debug_printf("HTTP: Parsed %s %s %s\n", req->method, req->path, req->version);
+
+    return 1;
+}
+
+/* Simple implementation of strnstr for platforms that don't have it */
+static const char *local_strnstr(const char *haystack, const char *needle, size_t len)
+{
+    size_t needle_len;
+
+    if (needle == NULL || *needle == '\0')
+    {
+        return haystack;
+    }
+
+    needle_len = strlen(needle);
+    if (needle_len > len)
+    {
+        return NULL;
+    }
+
+    while (len >= needle_len)
+    {
+        if (strncmp(haystack, needle, needle_len) == 0)
+        {
+            return haystack;
+        }
+        haystack++;
+        len--;
+    }
+
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* MIME Types                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+const char *http_get_mime_type(const char *filename, int filetype)
+{
+    /* First check RISC OS filetype if available */
+    if (filetype >= 0)
+    {
+        switch (filetype)
+        {
+            case FILETYPE_HTML:
+                return "text/html; charset=utf-8";
+            case FILETYPE_CSS:
+                return "text/css; charset=utf-8";
+            case FILETYPE_TEXT:
+                return "text/plain; charset=utf-8";
+            case FILETYPE_PNG:
+                return "image/png";
+            case FILETYPE_JPEG:
+                return "image/jpeg";
+            case FILETYPE_GIF:
+                return "image/gif";
+            default:
+                break;
+        }
+    }
+
+    /* Fallback: check filename for common extensions */
+    if (filename != NULL)
+    {
+        const char *dot = strrchr(filename, '.');
+        if (dot != NULL)
+        {
+            dot++;
+            if (strcasecmp(dot, "html") == 0 || strcasecmp(dot, "htm") == 0)
+            {
+                return "text/html; charset=utf-8";
+            }
+            if (strcasecmp(dot, "css") == 0)
+            {
+                return "text/css; charset=utf-8";
+            }
+            if (strcasecmp(dot, "txt") == 0)
+            {
+                return "text/plain; charset=utf-8";
+            }
+            if (strcasecmp(dot, "png") == 0)
+            {
+                return "image/png";
+            }
+            if (strcasecmp(dot, "jpg") == 0 || strcasecmp(dot, "jpeg") == 0)
+            {
+                return "image/jpeg";
+            }
+            if (strcasecmp(dot, "gif") == 0)
+            {
+                return "image/gif";
+            }
+            if (strcasecmp(dot, "js") == 0)
+            {
+                return "application/javascript; charset=utf-8";
+            }
+            if (strcasecmp(dot, "json") == 0)
+            {
+                return "application/json; charset=utf-8";
+            }
+            if (strcasecmp(dot, "ico") == 0)
+            {
+                return "image/x-icon";
+            }
+        }
+    }
+
+    /* Default to octet-stream */
+    return "application/octet-stream";
+}
+
+/* ******************************************************************************************************************************************************** */
+/* HTTP Status                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+const char *http_status_text(int status)
+{
+    switch (status)
+    {
+        case 200: return "OK";
+        case 400: return "Bad Request";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 500: return "Internal Server Error";
+        default:  return "Unknown";
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* HTTP Response                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int http_send_headers(int socket, int status, const char *content_type, long content_length)
+{
+    char buffer[512];
+    int len;
+    int sent;
+
+    len = snprintf(buffer, sizeof(buffer),
+        "HTTP/1.0 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %ld\r\n"
+        "Connection: close\r\n"
+        "Server: ConverseWeb/1.0\r\n"
+        "\r\n",
+        status, http_status_text(status),
+        content_type,
+        content_length);
+
+    if (len < 0 || len >= (int)sizeof(buffer))
+    {
+        return -1;
+    }
+
+    sent = socketwrite(socket, buffer, len);
+    if (sent != len)
+    {
+        debug_printf("HTTP: Failed to send headers, wrote %d of %d\n", sent, len);
+        return -1;
+    }
+
+    return sent;
+}
+
+int http_send_error(int socket, int status, const char *message)
+{
+    char body[512];
+    int body_len;
+    int header_sent;
+    int body_sent;
+
+    if (message == NULL)
+    {
+        message = http_status_text(status);
+    }
+
+    body_len = snprintf(body, sizeof(body),
+        "<!DOCTYPE html>\r\n"
+        "<html>\r\n"
+        "<head><title>%d %s</title></head>\r\n"
+        "<body>\r\n"
+        "<h1>%d %s</h1>\r\n"
+        "<p>%s</p>\r\n"
+        "<hr>\r\n"
+        "<p><em>ConverseWeb/1.0</em></p>\r\n"
+        "</body>\r\n"
+        "</html>\r\n",
+        status, http_status_text(status),
+        status, http_status_text(status),
+        message);
+
+    if (body_len < 0 || body_len >= (int)sizeof(body))
+    {
+        body_len = (int)strlen(body);
+    }
+
+    header_sent = http_send_headers(socket, status, "text/html; charset=utf-8", body_len);
+    if (header_sent < 0)
+    {
+        return -1;
+    }
+
+    body_sent = socketwrite(socket, body, body_len);
+    if (body_sent != body_len)
+    {
+        return -1;
+    }
+
+    return header_sent + body_sent;
+}
+
+int http_send_data(int socket, const char *data, long length)
+{
+    long sent = 0;
+    int chunk;
+
+    while (sent < length)
+    {
+        int remaining = (int)(length - sent);
+        if (remaining > 4096)
+        {
+            remaining = 4096;
+        }
+
+        chunk = socketwrite(socket, data + sent, remaining);
+        if (chunk <= 0)
+        {
+            debug_printf("HTTP: Send data failed at %ld of %ld\n", sent, length);
+            return -1;
+        }
+
+        sent += chunk;
+    }
+
+    return (int)sent;
+}
+
+int http_send_file(int socket, const char *filepath)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int object_type;
+    int filetype;
+    long filesize;
+    char *buffer;
+    const char *mime;
+    int result;
+
+    if (filepath == NULL)
+    {
+        return http_send_error(socket, HTTP_STATUS_NOT_FOUND, "File not found");
+    }
+
+    /* OS_File 17 - Read catalogue info */
+    regs.r[0] = OSFILE_READ_INFO;
+    regs.r[1] = (int)filepath;
+    err = _kernel_swi(OS_File, &regs, &regs);
+    if (err != NULL)
+    {
+        debug_printf("HTTP: OS_File error: %s\n", err->errmess);
+        return http_send_error(socket, HTTP_STATUS_NOT_FOUND, "File not found");
+    }
+
+    object_type = regs.r[0];
+    if (object_type == 0)
+    {
+        debug_printf("HTTP: File not found: %s\n", filepath);
+        return http_send_error(socket, HTTP_STATUS_NOT_FOUND, "File not found");
+    }
+
+    if (object_type == 2)
+    {
+        /* It's a directory - try to serve index file */
+        debug_printf("HTTP: Path is directory: %s\n", filepath);
+        return http_send_error(socket, HTTP_STATUS_NOT_FOUND, "Directory listing not supported");
+    }
+
+    /* Extract filetype from load address (bits 8-19) */
+    if ((regs.r[2] & 0xFFF00000) == 0xFFF00000)
+    {
+        filetype = (regs.r[2] >> 8) & 0xFFF;
+    }
+    else
+    {
+        filetype = -1;
+    }
+
+    filesize = (long)regs.r[4];
+
+    debug_printf("HTTP: Serving file %s (type=%03X, size=%ld)\n", filepath, filetype, filesize);
+
+    /* Allocate buffer for file */
+    buffer = malloc((size_t)filesize);
+    if (buffer == NULL)
+    {
+        debug_printf("HTTP: Failed to allocate %ld bytes\n", filesize);
+        return http_send_error(socket, HTTP_STATUS_SERVER_ERROR, "Out of memory");
+    }
+
+    /* OS_File 255 - Load file */
+    regs.r[0] = OSFILE_LOAD;
+    regs.r[1] = (int)filepath;
+    regs.r[2] = (int)buffer;
+    regs.r[3] = 0;
+    err = _kernel_swi(OS_File, &regs, &regs);
+    if (err != NULL)
+    {
+        debug_printf("HTTP: Failed to load file: %s\n", err->errmess);
+        free(buffer);
+        return http_send_error(socket, HTTP_STATUS_SERVER_ERROR, "Failed to read file");
+    }
+
+    /* Get MIME type */
+    mime = http_get_mime_type(filepath, filetype);
+
+    /* Send headers */
+    if (http_send_headers(socket, HTTP_STATUS_OK, mime, filesize) < 0)
+    {
+        free(buffer);
+        return -1;
+    }
+
+    /* Send file content */
+    result = http_send_data(socket, buffer, filesize);
+
+    free(buffer);
+    return result;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Path Validation                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int http_validate_path(const char *path)
+{
+    const char *p;
+
+    if (path == NULL || path[0] == '\0')
+    {
+        return 0;
+    }
+
+    /* Must start with / */
+    if (path[0] != '/')
+    {
+        debug_printf("HTTP: Path doesn't start with /: %s\n", path);
+        return 0;
+    }
+
+    /* Check for dangerous patterns */
+    p = path;
+    while (*p)
+    {
+        /* Reject .. (parent directory) */
+        if (p[0] == '.' && p[1] == '.')
+        {
+            debug_printf("HTTP: Path contains ..: %s\n", path);
+            return 0;
+        }
+
+        /* Reject RISC OS special characters */
+        if (*p == ':' || *p == '@' || *p == '$' || *p == '%' || *p == '^' || *p == '&' || *p == '\\')
+        {
+            debug_printf("HTTP: Path contains special char '%c': %s\n", *p, path);
+            return 0;
+        }
+
+        p++;
+    }
+
+    return 1;
+}
+
+int http_build_filepath(const char *docroot, const char *request_path,
+                        char *out, size_t out_size)
+{
+    const char *src;
+    char *dst;
+    size_t remaining;
+    size_t docroot_len;
+
+    if (docroot == NULL || request_path == NULL || out == NULL || out_size < 2)
+    {
+        return 0;
+    }
+
+    /* Start with docroot */
+    docroot_len = strlen(docroot);
+    if (docroot_len >= out_size)
+    {
+        return 0;
+    }
+
+    strcpy(out, docroot);
+    dst = out + docroot_len;
+    remaining = out_size - docroot_len;
+
+    /* Convert URL path to RISC OS path */
+    src = request_path;
+
+    /* Skip leading / */
+    if (*src == '/')
+    {
+        src++;
+    }
+
+    /* If empty path, use "index" as default */
+    if (*src == '\0')
+    {
+        if (remaining < 7)
+        {
+            return 0;
+        }
+        strcpy(dst, ".index");
+        return 1;
+    }
+
+    /* Add separator */
+    if (remaining < 2)
+    {
+        return 0;
+    }
+    *dst++ = '.';
+    remaining--;
+
+    /* Convert path: / becomes . */
+    while (*src && remaining > 1)
+    {
+        if (*src == '/')
+        {
+            *dst++ = '.';
+        }
+        else
+        {
+            *dst++ = *src;
+        }
+        src++;
+        remaining--;
+    }
+    *dst = '\0';
+
+    /* If path ends with ., add "index" */
+    if (dst > out && *(dst - 1) == '.')
+    {
+        if (remaining < 6)
+        {
+            return 0;
+        }
+        strcpy(dst, "index");
+    }
+
+    debug_printf("HTTP: Built path: %s -> %s\n", request_path, out);
+    return 1;
+}
+
+/* Case-insensitive string comparison */
+static int strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}

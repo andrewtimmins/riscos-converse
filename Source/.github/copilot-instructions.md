@@ -899,3 +899,67 @@ sendfile `%{file_id}` zmodem
 goto download_done
 ```
 
+## Web Server Module
+
+### Overview
+The Web Server module (`Web/`) provides HTTP access to static files and filebase listings. It runs as a Wimp application on port 80.
+
+### Architecture
+- **Source Files**:
+  - `c/main`: Wimp application, socket handling, multi-client management
+  - `c/http`: HTTP/1.0 protocol parser and response builder
+  - `c/template`: Template engine for `{{filebase}}` substitution
+  - `c/debug`: Debug logging via Reporter module
+- **Resources**:
+  - `Resources/Messages`: UI strings
+  - `Resources/!Boot,feb`: Boot obey file
+  - `Resources/!Run,feb`: Run obey file
+
+### Configuration
+- **Listen Port**: 80 (hardcoded in `WEB_DEFAULT_PORT`)
+- **Document Root**: `<Converse$Dir>.Web`
+- **Default File**: `index` (no extension)
+- **Max Clients**: 16 simultaneous connections
+- **Client Timeout**: 30 seconds
+
+### HTTP Features
+- HTTP/1.0 protocol (Connection: close)
+- Methods: GET only
+- MIME types: HTML, CSS, TXT, PNG, JPG, GIF, JS, JSON, ICO
+- Status codes: 200, 400, 403, 404, 500, 503
+
+### Template Tags
+HTML files (filetype 0xFAF) are scanned for template tags:
+- `{{filebase}}`: Replaced with HTML table listing all filebases and files
+
+### Path Mapping
+URL paths are converted to RISC OS paths:
+- `/` → `<Converse$Dir>.Web.index`
+- `/files/test` → `<Converse$Dir>.Web.files.test`
+- `/about/` → `<Converse$Dir>.Web.about.index`
+
+### Security
+- Path traversal blocked (rejects `..`, `:`, `@`, `$`, `%`, `^`, `&`, `\`)
+- Request size limit: 4KB
+- No CGI/script execution
+
+### Integration
+- Responds to `MESSAGE_LINE_BROADCAST` (0x5AA00) for shutdown
+- Queries Filer module (SWI 0x5AA43) for filebase listings
+- Uses Reporter module for debug output
+
+### Example Web Content
+Create files in `<Converse$Dir>.Web`:
+```html
+<!-- index file (filetype FAF) -->
+<!DOCTYPE html>
+<html>
+<head><title>Converse BBS</title></head>
+<body>
+  <h1>Welcome to Converse BBS</h1>
+  <h2>File Downloads</h2>
+  {{filebase}}
+</body>
+</html>
+```
+

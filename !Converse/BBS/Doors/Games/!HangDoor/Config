@@ -1,0 +1,26 @@
+;         Config file for Hangman Door © Richard Paddle
+;ONE space between keyword and parameter please
+;
+;         DoorNumber - number of door to be called
+;
+DoorNumber 6
+;        
+;         Gambling options ON or OFF
+;
+Gamble ON
+;           
+;         Multiplying factors for Up/down load times
+;ie: If score 3 which is 2 less than Confdivide then
+;New online=Confdivide(5)-score(3)*OnlineConf(5)=-10
+;
+Confdivide 5
+UpdownConf 1
+OnlineConf 5 
+;
+;         QuitDelay - time in cS before app. quits after display is done
+;
+QuitDelay 100
+;
+;         End must be present
+;
+End

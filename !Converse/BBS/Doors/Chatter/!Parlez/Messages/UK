@@ -1,0 +1,122 @@
+#
+# ENGLISH messages for Parlez, v1.40.
+#
+# Note that '~' is replaced with '<esc>['...
+
+# General
+AppName:Parlez
+Version:1.40
+
+
+# DEFPROCwindow_poll
+Msg01:~1;31mOther side lost carrier...
+Msg02:~33mChat finished...
+Msg03:~32mPress [?] or [Return] if nothing happens...
+
+
+# DEFPROCio()
+Msg04:This door allows you to send a message (and optionally chat) to any user
+Msg05:currently on-line. To abort, press Ctrl+C. Ctrl+\ for information.
+Msg06:~44m~37m  # ~36mBaudR ~37mUser# ~36mUsername                       ~37mWhere       ~40m
+
+
+# DEFPROCshowstats... Special case DOING strings.
+Msg07:Logging on
+Msg08:New user
+
+
+# DEFPROCgetport
+Msg09:~32mWhich port would you like to send your message to? ~33m
+
+Msg10:~37mHmmm... What's a negative port? An 'antiport' - the BBS calls you? ;-)
+Msg11:~37mHmmm... How many ports do you think there are??? ;-)
+Msg12:~37mWhoops!!!
+Msg13:~37mTalking to yourself again? You should seek help if this continues...
+Msg14:~37mSorry, that port is not on-line at this time.
+Msg15:~37mSorry, that port has not completed log-on procedure yet.
+
+
+# DEFPROCgetmessage
+Msg16:~32mPlease enter your message, up to two lines, and press RETURN to send.~33m
+Msg17:~36mWould you like the option of a private chat (Y/n) ?
+
+
+# DEFPROCsendtoport
+Msg18:~35mSorry,"+esc$+"37m the port you are trying to contact has disconnected...
+Msg19:~37m the port you are trying to contact has disconnected...
+Msg20:~35mSorry,~37m the port you are trying to contact is running another door...
+
+Msg21:~37mAttempting to send...
+
+Msg22:~33mSorry, the user doesn't want to be bothered by chat requests or messages...
+
+Msg23:~32mMessage from %0 on port %1...
+Msg24:~36m%0
+
+Msg25:~33mSent!
+
+Msg26:35mSorry,~37m port %0 is unobtainable. Please check and try again.
+
+
+# DEFPROCgetuser - used if invalid username found.
+Msg27:Anonymous
+
+
+# DEFPROCinformation
+Msg28:Press SPACE to continue...
+
+
+# DEFPROCanykey
+Msg29:~35mPlease press [SPACE] to continue...
+Msg30:...Thank you!
+
+
+# DEFPROCuploadmessage
+Msg31:The SysOp has forbidden failed messages to be uploaded to the user's mailbox.
+
+Msg32:Message from Parlez door
+
+Msg33:~33mYour message has been uploaded to %0's mailbox...
+
+
+# DEFPROCinitiatechat()
+Msg34:~36mAsking if other user would like to open a private chat...
+Msg35:~36mWould you like to open a private chat with %0 (Y/n)? 
+Msg36:~35mTimed out...
+Msg37:~35mUser didn't want to chat...
+Msg38:~35mChat cancelled...
+
+Msg39:~33mChat started...  Press ^C to finish or ^T for remaining time.
+
+
+# Colours used in chat:
+#   Us typing, on our screen     - 36 (Cyan)      | So echoed text is cyan,
+#   Us typing, on their screen   - 37 (White)     | and text from the other
+#   Them typing, on our screen   - 37 (White)     | side is white...
+#   Them typing, on their screen - 36 (Cyan)
+Msg40:~36m
+Msg41:~37m
+Msg42:~37m
+Msg43:~36m
+
+Msg44:~1;31mOther side lost carrier...
+
+
+# DEFPROCcloseup
+Msg45:~33mChat finished...
+Msg46:~32mPress [?] or [Return] if nothing happens...
+
+
+# DEFPROCchecktime()
+Msg47:~1;32mYou have 5 minutes left...
+Msg48:~1;32mYou have 2 minutes left...
+Msg49:~1;31mLAST MINUTE!!!
+Msg50:~1;31mI'm sorry, you have run out of time.
+Msg51:~1;31mI'm sorry, the other person has run out of time.
+
+
+# DEFPROCshowtime()
+Msg52:~1;32mYou have %0:%1 (mm:ss) remaining...
+
+
+# END...

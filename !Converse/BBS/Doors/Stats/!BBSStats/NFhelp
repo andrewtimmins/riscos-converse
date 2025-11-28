@@ -1,0 +1,20 @@
+NewsFlash users... (set bbstype%=3 in the basic file if not already done)
+
+Put !BBSstat in the    <NewsFlash$BBS>Doors.NewsFlash    directory
+
+Then use the following script extract to use !BBSstats 
+(where 'option' is a variable!)
+
+{
+if option = "B" then
+ std
+ report "BBSstats"
+ runtask "<NewsFlash$BBS>Doors.NewsFlash.!BBSstats"
+ script "<NewsFlash$BBS>Doors.newsflash.!BBSstats.StatScr"
+ gosub anykey
+endif
+}
+
+Note: the door will have to be run once before it will generate a script!
+
+-Alex-

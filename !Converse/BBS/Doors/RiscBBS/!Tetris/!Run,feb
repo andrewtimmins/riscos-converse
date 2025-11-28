@@ -1,3 +1,0 @@
-WimpSlot -Min 64k -Max 64k
-Set Tetris$Dir <Obey$Dir>
-Run <Tetris$Dir>.!RunImage %*0

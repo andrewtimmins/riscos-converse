@@ -1,0 +1,707 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Main Module                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/* Standard ANSI Includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+
+/* OS Includes */
+#include "kernel.h"
+#include "swis.h"
+
+/* Desk Includes */
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Resource.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Dialog.h"
+#include "C:Desk.Dialog2.h"
+#include "C:Desk.Error.h"
+
+/* TCPIP Includes */
+#define COMPAT_INET4 1
+#include "sys/types.h"
+#include "sys/socket.h"
+#include "socklib.h"
+#include "inetlib.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "sys/errno.h"
+#include "netdb.h"
+
+/* Our Includes */
+#include "main.h"
+#include "http.h"
+#include "template.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Global Variables                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+WIMP_STATE wimp;
+CLIENT_SLOT clients[WEB_MAX_CLIENTS];
+int listen_socket = -1;
+int listen_port = WEB_DEFAULT_PORT;
+int active_clients = 0;
+
+static char docroot[256] = WEB_DOCROOT;
+static Desk_dialog2_block *proginfo_window;
+
+/* Menu indices */
+enum
+{
+    ICONBAR_MENU_INFO = 0,
+    ICONBAR_MENU_QUIT
+};
+
+/* Error messages */
+static char error_bind[100];
+static char error_listen[100];
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Numbers                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_OS_READMONOTONICTIME 0x00000042
+#define POLL_IDLE_DELAY 1  /* centiseconds between null polls (10ms) */
+
+/* Wimp message from Converse Server */
+#define MESSAGE_LINE_BROADCAST  0x5AA00
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static void display_error(const char *message)
+{
+    Desk_Error_Report(1, (char *)message);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp Event Handlers                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_bool handle_iconbar_click(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+
+    Desk_UNUSED(event);
+
+    if (event->data.mouse.button.data.menu)
+    {
+        Desk_Menu_Show(w->iconbar_menu, event->data.mouse.pos.x, -1);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+
+    switch (event->data.selection[0])
+    {
+        case ICONBAR_MENU_QUIT:
+            w->quit = Desk_bool_TRUE;
+            break;
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_null_event(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(event);
+    Desk_UNUSED(ref);
+
+    check_listener();
+    poll_clients();
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_broadcast_message(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+    int reason;
+
+    if (event == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    reason = event->data.message.data.words[0];
+
+    /* Reason 0 = quit */
+    if (reason == 0)
+    {
+        debug_printf("Web: Received broadcast quit message\n");
+        w->quit = Desk_bool_TRUE;
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_open_proginfo(Desk_event_pollblock *event, void *ref)
+{
+    if (event->data.message.data.menuwarn.selection[0] != ICONBAR_MENU_INFO)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+
+    return Desk_bool_TRUE;
+}
+
+static void poll_idle(void)
+{
+    _kernel_swi_regs regs;
+    Desk_event_pollblock event;
+    int earliest;
+
+    /* Get current monotonic time and add delay */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    earliest = regs.r[0] + POLL_IDLE_DELAY;
+
+    /* Poll with idle time */
+    Desk_Wimp_PollIdle(Desk_Event_mask, &event, earliest);
+    Desk_Event_Process(&event);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Networking Functions                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+void create_listener(int port)
+{
+    int args[2];
+    struct sockaddr_in saddr;
+
+    /* Create the socket */
+    listen_socket = socket(AF_INET, SOCK_STREAM, PF_UNSPEC);
+    if (listen_socket < 0)
+    {
+        display_error("Failed to create socket");
+        return;
+    }
+
+    /* Allow address reuse */
+    args[0] = 1;
+    setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, &args, sizeof(int));
+
+    /* Set linger time */
+    args[0] = 1;
+    args[1] = 10;
+    setsockopt(listen_socket, SOL_SOCKET, SO_LINGER, &args, (sizeof(int) * 2));
+
+    /* Bind to port */
+    memset(&saddr, 0, sizeof(saddr));
+    saddr.sin_family = AF_INET;
+    saddr.sin_port = htons(port);
+    saddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(listen_socket, (struct sockaddr *)&saddr, sizeof(saddr)) != 0)
+    {
+        socketclose(listen_socket);
+        listen_socket = -1;
+        display_error(error_bind);
+        return;
+    }
+
+    /* Make non-blocking */
+    args[0] = 1;
+    socketioctl(listen_socket, FIONBIO, &args[0]);
+
+    /* Start listening */
+    if (listen(listen_socket, 5) != 0)
+    {
+        socketclose(listen_socket);
+        listen_socket = -1;
+        display_error(error_listen);
+        return;
+    }
+
+    listen_port = port;
+    debug_printf("Web: Listening on port %d\n", port);
+}
+
+void destroy_listener(void)
+{
+    int i;
+
+    /* Close all client connections */
+    for (i = 0; i < WEB_MAX_CLIENTS; i++)
+    {
+        if (clients[i].socket > 0)
+        {
+            close_client(i);
+        }
+    }
+
+    /* Close listening socket */
+    if (listen_socket >= 0)
+    {
+        socketclose(listen_socket);
+        listen_socket = -1;
+    }
+
+    debug_printf("Web: Listener destroyed\n");
+}
+
+void check_listener(void)
+{
+    struct sockaddr_in saddr;
+    int namelen = sizeof(saddr);
+    int new_socket;
+    int slot;
+    fd_set readfds;
+    struct timeval timeout;
+
+    if (listen_socket < 0)
+    {
+        return;
+    }
+
+    /* Check for incoming connection */
+    FD_ZERO(&readfds);
+    FD_SET(listen_socket, &readfds);
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 0;
+
+    if (select(listen_socket + 1, &readfds, NULL, NULL, &timeout) <= 0)
+    {
+        return;
+    }
+
+    if (!FD_ISSET(listen_socket, &readfds))
+    {
+        return;
+    }
+
+    /* Accept connection */
+    memset(&saddr, 0, sizeof(saddr));
+    new_socket = accept(listen_socket, (struct sockaddr *)&saddr, &namelen);
+    if (new_socket < 0)
+    {
+        return;
+    }
+
+    /* Find free client slot */
+    slot = -1;
+    for (slot = 0; slot < WEB_MAX_CLIENTS; slot++)
+    {
+        if (clients[slot].socket == 0)
+        {
+            break;
+        }
+    }
+
+    if (slot >= WEB_MAX_CLIENTS)
+    {
+        /* No free slots - send error and close */
+        http_send_error(new_socket, 503, "Server busy");
+        shutdown(new_socket, 0);
+        socketclose(new_socket);
+        debug_printf("Web: Rejected connection - no free slots\n");
+        return;
+    }
+
+    /* Set up client slot */
+    {
+        int nonblock = 1;
+        socketioctl(new_socket, FIONBIO, &nonblock);
+    }
+
+    clients[slot].socket = new_socket;
+    clients[slot].state = CLIENT_STATE_CONNECTED;
+    clients[slot].connected = clock();
+    clients[slot].recv_len = 0;
+    strncpy(clients[slot].remote_addr, inet_ntoa(saddr.sin_addr), sizeof(clients[slot].remote_addr) - 1);
+    clients[slot].remote_addr[sizeof(clients[slot].remote_addr) - 1] = '\0';
+    active_clients++;
+
+    debug_printf("Web: Accepted connection from %s (slot %d)\n", clients[slot].remote_addr, slot);
+}
+
+void close_client(int slot)
+{
+    if (slot < 0 || slot >= WEB_MAX_CLIENTS)
+    {
+        return;
+    }
+
+    if (clients[slot].socket > 0)
+    {
+        shutdown(clients[slot].socket, 0);
+        socketclose(clients[slot].socket);
+        debug_printf("Web: Closed connection (slot %d)\n", slot);
+    }
+
+    clients[slot].socket = 0;
+    clients[slot].state = CLIENT_STATE_FREE;
+    clients[slot].recv_len = 0;
+
+    if (active_clients > 0)
+    {
+        active_clients--;
+    }
+}
+
+void poll_clients(void)
+{
+    int i;
+    clock_t now = clock();
+    clock_t timeout_ticks = (clock_t)(WEB_CLIENT_TIMEOUT * CLOCKS_PER_SEC);
+
+    for (i = 0; i < WEB_MAX_CLIENTS; i++)
+    {
+        int bytes_read;
+
+        if (clients[i].socket == 0)
+        {
+            continue;
+        }
+
+        /* Check for timeout */
+        if ((now - clients[i].connected) > timeout_ticks)
+        {
+            debug_printf("Web: Client timeout (slot %d)\n", i);
+            close_client(i);
+            continue;
+        }
+
+        /* Try to receive data */
+        bytes_read = socketread(clients[i].socket,
+                                clients[i].recv_buffer + clients[i].recv_len,
+                                WEB_RECV_BUFFER_SIZE - clients[i].recv_len - 1);
+
+        if (bytes_read < 0)
+        {
+            /* No data available or error */
+            int err = errno;
+            if (err != EWOULDBLOCK && err != EAGAIN)
+            {
+                debug_printf("Web: Read error %d (slot %d)\n", err, i);
+                close_client(i);
+            }
+            continue;
+        }
+
+        if (bytes_read == 0)
+        {
+            /* Connection closed by client */
+            debug_printf("Web: Client disconnected (slot %d)\n", i);
+            close_client(i);
+            continue;
+        }
+
+        clients[i].recv_len += bytes_read;
+        clients[i].recv_buffer[clients[i].recv_len] = '\0';
+        clients[i].state = CLIENT_STATE_RECEIVING;
+
+        /* Check if we have a complete request */
+        if (strstr(clients[i].recv_buffer, "\r\n\r\n") != NULL ||
+            strstr(clients[i].recv_buffer, "\n\n") != NULL)
+        {
+            handle_client_request(i);
+        }
+        else if (clients[i].recv_len >= WEB_RECV_BUFFER_SIZE - 1)
+        {
+            /* Buffer full but no complete request */
+            http_send_error(clients[i].socket, HTTP_STATUS_BAD_REQUEST, "Request too large");
+            close_client(i);
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Request Handling                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+void handle_client_request(int slot)
+{
+    HTTP_REQUEST req;
+    char filepath[512];
+    int parse_result;
+
+    if (slot < 0 || slot >= WEB_MAX_CLIENTS || clients[slot].socket == 0)
+    {
+        return;
+    }
+
+    clients[slot].state = CLIENT_STATE_SENDING;
+
+    /* Parse the request */
+    parse_result = http_parse_request(clients[slot].recv_buffer, clients[slot].recv_len, &req);
+
+    if (parse_result < 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Invalid request");
+        close_client(slot);
+        return;
+    }
+
+    if (parse_result == 0)
+    {
+        /* Incomplete - shouldn't happen since we checked for end marker */
+        return;
+    }
+
+    /* Only support GET */
+    if (strcmp(req.method, "GET") != 0 && strcmp(req.method, "HEAD") != 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Method not supported");
+        close_client(slot);
+        return;
+    }
+
+    /* Validate path */
+    if (!http_validate_path(req.path))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_FORBIDDEN, "Access denied");
+        close_client(slot);
+        return;
+    }
+
+    /* Build filesystem path */
+    if (!http_build_filepath(docroot, req.path, filepath, sizeof(filepath)))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Path error");
+        close_client(slot);
+        return;
+    }
+
+    debug_printf("Web: Request from %s: %s %s -> %s\n",
+                 clients[slot].remote_addr, req.method, req.path, filepath);
+
+    /* Check if file is HTML and might need template processing */
+    {
+        _kernel_swi_regs regs;
+        _kernel_oserror *err;
+        int object_type;
+        int filetype;
+
+        /* OS_File 17 - Read catalogue info */
+        regs.r[0] = 17;
+        regs.r[1] = (int)filepath;
+        err = _kernel_swi(OS_File, &regs, &regs);
+
+        if (err != NULL || regs.r[0] == 0)
+        {
+            /* File not found - try with index appended if path doesn't have extension */
+            char alt_path[512];
+            snprintf(alt_path, sizeof(alt_path), "%s.index", filepath);
+
+            regs.r[0] = 17;
+            regs.r[1] = (int)alt_path;
+            err = _kernel_swi(OS_File, &regs, &regs);
+
+            if (err == NULL && regs.r[0] == 1)
+            {
+                strcpy(filepath, alt_path);
+            }
+            else
+            {
+                http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "File not found");
+                close_client(slot);
+                return;
+            }
+        }
+
+        object_type = regs.r[0];
+
+        /* If it's a directory, try index file */
+        if (object_type == 2)
+        {
+            char dir_path[512];
+            snprintf(dir_path, sizeof(dir_path), "%s.index", filepath);
+
+            regs.r[0] = 17;
+            regs.r[1] = (int)dir_path;
+            err = _kernel_swi(OS_File, &regs, &regs);
+
+            if (err == NULL && regs.r[0] == 1)
+            {
+                strcpy(filepath, dir_path);
+                object_type = 1;
+            }
+            else
+            {
+                http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "Directory listing not supported");
+                close_client(slot);
+                return;
+            }
+        }
+
+        /* Extract filetype */
+        if ((regs.r[2] & 0xFFF00000) == 0xFFF00000)
+        {
+            filetype = (regs.r[2] >> 8) & 0xFFF;
+        }
+        else
+        {
+            filetype = -1;
+        }
+
+        /* Check if HTML file that might need template processing */
+        if (filetype == 0xFAF) /* HTML */
+        {
+            long filesize = (long)regs.r[4];
+            char *content;
+            _kernel_swi_regs load_regs;
+
+            /* Load file into memory */
+            content = malloc((size_t)filesize + 1);
+            if (content != NULL)
+            {
+                load_regs.r[0] = 255; /* Load */
+                load_regs.r[1] = (int)filepath;
+                load_regs.r[2] = (int)content;
+                load_regs.r[3] = 0;
+                err = _kernel_swi(OS_File, &load_regs, &load_regs);
+
+                if (err == NULL)
+                {
+                    content[filesize] = '\0';
+
+                    /* Check for template tags */
+                    if (template_has_tags(content, filesize))
+                    {
+                        char *processed;
+                        long processed_len;
+
+                        processed = template_process(content, filesize, &processed_len);
+                        free(content);
+
+                        if (processed != NULL)
+                        {
+                            http_send_headers(clients[slot].socket, HTTP_STATUS_OK,
+                                            "text/html; charset=utf-8", processed_len);
+                            http_send_data(clients[slot].socket, processed, processed_len);
+                            free(processed);
+                            close_client(slot);
+                            return;
+                        }
+                    }
+                }
+                free(content);
+            }
+        }
+    }
+
+    /* Serve the file directly */
+    http_send_file(clients[slot].socket, filepath);
+    close_client(slot);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int main(void)
+{
+    int i;
+    char menu_title[32];
+    char menu_items[64];
+
+    /* Initialise client slots */
+    for (i = 0; i < WEB_MAX_CLIENTS; i++)
+    {
+        memset(&clients[i], 0, sizeof(CLIENT_SLOT));
+    }
+
+    wimp.quit = Desk_bool_FALSE;
+
+    /* Initialise debug */
+    debug_initialise();
+    debug_printf("Web: Starting...\n");
+
+    /* Initialise Wimp */
+    Desk_Resource_Initialise("ConverseRes");
+    Desk_Msgs_LoadFile("Messages");
+
+    /* Load error messages */
+    Desk_Msgs_Lookup("web.bind", error_bind, sizeof(error_bind));
+    Desk_Msgs_Lookup("web.listen", error_listen, sizeof(error_listen));
+
+    if (error_bind[0] == '\0')
+    {
+        strcpy(error_bind, "Failed to bind to port");
+    }
+    if (error_listen[0] == '\0')
+    {
+        strcpy(error_listen, "Failed to listen on socket");
+    }
+
+    Desk_Event_Initialise("WebServer");
+    Desk_EventMsg_Initialise();
+    Desk_Screen_CacheModeInfo();
+
+    /* Set up event handlers */
+    Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, Desk_Handler_ModeChange, NULL);
+    Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_BROADCAST, Desk_event_ANY, handle_broadcast_message, &wimp);
+    Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY, handle_null_event, NULL);
+    Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY, handle_menu_selection, &wimp);
+
+    /* Create iconbar icon */
+    wimp.iconbar_icon = Desk_Icon_BarIcon("!web", Desk_iconbar_RIGHT);
+    Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon,
+                     handle_iconbar_click, &wimp);
+
+    /* Create iconbar menu */
+    Desk_Msgs_Lookup("web.ibmt", menu_title, sizeof(menu_title));
+    Desk_Msgs_Lookup("web.ibm", menu_items, sizeof(menu_items));
+
+    if (menu_title[0] == '\0')
+    {
+        strcpy(menu_title, "Web");
+    }
+    if (menu_items[0] == '\0')
+    {
+        strcpy(menu_items, "Info,Quit");
+    }
+
+    wimp.iconbar_menu = Desk_Menu_New(menu_title, menu_items);
+
+    /* Load templates and create proginfo window */
+    Desk_Template_Initialise();
+    Desk_Template_UseOutlineFonts();
+    Desk_Template_LoadFile("Templates");
+
+    proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
+    Desk_Menu_Warn(wimp.iconbar_menu, ICONBAR_MENU_INFO, Desk_bool_TRUE, handle_open_proginfo, (void *)proginfo_window);
+
+    /* Create listener */
+    create_listener(listen_port);
+    atexit(destroy_listener);
+
+    debug_printf("Web: Initialisation complete, entering main loop\n");
+
+    /* Main event loop */
+    while (wimp.quit == Desk_bool_FALSE)
+    {
+        poll_idle();
+    }
+
+    debug_printf("Web: Shutting down\n");
+    debug_finalise();
+
+    Desk_Template_ClearAll();
+
+    return 0;
+}

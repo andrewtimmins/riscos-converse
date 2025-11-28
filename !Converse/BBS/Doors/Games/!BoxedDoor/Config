@@ -1,0 +1,15 @@
+;Config file for BoxedDoor © Richard Paddle
+;
+;ONE space between keyword and parameter please
+;
+;     DoorNumber - number of door to be called
+;
+DoorNumber 5
+;
+;     QuitDelay - time in cS before app. quits after display is done
+;
+QuitDelay 200
+;
+;     End must be present
+;
+End

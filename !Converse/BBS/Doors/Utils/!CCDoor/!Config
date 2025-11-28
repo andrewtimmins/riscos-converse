@@ -1,0 +1,53 @@
+; This file contains all the details about the setup and the call rates
+;
+; The number below is the `door` calling number. I recommend that you change
+;  this to suit your setup, but please don't distribute `changed` versions.
+DOORNUM:11
+;
+; The `SHUTDOWN` means the time in seconds before the application shuts
+;  down itself. This is used so that it won't use precious RAM if it goes wrong
+;  and it isn't called.
+SHUTDOWN:15
+;
+; The VAT rate
+VAT:17.5
+;
+; Below is a list of call rates. They must ALL be present. The cost shows
+;  how much it would be for a one minute call using a certain setup. A one
+;  minute call can only be imagined (!) for users of BT, as calls are `rounded`
+;  up to the nearest 3 minutes. CCDoor does this automatically though.
+; The cost is the amount of hundrenths of a penny, ie. If it was 4.2 pence per
+;   minute, the value would be 420.
+; This is how to work out which is which...
+; The first letter shows the call rate        L, A or B
+; The second letter shows the week time       N = Normal, W = Weekend
+; The third letter shows the time of day      D = Daytime, E = Evening
+; The fourth letter shows the phone network   B = BT, M = Mercury
+; First the local call rates...
+LNDB:500
+LNDM:650
+LNEB:167
+LNEM:245
+LWDB:127
+LWDM:245
+LWEB:167
+LWEM:245
+; Then the `A` rate calls..
+ANDB:834
+ANDM:590
+ANEB:500
+ANEM:240
+AWDB:334
+AWDM:240
+AWEB:334
+AWEM:240
+; Then, those terrible `B` rate calls..
+BNDB:1000
+BNDM:660
+BNEB:667
+BNEM:400
+BWDB:334
+BWDM:250
+BWEB:334
+BWEM:250
+; And thats it!

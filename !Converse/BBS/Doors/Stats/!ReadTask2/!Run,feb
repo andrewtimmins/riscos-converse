@@ -1,0 +1,4 @@
+Set Readtasks2door$Dir <Obey$Dir>
+IconSprites <Readtasks2door$Dir>.!Sprites
+WimpSlot -Min 32k -Max 32k
+Run <Readtasks2door$Dir>.!RunImage

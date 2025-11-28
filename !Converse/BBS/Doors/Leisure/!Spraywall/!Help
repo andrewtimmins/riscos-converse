@@ -1,0 +1,343 @@
+                _  _____                                     _ _ 
+               | |/ ____|                                   | | |
+               | | (___  _ __  _ __ __ _ _   ___      ____ _| | |
+               | |\___ \| '_ \| '__/ _` | | | \ \ /\ / / _` | | |
+               |_|____) | |_) | | | (_| | |_| |\ V  V / (_| | | |
+               (_)_____/| .__/|_|  \__,_|\__, | \_/\_/ \__,_|_|_|
+               =========| |=================/ |==================
+                        |_|              |___/                   
+
+© Werewolf Software 1997
+Written by Dane Koekoek
+Version 1.12 (16th February 1997)
+
+Introduction
+~~~~~~~~~~~~
+!Spraywall is an ARCbbs door which allows users to write a few lines of 
+`graffiti` for other users to see. It can be a sort of chat forum for short 
+messages and comments, or could also be used by the sysop to post a quick 
+announcement.
+
+Using !Spraywall
+~~~~~~~~~~~~~~~~
+Right, the first step to using !Spraywall is to copy !Spraywall out of this 
+archive and into your doors directory.
+
+Next you need to set up a menu option for the spraywall.
+
+  Example config for ArmBBS
+  ~~~~~~~~~~~~~~~~~~~~~~~~~
+  
+  defitem S
+  display `Spraywall`
+  help ` Write on the Spraywall`
+  [
+    door `1 10 <ArmBBS$Dir>.Doors.!Spraywall`
+  ]
+  enditem
+
+  Example config for ARCbbs
+  ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  DOING "Main Menu"
+  OSCLI "WimpTask <ARCbbs$Doors>.!spraywall"
+  DOOR 10
+  GOTO mainmenu
+
+Right, next you need to configure !Spraywall. Go inside !Spraywall and load 
+up the Config file inside it. It'll look something like this:
+
+=============================================================================
+BBS Name:The Werewolf BBS
+Door number:10
+Sillywall:No
+Sillyuser:Andrew Lobel
+Number of previous lines displayed:10
+Maximum number of lines to write in:3
+Name colour:32:B
+Wall colour:33:B
+Line colour:36:F
+Colours:Yes
+Colour char:~
+Fullnames:Yes
+Swear filter:Yes
+=============================================================================
+
+The first two lines should be self explanatory - your BBS name and the door 
+number you're allocating for !Spraywall. The third and fourth lines are an 
+extra feature for the Spraywall. If sillywall is set to Yes then there is 
+a 1 in 15 chance that when someone writes in the Spraywall the user 
+specified as the sillyuser will write a line of complete junk!
+
+The fifth line is an option to allow you to alter the number of lines 
+written previously !Spraywall displays. The more this number, the more 
+screens every user has to wade in through every time theey go to the 
+spraywall option on your BBS. The sixth line is for the maximum number of 
+lines a user can write in one go at the spraywall.
+
+The seventh and eigth lines are the default ANSI colour codes for the 
+colour of the name of the user line, and the colour of the wall line. These 
+are minus the 3 that you normally find infront of ANSI codes, so are more 
+like ArmBBS colour codes really. The same codes are used for the colours 
+in the spraywall itself.
+
+The ninth line is to turn on the exclusive colour-redefining routines in 
+the spraywall if it's set to yes, and the tenth line is to define which 
+character enables redefining of colours in the spraywall.
+
+The eleventh line defines whether you wish lines to be stored with
+a prefix of "Dane Koekoek wrote on xxx" or "Dane wrote on xxx". With fullnames
+set to yes it uses the former, whilst anything else makes it use the latter.
+
+Your next step is to try out the spraywall for yourself on your BBS. Then 
+try it out with your users and see what they think too! I hope you like it!
+
+The last line allows you to turn on the built-in swear filter on. The default
+is on, and it will automatically chuck out any user who swears whilst in 
+!Spraywall. In addition to the built-in list of swear words, you can add your
+own. To do this, load the file SwearWords inside !Spraywall into your 
+favourite text editor and add any extra words you wish to ban. It is very
+important you leave no blank lines - the only line with nothing in it should
+be the final line.
+
+
+Extra features
+~~~~~~~~~~~~~~
+If you press control-c at any of the prompts, !Spraywall exits back to the 
+BBS server.
+
+If you press n or N at any of the `press any key` prompts, then !Spraywall 
+will go straight to the end and ask you to enter your message, without 
+reading the whole wall.
+
+You can deny users access to the Spraywall by adding their names to the 
+file called TwitList. Possible causes to do this could be because they 
+constantly post annoying adverts for their BBS there.
+
+There is a swear filter which chucks a user out if they swear on the wall 
+and then tells the whole BBS that they've been silly by posting up a strange 
+message about their personal tastes. :-) What they said is logged in a file 
+called OutLog inside !Spraywall to inform the sysop of what they've actually 
+been saying.
+
+There's now the facility to add colours into the text when a user writes 
+in the spraywall. Standard ANSI colour codes apply here - try it out, 
+it's different. :-)
+
+
+History
+~~~~~~~
+1.00    First version. Written solely for use on The Werewolf BBS. Simply a 
+        better version than Chris John's spraywall, and also cured a few 
+        bugs in his.
+
+1.01    Changed a few things a bit. Had loads of complaints from users. :-(
+
+1.02    Finally sorted out a load of the bugs and got the program to work 
+        decently.
+        
+        Added in option to have more than one line, number of previous
+        lines shown and made it fully configurable. Released to John 
+        Stonier. :-)
+
+1.03    Tidied up a few things in the code. Fixed a major bug I just 
+        introduced (:-) ). Added the colours feature. Removed Stars option.
+
+1.04    Now made the colours feature an option, so you can turn it off if 
+        you or you users don't like it (though I can't see why! :-) ).
+
+        Changed the key for the colours from the top to the bottom, cos you 
+        couldn't see the key when writing your line!!! :-)
+
+1.05    Now made it scan upto port 32 instead of 15 <ahem!>. Thanks Richard 
+        for sorting that silly out.
+        
+        Made memory usage work properly, so the wimpslot automatically gets 
+        larger as the Wall file gets larger. This has the disadvantage that 
+        if your Wall file has been in use for a very long period of time 
+        and has reached, say 200K, then the wimpslot of Spraywall will be 
+        200K bigger than it is with a blank Wall file. Cure for this - 
+        manage your Wall file every so often. 
+
+        Sorted out the sillywall option so it actually does the silly 
+        lines - misplaced variable!
+
+1.06    Sorted out the config file handling so if sysops put wrong numbers 
+        in config it /should/ go to sensible figures. 
+        
+        Changed config file so there's an extra option for the colour of 
+        the lines going across.
+
+        Changed numbers of colours so they're now try ANSI colours - ie 34 
+        instead of 4 for dark blue.
+        
+        Added :B or :F onto these lines for Bold or Feint colours for those
+        lines.
+        
+        It now checks for what type of terminal the user has and if they're 
+        not using an ANSI terminal then it chucks them out of the door.
+        
+        Three lines per session of writing is now the maximum due to the way 
+        the program has been designed.
+
+1.07    Control-I now gives a help page when in the door.
+
+        Control-R redisplays the wall. 
+
+        Read the help screen for full info on the keypresses supported.
+
+        Added in legend to tell user to press Control-I to display the help 
+        screen.
+
+1.08    Tidied up a few things.
+
+        Removed the dynamic memory stuff that I spent ages putting into 
+        the code! :-) Please note that you can delete past text written by 
+        holding down delete and it'll go up the line. However, it works 
+        okay on ArmBBS local login, but nowhere else does it seem to jump 
+        to the next line, but it does delete the text... Working on making 
+        it delete the text on screen too. :-) Sorted out a slight bug where 
+        the text kept on popping up for every time the help screen 
+        was viewed!
+
+1.09    Altered the `saving the user's contribution` procedure so that it
+        will NOT save anything if the user hasn't entered anything in,
+        OR if the user has just pressed the space bar (very common cause
+        of many blank lines in the spraywall).
+        
+        Made it now scan upto port 35, instead of just upto port 32, after
+        a request from Steve Pursey.
+
+1.10    The beginning of the month prompted me to notice that !Spraywall was
+        saving dates as "06th". A small change has been made so that it'll 
+        save them just as "6th" - just looks much nicer IMHO.
+
+        Heading at the top saying "Now with colours! :-)" has been altered
+        to say "Now with colour :-)", with the "s" in "colours" being
+        removed and each colour being moved one along. This is so the "c"
+        in "colours" will display as a red, instead of a grey which some
+        terminals cannot display properly. This compromise was suggested
+        by Steve Pursey.
+
+1.11    Altered header bar to look nicer. Then altered it again so that
+        something like "Digital Databank BBS" would fit without creating
+        a blank line after it!
+
+        Made a new config option in the Config file to define whether lines
+        are stored with a prefix of "Dane Koekoek wrote on xxx" or 
+        "Dane wrote on xxx". It used to store names as firstnames only,
+        of which currently the default is. With fullnames set to yes it uses 
+        the former, whilst anything else makes it use the latter. This feature
+        could be useful on larger BBS's where there might be many "Dave"'s 
+        contributing to the Spraywall!
+        ** Please add "Fullnames:Yes" or "Fullnames:No" to the end of your 
+        Config file inside !Spraywall. **
+
+1.12    Recoded the swear filter to make it much more efficient. There now is
+        a config option to turn the swear filter on or off:
+        ** Please add "Swear filter:Yes" or "Swear filter:No" to the end of
+        your Config file inside !Spraywall. **
+
+        A file called SwearWords will be automatically created inside !Spraywall
+        when it is next loaded. This allows you to add extra swear words to
+        the swear filter to supplement the ones built-in. Open up the file and
+        add words to it, at the end. All words are checked in upper and lower
+        case, and with other characters nearby them. It is VITAL that no 
+        empty lines are left in this file, and the ONLY empty line must be 
+        the last line, which is just one single character return.
+
+        Colours for the header changed, by request of Steve Pursey.
+
+
+Wish list
+~~~~~~~~~
+Only a few things so far.
+
+  è Maybe a sysop user interface for easy adding lines in the desktop.
+
+  è Possibly changing it so that you can just read from when you last went 
+    into !Spraywall?
+
+  è Changing it so you can press RETURN when you enter your lines and it 
+    goes onto the next line, and not exit the spraywall. What do people 
+    think?
+
+  è Possibly having it so there's an option after reading the spraywall 
+    whether to write a line or to exit instead of going straight into 
+    writing a line and then exiting, or just exiting when you press return?
+
+  è User-definable BBS-ads-and-other-unmentionable-items filter?
+
+  è User-definable words for sillyuser option.
+
+  è A message sent to the SysOp if there is an error - chucked out or swearing
+    on the wall.
+
+  è Have option to add users to the TwitList if they get chucked out of the 
+    door.
+
+Please tell me if you have any more suggestions of ideas or feel that any 
+one of the above ideas should really be implemented soon.
+
+
+Credits
+~~~~~~~
+Quintin Parker for writing the fancy colour routines and for messing about 
+with my code, changing variable names and commenting on my programming 
+skills (?) :-) Also for testing it and for writing odd extra enhancements 
+to the code. :-)
+
+John Stonier for giving this a good test on a true ARCbbs server, on a 
+busy BBS server.
+
+Steve Pursey for testing it out on his BBS and giving many invaluable 
+suggestions.
+
+Toby Mackenzie for nagging me for months to have a copy, and then when he
+got it giving no suggestions whatsoever of how to improve it! ;-)
+
+David Coronel for showing me how to write a certain routine one way, with 
+the effect of me spending a whole evening trying to work out why it 
+wasn't working.
+
+Malcolm Knight for rewriting this procedure so it did work properly! :-)
+
+Richard Murray for sorting out a few bugs and for sorting out the port 
+number scanning one (:-) ).
+
+
+Problems
+~~~~~~~~
+If you've got any problems with !Spraywall, or have any comments or 
+suggestions, then just contact me in any of the ways listed below.
+
+
+Werewolf Software
+~~~~~~~~~~~~~~~~~
+Werewolf Software produce many quality products for Acorn computers
+including the excellent CDtracker & CDtracker Plus audio CD databasing
+and playing programs, and the new T.A.N.K.S. game. Please contact us
+using any of the ways listed at the end of this file for more information
+about us and our products.
+
+!Spraywall is a freeware product, copyright Werewolf Software.
+
+
+Contacting me
+~~~~~~~~~~~~~
+You can contact me or Werewolf Software in any of the following ways:
+
+Email:
+  Dane Koekoek (#1) on The Werewolf BBS (+44-181-289 6003 * 24hrs * 33k6)
+
+  Dane Koekoek@2:254/310 on FidoNet
+  dane@werewlf.demon.co.uk
+  
+Snail Mail:
+  Dane Koekoek
+  Werewolf Software
+  23 The Spinneys,
+  Bromley,
+  Kent,
+  BR1 2NT.
+  ENGLAND, UK.

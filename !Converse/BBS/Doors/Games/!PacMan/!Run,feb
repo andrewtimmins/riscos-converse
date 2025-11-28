@@ -1,0 +1,4 @@
+Set PacMan$Dir <Obey$Dir>
+IconSprites <PacMan$Dir>.!Sprites
+WimpSlot 32k 32k
+Run <PacMan$Dir>.!RunImage %*0

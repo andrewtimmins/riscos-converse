@@ -1,0 +1,81 @@
+                Snake Game by Richard Paddle
+                ============================
+
+This program is COPYRIGHT. (C)1993 Richard Paddle
+
+If you like it you can get a registered copy for £5 by sending
+a 3.5" disc, SAE and a cheque for £5 made payable to:
+
+Richard Paddle,
+163 Ebberns Road,
+Apsley,
+Hemel Hempstead,
+Herts.
+HP3 9RD.
+Tel: 0860 128277
+
+
+and you will then receive the full version.
+
+
+          How to set the door up
+          ======================
+
+What you need to do:
+
+Firstly you will need to edit the config file
+Set the doornumber you wish snake to repond to.
+Set the Quit delay.
+
+Next you need to write the Menu data files for ARCbbs an example is
+given below. This Shows the user the instruction screen, then enters
+the door, and after the game displays the high score:
+
+|Snake game
+DOING"Snake game"
+TYPE <ARCbbs$text>.SnakeIns
+ANYKEY
+OSCLI "WimpTask <ARCserver$Dir>.^.!SnakeDoor"
+DOOR 4
+TYPE <ARCbbs$text>.SnkScr
+ECHO "{bfgbg wb}                                Press any key{eol std}"
+ANYKEY
+ECHO
+GOTO games
+
+Note you should put the Instruction screen in the ARCbbs text directory
+
+Below is also a little file to display the high scores:
+
+| Snake Scores
+DOING "Snake Scores"
+TYPE <ARCbbs$text>.SnkScr
+ECHO "{bfgbg wb}                             Press any key{eol std}"
+ANYKEY
+ECHO
+GOTO games
+|
+
+An example Instruction page is also included within this application
+called SnakeIns
+
+
+            Notes for the Unregistered
+            ==========================
+
+This program is copyright.
+As an unregistered user the highscore table prints Unregistered instead
+of the usersname, The BBS name is printed as UNREGISTERED and there is
+a maximum score of 20
+
+You can obtain a registered version for £5, see note at top of this file
+
+
+             Any suggestion etc to...
+             ========================
+
+Richard Paddle@2:257/120           or
+Richard Paddle@2:254/27            or
+richard@arcade.demon.co.uk
+
+

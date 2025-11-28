@@ -1,0 +1,26 @@
+Web Server Resources
+====================
+
+This folder contains resources for the Web Server application.
+
+Templates File
+--------------
+You need to create a Templates file (filetype &FEC) containing a "proginfo"
+window template. Use WinEd, TemplEd, or FormEd on RISC OS to create it.
+
+The "proginfo" window should contain:
+- Icon 0: Application name (e.g., "Web Server")  
+- Icon 1: Purpose (e.g., "HTTP server for Converse BBS")
+- Icon 2: Author (e.g., "Converse BBS")
+- Icon 3: Version (e.g., "1.00 (28 Nov 2025)")
+
+Alternatively, copy an existing proginfo template from another Converse
+application (Server, FTN, etc.) and modify it.
+
+Sprites File
+------------
+Create an !Sprites file (filetype &FF9) containing:
+- !web: Application icon for the iconbar (small, 34x17 or similar)
+- Optionally: sm!web (small icon for icon bar)
+
+Use Paint or another sprite editor on RISC OS to create these.

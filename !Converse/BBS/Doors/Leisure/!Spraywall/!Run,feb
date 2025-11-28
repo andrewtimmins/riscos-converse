@@ -1,0 +1,8 @@
+|Run file for Spraywall
+|© Werewolf Software 1997
+|Written by Dane Koekoek
+|
+WimpSlot -min 64K -max 64K
+Set Spraywall$Dir <Obey$Dir>
+IconSprites <Spraywall$Dir>.!Sprites
+Run <Spraywall$Dir>.!RunImage %*0
