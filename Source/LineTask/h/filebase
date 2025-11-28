@@ -113,6 +113,16 @@ int filebase_show_file_info(filebase_session *session,
 int filebase_download_block(int base_id, int file_id, void *buffer, long offset, int length);
 int filebase_get_file_size(int base_id, int file_id, long *size_out);
 
+/* Upload operations */
+int filebase_begin_upload(int base_id, int area_id, const char *filename, 
+                          const char *description, int uploaded_by,
+                          int accesslevel, const char *keys);
+int filebase_upload_block(int base_id, int file_id, const void *data, int length);
+int filebase_get_temp_upload_path(int base_id, int line, char *path, int path_size);
+int filebase_register_upload(int base_id, int area_id, const char *temp_path,
+                             const char *filename, const char *description,
+                             int uploaded_by, int accesslevel, const char *keys);
+
 /* Access control helpers */
 int filebase_check_access(int required_level, const char *required_keys,
                           int user_level, const char *user_keys);

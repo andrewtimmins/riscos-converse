@@ -151,6 +151,35 @@ Instructions
         filebase info 5
         filebase download 5
 
+`SENDFILE <file_id> [protocol]`
+    Initiates a file transfer using the selected filebase. The file_id
+    refers to a file in the currently selected filebase. The protocol
+    argument selects the transfer protocol to use:
+    
+    - `xmodem` — Standard XMODEM (128-byte blocks, checksum)
+    - `xmodem-crc` — XMODEM with CRC-16 (default, recommended)
+    - `xmodem-1k` — XMODEM with 1024-byte blocks and CRC-16
+    
+    Before using SENDFILE, you must:
+    1. Select a filebase with `filebase select <id>`
+    2. Optionally select an area with `filebase area <id>`
+    3. Know the file ID (from `filebase files` or `filebase info`)
+    
+    The command displays a prompt asking the user to start their receiver,
+    then waits for the receiver's start signal (NAK for checksum mode,
+    'C' for CRC mode). Once the transfer completes (success or failure),
+    script execution resumes.
+    
+    Example:
+        filebase select 1
+        filebase files
+        prompt file_id line echo
+        sendfile %{file_id} xmodem-crc
+        print `\r\nTransfer complete.\r\n`
+    
+    Note: The user's terminal emulator must support XMODEM file transfers.
+    Most modern terminal programs include this capability.
+
 `ONLINE`
     Lists currently connected users with their line numbers, usernames,
     online duration, and current activity.

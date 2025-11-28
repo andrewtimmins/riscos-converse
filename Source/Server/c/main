@@ -1205,6 +1205,8 @@ void check_listener(void)
 
 		if (line_configuration[socket_poll].socket == 0)
 		{
+			int nonblock = 1;
+
 			// We are not connected, so accept this connection.
 			line_configuration[socket_poll].socket = accept(listening_socket, (struct sockaddr *)&saddr, &namelen);
 			active_sockets++;
@@ -1216,6 +1218,9 @@ void check_listener(void)
 				// Something went wrong. Just get out of here, the listener is still active...
 				return;
 			}
+
+			// Make the client socket non-blocking so we don't hang waiting for data
+			socketioctl(line_configuration[socket_poll].socket, FIONBIO, &nonblock);
 		}
 
 		line_configuration[socket_poll].connectedtime = clock();

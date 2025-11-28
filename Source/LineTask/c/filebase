@@ -72,27 +72,37 @@ int filebase_get_info(int base_id, LINETASK_FILEBASE_RECORD *record_out)
 {
     _kernel_swi_regs regs;
     LINETASK_FILEBASE_RECORD *result;
+    _kernel_oserror *err;
+
+    debug_printf("filebase_get_info: base_id=%d\n", base_id);
 
     if (base_id <= 0 || record_out == NULL)
     {
+        debug_printf("filebase_get_info: invalid params, returning 0\n");
         return 0;
     }
 
     regs.r[0] = FILEBASE_CMD_INFO;
     regs.r[1] = base_id;
 
-    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+    if (err != NULL)
     {
+        debug_printf("filebase_get_info: SWI error: %s\n", err->errmess);
         return 0;
     }
 
+    debug_printf("filebase_get_info: SWI returned R0=%d\n", regs.r[0]);
+
     if (regs.r[0] == -1 || regs.r[0] == 0)
     {
+        debug_printf("filebase_get_info: not found (R0=%d)\n", regs.r[0]);
         return 0;
     }
 
     /* Copy from module's cache to our buffer */
     result = (LINETASK_FILEBASE_RECORD *)regs.r[0];
+    debug_printf("filebase_get_info: found record name='%s' id=%d\n", result->name, result->id);
     memcpy(record_out, result, sizeof(LINETASK_FILEBASE_RECORD));
 
     return 1;
@@ -674,4 +684,155 @@ int filebase_get_file_size(int base_id, int file_id, long *size_out)
 
     *size_out = record_ptr->filesize;
     return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Upload Operations                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+int filebase_begin_upload(int base_id, int area_id, const char *filename, 
+                          const char *description, int uploaded_by,
+                          int accesslevel, const char *keys)
+{
+    _kernel_swi_regs regs;
+    LINETASK_FILE_RECORD record;
+
+    if (base_id <= 0 || filename == NULL || filename[0] == '\0')
+    {
+        return -1;
+    }
+
+    /* Prepare file record */
+    memset(&record, 0, sizeof(record));
+    record.filebaseid = base_id;
+    record.filebaseareaid = area_id;
+    record.accesslevel = accesslevel;
+    record.uploadedby = uploaded_by;
+    record.deleted = 0;
+    record.filesize = 0;
+    record.downloads = 0;
+
+    strncpy(record.name, filename, sizeof(record.name) - 1);
+    record.name[sizeof(record.name) - 1] = '\0';
+
+    if (description != NULL)
+    {
+        strncpy(record.description, description, sizeof(record.description) - 1);
+        record.description[sizeof(record.description) - 1] = '\0';
+    }
+
+    if (keys != NULL)
+    {
+        strncpy(record.keys, keys, sizeof(record.keys) - 1);
+        record.keys[sizeof(record.keys) - 1] = '\0';
+    }
+
+    /* Call Filer SWI to begin upload */
+    regs.r[0] = FILEBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = base_id;
+    regs.r[2] = (int)&record;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0]; /* Returns file ID or -1 on error */
+}
+
+int filebase_upload_block(int base_id, int file_id, const void *data, int length)
+{
+    _kernel_swi_regs regs;
+
+    if (base_id <= 0 || file_id <= 0 || data == NULL || length <= 0)
+    {
+        return -1;
+    }
+
+    regs.r[0] = FILEBASE_CMD_UPLOAD_BLOCK;
+    regs.r[1] = base_id;
+    regs.r[2] = file_id;
+    regs.r[3] = (int)data;
+    regs.r[4] = length;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0]; /* Returns bytes written or -1 on error */
+}
+
+int filebase_get_temp_upload_path(int base_id, int line, char *path, int path_size)
+{
+    if (path == NULL || path_size <= 0)
+    {
+        return 0;
+    }
+
+    /* Use Converse temp directory for uploads in progress */
+    snprintf(path, path_size, "<Converse$Dir>.Temp.Upload_%d_%d", base_id, line);
+    return 1;
+}
+
+int filebase_register_upload(int base_id, int area_id, const char *temp_path,
+                             const char *filename, const char *description,
+                             int uploaded_by, int accesslevel, const char *keys)
+{
+    _kernel_swi_regs regs;
+    int file_id;
+    FILE *temp_file;
+    FILE *dest_file;
+    long file_size;
+    char buffer[1024];
+    size_t bytes_read;
+    LINETASK_FILE_RECORD record;
+
+    if (base_id <= 0 || temp_path == NULL || filename == NULL)
+    {
+        return -1;
+    }
+
+    /* Get temp file size */
+    temp_file = fopen(temp_path, "rb");
+    if (temp_file == NULL)
+    {
+        return -1;
+    }
+    fseek(temp_file, 0, SEEK_END);
+    file_size = ftell(temp_file);
+    fseek(temp_file, 0, SEEK_SET);
+
+    if (file_size <= 0)
+    {
+        fclose(temp_file);
+        return -1;
+    }
+
+    /* Begin the upload to get a file ID */
+    file_id = filebase_begin_upload(base_id, area_id, filename, description,
+                                     uploaded_by, accesslevel, keys);
+    if (file_id <= 0)
+    {
+        fclose(temp_file);
+        return -1;
+    }
+
+    /* Copy temp file to filebase using upload block SWI */
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), temp_file)) > 0)
+    {
+        if (filebase_upload_block(base_id, file_id, buffer, (int)bytes_read) < 0)
+        {
+            fclose(temp_file);
+            /* TODO: Delete the partial file record */
+            return -1;
+        }
+    }
+
+    fclose(temp_file);
+
+    /* Remove temp file */
+    remove(temp_path);
+
+    return file_id;
 }

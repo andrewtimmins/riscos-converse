@@ -1,0 +1,288 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask File Transfer Module                                                                                                                              */
+/*                                                                                                                                                            */
+/* Provides file transfer protocol support (XMODEM, XMODEM-CRC, XMODEM-1K) via the Pipes module.                                                              */
+/* Designed for cooperative multitasking - all operations are non-blocking with state machine polling.                                                         */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_TRANSFER_H
+#define LINETASK_TRANSFER_H
+
+#include <stdint.h>
+#include <time.h>
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer Protocol Types                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    TRANSFER_PROTO_XMODEM,          /* Standard XMODEM - 128 byte blocks, checksum */
+    TRANSFER_PROTO_XMODEM_CRC,      /* XMODEM-CRC - 128 byte blocks, 16-bit CRC */
+    TRANSFER_PROTO_XMODEM_1K        /* XMODEM-1K - 1024 byte blocks, 16-bit CRC */
+} transfer_protocol;
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer Direction                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    TRANSFER_DIR_SEND,              /* Sending file to remote (download from BBS perspective) */
+    TRANSFER_DIR_RECEIVE            /* Receiving file from remote (upload from BBS perspective) */
+} transfer_direction;
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer State Machine States                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    XFER_IDLE,                      /* No transfer active */
+    XFER_INIT,                      /* Initialising transfer */
+    
+    /* Send states */
+    XFER_SEND_WAIT_START,           /* Waiting for receiver's NAK (checksum) or 'C' (CRC) */
+    XFER_SEND_BLOCK,                /* Transmitting a data block */
+    XFER_SEND_WAIT_ACK,             /* Waiting for ACK/NAK response */
+    XFER_SEND_EOT,                  /* Sending End Of Transmission */
+    XFER_SEND_WAIT_EOT_ACK,         /* Waiting for EOT acknowledgement */
+    
+    /* Receive states */
+    XFER_RECV_SEND_START,           /* Sending initial NAK or 'C' */
+    XFER_RECV_WAIT_BLOCK,           /* Waiting for block header (SOH/STX/EOT) */
+    XFER_RECV_READ_BLOCK,           /* Reading block data */
+    XFER_RECV_SEND_ACK,             /* Sending ACK after good block */
+    XFER_RECV_SEND_NAK,             /* Sending NAK after bad block */
+    
+    /* Terminal states */
+    XFER_COMPLETE,                  /* Transfer completed successfully */
+    XFER_ERROR,                     /* Unrecoverable error occurred */
+    XFER_CANCELLED,                 /* Transfer cancelled by user or remote */
+    XFER_TIMEOUT                    /* Transfer timed out */
+} transfer_state;
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer Result Codes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    XFER_RESULT_OK,                 /* Transfer completed successfully */
+    XFER_RESULT_CANCELLED,          /* User cancelled */
+    XFER_RESULT_TIMEOUT,            /* Timed out waiting for response */
+    XFER_RESULT_TOO_MANY_ERRORS,    /* Too many retries */
+    XFER_RESULT_REMOTE_CANCEL,      /* Remote sent CAN */
+    XFER_RESULT_FILE_ERROR,         /* File read/write error */
+    XFER_RESULT_PROTOCOL_ERROR,     /* Protocol violation */
+    XFER_RESULT_OUT_OF_SYNC         /* Block sequence error */
+} transfer_result;
+
+/* ******************************************************************************************************************************************************** */
+/* XMODEM Protocol Constants                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#define XMODEM_SOH              0x01    /* Start of 128-byte block */
+#define XMODEM_STX              0x02    /* Start of 1024-byte block */
+#define XMODEM_EOT              0x04    /* End of transmission */
+#define XMODEM_ACK              0x06    /* Acknowledge */
+#define XMODEM_NAK              0x15    /* Negative acknowledge */
+#define XMODEM_CAN              0x18    /* Cancel transfer */
+#define XMODEM_CTRLZ            0x1A    /* Padding byte (EOF in CP/M) */
+#define XMODEM_CRC_START        'C'     /* CRC mode request */
+
+#define XMODEM_BLOCK_SIZE       128     /* Standard block size */
+#define XMODEM_1K_BLOCK_SIZE    1024    /* Extended block size */
+#define XMODEM_MAX_BLOCK_SIZE   1024    /* Maximum block we handle */
+
+#define XMODEM_MAX_RETRIES      10      /* Maximum retry attempts per block */
+#define XMODEM_START_RETRIES    6       /* Maximum start sequence retries */
+#define XMODEM_TIMEOUT_MS       10000   /* 10 second timeout for responses */
+#define XMODEM_START_TIMEOUT_MS 60000   /* 60 second timeout for initial start */
+#define XMODEM_CAN_COUNT        2       /* Number of CANs to send for abort */
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer Session Structure                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    /* Session identification */
+    int line;                           /* Pipe line number */
+    int active;                         /* Transfer is active */
+    
+    /* Protocol configuration */
+    transfer_protocol protocol;         /* Selected protocol */
+    transfer_direction direction;       /* Send or receive */
+    int use_crc;                        /* Using CRC (vs checksum) - determined during handshake */
+    int block_size;                     /* Current block size (128 or 1024) */
+    
+    /* State machine */
+    transfer_state state;               /* Current state */
+    transfer_result result;             /* Result code when complete */
+    
+    /* Block handling */
+    uint8_t block_num;                  /* Current block number (1-255, wraps) */
+    uint8_t block_buffer[XMODEM_MAX_BLOCK_SIZE + 5];  /* Block buffer with header/trailer */
+    int block_pos;                      /* Position within block buffer */
+    int block_len;                      /* Expected block length */
+    
+    /* File handling - uses Filer module for downloads */
+    int filebase_id;                    /* Filebase ID for downloads */
+    int file_id;                        /* File ID for downloads */
+    long file_size;                     /* Total file size */
+    long file_offset;                   /* Current offset in file */
+    
+    /* For receive (upload) - direct file path */
+    char upload_path[256];              /* Path for received file */
+    int upload_handle;                  /* File handle for uploads */
+    
+    /* Statistics */
+    long bytes_transferred;             /* Total bytes sent/received */
+    int blocks_transferred;             /* Total blocks sent/received */
+    int errors;                         /* Error count */
+    int retries;                        /* Current retry count */
+    
+    /* Timing */
+    unsigned int timeout_end;           /* Monotonic time when timeout expires */
+    unsigned int transfer_start;        /* When transfer started */
+    
+    /* Output buffer for pending writes */
+    uint8_t output_pending[16];         /* Small buffer for protocol bytes */
+    int output_count;                   /* Bytes pending in output buffer */
+    int output_pos;                     /* Current write position */
+    
+    /* Error message */
+    char error_msg[64];                 /* Human-readable error description */
+    
+} transfer_session;
+
+/* ******************************************************************************************************************************************************** */
+/* Public API                                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Initialise the transfer module.
+ * Call once at LineTask startup.
+ */
+void transfer_init(void);
+
+/*
+ * Start a file send transfer (user downloading from BBS).
+ *
+ * line         - Pipe line number
+ * protocol     - XMODEM variant to use
+ * filebase_id  - Filer filebase ID containing the file
+ * file_id      - File ID within the filebase
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_send(int line, transfer_protocol protocol,
+                        int filebase_id, int file_id,
+                        transfer_session *session);
+
+/*
+ * Start a file receive transfer (user uploading to BBS).
+ *
+ * line         - Pipe line number
+ * protocol     - XMODEM variant to use
+ * upload_path  - Full RISC OS path for received file
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_receive(int line, transfer_protocol protocol,
+                           const char *upload_path,
+                           transfer_session *session);
+
+/*
+ * Poll the transfer state machine.
+ * Must be called frequently from the main loop.
+ *
+ * session      - Active transfer session
+ *
+ * Returns: 1 if transfer still active, 0 if complete/error/cancelled
+ */
+int transfer_poll(transfer_session *session);
+
+/*
+ * Cancel an active transfer.
+ *
+ * session      - Transfer session to cancel
+ */
+void transfer_cancel(transfer_session *session);
+
+/*
+ * Check if a transfer is active.
+ *
+ * session      - Transfer session to check
+ *
+ * Returns: 1 if active, 0 if idle/complete
+ */
+int transfer_is_active(transfer_session *session);
+
+/*
+ * Get transfer progress as percentage.
+ *
+ * session      - Transfer session
+ *
+ * Returns: 0-100 percentage, or -1 if unknown
+ */
+int transfer_get_progress(transfer_session *session);
+
+/*
+ * Get human-readable status string.
+ *
+ * session      - Transfer session
+ * buffer       - Output buffer
+ * buffer_size  - Size of output buffer
+ */
+void transfer_get_status(transfer_session *session, char *buffer, int buffer_size);
+
+/* ******************************************************************************************************************************************************** */
+/* CRC Calculation                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Calculate XMODEM CRC-16 (polynomial 0x1021).
+ *
+ * data         - Data buffer
+ * length       - Number of bytes
+ *
+ * Returns: 16-bit CRC value
+ */
+uint16_t transfer_crc16(const uint8_t *data, int length);
+
+/*
+ * Calculate simple checksum (sum of bytes mod 256).
+ *
+ * data         - Data buffer
+ * length       - Number of bytes
+ *
+ * Returns: 8-bit checksum
+ */
+uint8_t transfer_checksum(const uint8_t *data, int length);
+
+/* ******************************************************************************************************************************************************** */
+/* Internal Helpers (exposed for testing)                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Get monotonic time in centiseconds.
+ * Uses OS_ReadMonotonicTime.
+ */
+unsigned int transfer_get_time(void);
+
+/*
+ * Check if timeout has expired.
+ */
+int transfer_timeout_expired(transfer_session *session);
+
+/*
+ * Set timeout from now.
+ * timeout_ms - Timeout in milliseconds
+ */
+void transfer_set_timeout(transfer_session *session, unsigned int timeout_ms);
+
+#endif /* LINETASK_TRANSFER_H */

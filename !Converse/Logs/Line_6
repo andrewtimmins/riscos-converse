@@ -1,0 +1,22 @@
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 27/11/2025 | 20:49:44 | LineTask started
+| 27/11/2025 | 20:53:44 | LineTask shutting down
+| 27/11/2025 | 20:56:52 | LineTask started
+| 27/11/2025 | 21:04:31 | LineTask shutting down
+| 27/11/2025 | 21:07:08 | LineTask started
+| 27/11/2025 | 21:15:07 | LineTask shutting down
+| 27/11/2025 | 21:15:48 | LineTask started
+| 28/11/2025 | 00:47:43 | LineTask started
+| 28/11/2025 | 00:53:03 | LineTask shutting down
+| 28/11/2025 | 00:53:30 | LineTask started
+| 28/11/2025 | 01:04:01 | LineTask shutting down
+| 28/11/2025 | 01:04:24 | LineTask started
+| 28/11/2025 | 01:14:10 | LineTask shutting down
+| 28/11/2025 | 01:15:19 | LineTask started
+| 28/11/2025 | 01:26:03 | LineTask shutting down
+| 28/11/2025 | 02:45:03 | LineTask started
+| 28/11/2025 | 02:48:06 | LineTask shutting down

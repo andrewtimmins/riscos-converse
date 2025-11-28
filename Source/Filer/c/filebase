@@ -183,12 +183,16 @@ void filebase_swi_handler(_kernel_swi_regs *r)
     {
       int base_id = r->r[1];
 
+      filebase_log("CMD_INFO: base_id=%d", base_id);
+
       if (base_id <= 0 || !filebase_find_base_record(base_id, &filebase_info_cache))
       {
+        filebase_log("CMD_INFO: not found, returning -1");
         r->r[0] = -1;
         return;
       }
 
+      filebase_log("CMD_INFO: found record name='%s' id=%d", filebase_info_cache.name, filebase_info_cache.id);
       r->r[0] = (int)(uintptr_t)&filebase_info_cache;
       break;
     }
@@ -995,14 +999,20 @@ static int filebase_update_base_record(const FILEBASE_RECORD *record)
 
 static int filebase_find_base_record(int id, FILEBASE_RECORD *record_out)
 {
-  FILE *file = fopen(FILEBASE_DB_PATH, "rb");
+  FILE *file;
+  
+  filebase_log("find_base_record: looking for id=%d in %s", id, FILEBASE_DB_PATH);
+  
+  file = fopen(FILEBASE_DB_PATH, "rb");
   if (file == NULL)
   {
+    filebase_log("find_base_record: failed to open FileDB");
     return 0;
   }
 
   while (fread(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, file) == 1)
   {
+    filebase_log("find_base_record: read record id=%d name='%s'", filebase_info_cache.id, filebase_info_cache.name);
     if (filebase_info_cache.id == id)
     {
       char previous_dir[MAX_DIR];

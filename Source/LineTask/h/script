@@ -27,6 +27,12 @@ typedef struct script_host
     int (*authenticate_user)(void *context, const char *username, const char *password, int *auth_result);
     void (*start_postlogon)(void *context);
     void (*start_newuser)(void *context);
+    /* File transfer callback - protocol: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K */
+    int (*start_transfer)(void *context, int base_id, int file_id, int protocol);
+    /* Receive transfer callback - returns 1 on success, 0 on failure */
+    int (*start_receive_transfer)(void *context, const char *temp_path, int protocol);
+    /* Get current user ID for upload attribution */
+    int (*get_user_id)(void *context);
 } script_host;
 
 typedef enum
@@ -39,6 +45,7 @@ typedef enum
     SCRIPT_STATUS_WAIT_SLEEP,
     SCRIPT_STATUS_WAIT_LOGON_USERNAME,
     SCRIPT_STATUS_WAIT_LOGON_PASSWORD,
+    SCRIPT_STATUS_WAIT_TRANSFER,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -66,7 +73,9 @@ typedef enum
     SCRIPT_CMD_LOGOFF,
     SCRIPT_CMD_ONLINE,
     SCRIPT_CMD_FILEBASE,
-    SCRIPT_CMD_LOGON
+    SCRIPT_CMD_LOGON,
+    SCRIPT_CMD_SENDFILE,
+    SCRIPT_CMD_RECEIVEFILE
 } script_command_type;
 
 typedef enum
@@ -131,6 +140,9 @@ void script_stop(script_state *state);
 void script_process(script_state *state);
 int script_handle_user_byte(script_state *state, unsigned char byte);
 void script_notify_door_closed(script_state *state);
+void script_notify_transfer_complete(script_state *state);
 script_status script_get_status(const script_state *state);
+const char *script_get_last_error(const script_state *state);
+const char *script_get_variable(const script_state *state, const char *name);
 
 #endif

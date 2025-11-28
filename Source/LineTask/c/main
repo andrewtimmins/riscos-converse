@@ -19,6 +19,7 @@
 #include "C:Desk.WimpSWIs.h"
 #include "script.h"
 #include "filebase.h"
+#include "transfer.h"
 #include "debug.h"
 #include "iconnames.h"
 #include "main.h"
@@ -157,6 +158,8 @@ typedef struct
     script_state script;
     /* Filebase session */
     filebase_session fb_session;
+    /* File transfer session */
+    transfer_session xfer_session;
     /* User session state */
     int user_id;
     int user_accesslevel;
@@ -235,6 +238,9 @@ static int script_host_filebase_download(void *context, int base_id, int file_id
 static int script_host_authenticate_user(void *context, const char *username, const char *password, int *auth_result);
 static void script_host_start_postlogon(void *context);
 static void script_host_start_newuser(void *context);
+static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
+static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
+static int script_host_get_user_id(void *context);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
 static void poll_idle(void);
@@ -368,11 +374,18 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.authenticate_user = script_host_authenticate_user;
         host.start_postlogon = script_host_start_postlogon;
         host.start_newuser = script_host_start_newuser;
+        host.start_transfer = script_host_start_transfer;
+        host.start_receive_transfer = script_host_start_receive_transfer;
+        host.get_user_id = script_host_get_user_id;
         script_initialise(&state->script, &host);
     }
 
     /* Initialise filebase session */
     filebase_session_init(&state->fb_session);
+    
+    /* Initialise transfer session */
+    memset(&state->xfer_session, 0, sizeof(state->xfer_session));
+    
     state->user_id = 0;
     state->user_accesslevel = 0;
     state->user_keys[0] = '\0';
@@ -477,11 +490,100 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
     line_task_state *state = (line_task_state *)ref;
     Desk_UNUSED(event);
 
-    process_server_stream(state);
-    botstopper_process(state);
-    door_process(state);
-    arcbbs_door_process(state);
+    /* Poll file transfer if active - do this FIRST to consume raw bytes */
+    if (transfer_is_active(&state->xfer_session))
+    {
+        if (!transfer_poll(&state->xfer_session))
+        {
+            /* Transfer completed - notify script engine */
+            if (state->xfer_session.result == XFER_RESULT_OK)
+            {
+                /* Check if this was a receive (upload) transfer */
+                if (state->xfer_session.direction == TRANSFER_DIR_RECEIVE)
+                {
+                    /* Register the uploaded file in the filebase */
+                    const char *fb_str = script_get_variable(&state->script, "_upload_filebase");
+                    const char *area_str = script_get_variable(&state->script, "_upload_area");
+                    const char *filename = script_get_variable(&state->script, "_upload_filename");
+                    int base_id = fb_str ? atoi(fb_str) : 0;
+                    int area_id = area_str ? atoi(area_str) : 0;
+                    
+                    if (base_id > 0 && filename && filename[0] != '\0')
+                    {
+                        int file_id = filebase_register_upload(
+                            base_id, area_id,
+                            state->xfer_session.upload_path,
+                            filename,
+                            NULL,  /* No description for now */
+                            state->user_id,
+                            0,     /* Default access level */
+                            NULL   /* No keys required */
+                        );
+                        
+                        if (file_id > 0)
+                        {
+                            char msg[256];
+                            snprintf(msg, sizeof(msg),
+                                "\r\n\033[1;32mUpload complete! File ID: %d\033[0m\r\n", file_id);
+                            pipes_output_write_string(state->line_id, msg);
+                            
+                            snprintf(msg, sizeof(msg), "Upload registered: %s (file_id=%d)", filename, file_id);
+                            log_line_event(state->line_id, msg);
+                        }
+                        else
+                        {
+                            pipes_output_write_string(state->line_id,
+                                "\r\n\033[1;33mFile received but registration failed.\033[0m\r\n");
+                        }
+                    }
+                    else
+                    {
+                        pipes_output_write_string(state->line_id,
+                            "\r\n\033[1;32mFile received.\033[0m\r\n");
+                    }
+                }
+                else
+                {
+                    pipes_output_write_string(state->line_id, 
+                        "\r\n\033[1;32mTransfer complete!\033[0m\r\n");
+                }
+            }
+            else
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), 
+                    "\r\n\033[1;31mTransfer failed: %s\033[0m\r\n",
+                    state->xfer_session.error_msg[0] ? state->xfer_session.error_msg : "Unknown error");
+                pipes_output_write_string(state->line_id, msg);
+            }
+            script_notify_transfer_complete(&state->script);
+        }
+        /* Don't process normal input during active transfer */
+    }
+    else
+    {
+        /* Normal input processing when no transfer is active */
+        process_server_stream(state);
+        botstopper_process(state);
+        door_process(state);
+        arcbbs_door_process(state);
+    }
+    
     script_process(&state->script);
+    
+    /* Check for script errors and report them to user */
+    if (script_get_status(&state->script) == SCRIPT_STATUS_ERROR)
+    {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), 
+            "\r\n\033[1;31m[Script Error: %s]\033[0m\r\n",
+            script_get_last_error(&state->script));
+        pipes_output_write_string(state->line_id, error_msg);
+        snprintf(error_msg, sizeof(error_msg), "Script error: %s", script_get_last_error(&state->script));
+        log_line_event(state->line_id, error_msg);
+        script_stop(&state->script);
+    }
+    
     return Desk_bool_TRUE;
 }
 
@@ -2161,6 +2263,112 @@ static void script_host_start_newuser(void *context)
     }
     
     script_start_newuser(state);
+}
+
+static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol)
+{
+    line_task_state *state = (line_task_state *)context;
+    transfer_protocol xfer_proto;
+    char log_msg[128];
+
+    if (state == NULL || base_id <= 0 || file_id <= 0)
+    {
+        return 0;
+    }
+
+    /* Map protocol number to enum */
+    switch (protocol)
+    {
+        case 0:
+            xfer_proto = TRANSFER_PROTO_XMODEM;
+            break;
+        case 2:
+            xfer_proto = TRANSFER_PROTO_XMODEM_1K;
+            break;
+        case 1:
+        default:
+            xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
+            break;
+    }
+
+    /* Cancel any existing transfer */
+    if (transfer_is_active(&state->xfer_session))
+    {
+        transfer_cancel(&state->xfer_session);
+    }
+
+    /* Start the new transfer */
+    if (!transfer_start_send(state->line_id, xfer_proto, base_id, file_id, &state->xfer_session))
+    {
+        debug_printf("script_host_start_transfer: failed to start - %s\n", 
+                     state->xfer_session.error_msg);
+        return 0;
+    }
+
+    snprintf(log_msg, sizeof(log_msg), "Starting file transfer (base=%d, file=%d, proto=%d)",
+             base_id, file_id, protocol);
+    log_line_event(state->line_id, log_msg);
+
+    return 1;
+}
+
+static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol)
+{
+    line_task_state *state = (line_task_state *)context;
+    transfer_protocol xfer_proto;
+    char log_msg[128];
+
+    if (state == NULL || temp_path == NULL || temp_path[0] == '\0')
+    {
+        return 0;
+    }
+
+    /* Map protocol number to enum */
+    switch (protocol)
+    {
+        case 0:
+            xfer_proto = TRANSFER_PROTO_XMODEM;
+            break;
+        case 2:
+            xfer_proto = TRANSFER_PROTO_XMODEM_1K;
+            break;
+        case 1:
+        default:
+            xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
+            break;
+    }
+
+    /* Cancel any existing transfer */
+    if (transfer_is_active(&state->xfer_session))
+    {
+        transfer_cancel(&state->xfer_session);
+    }
+
+    /* Start the receive transfer */
+    if (!transfer_start_receive(state->line_id, xfer_proto, temp_path, &state->xfer_session))
+    {
+        debug_printf("script_host_start_receive_transfer: failed to start - %s\n", 
+                     state->xfer_session.error_msg);
+        return 0;
+    }
+
+    snprintf(log_msg, sizeof(log_msg), "Starting file receive (path=%s, proto=%d)",
+             temp_path, protocol);
+    log_line_event(state->line_id, log_msg);
+
+    return 1;
+}
+
+static int script_host_get_user_id(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return 0;
+    }
+
+    return state->user_id;
 }
 
 static void log_line_event(int line_id, const char *message)

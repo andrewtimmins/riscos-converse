@@ -1,0 +1,471 @@
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 27/11/2025 | 20:49:44 | LineTask started
+| 27/11/2025 | 20:49:53 | Session connected
+| 27/11/2025 | 20:49:53 | Botstopper challenge started
+| 27/11/2025 | 20:49:54 | Botstopper passed
+| 27/11/2025 | 20:49:54 | Starting prelogon script
+| 27/11/2025 | 20:49:54 | Logging on...
+| 27/11/2025 | 20:49:57 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 20:49:57 | Starting postlogon script
+| 27/11/2025 | 20:49:57 | Main Menu
+| 27/11/2025 | 20:50:32 | Session disconnected
+| 27/11/2025 | 20:50:45 | Session connected
+| 27/11/2025 | 20:50:45 | Botstopper challenge started
+| 27/11/2025 | 20:50:46 | Botstopper passed
+| 27/11/2025 | 20:50:46 | Starting prelogon script
+| 27/11/2025 | 20:50:46 | Logging on...
+| 27/11/2025 | 20:50:50 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 20:50:50 | Starting postlogon script
+| 27/11/2025 | 20:50:50 | Main Menu
+| 27/11/2025 | 20:50:52 | ARCbbs Menu
+| 27/11/2025 | 20:51:24 | Session disconnected
+| 27/11/2025 | 20:51:35 | Session connected
+| 27/11/2025 | 20:51:35 | Botstopper challenge started
+| 27/11/2025 | 20:51:36 | Botstopper passed
+| 27/11/2025 | 20:51:36 | Starting prelogon script
+| 27/11/2025 | 20:51:36 | Logging on...
+| 27/11/2025 | 20:51:41 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 20:51:41 | Starting postlogon script
+| 27/11/2025 | 20:51:41 | Main Menu
+| 27/11/2025 | 20:51:44 | ARCbbs Menu
+| 27/11/2025 | 20:51:45 | Main Menu
+| 27/11/2025 | 20:51:48 | Viewing online users
+| 27/11/2025 | 20:51:49 | Main Menu
+| 27/11/2025 | 20:52:23 | Session disconnected
+| 27/11/2025 | 20:53:44 | LineTask shutting down
+| 27/11/2025 | 20:56:52 | LineTask started
+| 27/11/2025 | 20:56:58 | Session connected
+| 27/11/2025 | 20:56:58 | Botstopper challenge started
+| 27/11/2025 | 20:57:00 | Botstopper passed
+| 27/11/2025 | 20:57:00 | Starting prelogon script
+| 27/11/2025 | 20:57:00 | Logging on...
+| 27/11/2025 | 20:57:05 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 20:57:05 | Starting postlogon script
+| 27/11/2025 | 20:57:05 | Main Menu
+| 27/11/2025 | 20:57:40 | Session disconnected
+| 27/11/2025 | 20:57:49 | Session connected
+| 27/11/2025 | 20:57:49 | Botstopper challenge started
+| 27/11/2025 | 20:57:51 | Botstopper passed
+| 27/11/2025 | 20:57:51 | Starting prelogon script
+| 27/11/2025 | 20:57:51 | Logging on...
+| 27/11/2025 | 20:57:58 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 20:57:58 | Starting postlogon script
+| 27/11/2025 | 20:57:58 | Main Menu
+| 27/11/2025 | 20:58:30 | Session disconnected
+| 27/11/2025 | 21:00:11 | Session connected
+| 27/11/2025 | 21:00:11 | Botstopper challenge started
+| 27/11/2025 | 21:00:12 | Botstopper passed
+| 27/11/2025 | 21:00:12 | Starting prelogon script
+| 27/11/2025 | 21:00:12 | Logging on...
+| 27/11/2025 | 21:00:15 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:00:15 | Starting postlogon script
+| 27/11/2025 | 21:00:15 | Main Menu
+| 27/11/2025 | 21:00:18 | Filebase Menu
+| 27/11/2025 | 21:01:01 | Session disconnected
+| 27/11/2025 | 21:01:21 | Session connected
+| 27/11/2025 | 21:01:21 | Botstopper challenge started
+| 27/11/2025 | 21:01:23 | Botstopper passed
+| 27/11/2025 | 21:01:23 | Starting prelogon script
+| 27/11/2025 | 21:01:23 | Logging on...
+| 27/11/2025 | 21:01:26 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:01:26 | Starting postlogon script
+| 27/11/2025 | 21:01:26 | Main Menu
+| 27/11/2025 | 21:01:58 | Session disconnected
+| 27/11/2025 | 21:02:36 | Session connected
+| 27/11/2025 | 21:02:36 | Botstopper challenge started
+| 27/11/2025 | 21:02:38 | Botstopper passed
+| 27/11/2025 | 21:02:38 | Starting prelogon script
+| 27/11/2025 | 21:02:38 | Logging on...
+| 27/11/2025 | 21:02:41 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:02:41 | Starting postlogon script
+| 27/11/2025 | 21:02:41 | Main Menu
+| 27/11/2025 | 21:02:43 | Filebase Menu
+| 27/11/2025 | 21:02:46 | Main Menu
+| 27/11/2025 | 21:02:47 | Filebase Menu
+| 27/11/2025 | 21:02:49 | Listing filebases...
+| 27/11/2025 | 21:02:51 | Filebase Menu
+| 27/11/2025 | 21:03:26 | Session disconnected
+| 27/11/2025 | 21:03:38 | Session connected
+| 27/11/2025 | 21:03:38 | Botstopper challenge started
+| 27/11/2025 | 21:03:39 | Botstopper passed
+| 27/11/2025 | 21:03:39 | Starting prelogon script
+| 27/11/2025 | 21:03:39 | Logging on...
+| 27/11/2025 | 21:03:42 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:03:42 | Starting postlogon script
+| 27/11/2025 | 21:03:42 | Main Menu
+| 27/11/2025 | 21:04:13 | Session disconnected
+| 27/11/2025 | 21:04:31 | LineTask shutting down
+| 27/11/2025 | 21:07:08 | LineTask started
+| 27/11/2025 | 21:07:13 | Session connected
+| 27/11/2025 | 21:07:13 | Botstopper challenge started
+| 27/11/2025 | 21:07:15 | Botstopper passed
+| 27/11/2025 | 21:07:15 | Starting prelogon script
+| 27/11/2025 | 21:07:15 | Logging on...
+| 27/11/2025 | 21:07:19 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:07:19 | Starting postlogon script
+| 27/11/2025 | 21:07:19 | Main Menu
+| 27/11/2025 | 21:07:20 | Script error: Unknown command 'area_id' on line 50
+| 27/11/2025 | 21:07:50 | Session disconnected
+| 27/11/2025 | 21:11:52 | Session connected
+| 27/11/2025 | 21:11:52 | Botstopper challenge started
+| 27/11/2025 | 21:11:54 | Botstopper passed
+| 27/11/2025 | 21:11:54 | Starting prelogon script
+| 27/11/2025 | 21:11:54 | Logging on...
+| 27/11/2025 | 21:11:58 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:11:58 | Starting postlogon script
+| 27/11/2025 | 21:11:58 | Main Menu
+| 27/11/2025 | 21:11:58 | Filebase Menu
+| 27/11/2025 | 21:12:06 | Filebase Menu
+| 27/11/2025 | 21:12:08 | Listing filebases...
+| 27/11/2025 | 21:12:10 | Filebase Menu
+| 27/11/2025 | 21:12:59 | Session disconnected
+| 27/11/2025 | 21:13:03 | Session connected
+| 27/11/2025 | 21:13:03 | Botstopper challenge started
+| 27/11/2025 | 21:13:04 | Botstopper passed
+| 27/11/2025 | 21:13:04 | Starting prelogon script
+| 27/11/2025 | 21:13:04 | Logging on...
+| 27/11/2025 | 21:13:07 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:13:07 | Starting postlogon script
+| 27/11/2025 | 21:13:07 | Main Menu
+| 27/11/2025 | 21:13:09 | Filebase Menu
+| 27/11/2025 | 21:13:10 | Listing filebases...
+| 27/11/2025 | 21:13:13 | Filebase Menu
+| 27/11/2025 | 21:13:24 | Filebase Menu
+| 27/11/2025 | 21:13:25 | Listing areas...
+| 27/11/2025 | 21:13:28 | Filebase Menu
+| 27/11/2025 | 21:13:31 | Listing files...
+| 27/11/2025 | 21:13:32 | Filebase Menu
+| 27/11/2025 | 21:14:06 | Session disconnected
+| 27/11/2025 | 21:15:07 | LineTask shutting down
+| 27/11/2025 | 21:15:48 | LineTask started
+| 27/11/2025 | 21:15:54 | Session connected
+| 27/11/2025 | 21:15:54 | Botstopper challenge started
+| 27/11/2025 | 21:15:54 | Botstopper passed
+| 27/11/2025 | 21:15:54 | Starting prelogon script
+| 27/11/2025 | 21:15:54 | Logging on...
+| 27/11/2025 | 21:15:58 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:15:58 | Starting postlogon script
+| 27/11/2025 | 21:15:58 | Main Menu
+| 27/11/2025 | 21:16:00 | Viewing online users
+| 27/11/2025 | 21:16:01 | Main Menu
+| 27/11/2025 | 21:16:02 | Filebase Menu
+| 27/11/2025 | 21:16:04 | Listing filebases...
+| 27/11/2025 | 21:16:05 | Filebase Menu
+| 27/11/2025 | 21:16:09 | Filebase Menu
+| 27/11/2025 | 21:16:11 | Listing filebases...
+| 27/11/2025 | 21:16:11 | Filebase Menu
+| 27/11/2025 | 21:16:33 | Filebase Menu
+| 27/11/2025 | 21:16:41 | Filebase Menu
+| 27/11/2025 | 21:16:42 | Listing areas...
+| 27/11/2025 | 21:16:43 | Filebase Menu
+| 27/11/2025 | 21:16:48 | Filebase Menu
+| 27/11/2025 | 21:16:51 | Listing files...
+| 27/11/2025 | 21:16:51 | Filebase Menu
+| 27/11/2025 | 21:17:16 | Listing filebases...
+| 27/11/2025 | 21:17:18 | Filebase Menu
+| 27/11/2025 | 21:17:19 | Listing filebases...
+| 27/11/2025 | 21:17:23 | Filebase Menu
+| 27/11/2025 | 21:17:24 | Listing filebases...
+| 27/11/2025 | 21:17:25 | Filebase Menu
+| 27/11/2025 | 21:17:55 | Session disconnected
+| 27/11/2025 | 21:19:29 | Session connected
+| 27/11/2025 | 21:19:29 | Botstopper challenge started
+| 27/11/2025 | 21:19:31 | Botstopper passed
+| 27/11/2025 | 21:19:31 | Starting prelogon script
+| 27/11/2025 | 21:19:31 | Logging on...
+| 27/11/2025 | 21:19:34 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:19:34 | Starting postlogon script
+| 27/11/2025 | 21:19:34 | Main Menu
+| 27/11/2025 | 21:19:41 | Viewing online users
+| 27/11/2025 | 21:19:42 | Main Menu
+| 27/11/2025 | 21:19:43 | Viewing online users
+| 27/11/2025 | 21:19:43 | Main Menu
+| 27/11/2025 | 21:19:45 | Viewing online users
+| 27/11/2025 | 21:19:45 | Main Menu
+| 27/11/2025 | 21:19:46 | Viewing online users
+| 27/11/2025 | 21:19:46 | Main Menu
+| 27/11/2025 | 21:19:53 | Chatting with Sysop...
+| 27/11/2025 | 21:20:04 | Main Menu
+| 27/11/2025 | 21:20:07 | Session disconnected
+| 27/11/2025 | 21:20:23 | Session connected
+| 27/11/2025 | 21:20:23 | Botstopper challenge started
+| 27/11/2025 | 21:20:25 | Botstopper passed
+| 27/11/2025 | 21:20:25 | Starting prelogon script
+| 27/11/2025 | 21:20:25 | Logging on...
+| 27/11/2025 | 21:20:28 | Login failed for 'any' (reason 1)
+| 27/11/2025 | 21:20:32 | User 'andy' logged in (id=1, level=0)
+| 27/11/2025 | 21:20:32 | Starting postlogon script
+| 27/11/2025 | 21:20:32 | Main Menu
+| 27/11/2025 | 21:20:38 | Connection status
+| 27/11/2025 | 21:20:39 | Main Menu
+| 27/11/2025 | 21:20:48 | ARCbbs Menu
+| 27/11/2025 | 21:20:51 | Playing Trivial...
+| 27/11/2025 | 21:21:08 | ARCbbs Menu
+| 27/11/2025 | 21:21:11 | Talking in Virtual Cafe...
+| 28/11/2025 | 00:47:43 | LineTask started
+| 28/11/2025 | 00:47:52 | Session connected
+| 28/11/2025 | 00:47:52 | Botstopper challenge started
+| 28/11/2025 | 00:47:54 | Botstopper passed
+| 28/11/2025 | 00:47:54 | Starting prelogon script
+| 28/11/2025 | 00:47:54 | Logging on...
+| 28/11/2025 | 00:47:57 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 00:47:57 | Starting postlogon script
+| 28/11/2025 | 00:47:57 | Main Menu
+| 28/11/2025 | 00:47:59 | Filebase Menu
+| 28/11/2025 | 00:48:01 | Listing filebases...
+| 28/11/2025 | 00:48:06 | Filebase Menu
+| 28/11/2025 | 00:48:40 | Session disconnected
+| 28/11/2025 | 00:53:03 | LineTask shutting down
+| 28/11/2025 | 00:53:30 | LineTask started
+| 28/11/2025 | 00:53:35 | Session connected
+| 28/11/2025 | 00:53:35 | Botstopper challenge started
+| 28/11/2025 | 00:53:37 | Botstopper passed
+| 28/11/2025 | 00:53:37 | Starting prelogon script
+| 28/11/2025 | 00:53:37 | Logging on...
+| 28/11/2025 | 00:53:40 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 00:53:40 | Starting postlogon script
+| 28/11/2025 | 00:53:40 | Main Menu
+| 28/11/2025 | 00:53:43 | Filebase Menu
+| 28/11/2025 | 00:53:45 | Listing filebases...
+| 28/11/2025 | 00:53:49 | Filebase Menu
+| 28/11/2025 | 00:53:56 | Filebase Menu
+| 28/11/2025 | 00:53:57 | Listing areas...
+| 28/11/2025 | 00:54:04 | Filebase Menu
+| 28/11/2025 | 00:54:07 | Listing files...
+| 28/11/2025 | 00:54:09 | Filebase Menu
+| 28/11/2025 | 00:54:39 | Session disconnected
+| 28/11/2025 | 01:04:01 | LineTask shutting down
+| 28/11/2025 | 01:04:24 | LineTask started
+| 28/11/2025 | 01:04:30 | Session connected
+| 28/11/2025 | 01:04:30 | Botstopper challenge started
+| 28/11/2025 | 01:04:32 | Botstopper passed
+| 28/11/2025 | 01:04:32 | Starting prelogon script
+| 28/11/2025 | 01:04:32 | Logging on...
+| 28/11/2025 | 01:04:38 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 01:04:38 | Starting postlogon script
+| 28/11/2025 | 01:04:38 | Main Menu
+| 28/11/2025 | 01:04:39 | Filebase Menu
+| 28/11/2025 | 01:04:41 | Listing areas...
+| 28/11/2025 | 01:04:42 | Filebase Menu
+| 28/11/2025 | 01:04:43 | Listing filebases...
+| 28/11/2025 | 01:04:44 | Filebase Menu
+| 28/11/2025 | 01:04:45 | Listing areas...
+| 28/11/2025 | 01:04:49 | Filebase Menu
+| 28/11/2025 | 01:04:52 | Filebase Menu
+| 28/11/2025 | 01:04:56 | Filebase Menu
+| 28/11/2025 | 01:05:03 | Filebase Menu
+| 28/11/2025 | 01:05:08 | Main Menu
+| 28/11/2025 | 01:05:09 | Session disconnected
+| 28/11/2025 | 01:05:29 | Session connected
+| 28/11/2025 | 01:05:29 | Botstopper challenge started
+| 28/11/2025 | 01:05:30 | Botstopper passed
+| 28/11/2025 | 01:05:30 | Starting prelogon script
+| 28/11/2025 | 01:05:30 | Logging on...
+| 28/11/2025 | 01:05:34 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 01:05:34 | Starting postlogon script
+| 28/11/2025 | 01:05:34 | Main Menu
+| 28/11/2025 | 01:05:37 | Filebase Menu
+| 28/11/2025 | 01:05:42 | Filebase Menu
+| 28/11/2025 | 01:05:48 | Filebase Menu
+| 28/11/2025 | 01:05:56 | Uploading file...
+| 28/11/2025 | 01:05:56 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=0)
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Filebase Menu
+| 28/11/2025 | 01:06:59 | Listing files...
+| 28/11/2025 | 01:07:00 | Filebase Menu
+| 28/11/2025 | 01:07:00 | Filebase Menu
+| 28/11/2025 | 01:07:00 | Filebase Menu
+| 28/11/2025 | 01:07:00 | Filebase Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | Main Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | ARCbbs Menu
+| 28/11/2025 | 01:07:00 | Playing Arms Race...
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | ARCbbs Menu
+| 28/11/2025 | 01:07:01 | Playing Arms Race...
+| 28/11/2025 | 01:07:46 | Session disconnected
+| 28/11/2025 | 01:07:51 | Session connected
+| 28/11/2025 | 01:07:51 | Botstopper challenge started
+| 28/11/2025 | 01:07:53 | Botstopper passed
+| 28/11/2025 | 01:07:53 | Starting prelogon script
+| 28/11/2025 | 01:07:53 | Logging on...
+| 28/11/2025 | 01:08:02 | Login failed for ' andy' (reason 1)
+| 28/11/2025 | 01:08:05 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 01:08:05 | Starting postlogon script
+| 28/11/2025 | 01:08:05 | Main Menu
+| 28/11/2025 | 01:08:15 | Filebase Menu
+| 28/11/2025 | 01:08:19 | Filebase Menu
+| 28/11/2025 | 01:08:20 | Listing areas...
+| 28/11/2025 | 01:08:22 | Filebase Menu
+| 28/11/2025 | 01:08:26 | Listing files...
+| 28/11/2025 | 01:08:27 | Filebase Menu
+| 28/11/2025 | 01:08:37 | Uploading file...
+| 28/11/2025 | 01:08:37 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=1)
+| 28/11/2025 | 01:09:37 | Filebase Menu
+| 28/11/2025 | 01:09:43 | Filebase Menu
+| 28/11/2025 | 01:09:50 | Uploading file...
+| 28/11/2025 | 01:09:50 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=0)
+| 28/11/2025 | 01:10:50 | Filebase Menu
+| 28/11/2025 | 01:10:52 | Filebase Menu
+| 28/11/2025 | 01:10:55 | Filebase Menu
+| 28/11/2025 | 01:11:19 | Uploading file...
+| 28/11/2025 | 01:11:19 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=0)
+| 28/11/2025 | 01:12:19 | Filebase Menu
+| 28/11/2025 | 01:12:37 | Filebase Menu
+| 28/11/2025 | 01:12:45 | Filebase Menu
+| 28/11/2025 | 01:12:51 | Uploading file...
+| 28/11/2025 | 01:12:51 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=2)
+| 28/11/2025 | 01:13:51 | Filebase Menu
+| 28/11/2025 | 01:14:10 | LineTask shutting down
+| 28/11/2025 | 01:15:18 | LineTask started
+| 28/11/2025 | 01:15:29 | Session connected
+| 28/11/2025 | 01:15:29 | Botstopper challenge started
+| 28/11/2025 | 01:15:38 | Botstopper passed
+| 28/11/2025 | 01:15:38 | Starting prelogon script
+| 28/11/2025 | 01:15:38 | Logging on...
+| 28/11/2025 | 01:15:42 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 01:15:42 | Starting postlogon script
+| 28/11/2025 | 01:15:42 | Main Menu
+| 28/11/2025 | 01:15:43 | Filebase Menu
+| 28/11/2025 | 01:15:45 | Listing filebases...
+| 28/11/2025 | 01:15:45 | Filebase Menu
+| 28/11/2025 | 01:15:50 | Filebase Menu
+| 28/11/2025 | 01:15:54 | Filebase Menu
+| 28/11/2025 | 01:16:13 | Uploading file...
+| 28/11/2025 | 01:16:13 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=1)
+| 28/11/2025 | 01:19:57 | Filebase Menu
+| 28/11/2025 | 01:20:00 | Session connected
+| 28/11/2025 | 01:20:00 | Botstopper challenge started
+| 28/11/2025 | 01:20:30 | Botstopper timeout
+| 28/11/2025 | 01:20:30 | Session disconnected
+| 28/11/2025 | 01:21:38 | Session connected
+| 28/11/2025 | 01:21:38 | Botstopper challenge started
+| 28/11/2025 | 01:21:43 | Botstopper passed
+| 28/11/2025 | 01:21:43 | Starting prelogon script
+| 28/11/2025 | 01:21:43 | Logging on...
+| 28/11/2025 | 01:21:47 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 01:21:47 | Starting postlogon script
+| 28/11/2025 | 01:21:47 | Main Menu
+| 28/11/2025 | 01:21:50 | Filebase Menu
+| 28/11/2025 | 01:21:52 | Filebase Menu
+| 28/11/2025 | 01:21:55 | Listing filebases...
+| 28/11/2025 | 01:21:56 | Filebase Menu
+| 28/11/2025 | 01:21:59 | Listing areas...
+| 28/11/2025 | 01:22:00 | Filebase Menu
+| 28/11/2025 | 01:22:01 | Filebase Menu
+| 28/11/2025 | 01:22:06 | Filebase Menu
+| 28/11/2025 | 01:22:07 | Listing filebases...
+| 28/11/2025 | 01:22:08 | Filebase Menu
+| 28/11/2025 | 01:22:14 | Filebase Menu
+| 28/11/2025 | 01:22:22 | Uploading file...
+| 28/11/2025 | 01:22:22 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=1)
+| 28/11/2025 | 01:23:14 | Upload registered: `test` (file_id=1)
+| 28/11/2025 | 01:23:14 | Filebase Menu
+| 28/11/2025 | 01:23:18 | Filebase Menu
+| 28/11/2025 | 01:23:25 | Listing files...
+| 28/11/2025 | 01:23:28 | Filebase Menu
+| 28/11/2025 | 01:23:30 | Listing files...
+| 28/11/2025 | 01:23:30 | Filebase Menu
+| 28/11/2025 | 01:23:39 | Downloading file...
+| 28/11/2025 | 01:23:39 | Filebase Menu
+| 28/11/2025 | 01:23:45 | Filebase Menu
+| 28/11/2025 | 01:23:45 | Filebase Menu
+| 28/11/2025 | 01:23:53 | Downloading file...
+| 28/11/2025 | 01:23:53 | Filebase Menu
+| 28/11/2025 | 01:24:06 | Filebase Menu
+| 28/11/2025 | 01:24:06 | Filebase Menu
+| 28/11/2025 | 01:24:09 | Listing areas...
+| 28/11/2025 | 01:24:12 | Filebase Menu
+| 28/11/2025 | 01:24:18 | Filebase Menu
+| 28/11/2025 | 01:24:26 | Downloading file...
+| 28/11/2025 | 01:24:26 | Filebase Menu
+| 28/11/2025 | 01:24:56 | Session disconnected
+| 28/11/2025 | 01:26:03 | LineTask shutting down
+| 28/11/2025 | 02:45:03 | LineTask started
+| 28/11/2025 | 02:45:10 | Session connected
+| 28/11/2025 | 02:45:10 | Botstopper challenge started
+| 28/11/2025 | 02:45:12 | Botstopper passed
+| 28/11/2025 | 02:45:12 | Starting prelogon script
+| 28/11/2025 | 02:45:12 | Logging on...
+| 28/11/2025 | 02:45:16 | User 'andy' logged in (id=1, level=0)
+| 28/11/2025 | 02:45:16 | Starting postlogon script
+| 28/11/2025 | 02:45:16 | Main Menu
+| 28/11/2025 | 02:45:18 | Filebase Menu
+| 28/11/2025 | 02:45:19 | Listing filebases...
+| 28/11/2025 | 02:45:22 | Filebase Menu
+| 28/11/2025 | 02:45:23 | Listing areas...
+| 28/11/2025 | 02:45:24 | Filebase Menu
+| 28/11/2025 | 02:45:26 | Listing filebases...
+| 28/11/2025 | 02:45:27 | Filebase Menu
+| 28/11/2025 | 02:45:32 | Filebase Menu
+| 28/11/2025 | 02:45:35 | Listing files...
+| 28/11/2025 | 02:45:49 | Filebase Menu
+| 28/11/2025 | 02:46:00 | Filebase Menu
+| 28/11/2025 | 02:46:23 | Uploading file...
+| 28/11/2025 | 02:46:23 | Starting file receive (path=<Converse$Dir>.Temp.Upload_1_0, proto=2)
+| 28/11/2025 | 02:48:06 | LineTask shutting down

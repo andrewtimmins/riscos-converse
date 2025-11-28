@@ -20,6 +20,11 @@
         "script": "cpp",
         "userdb": "cpp",
         "window": "cpp",
-        "mailer": "c"
+        "mailer": "c",
+        "filebase": "cpp",
+        "ftnconfig": "cpp",
+        "msgbaseconfig": "cpp",
+        "tosser": "cpp",
+        "transfer": "cpp"
     }
 }

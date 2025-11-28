@@ -5,6 +5,9 @@
 #include <stdarg.h>
 #include <time.h>
 
+#include "kernel.h"
+#include "swis.h"
+
 #include "script.h"
 #include "filebase.h"
 
@@ -13,6 +16,7 @@
 #define SCRIPT_DEFAULT_VARIABLE_CAPACITY 8
 #define SCRIPT_INPUT_BUFFER_CHUNK 64
 #define SCRIPT_LITERAL_BUFFER_CHUNK 256
+#define SCRIPT_MAX_INSTRUCTIONS_PER_POLL 1000  /* Prevent infinite loops from locking up */
 
 typedef struct script_buffer
 {
@@ -186,6 +190,8 @@ void script_stop(script_state *state)
 
 void script_process(script_state *state)
 {
+    int instructions_executed = 0;
+
     if (state == NULL)
     {
         return;
@@ -204,6 +210,14 @@ void script_process(script_state *state)
         script_instruction *instruction = &state->instructions[state->program_counter];
         state->program_counter++;
         script_execute_instruction(state, instruction);
+
+        instructions_executed++;
+        if (instructions_executed >= SCRIPT_MAX_INSTRUCTIONS_PER_POLL)
+        {
+            /* Yield to allow other tasks to run - prevents infinite loops from locking system */
+            /* Script will continue on next poll */
+            return;
+        }
     }
 
     if (state->status == SCRIPT_STATUS_RUNNING && state->program_counter >= state->instruction_count)
@@ -256,12 +270,14 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
 
     if (state->status == SCRIPT_STATUS_WAIT_INPUT_LINE)
     {
-        if (byte == '\r')
+        /* Ignore LF - we complete on CR */
+        if (byte == '\n')
         {
             return 1;
         }
 
-        if (byte == '\n')
+        /* CR triggers end of input */
+        if (byte == '\r')
         {
             state->input_buffer[state->input_length] = '\0';
             if (state->input_echo && state->host.write_text != NULL)
@@ -271,6 +287,21 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             script_set_variable_value(state, state->input_target, state->input_buffer);
             state->status = SCRIPT_STATUS_RUNNING;
             script_process(state);
+            return 1;
+        }
+
+        /* Handle backspace (ASCII 8 or 127) */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->input_echo && state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
             return 1;
         }
 
@@ -530,6 +561,20 @@ void script_notify_door_closed(script_state *state)
     }
 }
 
+void script_notify_transfer_complete(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_TRANSFER)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+    }
+}
+
 script_status script_get_status(const script_state *state)
 {
     if (state == NULL)
@@ -538,6 +583,26 @@ script_status script_get_status(const script_state *state)
     }
 
     return state->status;
+}
+
+const char *script_get_last_error(const script_state *state)
+{
+    if (state == NULL)
+    {
+        return "Invalid script state";
+    }
+
+    if (state->last_error[0] == '\0')
+    {
+        return "Unknown error";
+    }
+
+    return state->last_error;
+}
+
+const char *script_get_variable(const script_state *state, const char *name)
+{
+    return script_get_variable_value(state, name);
 }
 
 static void script_clear_program(script_state *state)
@@ -1116,6 +1181,34 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "sendfile") == 0)
+    {
+        /* SENDFILE <file_id> [protocol]
+         * protocol: xmodem, xmodem-crc, xmodem-1k (default: xmodem-crc)
+         */
+        char *file_id_str = strtok(NULL, " \t");
+        char *protocol_str = strtok(NULL, " \t");
+
+        instruction->type = SCRIPT_CMD_SENDFILE;
+        instruction->arg1 = script_duplicate_string(file_id_str != NULL ? file_id_str : "0");
+        instruction->arg2 = script_duplicate_string(protocol_str != NULL ? protocol_str : "xmodem-crc");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "receivefile") == 0)
+    {
+        /* RECEIVEFILE <filename> [protocol]
+         * protocol: xmodem, xmodem-crc, xmodem-1k (default: xmodem-crc)
+         */
+        char *filename_str = strtok(NULL, " \t");
+        char *protocol_str = strtok(NULL, " \t");
+
+        instruction->type = SCRIPT_CMD_RECEIVEFILE;
+        instruction->arg1 = script_duplicate_string(filename_str != NULL ? filename_str : "");
+        instruction->arg2 = script_duplicate_string(protocol_str != NULL ? protocol_str : "xmodem-crc");
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -1290,6 +1383,13 @@ static void script_execute_instruction(script_state *state, script_instruction *
             const char *var = instruction->arg1 != NULL ? instruction->arg1 : "selection";
             const char *mode = instruction->arg2 != NULL ? instruction->arg2 : "char";
             const char *echo = instruction->arg3 != NULL ? instruction->arg3 : "echo";
+
+            /* Reset input buffer for new prompt */
+            state->input_length = 0;
+            if (state->input_buffer != NULL && state->input_capacity > 0)
+            {
+                state->input_buffer[0] = '\0';
+            }
 
             strncpy(state->input_target, var, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
@@ -1588,6 +1688,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 }
 
                 base_id = atoi(arg);
+
                 if (base_id <= 0)
                 {
                     script_write_output(state, "\r\n[Invalid filebase ID]\r\n");
@@ -1767,6 +1868,248 @@ static void script_execute_instruction(script_state *state, script_instruction *
             state->status = SCRIPT_STATUS_WAIT_LOGON_USERNAME;
             return;
         }
+
+        case SCRIPT_CMD_SENDFILE:
+        {
+            /* SENDFILE <file_id> [protocol]
+             * Initiates a file transfer using the current filebase.
+             * protocol: xmodem, xmodem-crc, xmodem-1k
+             */
+            const char *file_id_str = instruction->arg1;
+            const char *protocol_str = instruction->arg2;
+            char expanded_id[64];
+            char expanded_proto[32];
+            int file_id;
+            int protocol = 1; /* Default to XMODEM-CRC */
+            filebase_session *session = NULL;
+            char debug_msg[256];
+
+            /* Expand macros in arguments */
+            if (file_id_str != NULL)
+            {
+                script_expand_macros(state, file_id_str, expanded_id, sizeof(expanded_id));
+                file_id = atoi(expanded_id);
+                snprintf(debug_msg, sizeof(debug_msg), 
+                    "\r\n[DEBUG: file_id_str='%s' expanded='%s' file_id=%d]\r\n",
+                    file_id_str, expanded_id, file_id);
+                script_write_output(state, debug_msg);
+            }
+            else
+            {
+                file_id = 0;
+            }
+
+            if (protocol_str != NULL)
+            {
+                script_expand_macros(state, protocol_str, expanded_proto, sizeof(expanded_proto));
+                
+                if (script_stringcasecmp(expanded_proto, "xmodem") == 0)
+                {
+                    protocol = 0;
+                }
+                else if (script_stringcasecmp(expanded_proto, "xmodem-crc") == 0)
+                {
+                    protocol = 1;
+                }
+                else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
+                {
+                    protocol = 2;
+                }
+            }
+
+            if (file_id <= 0)
+            {
+                script_write_output(state, "\r\n[Invalid file ID]\r\n");
+                break;
+            }
+
+            /* Get filebase session */
+            if (state->host.get_filebase_session != NULL)
+            {
+                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            }
+
+            if (session == NULL || session->current_filebase <= 0)
+            {
+                script_write_output(state, "\r\n[No filebase selected]\r\n");
+                break;
+            }
+
+            /* Check file access */
+            {
+                LINETASK_FILE_RECORD file_record;
+                _kernel_swi_regs regs;
+
+                regs.r[0] = 11; /* FILEBASE_CMD_FILE_INFO */
+                regs.r[1] = session->current_filebase;
+                regs.r[2] = file_id;
+
+                if (_kernel_swi(0x5AA43, &regs, &regs) != NULL || regs.r[0] <= 0)
+                {
+                    script_write_output(state, "\r\n[File not found]\r\n");
+                    break;
+                }
+
+                memcpy(&file_record, (void *)regs.r[0], sizeof(file_record));
+
+                if (file_record.deleted)
+                {
+                    script_write_output(state, "\r\n[File not found]\r\n");
+                    break;
+                }
+
+                if (!filebase_check_access(file_record.accesslevel, file_record.keys,
+                                           session->user_accesslevel, session->user_keys))
+                {
+                    script_write_output(state, "\r\n[Access denied]\r\n");
+                    break;
+                }
+            }
+
+            /* Initiate transfer via host callback */
+            if (state->host.start_transfer != NULL)
+            {
+                char msg[128];
+                const char *proto_name = (protocol == 0) ? "XMODEM" :
+                                         (protocol == 1) ? "XMODEM-CRC" : "XMODEM-1K";
+
+                snprintf(msg, sizeof(msg), 
+                         "\r\n\033[1;33mStarting %s transfer. Start your receiver now...\033[0m\r\n",
+                         proto_name);
+                script_write_output(state, msg);
+
+                if (state->host.start_transfer(state->host.context, 
+                                               session->current_filebase, file_id, protocol))
+                {
+                    state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+                    return;
+                }
+                else
+                {
+                    script_write_output(state, "\r\n\033[1;31m[Transfer failed to start]\033[0m\r\n");
+                }
+            }
+            else
+            {
+                script_write_output(state, "\r\n[File transfer not available]\r\n");
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_RECEIVEFILE:
+        {
+            /* RECEIVEFILE <filename> [protocol]
+             * Receives a file upload using the current filebase.
+             * protocol: xmodem, xmodem-crc, xmodem-1k
+             */
+            const char *filename_str = instruction->arg1;
+            const char *protocol_str = instruction->arg2;
+            char expanded_filename[128];
+            char expanded_proto[32];
+            char temp_path[300];
+            int protocol = 1; /* Default to XMODEM-CRC */
+            filebase_session *session = NULL;
+            int line_id = 0;
+
+            /* Expand macros in arguments */
+            if (filename_str != NULL)
+            {
+                script_expand_macros(state, filename_str, expanded_filename, sizeof(expanded_filename));
+            }
+            else
+            {
+                expanded_filename[0] = '\0';
+            }
+
+            if (protocol_str != NULL)
+            {
+                script_expand_macros(state, protocol_str, expanded_proto, sizeof(expanded_proto));
+                
+                if (script_stringcasecmp(expanded_proto, "xmodem") == 0)
+                {
+                    protocol = 0;
+                }
+                else if (script_stringcasecmp(expanded_proto, "xmodem-crc") == 0)
+                {
+                    protocol = 1;
+                }
+                else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
+                {
+                    protocol = 2;
+                }
+            }
+
+            if (expanded_filename[0] == '\0')
+            {
+                script_write_output(state, "\r\n[No filename specified]\r\n");
+                break;
+            }
+
+            /* Get filebase session */
+            if (state->host.get_filebase_session != NULL)
+            {
+                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            }
+
+            if (session == NULL || session->current_filebase <= 0)
+            {
+                script_write_output(state, "\r\n[No filebase selected]\r\n");
+                break;
+            }
+
+            /* Check write access to current area */
+            /* For now, any logged-in user with access can upload */
+
+            /* Get line ID for temp file naming */
+            if (state->host.get_line_id != NULL)
+            {
+                line_id = state->host.get_line_id(state->host.context);
+            }
+
+            /* Store upload metadata in script variables for post-transfer registration */
+            script_set_variable_value(state, "_upload_filebase", "");
+            script_set_variable_value(state, "_upload_area", "");
+            script_set_variable_value(state, "_upload_filename", expanded_filename);
+            {
+                char num_buf[16];
+                snprintf(num_buf, sizeof(num_buf), "%d", session->current_filebase);
+                script_set_variable_value(state, "_upload_filebase", num_buf);
+                snprintf(num_buf, sizeof(num_buf), "%d", session->current_area);
+                script_set_variable_value(state, "_upload_area", num_buf);
+            }
+
+            /* Build temp path */
+            filebase_get_temp_upload_path(session->current_filebase, line_id, temp_path, sizeof(temp_path));
+
+            /* Initiate receive transfer via host callback */
+            if (state->host.start_receive_transfer != NULL)
+            {
+                char msg[256];
+                const char *proto_name = (protocol == 0) ? "XMODEM" :
+                                         (protocol == 1) ? "XMODEM-CRC" : "XMODEM-1K";
+
+                snprintf(msg, sizeof(msg), 
+                         "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"
+                         "Start your sender now...\033[0m\r\n",
+                         expanded_filename, proto_name);
+                script_write_output(state, msg);
+
+                if (state->host.start_receive_transfer(state->host.context, temp_path, protocol))
+                {
+                    state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+                    return;
+                }
+                else
+                {
+                    script_write_output(state, "\r\n\033[1;31m[Receive failed to start]\033[0m\r\n");
+                }
+            }
+            else
+            {
+                script_write_output(state, "\r\n[File receive not available]\r\n");
+            }
+        }
+        break;
 
         default:
             break;

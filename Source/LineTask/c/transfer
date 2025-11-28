@@ -1,0 +1,1209 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask File Transfer Module                                                                                                                              */
+/*                                                                                                                                                            */
+/* Implements XMODEM, XMODEM-CRC, and XMODEM-1K file transfer protocols.                                                                                      */
+/* Uses Pipes module for I/O and Filer module for file access.                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "transfer.h"
+#include "filebase.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Definitions                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_PIPES_BASE              0x5AA00
+
+#define SWI_PIPES_INPUT_STATUS      (SWI_PIPES_BASE + 2)
+#define SWI_PIPES_INPUT_READ        (SWI_PIPES_BASE + 3)
+#define SWI_PIPES_OUTPUT_STATUS     (SWI_PIPES_BASE + 4)
+#define SWI_PIPES_OUTPUT_WRITE      (SWI_PIPES_BASE + 5)
+#define SWI_PIPES_INPUT_WRITE       (SWI_PIPES_BASE + 8)
+#define SWI_PIPES_OUTPUT_READ       (SWI_PIPES_BASE + 9)
+#define SWI_PIPES_INPUT_WRITE_BLOCK (SWI_PIPES_BASE + 0xD)
+#define SWI_PIPES_OUTPUT_READ_BLOCK (SWI_PIPES_BASE + 0xE)
+
+#define SWI_OS_ReadMonotonicTime    0x42
+
+/* File SWIs for upload handling */
+#define SWI_OS_Find                 0x0D
+#define SWI_OS_GBPB                 0x0C
+#define SWI_OS_Args                 0x09
+
+/* ******************************************************************************************************************************************************** */
+/* CRC Table                                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/* Precomputed CRC-16 table for polynomial 0x1021 (XMODEM/CCITT) */
+static const uint16_t crc16_table[256] = {
+    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
+    0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
+    0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6,
+    0x9339, 0x8318, 0xB37B, 0xA35A, 0xD3BD, 0xC39C, 0xF3FF, 0xE3DE,
+    0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485,
+    0xA56A, 0xB54B, 0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D,
+    0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
+    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC,
+    0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861, 0x2802, 0x3823,
+    0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B,
+    0x5AF5, 0x4AD4, 0x7AB7, 0x6A96, 0x1A71, 0x0A50, 0x3A33, 0x2A12,
+    0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A,
+    0x6CA6, 0x7C87, 0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41,
+    0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
+    0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70,
+    0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A, 0x9F59, 0x8F78,
+    0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F,
+    0x1080, 0x00A1, 0x30C2, 0x20E3, 0x5004, 0x4025, 0x7046, 0x6067,
+    0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E,
+    0x02B1, 0x1290, 0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256,
+    0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
+    0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405,
+    0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E, 0xC71D, 0xD73C,
+    0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634,
+    0xD94C, 0xC96D, 0xF90E, 0xE92F, 0x99C8, 0x89E9, 0xB98A, 0xA9AB,
+    0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3,
+    0xCB7D, 0xDB5C, 0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A,
+    0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
+    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9,
+    0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83, 0x1CE0, 0x0CC1,
+    0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
+    0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
+};
+
+/* ******************************************************************************************************************************************************** */
+/* CRC and Checksum Functions                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+uint16_t transfer_crc16(const uint8_t *data, int length)
+{
+    uint16_t crc = 0;
+    int i;
+
+    for (i = 0; i < length; i++)
+    {
+        crc = (uint16_t)((crc << 8) ^ crc16_table[((crc >> 8) ^ data[i]) & 0xFF]);
+    }
+
+    return crc;
+}
+
+uint8_t transfer_checksum(const uint8_t *data, int length)
+{
+    uint8_t sum = 0;
+    int i;
+
+    for (i = 0; i < length; i++)
+    {
+        sum = (uint8_t)(sum + data[i]);
+    }
+
+    return sum;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Time Functions                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+unsigned int transfer_get_time(void)
+{
+    _kernel_swi_regs regs;
+
+    if (_kernel_swi(SWI_OS_ReadMonotonicTime, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (unsigned int)regs.r[0];
+}
+
+void transfer_set_timeout(transfer_session *session, unsigned int timeout_ms)
+{
+    /* Convert milliseconds to centiseconds */
+    unsigned int timeout_cs = timeout_ms / 10;
+    session->timeout_end = transfer_get_time() + timeout_cs;
+}
+
+int transfer_timeout_expired(transfer_session *session)
+{
+    unsigned int now = transfer_get_time();
+
+    /* Handle wraparound - if difference is huge, assume not expired */
+    if ((session->timeout_end - now) > 0x80000000U)
+    {
+        return 1; /* Timeout has passed */
+    }
+
+    return (now >= session->timeout_end) ? 1 : 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe I/O Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static int pipe_bytes_available(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+
+    if (_kernel_swi(SWI_PIPES_INPUT_STATUS, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] >= 0) ? regs.r[0] : 0;
+}
+
+static int pipe_read_byte(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+
+    if (_kernel_swi(SWI_PIPES_INPUT_READ, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+static int pipe_space_available(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+
+    if (_kernel_swi(SWI_PIPES_OUTPUT_STATUS, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] >= 0) ? regs.r[0] : 0;
+}
+
+static int pipe_write_byte(int line, uint8_t byte)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+    regs.r[1] = byte;
+
+    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return (regs.r[0] == 0) ? 0 : -1;
+}
+
+/*
+ * Write a block of bytes to the output pipe (slave->host).
+ * Uses byte-by-byte OutputWrite as there's no OutputWriteBlock SWI.
+ * Returns number of bytes written, or -1 on error.
+ */
+static int pipe_write_block(int line, const uint8_t *data, int length)
+{
+    int written = 0;
+
+    while (written < length)
+    {
+        if (pipe_write_byte(line, data[written]) != 0)
+        {
+            break;
+        }
+        written++;
+    }
+
+    return written;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Module Initialisation                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+void transfer_init(void)
+{
+    debug_printf("transfer_init: File transfer module initialised\n");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Management                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static void session_reset(transfer_session *session)
+{
+    memset(session, 0, sizeof(transfer_session));
+    session->state = XFER_IDLE;
+    session->block_size = XMODEM_BLOCK_SIZE;
+}
+
+int transfer_is_active(transfer_session *session)
+{
+    if (session == NULL)
+    {
+        return 0;
+    }
+
+    return session->active;
+}
+
+int transfer_get_progress(transfer_session *session)
+{
+    if (session == NULL || session->file_size <= 0)
+    {
+        return -1;
+    }
+
+    if (session->bytes_transferred >= session->file_size)
+    {
+        return 100;
+    }
+
+    return (int)((session->bytes_transferred * 100) / session->file_size);
+}
+
+void transfer_get_status(transfer_session *session, char *buffer, int buffer_size)
+{
+    const char *state_str;
+    int progress;
+
+    if (session == NULL || buffer == NULL || buffer_size <= 0)
+    {
+        return;
+    }
+
+    switch (session->state)
+    {
+        case XFER_IDLE:
+            state_str = "Idle";
+            break;
+        case XFER_INIT:
+            state_str = "Initialising";
+            break;
+        case XFER_SEND_WAIT_START:
+            state_str = "Waiting for receiver";
+            break;
+        case XFER_SEND_BLOCK:
+            state_str = "Sending block";
+            break;
+        case XFER_SEND_WAIT_ACK:
+            state_str = "Waiting for ACK";
+            break;
+        case XFER_SEND_EOT:
+        case XFER_SEND_WAIT_EOT_ACK:
+            state_str = "Completing";
+            break;
+        case XFER_RECV_SEND_START:
+            state_str = "Starting receive";
+            break;
+        case XFER_RECV_WAIT_BLOCK:
+            state_str = "Waiting for data";
+            break;
+        case XFER_RECV_READ_BLOCK:
+            state_str = "Receiving block";
+            break;
+        case XFER_COMPLETE:
+            state_str = "Complete";
+            break;
+        case XFER_ERROR:
+            state_str = "Error";
+            break;
+        case XFER_CANCELLED:
+            state_str = "Cancelled";
+            break;
+        case XFER_TIMEOUT:
+            state_str = "Timeout";
+            break;
+        default:
+            state_str = "Unknown";
+            break;
+    }
+
+    progress = transfer_get_progress(session);
+
+    if (progress >= 0)
+    {
+        snprintf(buffer, buffer_size, "%s: %d%% (%ld/%ld bytes, %d blocks)",
+                 state_str, progress,
+                 session->bytes_transferred, session->file_size,
+                 session->blocks_transferred);
+    }
+    else
+    {
+        snprintf(buffer, buffer_size, "%s: %ld bytes, %d blocks",
+                 state_str,
+                 session->bytes_transferred,
+                 session->blocks_transferred);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Start Send Transfer                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+int transfer_start_send(int line, transfer_protocol protocol,
+                        int filebase_id, int file_id,
+                        transfer_session *session)
+{
+    long file_size;
+
+    if (session == NULL)
+    {
+        return 0;
+    }
+
+    session_reset(session);
+
+    /* Get file size from Filer */
+    if (!filebase_get_file_size(filebase_id, file_id, &file_size))
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return 0;
+    }
+
+    debug_printf("transfer_start_send: line=%d protocol=%d filebase=%d file=%d size=%ld\n",
+                 line, protocol, filebase_id, file_id, file_size);
+
+    /* Initialise session */
+    session->line = line;
+    session->active = 1;
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_SEND;
+    session->filebase_id = filebase_id;
+    session->file_id = file_id;
+    session->file_size = file_size;
+    session->file_offset = 0;
+    session->block_num = 1;
+
+    /* Set block size based on protocol */
+    if (protocol == TRANSFER_PROTO_XMODEM_1K)
+    {
+        session->block_size = XMODEM_1K_BLOCK_SIZE;
+    }
+    else
+    {
+        session->block_size = XMODEM_BLOCK_SIZE;
+    }
+
+    /* CRC mode for XMODEM-CRC and XMODEM-1K, but receiver decides */
+    session->use_crc = (protocol != TRANSFER_PROTO_XMODEM) ? 1 : 0;
+
+    /* Start state machine */
+    session->state = XFER_SEND_WAIT_START;
+    session->transfer_start = transfer_get_time();
+    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
+    session->retries = 0;
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Start Receive Transfer                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+int transfer_start_receive(int line, transfer_protocol protocol,
+                           const char *upload_path,
+                           transfer_session *session)
+{
+    _kernel_swi_regs regs;
+
+    if (session == NULL || upload_path == NULL)
+    {
+        return 0;
+    }
+
+    session_reset(session);
+
+    debug_printf("transfer_start_receive: line=%d protocol=%d path=%s\n",
+                 line, protocol, upload_path);
+
+    /* Ensure the Temp directory exists */
+    regs.r[0] = 8;  /* OS_File 8 = Create directory */
+    regs.r[1] = (int)"<Converse$Dir>.Temp";
+    regs.r[4] = 0;  /* Default number of entries */
+    _kernel_swi(0x08, &regs, &regs); /* OS_File - ignore errors if already exists */
+
+    /* Open file for writing */
+    regs.r[0] = 0x8F; /* Open for output, create if needed */
+    regs.r[1] = (int)upload_path;
+
+    if (_kernel_swi(SWI_OS_Find, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create file");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return 0;
+    }
+
+    session->upload_handle = regs.r[0];
+    strncpy(session->upload_path, upload_path, sizeof(session->upload_path) - 1);
+    session->upload_path[sizeof(session->upload_path) - 1] = '\0';
+
+    /* Initialise session */
+    session->line = line;
+    session->active = 1;
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_RECEIVE;
+    session->file_size = 0; /* Unknown until transfer complete */
+    session->file_offset = 0;
+    session->block_num = 1;
+
+    /* Set block size and CRC based on protocol */
+    if (protocol == TRANSFER_PROTO_XMODEM_1K)
+    {
+        session->block_size = XMODEM_1K_BLOCK_SIZE;
+        session->use_crc = 1;
+    }
+    else if (protocol == TRANSFER_PROTO_XMODEM_CRC)
+    {
+        session->block_size = XMODEM_BLOCK_SIZE;
+        session->use_crc = 1;
+    }
+    else
+    {
+        session->block_size = XMODEM_BLOCK_SIZE;
+        session->use_crc = 0;
+    }
+
+    /* Start state machine */
+    session->state = XFER_RECV_SEND_START;
+    session->transfer_start = transfer_get_time();
+    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
+    session->retries = 0;
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Cancel Transfer                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+void transfer_cancel(transfer_session *session)
+{
+    int i;
+
+    if (session == NULL || !session->active)
+    {
+        return;
+    }
+
+    debug_printf("transfer_cancel: cancelling transfer on line %d\n", session->line);
+
+    /* Send CAN characters to abort */
+    for (i = 0; i < XMODEM_CAN_COUNT; i++)
+    {
+        pipe_write_byte(session->line, XMODEM_CAN);
+    }
+
+    /* Close upload file if open */
+    if (session->direction == TRANSFER_DIR_RECEIVE && session->upload_handle > 0)
+    {
+        _kernel_swi_regs regs;
+        regs.r[0] = 0;
+        regs.r[1] = session->upload_handle;
+        _kernel_swi(SWI_OS_Find, &regs, &regs);
+        session->upload_handle = 0;
+    }
+
+    session->state = XFER_CANCELLED;
+    session->result = XFER_RESULT_CANCELLED;
+    session->active = 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Send State Machine Helpers                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+static int send_prepare_block(transfer_session *session)
+{
+    int bytes_to_read;
+    int bytes_read;
+    int trailer_size;
+    uint8_t *data_start;
+
+    /* Calculate bytes remaining */
+    bytes_to_read = session->block_size;
+    if ((session->file_size - session->file_offset) < bytes_to_read)
+    {
+        bytes_to_read = (int)(session->file_size - session->file_offset);
+    }
+
+    if (bytes_to_read <= 0)
+    {
+        return 0; /* No more data */
+    }
+
+    /* Build block header */
+    if (session->block_size == XMODEM_1K_BLOCK_SIZE)
+    {
+        session->block_buffer[0] = XMODEM_STX;
+    }
+    else
+    {
+        session->block_buffer[0] = XMODEM_SOH;
+    }
+    session->block_buffer[1] = session->block_num;
+    session->block_buffer[2] = (uint8_t)(255 - session->block_num);
+
+    /* Read file data into block */
+    data_start = &session->block_buffer[3];
+
+    bytes_read = filebase_download_block(session->filebase_id, session->file_id,
+                                         data_start, session->file_offset,
+                                         bytes_to_read);
+
+    if (bytes_read < 0)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "File read error");
+        return -1;
+    }
+
+    /* Pad remainder with CTRL-Z if needed */
+    if (bytes_read < session->block_size)
+    {
+        memset(data_start + bytes_read, XMODEM_CTRLZ, session->block_size - bytes_read);
+    }
+
+    /* Add checksum or CRC */
+    if (session->use_crc)
+    {
+        uint16_t crc = transfer_crc16(data_start, session->block_size);
+        session->block_buffer[3 + session->block_size] = (uint8_t)(crc >> 8);
+        session->block_buffer[4 + session->block_size] = (uint8_t)(crc & 0xFF);
+        trailer_size = 2;
+    }
+    else
+    {
+        session->block_buffer[3 + session->block_size] = transfer_checksum(data_start, session->block_size);
+        trailer_size = 1;
+    }
+
+    session->block_len = 3 + session->block_size + trailer_size;
+    session->block_pos = 0;
+
+    debug_printf("send_prepare_block: block %d prepared, %d bytes, offset %ld\n",
+                 session->block_num, session->block_len, session->file_offset);
+
+    return bytes_read;
+}
+
+static int send_block_data(transfer_session *session)
+{
+    int space;
+    int to_send;
+    int sent;
+
+    space = pipe_space_available(session->line);
+    if (space <= 0)
+    {
+        return 0; /* Can't send yet */
+    }
+
+    to_send = session->block_len - session->block_pos;
+    if (to_send > space)
+    {
+        to_send = space;
+    }
+
+    /* Use block write for efficiency */
+    sent = pipe_write_block(session->line,
+                           &session->block_buffer[session->block_pos],
+                           to_send);
+
+    if (sent < 0)
+    {
+        return -1;
+    }
+
+    session->block_pos += sent;
+
+    return (session->block_pos >= session->block_len) ? 1 : 0; /* 1 = complete */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Receive State Machine Helpers                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+static int receive_write_file(transfer_session *session, const uint8_t *data, int length)
+{
+    _kernel_swi_regs regs;
+
+    if (session->upload_handle <= 0)
+    {
+        return -1;
+    }
+
+    regs.r[0] = 2; /* Write bytes to current position */
+    regs.r[1] = session->upload_handle;
+    regs.r[2] = (int)data;
+    regs.r[3] = length;
+
+    if (_kernel_swi(SWI_OS_GBPB, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return length;
+}
+
+static int receive_validate_block(transfer_session *session)
+{
+    uint8_t block_num;
+    uint8_t block_inv;
+    uint8_t *data_start;
+
+    /* Check block number */
+    block_num = session->block_buffer[1];
+    block_inv = session->block_buffer[2];
+
+    if ((uint8_t)(block_num + block_inv) != 255)
+    {
+        debug_printf("receive_validate_block: block number/inverse mismatch\n");
+        return 0; /* Invalid block */
+    }
+
+    /* Check sequence */
+    if (block_num == (uint8_t)(session->block_num - 1))
+    {
+        /* Duplicate block - ACK but don't save */
+        debug_printf("receive_validate_block: duplicate block %d\n", block_num);
+        return 2; /* Duplicate */
+    }
+
+    if (block_num != session->block_num)
+    {
+        debug_printf("receive_validate_block: out of sequence - expected %d got %d\n",
+                     session->block_num, block_num);
+        return 0; /* Out of sequence */
+    }
+
+    /* Validate checksum/CRC */
+    data_start = &session->block_buffer[3];
+
+    if (session->use_crc)
+    {
+        uint16_t calc_crc = transfer_crc16(data_start, session->block_size);
+        uint16_t recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
+                                       session->block_buffer[4 + session->block_size]);
+
+        if (calc_crc != recv_crc)
+        {
+            debug_printf("receive_validate_block: CRC mismatch - calc=%04X recv=%04X\n",
+                         calc_crc, recv_crc);
+            return 0;
+        }
+    }
+    else
+    {
+        uint8_t calc_sum = transfer_checksum(data_start, session->block_size);
+        uint8_t recv_sum = session->block_buffer[3 + session->block_size];
+
+        if (calc_sum != recv_sum)
+        {
+            debug_printf("receive_validate_block: checksum mismatch - calc=%02X recv=%02X\n",
+                         calc_sum, recv_sum);
+            return 0;
+        }
+    }
+
+    return 1; /* Valid new block */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Poll - Send Direction                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+static int poll_send(transfer_session *session)
+{
+    int byte;
+    int result;
+
+    switch (session->state)
+    {
+        case XFER_SEND_WAIT_START:
+            /* Wait for NAK (checksum) or 'C' (CRC) from receiver */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_NAK)
+                {
+                    debug_printf("poll_send: got NAK - using checksum mode\n");
+                    session->use_crc = 0;
+                    session->state = XFER_SEND_BLOCK;
+                }
+                else if (byte == XMODEM_CRC_START)
+                {
+                    debug_printf("poll_send: got 'C' - using CRC mode\n");
+                    session->use_crc = 1;
+                    session->state = XFER_SEND_BLOCK;
+                }
+                else if (byte == XMODEM_CAN)
+                {
+                    debug_printf("poll_send: got CAN - receiver cancelled\n");
+                    session->state = XFER_CANCELLED;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    session->active = 0;
+                    return 0;
+                }
+                /* Ignore other characters */
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                session->retries++;
+                if (session->retries >= XMODEM_START_RETRIES)
+                {
+                    debug_printf("poll_send: start timeout - no response from receiver\n");
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from receiver");
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_SEND_BLOCK:
+            /* Prepare and send next block */
+            if (session->block_pos == 0)
+            {
+                result = send_prepare_block(session);
+                if (result == 0)
+                {
+                    /* No more data - send EOT */
+                    debug_printf("poll_send: all data sent, sending EOT\n");
+                    session->state = XFER_SEND_EOT;
+                    break;
+                }
+                else if (result < 0)
+                {
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_FILE_ERROR;
+                    session->active = 0;
+                    return 0;
+                }
+            }
+
+            result = send_block_data(session);
+            if (result > 0)
+            {
+                /* Block sent, wait for ACK */
+                debug_printf("poll_send: block %d sent\n", session->block_num);
+                session->state = XFER_SEND_WAIT_ACK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            else if (result < 0)
+            {
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_PROTOCOL_ERROR;
+                session->active = 0;
+                return 0;
+            }
+            break;
+
+        case XFER_SEND_WAIT_ACK:
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_ACK)
+                {
+                    debug_printf("poll_send: got ACK for block %d\n", session->block_num);
+                    
+                    /* Update statistics */
+                    session->file_offset += session->block_size;
+                    if (session->file_offset > session->file_size)
+                    {
+                        session->file_offset = session->file_size;
+                    }
+                    session->bytes_transferred = session->file_offset;
+                    session->blocks_transferred++;
+                    session->block_num++;
+                    session->block_pos = 0;
+                    session->retries = 0;
+
+                    /* Continue with next block */
+                    session->state = XFER_SEND_BLOCK;
+                }
+                else if (byte == XMODEM_NAK)
+                {
+                    debug_printf("poll_send: got NAK - retrying block %d\n", session->block_num);
+                    session->errors++;
+                    session->retries++;
+
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Too many retries");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                        session->active = 0;
+                        return 0;
+                    }
+
+                    /* Resend block */
+                    session->block_pos = 0;
+                    session->state = XFER_SEND_BLOCK;
+                }
+                else if (byte == XMODEM_CAN)
+                {
+                    debug_printf("poll_send: got CAN - receiver cancelled\n");
+                    session->state = XFER_CANCELLED;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    session->active = 0;
+                    return 0;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                debug_printf("poll_send: ACK timeout - retrying block %d\n", session->block_num);
+                session->errors++;
+                session->retries++;
+
+                if (session->retries >= XMODEM_MAX_RETRIES)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "ACK timeout");
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+
+                /* Resend block */
+                session->block_pos = 0;
+                session->state = XFER_SEND_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_SEND_EOT:
+            if (pipe_space_available(session->line) > 0)
+            {
+                pipe_write_byte(session->line, XMODEM_EOT);
+                session->state = XFER_SEND_WAIT_EOT_ACK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+                session->retries = 0;
+            }
+            break;
+
+        case XFER_SEND_WAIT_EOT_ACK:
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_ACK)
+                {
+                    debug_printf("poll_send: EOT acknowledged - transfer complete\n");
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+                else if (byte == XMODEM_NAK)
+                {
+                    /* Resend EOT */
+                    session->retries++;
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        /* Some receivers don't ACK EOT, consider it done */
+                        debug_printf("poll_send: EOT NAK limit reached, assuming complete\n");
+                        session->state = XFER_COMPLETE;
+                        session->result = XFER_RESULT_OK;
+                        session->active = 0;
+                        return 0;
+                    }
+                    session->state = XFER_SEND_EOT;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                /* Timeout waiting for EOT ACK - consider it done */
+                debug_printf("poll_send: EOT ACK timeout, assuming complete\n");
+                session->state = XFER_COMPLETE;
+                session->result = XFER_RESULT_OK;
+                session->active = 0;
+                return 0;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return 1; /* Still active */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Poll - Receive Direction                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+static int poll_receive(transfer_session *session)
+{
+    int byte;
+    int result;
+    int expected_len;
+
+    switch (session->state)
+    {
+        case XFER_RECV_SEND_START:
+            /* Send NAK or 'C' to initiate transfer */
+            if (pipe_space_available(session->line) > 0)
+            {
+                if (session->use_crc)
+                {
+                    pipe_write_byte(session->line, XMODEM_CRC_START);
+                    debug_printf("poll_receive: sent 'C' for CRC mode\n");
+                }
+                else
+                {
+                    pipe_write_byte(session->line, XMODEM_NAK);
+                    debug_printf("poll_receive: sent NAK for checksum mode\n");
+                }
+                session->state = XFER_RECV_WAIT_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_RECV_WAIT_BLOCK:
+            /* Wait for block header (SOH, STX, or EOT) */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_SOH)
+                {
+                    debug_printf("poll_receive: got SOH - 128 byte block\n");
+                    session->block_size = XMODEM_BLOCK_SIZE;
+                    session->block_buffer[0] = XMODEM_SOH;
+                    session->block_pos = 1;
+                    session->state = XFER_RECV_READ_BLOCK;
+                }
+                else if (byte == XMODEM_STX)
+                {
+                    debug_printf("poll_receive: got STX - 1024 byte block\n");
+                    session->block_size = XMODEM_1K_BLOCK_SIZE;
+                    session->block_buffer[0] = XMODEM_STX;
+                    session->block_pos = 1;
+                    session->state = XFER_RECV_READ_BLOCK;
+                }
+                else if (byte == XMODEM_EOT)
+                {
+                    debug_printf("poll_receive: got EOT - transfer complete\n");
+                    /* Send ACK for EOT */
+                    pipe_write_byte(session->line, XMODEM_ACK);
+
+                    /* Close file */
+                    if (session->upload_handle > 0)
+                    {
+                        _kernel_swi_regs regs;
+                        regs.r[0] = 0;
+                        regs.r[1] = session->upload_handle;
+                        _kernel_swi(SWI_OS_Find, &regs, &regs);
+                        session->upload_handle = 0;
+                    }
+
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+                else if (byte == XMODEM_CAN)
+                {
+                    debug_printf("poll_receive: got CAN - sender cancelled\n");
+
+                    /* Close file */
+                    if (session->upload_handle > 0)
+                    {
+                        _kernel_swi_regs regs;
+                        regs.r[0] = 0;
+                        regs.r[1] = session->upload_handle;
+                        _kernel_swi(SWI_OS_Find, &regs, &regs);
+                        session->upload_handle = 0;
+                    }
+
+                    session->state = XFER_CANCELLED;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    session->active = 0;
+                    return 0;
+                }
+                /* Ignore other characters */
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                session->retries++;
+                if (session->retries >= XMODEM_START_RETRIES)
+                {
+                    debug_printf("poll_receive: timeout waiting for sender\n");
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from sender");
+
+                    /* Close file */
+                    if (session->upload_handle > 0)
+                    {
+                        _kernel_swi_regs regs;
+                        regs.r[0] = 0;
+                        regs.r[1] = session->upload_handle;
+                        _kernel_swi(SWI_OS_Find, &regs, &regs);
+                        session->upload_handle = 0;
+                    }
+
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+
+                /* Resend start character */
+                session->state = XFER_RECV_SEND_START;
+            }
+            break;
+
+        case XFER_RECV_READ_BLOCK:
+            /* Read remaining block bytes */
+            expected_len = 3 + session->block_size + (session->use_crc ? 2 : 1);
+
+            while (pipe_bytes_available(session->line) > 0 && session->block_pos < expected_len)
+            {
+                byte = pipe_read_byte(session->line);
+                if (byte >= 0)
+                {
+                    session->block_buffer[session->block_pos++] = (uint8_t)byte;
+                }
+            }
+
+            if (session->block_pos >= expected_len)
+            {
+                /* Block complete - validate */
+                result = receive_validate_block(session);
+
+                if (result == 1)
+                {
+                    /* Valid new block - write to file */
+                    if (receive_write_file(session, &session->block_buffer[3], session->block_size) < 0)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "File write error");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_FILE_ERROR;
+                        session->active = 0;
+                        return 0;
+                    }
+
+                    session->bytes_transferred += session->block_size;
+                    session->blocks_transferred++;
+                    session->block_num++;
+                    session->retries = 0;
+                    session->state = XFER_RECV_SEND_ACK;
+                }
+                else if (result == 2)
+                {
+                    /* Duplicate block - ACK without saving */
+                    session->state = XFER_RECV_SEND_ACK;
+                }
+                else
+                {
+                    /* Invalid block - NAK */
+                    session->errors++;
+                    session->retries++;
+
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                        session->active = 0;
+                        return 0;
+                    }
+
+                    session->state = XFER_RECV_SEND_NAK;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                debug_printf("poll_receive: block read timeout at pos %d/%d\n",
+                             session->block_pos, expected_len);
+                session->errors++;
+                session->retries++;
+
+                if (session->retries >= XMODEM_MAX_RETRIES)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Block timeout");
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+
+                session->state = XFER_RECV_SEND_NAK;
+            }
+            break;
+
+        case XFER_RECV_SEND_ACK:
+            if (pipe_space_available(session->line) > 0)
+            {
+                pipe_write_byte(session->line, XMODEM_ACK);
+                debug_printf("poll_receive: sent ACK for block %d\n", (uint8_t)(session->block_num - 1));
+                session->block_pos = 0;
+                session->state = XFER_RECV_WAIT_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_RECV_SEND_NAK:
+            if (pipe_space_available(session->line) > 0)
+            {
+                pipe_write_byte(session->line, XMODEM_NAK);
+                debug_printf("poll_receive: sent NAK\n");
+                session->block_pos = 0;
+                session->state = XFER_RECV_WAIT_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    return 1; /* Still active */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Poll Entry Point                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+int transfer_poll(transfer_session *session)
+{
+    if (session == NULL || !session->active)
+    {
+        return 0;
+    }
+
+    /* Check for terminal states */
+    if (session->state == XFER_COMPLETE ||
+        session->state == XFER_ERROR ||
+        session->state == XFER_CANCELLED ||
+        session->state == XFER_TIMEOUT)
+    {
+        session->active = 0;
+        return 0;
+    }
+
+    /* Dispatch to direction-specific handler */
+    if (session->direction == TRANSFER_DIR_SEND)
+    {
+        return poll_send(session);
+    }
+    else
+    {
+        return poll_receive(session);
+    }
+}
