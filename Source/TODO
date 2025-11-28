@@ -1,0 +1,130 @@
+Converse BBS - TODO List
+=========================
+
+File Transfers
+--------------
+[ ] Prompt user for description entry after file upload completes
+[ ] Store file size in FILE_RECORD after upload completes (currently not set)
+[ ] Download counter - increment FILE_RECORD.downloads on successful transfer
+[ ] Upload stats - update USER_STATS.uploads/uploadskb on successful upload
+[ ] Download stats - update USER_STATS.downloads/downloadskb on successful download
+
+Filebase/Messagebase Navigation
+-------------------------------
+[ ] Nicer filebase and area selection UI (current is basic ID entry)
+[ ] Store last accessed filebase in USER_HISTORY on logout/disconnect
+[ ] Store last accessed messagebase in USER_HISTORY on logout/disconnect
+[ ] Expand USER_HISTORY struct to include filearea (last file area ID)
+[ ] Expand USER_HISTORY struct to include messagearea (last message area ID)
+[ ] Restore user's last filebase/area and messagebase/area on login
+
+User Interface
+--------------
+[ ] Design ANSI art for "Press any key" prompt
+[ ] Display anykey ANSI when script `anykey` command is executed
+    - Currently no visual feedback that system is waiting for keypress
+    - Should show prompt like "[Press any key to continue]" or ANSI graphic
+    - Config path: anykey setting in System config points to ANSI file
+    - Must query Support module SWI 0x5AA80 (Config Get) with key "anykey" to get path
+    - Then use `type` to display the ANSI file before waiting for input
+[ ] Design main system ANSI artwork (logo, headers, menus)
+[ ] Create ANSI files referenced in Config/System that don't exist yet:
+    - <Converse$Dir>.BBS.AnyKey
+    - <Converse$Dir>.BBS.ChatStart
+    - <Converse$Dir>.BBS.ChatEnd
+    - <Converse$Dir>.BBS.TimeUp
+    - <Converse$Dir>.BBS.Lockedout
+    - <Converse$Dir>.BBS.ClosedSys
+    - <Converse$Dir>.BBS.AfterMail
+    - <Converse$Dir>.BBS.Logoff
+
+User Management
+---------------
+[ ] Implement new user registration (NewUser script is placeholder)
+    - Prompt for username, password, real name, email
+    - Set default access level and flags
+    - Optional: email validation, sysop approval queue
+[ ] User profile editing (change password, email, settings)
+[ ] Sysop user management commands (edit user, delete user, lock/unlock)
+[ ] User search/listing for sysops
+[ ] Password encryption (currently plaintext in USER_RECORD)
+
+Messagebase System
+------------------
+[ ] Implement messagebase script commands:
+    - `messagebase list` - list available messagebases
+    - `messagebase select <id>` - select a messagebase
+    - `messagebase areas` - list areas in current messagebase
+    - `messagebase area <id>` - select an area
+    - `messagebase messages` - list messages in current area
+    - `messagebase read <id>` - read a message
+    - `messagebase write` - compose new message
+    - `messagebase reply <id>` - reply to a message
+
+[ ] Message composition:
+    - Private messages: prompt for recipient (To: user)
+    - Public area messages: no recipient needed (post to area)
+    - Subject line input
+    - Body text editor (line-by-line or simple editor)
+    - Quote previous message when replying
+
+[ ] Message display:
+    - Email-style format on screen:
+      From: username
+      To: username (or "All" for public)
+      Date: timestamp
+      Subject: subject line
+      ─────────────────────────
+      Body text...
+    - Nice ANSI borders/formatting
+    - Pagination for long messages
+
+[ ] Message listing:
+    - Show: ID, From, Subject, Date, Read/Unread status
+    - Mark new/unread messages
+    - Filter by read/unread
+
+[ ] Store last messagebase and area in USER_HISTORY (see above)
+
+[ ] FTN Integration:
+    - FTN mailer already tosses echomail into messagebases
+    - Tie local message reading to FTN-imported messages
+    - When writing to ECHO area type, export to outbound for FTN
+    - NETMAIL area type for private FTN mail (requires addressing)
+
+Server/Admin Features
+---------------------
+[ ] Sysop chat - implement chat between sysop and user (ChatStart/ChatEnd scripts)
+[ ] System pager - allow user to page sysop (pager config option)
+[ ] Kick/disconnect user from server UI
+[ ] View line - show what user is seeing in real-time (MESSAGE_LINE_VIEW_WINDOW)
+[ ] System statistics display (calls today, total calls, users online)
+[ ] Daily maintenance task (reset callstoday counter at midnight)
+[ ] Log viewer in server UI
+
+Script Engine Enhancements
+--------------------------
+[ ] Math operations in scripts (add, subtract for counters)
+[ ] String manipulation (substring, length, uppercase/lowercase)
+[ ] Random number generation for games/menus
+[ ] Time-based conditionals (if time > 18:00 goto evening_menu)
+[ ] Access level conditionals (if accesslevel >= 50 goto sysop_menu)
+[ ] Subroutine support with local variables
+[ ] Include directive for shared script snippets
+[ ] Better error messages with line numbers
+
+Security
+--------
+[ ] Rate limiting on login attempts (prevent brute force)
+[ ] IP-based banning
+[ ] Login audit log (successful/failed attempts with IP)
+[ ] Session timeout warning before disconnect
+[ ] Secure password storage (hash instead of XOR encryption)
+
+Documentation
+-------------
+[ ] User manual / help system accessible from BBS
+[ ] Sysop installation guide
+[ ] Script language reference
+[ ] SWI API documentation (beyond copilot-instructions)
+

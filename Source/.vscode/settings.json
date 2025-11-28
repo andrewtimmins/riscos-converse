@@ -25,6 +25,7 @@
         "ftnconfig": "cpp",
         "msgbaseconfig": "cpp",
         "tosser": "cpp",
-        "transfer": "cpp"
+        "transfer": "cpp",
+        "config": "cpp"
     }
 }
