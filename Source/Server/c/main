@@ -107,6 +107,7 @@ static void support_set_line_connected(int line_id, int connected);
 static void support_set_line_hostname(int line_id, const char *hostname);
 static void support_set_line_connect_time(int line_id, time_t connect_time);
 static void support_set_activity(int line_id, const char *activity);
+static int support_get_transfer_active(int line_id);
 
 /* String sanitization - strips leading/trailing whitespace and control chars */
 static void sanitize_string(char *str)
@@ -214,6 +215,7 @@ static int str_casecmp(const char *s1, const char *s2)
 #define LINE_FIELD_USER_ID     2
 #define LINE_FIELD_CONNECT_TIME 3
 #define LINE_FIELD_HOSTNAME    4
+#define LINE_FIELD_TRANSFER    5
 
 /* Activity reason codes */
 #define ACTIVITY_REASON_SET 0
@@ -596,6 +598,20 @@ static void support_set_activity(int line_id, const char *activity)
 	regs.r[1] = line_id;
 	regs.r[2] = (int)activity;
 	_kernel_swi(SWI_CONVERSEBBS_ACTIVITY, &regs, &regs);
+}
+
+static int support_get_transfer_active(int line_id)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_GET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_TRANSFER;
+	if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) != NULL)
+	{
+		return 0;
+	}
+	return regs.r[0];
 }
 
 /* *********************************************************************************************************************************************************************************** */
@@ -1280,13 +1296,18 @@ void check_socket(int line_id, int socket)
 	pump_socket_to_pipe(line_id, socket);
 	pump_pipe_to_socket(line_id, socket);
 
-	if (line_configuration[line_id].last_activity != 0)
+	if (line_configuration[line_id].last_activity != 0 && system_configuration[0].timeout > 0)
 	{
 		clock_t now = clock();
-		if ((now - line_configuration[line_id].last_activity) > LINE_IDLE_TIMEOUT_TICKS)
+		clock_t timeout_ticks = (clock_t)(system_configuration[0].timeout * CLOCKS_PER_SEC);
+		if ((now - line_configuration[line_id].last_activity) > timeout_ticks)
 		{
-			close_line_connection(line_id);
-			return;
+			/* Don't timeout during file transfer */
+			if (!support_get_transfer_active(line_id))
+			{
+				close_line_connection(line_id);
+				return;
+			}
 		}
 	}
 

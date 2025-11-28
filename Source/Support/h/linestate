@@ -27,7 +27,8 @@ typedef enum
     LINE_FIELD_CONNECTED = 1,   /* int: active connection? */
     LINE_FIELD_USER_ID = 2,     /* int: logged-in user ID (0=none) */
     LINE_FIELD_CONNECT_TIME = 3,/* time_t: when connection started */
-    LINE_FIELD_HOSTNAME = 4     /* char*: remote hostname/IP */
+    LINE_FIELD_HOSTNAME = 4,    /* char*: remote hostname/IP */
+    LINE_FIELD_TRANSFER = 5     /* int: file transfer in progress? */
 } LINE_FIELD;
 
 /* Activity reason codes for SWI ConverseBBS_Activity (0x5AA82) */
@@ -43,6 +44,7 @@ typedef struct
     int configured;
     int connected;
     int user_id;
+    int transfer_active;
     time_t connect_time;
     char activity[LINESTATE_ACTIVITY_LEN];
     char hostname[LINESTATE_HOSTNAME_LEN];

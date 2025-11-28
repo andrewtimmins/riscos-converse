@@ -1184,7 +1184,7 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
     if (script_stringcasecmp(token, "sendfile") == 0)
     {
         /* SENDFILE <file_id> [protocol]
-         * protocol: xmodem, xmodem-crc, xmodem-1k (default: xmodem-crc)
+         * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g (default: xmodem-crc)
          */
         char *file_id_str = strtok(NULL, " \t");
         char *protocol_str = strtok(NULL, " \t");
@@ -1198,7 +1198,7 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
     if (script_stringcasecmp(token, "receivefile") == 0)
     {
         /* RECEIVEFILE <filename> [protocol]
-         * protocol: xmodem, xmodem-crc, xmodem-1k (default: xmodem-crc)
+         * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g (default: xmodem-crc)
          */
         char *filename_str = strtok(NULL, " \t");
         char *protocol_str = strtok(NULL, " \t");
@@ -1873,7 +1873,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
         {
             /* SENDFILE <file_id> [protocol]
              * Initiates a file transfer using the current filebase.
-             * protocol: xmodem, xmodem-crc, xmodem-1k
+             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g
              */
             const char *file_id_str = instruction->arg1;
             const char *protocol_str = instruction->arg2;
@@ -1909,6 +1909,14 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
                 {
                     protocol = 2;
+                }
+                else if (script_stringcasecmp(expanded_proto, "ymodem") == 0)
+                {
+                    protocol = 3;
+                }
+                else if (script_stringcasecmp(expanded_proto, "ymodem-g") == 0)
+                {
+                    protocol = 4;
                 }
             }
 
@@ -1965,8 +1973,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.start_transfer != NULL)
             {
                 char msg[128];
-                const char *proto_name = (protocol == 0) ? "XMODEM" :
-                                         (protocol == 1) ? "XMODEM-CRC" : "XMODEM-1K";
+                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G"};
+                const char *proto_name = (protocol >= 0 && protocol <= 4) ? proto_names[protocol] : "XMODEM-CRC";
 
                 snprintf(msg, sizeof(msg), 
                          "\r\n\033[1;33mStarting %s transfer. Start your receiver now...\033[0m\r\n",
@@ -1995,7 +2003,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
         {
             /* RECEIVEFILE <filename> [protocol]
              * Receives a file upload using the current filebase.
-             * protocol: xmodem, xmodem-crc, xmodem-1k
+             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g
              */
             const char *filename_str = instruction->arg1;
             const char *protocol_str = instruction->arg2;
@@ -2031,6 +2039,14 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
                 {
                     protocol = 2;
+                }
+                else if (script_stringcasecmp(expanded_proto, "ymodem") == 0)
+                {
+                    protocol = 3;
+                }
+                else if (script_stringcasecmp(expanded_proto, "ymodem-g") == 0)
+                {
+                    protocol = 4;
                 }
             }
 
@@ -2080,8 +2096,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.start_receive_transfer != NULL)
             {
                 char msg[256];
-                const char *proto_name = (protocol == 0) ? "XMODEM" :
-                                         (protocol == 1) ? "XMODEM-CRC" : "XMODEM-1K";
+                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G"};
+                const char *proto_name = (protocol >= 0 && protocol <= 4) ? proto_names[protocol] : "XMODEM-CRC";
 
                 snprintf(msg, sizeof(msg), 
                          "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"

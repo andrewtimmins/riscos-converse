@@ -2285,6 +2285,12 @@ static int script_host_start_transfer(void *context, int base_id, int file_id, i
         case 2:
             xfer_proto = TRANSFER_PROTO_XMODEM_1K;
             break;
+        case 3:
+            xfer_proto = TRANSFER_PROTO_YMODEM;
+            break;
+        case 4:
+            xfer_proto = TRANSFER_PROTO_YMODEM_G;
+            break;
         case 1:
         default:
             xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
@@ -2298,11 +2304,44 @@ static int script_host_start_transfer(void *context, int base_id, int file_id, i
     }
 
     /* Start the new transfer */
-    if (!transfer_start_send(state->line_id, xfer_proto, base_id, file_id, &state->xfer_session))
+    if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
     {
-        debug_printf("script_host_start_transfer: failed to start - %s\n", 
-                     state->xfer_session.error_msg);
-        return 0;
+        /* YMODEM needs filename from file record */
+        _kernel_swi_regs regs;
+        char filename[128];
+        LINETASK_FILE_RECORD *file_rec;
+
+        regs.r[0] = 11; /* FILEBASE_CMD_FILE_INFO */
+        regs.r[1] = base_id;
+        regs.r[2] = file_id;
+
+        if (_kernel_swi(0x5AA43, &regs, &regs) == NULL && regs.r[0] > 0)
+        {
+            file_rec = (LINETASK_FILE_RECORD *)regs.r[0];
+            strncpy(filename, file_rec->name, sizeof(filename) - 1);
+            filename[sizeof(filename) - 1] = '\0';
+        }
+        else
+        {
+            snprintf(filename, sizeof(filename), "file%d", file_id);
+        }
+
+        if (!transfer_start_send_ymodem(state->line_id, xfer_proto, base_id, file_id,
+                                        filename, &state->xfer_session))
+        {
+            debug_printf("script_host_start_transfer: YMODEM failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
+    }
+    else
+    {
+        if (!transfer_start_send(state->line_id, xfer_proto, base_id, file_id, &state->xfer_session))
+        {
+            debug_printf("script_host_start_transfer: failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
     }
 
     snprintf(log_msg, sizeof(log_msg), "Starting file transfer (base=%d, file=%d, proto=%d)",
@@ -2332,6 +2371,12 @@ static int script_host_start_receive_transfer(void *context, const char *temp_pa
         case 2:
             xfer_proto = TRANSFER_PROTO_XMODEM_1K;
             break;
+        case 3:
+            xfer_proto = TRANSFER_PROTO_YMODEM;
+            break;
+        case 4:
+            xfer_proto = TRANSFER_PROTO_YMODEM_G;
+            break;
         case 1:
         default:
             xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
@@ -2345,11 +2390,25 @@ static int script_host_start_receive_transfer(void *context, const char *temp_pa
     }
 
     /* Start the receive transfer */
-    if (!transfer_start_receive(state->line_id, xfer_proto, temp_path, &state->xfer_session))
+    if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
     {
-        debug_printf("script_host_start_receive_transfer: failed to start - %s\n", 
-                     state->xfer_session.error_msg);
-        return 0;
+        /* YMODEM receive: temp_path is the directory, filename comes from block 0 */
+        if (!transfer_start_receive_ymodem(state->line_id, xfer_proto, "<Converse$Dir>.Temp", 
+                                           &state->xfer_session))
+        {
+            debug_printf("script_host_start_receive_transfer: YMODEM failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
+    }
+    else
+    {
+        if (!transfer_start_receive(state->line_id, xfer_proto, temp_path, &state->xfer_session))
+        {
+            debug_printf("script_host_start_receive_transfer: failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
     }
 
     snprintf(log_msg, sizeof(log_msg), "Starting file receive (path=%s, proto=%d)",

@@ -19,7 +19,9 @@ typedef enum
 {
     TRANSFER_PROTO_XMODEM,          /* Standard XMODEM - 128 byte blocks, checksum */
     TRANSFER_PROTO_XMODEM_CRC,      /* XMODEM-CRC - 128 byte blocks, 16-bit CRC */
-    TRANSFER_PROTO_XMODEM_1K        /* XMODEM-1K - 1024 byte blocks, 16-bit CRC */
+    TRANSFER_PROTO_XMODEM_1K,       /* XMODEM-1K - 1024 byte blocks, 16-bit CRC */
+    TRANSFER_PROTO_YMODEM,          /* YMODEM - 1024 byte blocks, CRC, filename in block 0 */
+    TRANSFER_PROTO_YMODEM_G         /* YMODEM-G - streaming mode (no per-block ACK) */
 } transfer_protocol;
 
 /* ******************************************************************************************************************************************************** */
@@ -43,13 +45,20 @@ typedef enum
     
     /* Send states */
     XFER_SEND_WAIT_START,           /* Waiting for receiver's NAK (checksum) or 'C' (CRC) */
+    XFER_SEND_HEADER_BLOCK,         /* YMODEM: Sending block 0 (filename/size) */
+    XFER_SEND_WAIT_HEADER_ACK,      /* YMODEM: Waiting for header ACK + 'C' */
     XFER_SEND_BLOCK,                /* Transmitting a data block */
     XFER_SEND_WAIT_ACK,             /* Waiting for ACK/NAK response */
     XFER_SEND_EOT,                  /* Sending End Of Transmission */
     XFER_SEND_WAIT_EOT_ACK,         /* Waiting for EOT acknowledgement */
+    XFER_SEND_END_BATCH,            /* YMODEM: Sending empty block 0 to end batch */
+    XFER_SEND_WAIT_END_BATCH_ACK,   /* YMODEM: Waiting for final empty block ACK */
     
     /* Receive states */
     XFER_RECV_SEND_START,           /* Sending initial NAK or 'C' */
+    XFER_RECV_WAIT_HEADER,          /* YMODEM: Waiting for block 0 header */
+    XFER_RECV_READ_HEADER,          /* YMODEM: Reading block 0 data */
+    XFER_RECV_ACK_HEADER,           /* YMODEM: ACK header then send 'C' for data */
     XFER_RECV_WAIT_BLOCK,           /* Waiting for block header (SOH/STX/EOT) */
     XFER_RECV_READ_BLOCK,           /* Reading block data */
     XFER_RECV_SEND_ACK,             /* Sending ACK after good block */
@@ -116,6 +125,9 @@ typedef struct
     transfer_direction direction;       /* Send or receive */
     int use_crc;                        /* Using CRC (vs checksum) - determined during handshake */
     int block_size;                     /* Current block size (128 or 1024) */
+    int is_ymodem;                      /* YMODEM protocol (needs block 0) */
+    int ymodem_g;                       /* YMODEM-G streaming mode (no ACK per block) */
+    int header_sent;                    /* Block 0 has been sent/received */
     
     /* State machine */
     transfer_state state;               /* Current state */
@@ -136,6 +148,11 @@ typedef struct
     /* For receive (upload) - direct file path */
     char upload_path[256];              /* Path for received file */
     int upload_handle;                  /* File handle for uploads */
+    
+    /* YMODEM filename from block 0 */
+    char ymodem_filename[128];          /* Filename from/for YMODEM block 0 */
+    long ymodem_filesize;               /* File size from YMODEM block 0 */
+    time_t ymodem_modtime;              /* Modification time from block 0 */
     
     /* Statistics */
     long bytes_transferred;             /* Total bytes sent/received */
@@ -195,6 +212,39 @@ int transfer_start_send(int line, transfer_protocol protocol,
 int transfer_start_receive(int line, transfer_protocol protocol,
                            const char *upload_path,
                            transfer_session *session);
+
+/*
+ * Start a YMODEM file send transfer (user downloading from BBS).
+ * This variant provides filename for the block 0 header.
+ *
+ * line         - Pipe line number
+ * protocol     - YMODEM or YMODEM_G
+ * filebase_id  - Filer filebase ID containing the file
+ * file_id      - File ID within the filebase
+ * filename     - Filename to send in YMODEM block 0
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_send_ymodem(int line, transfer_protocol protocol,
+                               int filebase_id, int file_id,
+                               const char *filename,
+                               transfer_session *session);
+
+/*
+ * Start a YMODEM file receive transfer (user uploading to BBS).
+ * Filename will be extracted from YMODEM block 0 header.
+ *
+ * line         - Pipe line number
+ * protocol     - YMODEM or YMODEM_G
+ * upload_dir   - Directory to save received file (filename comes from block 0)
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
+                                  const char *upload_dir,
+                                  transfer_session *session);
 
 /*
  * Poll the transfer state machine.

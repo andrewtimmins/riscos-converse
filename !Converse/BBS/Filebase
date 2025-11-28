@@ -63,15 +63,19 @@
     prompt file_id line echo
     print `\r\nSelect protocol:\r\n`
     print `  [1] XMODEM (checksum)\r\n`
-    print `  [2] XMODEM-CRC (recommended)\r\n`
+    print `  [2] XMODEM-CRC\r\n`
     print `  [3] XMODEM-1K\r\n`
+    print `  [4] YMODEM (recommended)\r\n`
+    print `  [5] YMODEM-G (streaming)\r\n`
     print `\r\nChoice: `
     prompt proto_choice char echo
     if proto_choice == `1` goto dl_xmodem
     if proto_choice == `2` goto dl_xmodem_crc
     if proto_choice == `3` goto dl_xmodem_1k
-    print `\r\nUsing default (XMODEM-CRC)...\r\n`
-    goto dl_xmodem_crc
+    if proto_choice == `4` goto dl_ymodem
+    if proto_choice == `5` goto dl_ymodem_g
+    print `\r\nUsing default (YMODEM)...\r\n`
+    goto dl_ymodem
 
     label dl_xmodem
     doing `Downloading file...`
@@ -88,6 +92,16 @@
     sendfile `%{file_id}` xmodem-1k
     goto download_done
 
+    label dl_ymodem
+    doing `Downloading file...`
+    sendfile `%{file_id}` ymodem
+    goto download_done
+
+    label dl_ymodem_g
+    doing `Downloading file...`
+    sendfile `%{file_id}` ymodem-g
+    goto download_done
+
     label download_done
     doing `Filebase Menu`
     anykey temp
@@ -98,15 +112,19 @@
     prompt upload_name line echo
     print `\r\nSelect protocol:\r\n`
     print `  [1] XMODEM (checksum)\r\n`
-    print `  [2] XMODEM-CRC (recommended)\r\n`
+    print `  [2] XMODEM-CRC\r\n`
     print `  [3] XMODEM-1K\r\n`
+    print `  [4] YMODEM (recommended)\r\n`
+    print `  [5] YMODEM-G (streaming)\r\n`
     print `\r\nChoice: `
     prompt ul_proto char echo
     if ul_proto == `1` goto ul_xmodem
     if ul_proto == `2` goto ul_xmodem_crc
     if ul_proto == `3` goto ul_xmodem_1k
-    print `\r\nUsing default (XMODEM-CRC)...\r\n`
-    goto ul_xmodem_crc
+    if ul_proto == `4` goto ul_ymodem
+    if ul_proto == `5` goto ul_ymodem_g
+    print `\r\nUsing default (YMODEM)...\r\n`
+    goto ul_ymodem
 
     label ul_xmodem
     doing `Uploading file...`
@@ -121,6 +139,16 @@
     label ul_xmodem_1k
     doing `Uploading file...`
     receivefile `%{upload_name}` xmodem-1k
+    goto upload_done
+
+    label ul_ymodem
+    doing `Uploading file...`
+    receivefile `%{upload_name}` ymodem
+    goto upload_done
+
+    label ul_ymodem_g
+    doing `Uploading file...`
+    receivefile `%{upload_name}` ymodem-g
     goto upload_done
 
     label upload_done

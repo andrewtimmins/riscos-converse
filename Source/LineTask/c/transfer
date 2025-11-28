@@ -1,7 +1,7 @@
 /* ******************************************************************************************************************************************************** */
 /* LineTask File Transfer Module                                                                                                                              */
 /*                                                                                                                                                            */
-/* Implements XMODEM, XMODEM-CRC, and XMODEM-1K file transfer protocols.                                                                                      */
+/* Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM and YMODEM-G file transfer protocols.                                                                     */
 /* Uses Pipes module for I/O and Filer module for file access.                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
@@ -37,6 +37,11 @@
 #define SWI_OS_Find                 0x0D
 #define SWI_OS_GBPB                 0x0C
 #define SWI_OS_Args                 0x09
+
+/* Support SWIs for line state */
+#define SWI_SUPPORT_LINE            0x5AA81
+#define LINE_REASON_SET             0
+#define LINE_FIELD_TRANSFER         5
 
 /* ******************************************************************************************************************************************************** */
 /* CRC Table                                                                                                                                                  */
@@ -106,6 +111,195 @@ uint8_t transfer_checksum(const uint8_t *data, int length)
     }
 
     return sum;
+}
+
+/*
+ * Set the transfer_active flag in Support module line state.
+ * This prevents the server from applying idle timeout during transfers.
+ */
+static void set_transfer_state(int line, int active)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINE_REASON_SET;
+    regs.r[1] = line;
+    regs.r[2] = LINE_FIELD_TRANSFER;
+    regs.r[3] = active;
+    _kernel_swi(SWI_SUPPORT_LINE, &regs, &regs);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* YMODEM Block 0 Helpers                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Build YMODEM block 0 (header block) containing filename and file size.
+ * Format: SOH/STX + 00 + FF + [filename\0][size in octal\0][modtime in octal\0] + padding + CRC
+ * For end of batch, filename is empty.
+ *
+ * buffer      - Output buffer (must be at least XMODEM_MAX_BLOCK_SIZE + 5)
+ * filename    - Filename to send (NULL or empty for end of batch)
+ * filesize    - File size in bytes
+ * modtime     - Modification time (0 if unknown)
+ *
+ * Returns: Total block length including header and CRC
+ */
+static int ymodem_build_block0(uint8_t *buffer, const char *filename, long filesize, time_t modtime)
+{
+    int pos = 0;
+    int data_start;
+    int block_size;
+    uint16_t crc;
+
+    /* Use 128-byte block for header (standard practice) */
+    block_size = XMODEM_BLOCK_SIZE;
+
+    /* Block header */
+    buffer[pos++] = XMODEM_SOH;
+    buffer[pos++] = 0x00;  /* Block number 0 */
+    buffer[pos++] = 0xFF;  /* Inverse of block number */
+
+    data_start = pos;
+
+    /* If no filename, this is end-of-batch marker */
+    if (filename == NULL || filename[0] == '\0')
+    {
+        /* Empty block signals end of batch */
+        memset(&buffer[pos], 0, block_size);
+    }
+    else
+    {
+        int name_len;
+        int remaining;
+
+        /* Filename (null-terminated) */
+        name_len = strlen(filename);
+        if (name_len > 100) name_len = 100; /* Leave room for size/time */
+        memcpy(&buffer[pos], filename, name_len);
+        pos += name_len;
+        buffer[pos++] = '\0';
+
+        /* File size in decimal (some implementations use octal, but decimal is more common) */
+        pos += snprintf((char *)&buffer[pos], 20, "%ld", filesize);
+        buffer[pos++] = ' ';
+
+        /* Modification time in octal (optional, but good to include) */
+        if (modtime > 0)
+        {
+            pos += snprintf((char *)&buffer[pos], 20, "%lo", (unsigned long)modtime);
+        }
+
+        /* Pad with zeros */
+        remaining = block_size - (pos - data_start);
+        if (remaining > 0)
+        {
+            memset(&buffer[pos], 0, remaining);
+        }
+    }
+
+    pos = data_start + block_size;
+
+    /* Add CRC */
+    crc = transfer_crc16(&buffer[data_start], block_size);
+    buffer[pos++] = (uint8_t)(crc >> 8);
+    buffer[pos++] = (uint8_t)(crc & 0xFF);
+
+    return pos;
+}
+
+/*
+ * Parse YMODEM block 0 to extract filename and file size.
+ *
+ * data        - Block 0 data (after SOH/STX and block numbers)
+ * data_len    - Length of data (128 or 1024)
+ * filename    - Output buffer for filename (should be >= 128 bytes)
+ * filesize    - Output for file size
+ * modtime     - Output for modification time (0 if not present)
+ *
+ * Returns: 1 if valid header with filename, 0 if end-of-batch (empty), -1 on error
+ */
+static int ymodem_parse_block0(const uint8_t *data, int data_len, char *filename, long *filesize, time_t *modtime)
+{
+    int pos = 0;
+    int name_len;
+
+    if (filename == NULL || filesize == NULL)
+    {
+        return -1;
+    }
+
+    /* Check for empty block (end of batch) */
+    if (data[0] == '\0')
+    {
+        filename[0] = '\0';
+        *filesize = 0;
+        if (modtime) *modtime = 0;
+        return 0;
+    }
+
+    /* Extract filename (null-terminated) */
+    name_len = 0;
+    while (pos < data_len && data[pos] != '\0' && name_len < 127)
+    {
+        filename[name_len++] = data[pos++];
+    }
+    filename[name_len] = '\0';
+
+    /* Strip file extension for RISC OS compatibility */
+    {
+        int i;
+        for (i = name_len - 1; i > 0; i--)
+        {
+            if (filename[i] == '.')
+            {
+                filename[i] = '\0';
+                break;
+            }
+            /* Stop at path separator */
+            if (filename[i] == '/' || filename[i] == '\\')
+            {
+                break;
+            }
+        }
+    }
+
+    if (pos >= data_len)
+    {
+        *filesize = 0;
+        if (modtime) *modtime = 0;
+        return 1;
+    }
+
+    /* Skip the null terminator */
+    pos++;
+
+    /* Parse file size (may be decimal or octal) */
+    *filesize = 0;
+    while (pos < data_len && data[pos] >= '0' && data[pos] <= '9')
+    {
+        *filesize = (*filesize * 10) + (data[pos] - '0');
+        pos++;
+    }
+
+    /* Skip space if present */
+    if (pos < data_len && data[pos] == ' ')
+    {
+        pos++;
+    }
+
+    /* Parse modification time (octal) - optional */
+    if (modtime)
+    {
+        *modtime = 0;
+        while (pos < data_len && data[pos] >= '0' && data[pos] <= '7')
+        {
+            *modtime = (*modtime * 8) + (data[pos] - '0');
+            pos++;
+        }
+    }
+
+    debug_printf("ymodem_parse_block0: filename='%s' size=%ld\n", filename, *filesize);
+    return 1;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -292,6 +486,10 @@ void transfer_get_status(transfer_session *session, char *buffer, int buffer_siz
         case XFER_SEND_WAIT_START:
             state_str = "Waiting for receiver";
             break;
+        case XFER_SEND_HEADER_BLOCK:
+        case XFER_SEND_WAIT_HEADER_ACK:
+            state_str = "Sending header";
+            break;
         case XFER_SEND_BLOCK:
             state_str = "Sending block";
             break;
@@ -300,10 +498,17 @@ void transfer_get_status(transfer_session *session, char *buffer, int buffer_siz
             break;
         case XFER_SEND_EOT:
         case XFER_SEND_WAIT_EOT_ACK:
+        case XFER_SEND_END_BATCH:
+        case XFER_SEND_WAIT_END_BATCH_ACK:
             state_str = "Completing";
             break;
         case XFER_RECV_SEND_START:
             state_str = "Starting receive";
+            break;
+        case XFER_RECV_WAIT_HEADER:
+        case XFER_RECV_READ_HEADER:
+        case XFER_RECV_ACK_HEADER:
+            state_str = "Receiving header";
             break;
         case XFER_RECV_WAIT_BLOCK:
             state_str = "Waiting for data";
@@ -378,6 +583,7 @@ int transfer_start_send(int line, transfer_protocol protocol,
     /* Initialise session */
     session->line = line;
     session->active = 1;
+    set_transfer_state(line, 1);  /* Notify Support module transfer started */
     session->protocol = protocol;
     session->direction = TRANSFER_DIR_SEND;
     session->filebase_id = filebase_id;
@@ -387,7 +593,9 @@ int transfer_start_send(int line, transfer_protocol protocol,
     session->block_num = 1;
 
     /* Set block size based on protocol */
-    if (protocol == TRANSFER_PROTO_XMODEM_1K)
+    if (protocol == TRANSFER_PROTO_XMODEM_1K ||
+        protocol == TRANSFER_PROTO_YMODEM ||
+        protocol == TRANSFER_PROTO_YMODEM_G)
     {
         session->block_size = XMODEM_1K_BLOCK_SIZE;
     }
@@ -396,8 +604,14 @@ int transfer_start_send(int line, transfer_protocol protocol,
         session->block_size = XMODEM_BLOCK_SIZE;
     }
 
-    /* CRC mode for XMODEM-CRC and XMODEM-1K, but receiver decides */
+    /* CRC mode for XMODEM-CRC, XMODEM-1K, and YMODEM */
     session->use_crc = (protocol != TRANSFER_PROTO_XMODEM) ? 1 : 0;
+
+    /* YMODEM flags */
+    session->is_ymodem = (protocol == TRANSFER_PROTO_YMODEM ||
+                          protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->header_sent = 0;
 
     /* Start state machine */
     session->state = XFER_SEND_WAIT_START;
@@ -453,6 +667,7 @@ int transfer_start_receive(int line, transfer_protocol protocol,
     /* Initialise session */
     session->line = line;
     session->active = 1;
+    set_transfer_state(line, 1);  /* Notify Support module transfer started */
     session->protocol = protocol;
     session->direction = TRANSFER_DIR_RECEIVE;
     session->file_size = 0; /* Unknown until transfer complete */
@@ -460,7 +675,9 @@ int transfer_start_receive(int line, transfer_protocol protocol,
     session->block_num = 1;
 
     /* Set block size and CRC based on protocol */
-    if (protocol == TRANSFER_PROTO_XMODEM_1K)
+    if (protocol == TRANSFER_PROTO_XMODEM_1K ||
+        protocol == TRANSFER_PROTO_YMODEM ||
+        protocol == TRANSFER_PROTO_YMODEM_G)
     {
         session->block_size = XMODEM_1K_BLOCK_SIZE;
         session->use_crc = 1;
@@ -476,7 +693,150 @@ int transfer_start_receive(int line, transfer_protocol protocol,
         session->use_crc = 0;
     }
 
+    /* YMODEM flags */
+    session->is_ymodem = (protocol == TRANSFER_PROTO_YMODEM ||
+                          protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->header_sent = 0;
+
     /* Start state machine */
+    session->state = XFER_RECV_SEND_START;
+    session->transfer_start = transfer_get_time();
+    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
+    session->retries = 0;
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* YMODEM Start Functions                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Start a YMODEM file send transfer with explicit filename for block 0.
+ */
+int transfer_start_send_ymodem(int line, transfer_protocol protocol,
+                               int filebase_id, int file_id,
+                               const char *filename,
+                               transfer_session *session)
+{
+    long file_size;
+
+    if (session == NULL || filename == NULL)
+    {
+        return 0;
+    }
+
+    /* Must be YMODEM variant */
+    if (protocol != TRANSFER_PROTO_YMODEM && protocol != TRANSFER_PROTO_YMODEM_G)
+    {
+        return transfer_start_send(line, protocol, filebase_id, file_id, session);
+    }
+
+    session_reset(session);
+
+    /* Get file size from Filer */
+    if (!filebase_get_file_size(filebase_id, file_id, &file_size))
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return 0;
+    }
+
+    debug_printf("transfer_start_send_ymodem: line=%d filebase=%d file=%d size=%ld name=%s\n",
+                 line, filebase_id, file_id, file_size, filename);
+
+    /* Initialise session */
+    session->line = line;
+    session->active = 1;
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_SEND;
+    session->filebase_id = filebase_id;
+    session->file_id = file_id;
+    session->file_size = file_size;
+    session->file_offset = 0;
+    session->block_num = 0; /* YMODEM starts with block 0 */
+
+    /* YMODEM always uses 1K blocks and CRC */
+    session->block_size = XMODEM_1K_BLOCK_SIZE;
+    session->use_crc = 1;
+    session->is_ymodem = 1;
+    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->header_sent = 0;
+
+    /* Store filename for block 0 */
+    strncpy(session->ymodem_filename, filename, sizeof(session->ymodem_filename) - 1);
+    session->ymodem_filename[sizeof(session->ymodem_filename) - 1] = '\0';
+    session->ymodem_filesize = file_size;
+    session->ymodem_modtime = 0; /* Could get from file if needed */
+
+    /* Start state machine - wait for 'C' from receiver */
+    session->state = XFER_SEND_WAIT_START;
+    session->transfer_start = transfer_get_time();
+    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
+    session->retries = 0;
+
+    return 1;
+}
+
+/*
+ * Start a YMODEM file receive transfer.
+ * Filename will come from block 0 - upload_dir is the destination directory.
+ */
+int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
+                                  const char *upload_dir,
+                                  transfer_session *session)
+{
+    _kernel_swi_regs regs;
+
+    if (session == NULL || upload_dir == NULL)
+    {
+        return 0;
+    }
+
+    /* Must be YMODEM variant */
+    if (protocol != TRANSFER_PROTO_YMODEM && protocol != TRANSFER_PROTO_YMODEM_G)
+    {
+        return 0; /* Use transfer_start_receive for XMODEM */
+    }
+
+    session_reset(session);
+
+    debug_printf("transfer_start_receive_ymodem: line=%d protocol=%d dir=%s\n",
+                 line, protocol, upload_dir);
+
+    /* Ensure upload directory exists */
+    regs.r[0] = 8;  /* OS_File 8 = Create directory */
+    regs.r[1] = (int)upload_dir;
+    regs.r[4] = 0;
+    _kernel_swi(0x08, &regs, &regs);
+
+    /* Store the upload directory path - actual file opened after block 0 */
+    strncpy(session->upload_path, upload_dir, sizeof(session->upload_path) - 1);
+    session->upload_path[sizeof(session->upload_path) - 1] = '\0';
+    session->upload_handle = 0; /* Will be opened after we get filename */
+
+    /* Initialise session */
+    session->line = line;
+    session->active = 1;
+    set_transfer_state(line, 1);  /* Notify Support module transfer started */
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_RECEIVE;
+    session->file_size = 0;
+    session->file_offset = 0;
+    session->block_num = 0; /* YMODEM starts with block 0 */
+
+    /* YMODEM uses 1K blocks and CRC */
+    session->block_size = XMODEM_1K_BLOCK_SIZE;
+    session->use_crc = 1;
+    session->is_ymodem = 1;
+    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
+    session->header_sent = 0;
+    session->ymodem_filename[0] = '\0';
+    session->ymodem_filesize = 0;
+
+    /* Start state machine - send 'C' to request block 0 */
     session->state = XFER_RECV_SEND_START;
     session->transfer_start = transfer_get_time();
     transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
@@ -673,6 +1033,33 @@ static int receive_validate_block(transfer_session *session)
         return 0; /* Invalid block */
     }
 
+    /* YMODEM: Check for end-of-batch block 0 after EOT */
+    if (session->is_ymodem && block_num == 0 && session->block_num == 0)
+    {
+        /* Validate CRC first */
+        data_start = &session->block_buffer[3];
+        uint16_t calc_crc = transfer_crc16(data_start, session->block_size);
+        uint16_t recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
+                                       session->block_buffer[4 + session->block_size]);
+
+        if (calc_crc != recv_crc)
+        {
+            debug_printf("receive_validate_block: end-of-batch CRC mismatch\n");
+            return 0;
+        }
+
+        /* Check if filename is empty (end of batch) */
+        if (data_start[0] == '\0')
+        {
+            debug_printf("receive_validate_block: YMODEM end of batch\n");
+            return 3; /* End of batch */
+        }
+
+        /* Non-empty block 0 = another file starting (batch mode) */
+        debug_printf("receive_validate_block: YMODEM batch - another file\n");
+        return 4; /* Another file in batch - not currently supported */
+    }
+
     /* Check sequence */
     if (block_num == (uint8_t)(session->block_num - 1))
     {
@@ -741,13 +1128,27 @@ static int poll_send(transfer_session *session)
                 {
                     debug_printf("poll_send: got NAK - using checksum mode\n");
                     session->use_crc = 0;
-                    session->state = XFER_SEND_BLOCK;
+                    if (session->is_ymodem && !session->header_sent)
+                    {
+                        session->state = XFER_SEND_HEADER_BLOCK;
+                    }
+                    else
+                    {
+                        session->state = XFER_SEND_BLOCK;
+                    }
                 }
                 else if (byte == XMODEM_CRC_START)
                 {
                     debug_printf("poll_send: got 'C' - using CRC mode\n");
                     session->use_crc = 1;
-                    session->state = XFER_SEND_BLOCK;
+                    if (session->is_ymodem && !session->header_sent)
+                    {
+                        session->state = XFER_SEND_HEADER_BLOCK;
+                    }
+                    else
+                    {
+                        session->state = XFER_SEND_BLOCK;
+                    }
                 }
                 else if (byte == XMODEM_CAN)
                 {
@@ -770,6 +1171,105 @@ static int poll_send(transfer_session *session)
                     session->result = XFER_RESULT_TIMEOUT;
                     session->active = 0;
                     return 0;
+                }
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_SEND_HEADER_BLOCK:
+            /* YMODEM: Build and send block 0 with filename/size */
+            if (session->block_pos == 0)
+            {
+                session->block_len = ymodem_build_block0(session->block_buffer,
+                                                         session->ymodem_filename,
+                                                         session->ymodem_filesize,
+                                                         session->ymodem_modtime);
+                debug_printf("poll_send: built YMODEM block 0 (%d bytes)\n", session->block_len);
+            }
+
+            result = send_block_data(session);
+            if (result > 0)
+            {
+                debug_printf("poll_send: YMODEM header block sent\n");
+                session->state = XFER_SEND_WAIT_HEADER_ACK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            else if (result < 0)
+            {
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_PROTOCOL_ERROR;
+                session->active = 0;
+                return 0;
+            }
+            break;
+
+        case XFER_SEND_WAIT_HEADER_ACK:
+            /* YMODEM: Wait for ACK then 'C' for header block */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_ACK)
+                {
+                    debug_printf("poll_send: got ACK for header block\n");
+                    session->header_sent = 1;
+                    session->block_num = 1; /* Data blocks start at 1 */
+                    session->block_pos = 0;
+                    session->retries = 0;
+                    /* Now wait for 'C' to start data */
+                    transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+                }
+                else if (byte == XMODEM_CRC_START)
+                {
+                    if (session->header_sent)
+                    {
+                        debug_printf("poll_send: got 'C' after header ACK - starting data\n");
+                        session->state = XFER_SEND_BLOCK;
+                    }
+                }
+                else if (byte == XMODEM_NAK)
+                {
+                    debug_printf("poll_send: got NAK for header - retrying\n");
+                    session->errors++;
+                    session->retries++;
+
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Header rejected");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                        session->active = 0;
+                        return 0;
+                    }
+
+                    session->block_pos = 0;
+                    session->state = XFER_SEND_HEADER_BLOCK;
+                }
+                else if (byte == XMODEM_CAN)
+                {
+                    debug_printf("poll_send: got CAN - receiver cancelled\n");
+                    session->state = XFER_CANCELLED;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    session->active = 0;
+                    return 0;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                if (!session->header_sent)
+                {
+                    session->errors++;
+                    session->retries++;
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Header timeout");
+                        session->state = XFER_TIMEOUT;
+                        session->result = XFER_RESULT_TIMEOUT;
+                        session->active = 0;
+                        return 0;
+                    }
+                    session->block_pos = 0;
+                    session->state = XFER_SEND_HEADER_BLOCK;
                 }
                 transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
             }
@@ -904,11 +1404,24 @@ static int poll_send(transfer_session *session)
 
                 if (byte == XMODEM_ACK)
                 {
-                    debug_printf("poll_send: EOT acknowledged - transfer complete\n");
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
+                    debug_printf("poll_send: EOT acknowledged\n");
+                    
+                    /* YMODEM: Need to send empty block 0 to end batch */
+                    if (session->is_ymodem)
+                    {
+                        session->block_pos = 0;
+                        session->retries = 0;
+                        /* Wait for 'C' then send empty block 0 */
+                        session->state = XFER_SEND_END_BATCH;
+                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+                    }
+                    else
+                    {
+                        session->state = XFER_COMPLETE;
+                        session->result = XFER_RESULT_OK;
+                        session->active = 0;
+                        return 0;
+                    }
                 }
                 else if (byte == XMODEM_NAK)
                 {
@@ -925,11 +1438,95 @@ static int poll_send(transfer_session *session)
                     }
                     session->state = XFER_SEND_EOT;
                 }
+                else if (byte == XMODEM_CRC_START)
+                {
+                    /* YMODEM receiver ready for next file / end batch */
+                    if (session->is_ymodem)
+                    {
+                        session->block_pos = 0;
+                        session->state = XFER_SEND_END_BATCH;
+                    }
+                }
             }
             else if (transfer_timeout_expired(session))
             {
                 /* Timeout waiting for EOT ACK - consider it done */
                 debug_printf("poll_send: EOT ACK timeout, assuming complete\n");
+                session->state = XFER_COMPLETE;
+                session->result = XFER_RESULT_OK;
+                session->active = 0;
+                return 0;
+            }
+            break;
+
+        case XFER_SEND_END_BATCH:
+            /* YMODEM: Wait for 'C' then send empty block 0 to end batch */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_CRC_START || byte == XMODEM_NAK)
+                {
+                    /* Build empty block 0 */
+                    session->block_len = ymodem_build_block0(session->block_buffer, NULL, 0, 0);
+                    session->block_pos = 0;
+                    debug_printf("poll_send: sending empty block 0 to end batch\n");
+
+                    result = send_block_data(session);
+                    if (result > 0)
+                    {
+                        session->state = XFER_SEND_WAIT_END_BATCH_ACK;
+                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+                    }
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                session->retries++;
+                if (session->retries >= XMODEM_MAX_RETRIES)
+                {
+                    /* Assume complete if we don't get 'C' */
+                    debug_printf("poll_send: end batch timeout, assuming complete\n");
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_SEND_WAIT_END_BATCH_ACK:
+            /* YMODEM: Wait for ACK on empty block 0 */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_ACK)
+                {
+                    debug_printf("poll_send: batch end acknowledged - transfer complete\n");
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+                else if (byte == XMODEM_NAK)
+                {
+                    session->retries++;
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        session->state = XFER_COMPLETE;
+                        session->result = XFER_RESULT_OK;
+                        session->active = 0;
+                        return 0;
+                    }
+                    session->block_pos = 0;
+                    session->state = XFER_SEND_END_BATCH;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                debug_printf("poll_send: end batch ACK timeout, assuming complete\n");
                 session->state = XFER_COMPLETE;
                 session->result = XFER_RESULT_OK;
                 session->active = 0;
@@ -970,6 +1567,213 @@ static int poll_receive(transfer_session *session)
                     pipe_write_byte(session->line, XMODEM_NAK);
                     debug_printf("poll_receive: sent NAK for checksum mode\n");
                 }
+
+                /* YMODEM: First expect block 0 (header) */
+                if (session->is_ymodem && !session->header_sent)
+                {
+                    session->state = XFER_RECV_WAIT_HEADER;
+                }
+                else
+                {
+                    session->state = XFER_RECV_WAIT_BLOCK;
+                }
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+            break;
+
+        case XFER_RECV_WAIT_HEADER:
+            /* YMODEM: Wait for block 0 header */
+            if (pipe_bytes_available(session->line) > 0)
+            {
+                byte = pipe_read_byte(session->line);
+
+                if (byte == XMODEM_SOH)
+                {
+                    debug_printf("poll_receive: got SOH for header block\n");
+                    session->block_size = XMODEM_BLOCK_SIZE;
+                    session->block_buffer[0] = XMODEM_SOH;
+                    session->block_pos = 1;
+                    session->state = XFER_RECV_READ_HEADER;
+                }
+                else if (byte == XMODEM_STX)
+                {
+                    debug_printf("poll_receive: got STX for header block\n");
+                    session->block_size = XMODEM_1K_BLOCK_SIZE;
+                    session->block_buffer[0] = XMODEM_STX;
+                    session->block_pos = 1;
+                    session->state = XFER_RECV_READ_HEADER;
+                }
+                else if (byte == XMODEM_CAN)
+                {
+                    debug_printf("poll_receive: got CAN - sender cancelled\n");
+                    session->state = XFER_CANCELLED;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    session->active = 0;
+                    return 0;
+                }
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                session->retries++;
+                if (session->retries >= XMODEM_START_RETRIES)
+                {
+                    debug_printf("poll_receive: header timeout\n");
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from sender");
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+                session->state = XFER_RECV_SEND_START;
+            }
+            break;
+
+        case XFER_RECV_READ_HEADER:
+            /* YMODEM: Read block 0 data */
+            expected_len = 3 + session->block_size + 2; /* Always CRC for YMODEM */
+
+            while (pipe_bytes_available(session->line) > 0 && session->block_pos < expected_len)
+            {
+                byte = pipe_read_byte(session->line);
+                if (byte >= 0)
+                {
+                    session->block_buffer[session->block_pos++] = (uint8_t)byte;
+                }
+            }
+
+            if (session->block_pos > 0)
+            {
+                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+            }
+
+            if (session->block_pos >= expected_len)
+            {
+                /* Validate block 0 */
+                uint8_t block_num = session->block_buffer[1];
+                uint8_t block_inv = session->block_buffer[2];
+                uint16_t calc_crc, recv_crc;
+
+                if ((uint8_t)(block_num + block_inv) != 255 || block_num != 0)
+                {
+                    debug_printf("poll_receive: invalid header block number\n");
+                    session->retries++;
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Invalid header");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_PROTOCOL_ERROR;
+                        session->active = 0;
+                        return 0;
+                    }
+                    session->state = XFER_RECV_SEND_NAK;
+                    break;
+                }
+
+                calc_crc = transfer_crc16(&session->block_buffer[3], session->block_size);
+                recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
+                                      session->block_buffer[4 + session->block_size]);
+
+                if (calc_crc != recv_crc)
+                {
+                    debug_printf("poll_receive: header CRC error\n");
+                    session->retries++;
+                    if (session->retries >= XMODEM_MAX_RETRIES)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Header CRC error");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_PROTOCOL_ERROR;
+                        session->active = 0;
+                        return 0;
+                    }
+                    session->state = XFER_RECV_SEND_NAK;
+                    break;
+                }
+
+                /* Parse the header */
+                result = ymodem_parse_block0(&session->block_buffer[3], session->block_size,
+                                             session->ymodem_filename,
+                                             &session->ymodem_filesize,
+                                             &session->ymodem_modtime);
+
+                if (result == 0)
+                {
+                    /* Empty filename = end of batch */
+                    debug_printf("poll_receive: end of batch\n");
+                    pipe_write_byte(session->line, XMODEM_ACK);
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+
+                if (result < 0)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Invalid header format");
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_PROTOCOL_ERROR;
+                    session->active = 0;
+                    return 0;
+                }
+
+                /* Got valid filename - open the file */
+                session->file_size = session->ymodem_filesize;
+                debug_printf("poll_receive: YMODEM file='%s' size=%ld\n",
+                             session->ymodem_filename, session->file_size);
+
+                /* Build full path: upload_path (directory) + filename */
+                {
+                    _kernel_swi_regs regs;
+                    char full_path[512];
+
+                    snprintf(full_path, sizeof(full_path), "%s.%s",
+                             session->upload_path, session->ymodem_filename);
+
+                    regs.r[0] = 0x8F;
+                    regs.r[1] = (int)full_path;
+
+                    if (_kernel_swi(SWI_OS_Find, &regs, &regs) != NULL || regs.r[0] == 0)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create file");
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_FILE_ERROR;
+                        session->active = 0;
+                        return 0;
+                    }
+
+                    session->upload_handle = regs.r[0];
+                    strncpy(session->upload_path, full_path, sizeof(session->upload_path) - 1);
+                }
+
+                session->header_sent = 1;
+                session->state = XFER_RECV_ACK_HEADER;
+            }
+            else if (transfer_timeout_expired(session))
+            {
+                debug_printf("poll_receive: header read timeout at pos %d/%d\n",
+                             session->block_pos, expected_len);
+                session->retries++;
+                if (session->retries >= XMODEM_MAX_RETRIES)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Header timeout");
+                    session->state = XFER_TIMEOUT;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    session->active = 0;
+                    return 0;
+                }
+                session->state = XFER_RECV_SEND_NAK;
+            }
+            break;
+
+        case XFER_RECV_ACK_HEADER:
+            /* YMODEM: ACK header and send 'C' to start data */
+            if (pipe_space_available(session->line) >= 2)
+            {
+                pipe_write_byte(session->line, XMODEM_ACK);
+                pipe_write_byte(session->line, XMODEM_CRC_START);
+                debug_printf("poll_receive: ACKed header and sent 'C' for data\n");
+                session->block_num = 1;
+                session->block_pos = 0;
+                session->retries = 0;
                 session->state = XFER_RECV_WAIT_BLOCK;
                 transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
             }
@@ -1013,10 +1817,25 @@ static int poll_receive(transfer_session *session)
                         session->upload_handle = 0;
                     }
 
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
+                    /* YMODEM: Need to receive end-of-batch empty block 0 */
+                    if (session->is_ymodem)
+                    {
+                        /* Send 'C' to request next file / end of batch */
+                        pipe_write_byte(session->line, XMODEM_CRC_START);
+                        debug_printf("poll_receive: YMODEM - sent 'C' for end of batch\n");
+                        session->block_num = 0; /* Expect block 0 again */
+                        session->block_pos = 0;
+                        session->retries = 0;
+                        session->state = XFER_RECV_WAIT_BLOCK; /* Use normal block receive */
+                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
+                    }
+                    else
+                    {
+                        session->state = XFER_COMPLETE;
+                        session->result = XFER_RESULT_OK;
+                        session->active = 0;
+                        return 0;
+                    }
                 }
                 else if (byte == XMODEM_CAN)
                 {
@@ -1115,6 +1934,26 @@ static int poll_receive(transfer_session *session)
                     /* Duplicate block - ACK without saving */
                     session->state = XFER_RECV_SEND_ACK;
                 }
+                else if (result == 3)
+                {
+                    /* YMODEM end of batch - ACK and complete */
+                    pipe_write_byte(session->line, XMODEM_ACK);
+                    debug_printf("poll_receive: YMODEM batch complete\n");
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
+                else if (result == 4)
+                {
+                    /* YMODEM another file in batch - not supported, end transfer */
+                    pipe_write_byte(session->line, XMODEM_ACK);
+                    debug_printf("poll_receive: YMODEM batch mode not supported, ending\n");
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    session->active = 0;
+                    return 0;
+                }
                 else
                 {
                     /* Invalid block - NAK */
@@ -1200,6 +2039,7 @@ int transfer_poll(transfer_session *session)
         session->state == XFER_TIMEOUT)
     {
         session->active = 0;
+        set_transfer_state(session->line, 0);  /* Notify Support module transfer ended */
         return 0;
     }
 
