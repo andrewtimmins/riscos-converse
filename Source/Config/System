@@ -22,10 +22,9 @@ anykey      <Converse$Dir>.BBS.AnyKey
 chatstart   <Converse$Dir>.BBS.ChatStart
 chatend     <Converse$Dir>.BBS.ChatEnd
 
-prelogon    <Converse$Dir>.BBS.PreLogon
-postlogon   <Converse$Dir>.BBS.PostLogon
+prelogon    <Converse$Dir>.BBS.Prelogon
+postlogon   <Converse$Dir>.BBS.Postlogon
 logoff      <Converse$Dir>.BBS.Logoff
-welcome     <Converse$Dir>.BBS.Start
 newuser     <Converse$Dir>.BBS.NewUser
 
 timeup      <Converse$Dir>.BBS.TimeUp

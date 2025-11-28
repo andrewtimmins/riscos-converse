@@ -104,11 +104,6 @@ Server/Admin Features
 
 Script Engine Enhancements
 --------------------------
-[ ] Math operations in scripts (add, subtract for counters)
-[ ] String manipulation (substring, length, uppercase/lowercase)
-[ ] Random number generation for games/menus
-[ ] Time-based conditionals (if time > 18:00 goto evening_menu)
-[ ] Access level conditionals (if accesslevel >= 50 goto sysop_menu)
 [ ] Subroutine support with local variables
 [ ] Include directive for shared script snippets
 [ ] Better error messages with line numbers

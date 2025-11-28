@@ -8,6 +8,7 @@
 #include "kernel.h"
 #include "swis.h"
 
+#include "debug.h"
 #include "script.h"
 #include "filebase.h"
 
@@ -798,6 +799,8 @@ static int script_parse_line(script_state *state, const char *line, int line_num
 static int script_build_instruction(script_state *state, char *line, int line_number, script_instruction *instruction)
 {
     char *token;
+    char *line_after_cmd; /* Pointer to rest of line after command */
+    size_t token_len;
 
     if (line == NULL || instruction == NULL)
     {
@@ -806,7 +809,29 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     instruction->type = SCRIPT_CMD_NONE;
 
-    token = strtok(line, " \t");
+    /* Skip leading whitespace to find command start */
+    while (*line && isspace((unsigned char)*line)) line++;
+    
+    /* Find end of first token (command) */
+    token = line;
+    while (*line && !isspace((unsigned char)*line)) line++;
+    token_len = (size_t)(line - token);
+    
+    if (token_len == 0)
+    {
+        return 1;
+    }
+    
+    /* Skip whitespace after command to find rest of line */
+    while (*line && isspace((unsigned char)*line)) line++;
+    line_after_cmd = line;
+    
+    /* Now use token_len to compare command names */
+    /* We need to null-terminate for comparison, so use the original strtok approach
+     * but save line_after_cmd first */
+    
+    /* Re-parse with strtok for other commands that need it */
+    token = strtok(token, " \t");
     if (token == NULL)
     {
         return 1;
@@ -879,45 +904,67 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     if (script_stringcasecmp(token, "if") == 0)
     {
-        char *variable = strtok(NULL, " \t");
-        char *op = strtok(NULL, " \t");
-        char *value_part = strtok(NULL, "");
+        /* IF supports compound conditions with && (AND) and || (OR)
+         * Syntax: if <expr1> [&& <expr2>]... [|| <expr3>]... goto <label>
+         * Where each expr is: <var> <op> <value>
+         * Operators: ==, !=, >, <, >=, <=
+         * 
+         * Store entire condition in arg1, label in arg2
+         * 
+         * Use line_after_cmd which points to the rest of the line after "if"
+         */
+        char *rest = line_after_cmd;
         char *goto_keyword;
         char *label_name;
-        char *value_string = NULL;
+        char *condition_text;
+        char *search_pos;
 
-        if (variable == NULL || op == NULL || value_part == NULL)
+        if (*rest == '\0')
         {
             script_set_error(state, "Malformed if statement on line %d", line_number);
             return 0;
         }
 
-        value_part = script_trim(value_part);
-        goto_keyword = strstr(value_part, "goto");
+        /* Find the LAST occurrence of " goto " to handle compound conditions */
+        goto_keyword = NULL;
+        search_pos = rest;
+        while ((search_pos = strstr(search_pos, " goto ")) != NULL)
+        {
+            goto_keyword = search_pos;
+            search_pos += 6;
+        }
+        
+        /* Also try just "goto " if condition starts right at goto (shouldn't happen) */
+        if (goto_keyword == NULL && strncmp(rest, "goto ", 5) == 0)
+        {
+            goto_keyword = rest;
+        }
+        
         if (goto_keyword == NULL)
         {
             script_set_error(state, "If without goto on line %d", line_number);
             return 0;
         }
 
-        *goto_keyword = '\0';
-        goto_keyword += 4;
-        goto_keyword = script_trim(goto_keyword);
-        label_name = goto_keyword;
-
+        /* Split at goto */
+        if (goto_keyword == rest)
         {
-            size_t consumed = 0;
-            if (!script_parse_backtick_string(value_part, &consumed, &value_string))
-            {
-                value_string = script_duplicate_string(script_trim(value_part));
-            }
+            /* goto at start - no condition (shouldn't happen but handle it) */
+            condition_text = "";
+            label_name = script_trim(rest + 5);
+        }
+        else
+        {
+            *goto_keyword = '\0';
+            condition_text = script_trim(rest);
+            label_name = script_trim(goto_keyword + 6); /* skip " goto " */
         }
 
         instruction->type = SCRIPT_CMD_IF;
-        instruction->arg1 = script_duplicate_string(variable);
-        instruction->arg2 = script_duplicate_string(op);
-        instruction->arg3 = value_string;
-        instruction->arg4 = script_duplicate_string(label_name);
+        instruction->arg1 = script_duplicate_string(condition_text);
+        instruction->arg2 = script_duplicate_string(label_name);
+        instruction->arg3 = NULL;
+        instruction->arg4 = NULL;
         return 1;
     }
 
@@ -1209,6 +1256,144 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    /* Math commands: add, sub, mul, div, mod
+     * Syntax: add <result_var> <operand1> <operand2>
+     */
+    if (script_stringcasecmp(token, "add") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *op1 = strtok(NULL, " \t");
+        char *op2 = strtok(NULL, " \t");
+        if (result == NULL || op1 == NULL || op2 == NULL)
+        {
+            script_set_error(state, "Malformed add on line %d (usage: add result op1 op2)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_ADD;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(op1);
+        instruction->arg3 = script_duplicate_string(op2);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "sub") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *op1 = strtok(NULL, " \t");
+        char *op2 = strtok(NULL, " \t");
+        if (result == NULL || op1 == NULL || op2 == NULL)
+        {
+            script_set_error(state, "Malformed sub on line %d (usage: sub result op1 op2)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_SUB;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(op1);
+        instruction->arg3 = script_duplicate_string(op2);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "mul") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *op1 = strtok(NULL, " \t");
+        char *op2 = strtok(NULL, " \t");
+        if (result == NULL || op1 == NULL || op2 == NULL)
+        {
+            script_set_error(state, "Malformed mul on line %d (usage: mul result op1 op2)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_MUL;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(op1);
+        instruction->arg3 = script_duplicate_string(op2);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "div") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *op1 = strtok(NULL, " \t");
+        char *op2 = strtok(NULL, " \t");
+        if (result == NULL || op1 == NULL || op2 == NULL)
+        {
+            script_set_error(state, "Malformed div on line %d (usage: div result op1 op2)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_DIV;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(op1);
+        instruction->arg3 = script_duplicate_string(op2);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "mod") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *op1 = strtok(NULL, " \t");
+        char *op2 = strtok(NULL, " \t");
+        if (result == NULL || op1 == NULL || op2 == NULL)
+        {
+            script_set_error(state, "Malformed mod on line %d (usage: mod result op1 op2)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_MOD;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(op1);
+        instruction->arg3 = script_duplicate_string(op2);
+        return 1;
+    }
+
+    /* Random: random <result_var> <min> <max> */
+    if (script_stringcasecmp(token, "random") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *min_str = strtok(NULL, " \t");
+        char *max_str = strtok(NULL, " \t");
+        if (result == NULL || min_str == NULL || max_str == NULL)
+        {
+            script_set_error(state, "Malformed random on line %d (usage: random result min max)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_RANDOM;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(min_str);
+        instruction->arg3 = script_duplicate_string(max_str);
+        return 1;
+    }
+
+    /* String length: strlen <result_var> <string_var> */
+    if (script_stringcasecmp(token, "strlen") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *source = strtok(NULL, " \t");
+        if (result == NULL || source == NULL)
+        {
+            script_set_error(state, "Malformed strlen on line %d (usage: strlen result source)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_STRLEN;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(source);
+        return 1;
+    }
+
+    /* Check if user has a key: haskey <result_var> <key> */
+    if (script_stringcasecmp(token, "haskey") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *key = strtok(NULL, " \t");
+        if (result == NULL || key == NULL)
+        {
+            script_set_error(state, "Malformed haskey on line %d (usage: haskey result key)", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_HASKEY;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(key);
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -1401,28 +1586,239 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_IF:
         {
-            const char *var_name = instruction->arg1;
-            const char *op = instruction->arg2;
-            const char *value = instruction->arg3;
-            const char *label = instruction->arg4;
-            const char *current = script_get_variable_value(state, var_name);
-            int condition = 0;
+            /* Compound condition support: var op value [&& var op value]... [|| var op value]...
+             * arg1 = full condition expression, arg2 = label
+             */
+            const char *condition_expr = instruction->arg1;
+            const char *label = instruction->arg2;
+            int final_result = 0;
 
-            if (current == NULL)
+            if (condition_expr != NULL)
             {
-                current = "";
+                char expr_copy[1024];
+                char *p;
+                char *clause_start;
+                int current_result = 0;
+                int have_result = 0;
+                int pending_or = 0;
+                int pending_and = 0;
+
+                strncpy(expr_copy, condition_expr, sizeof(expr_copy) - 1);
+                expr_copy[sizeof(expr_copy) - 1] = '\0';
+
+                p = expr_copy;
+                clause_start = p;
+
+                while (1)
+                {
+                    char *and_pos = strstr(p, "&&");
+                    char *or_pos = strstr(p, "||");
+                    char *next_op = NULL;
+                    int is_and = 0;
+                    char *clause_end;
+                    char clause[256];
+                    char var[128], op[8], val[256];
+                    char var_expanded[512], val_expanded[512];
+                    const char *var_value;
+                    int clause_result = 0;
+
+                    /* Find the nearest operator */
+                    if (and_pos != NULL && (or_pos == NULL || and_pos < or_pos))
+                    {
+                        next_op = and_pos;
+                        is_and = 1;
+                    }
+                    else if (or_pos != NULL)
+                    {
+                        next_op = or_pos;
+                        is_and = 0;
+                    }
+
+                    /* Extract current clause */
+                    if (next_op != NULL)
+                    {
+                        clause_end = next_op;
+                    }
+                    else
+                    {
+                        clause_end = p + strlen(p);
+                    }
+
+                    /* Copy and trim the clause */
+                    {
+                        size_t len = (size_t)(clause_end - clause_start);
+                        if (len >= sizeof(clause)) len = sizeof(clause) - 1;
+                        strncpy(clause, clause_start, len);
+                        clause[len] = '\0';
+                    }
+
+                    /* Parse clause: var op value */
+                    {
+                        char *cp = clause;
+                        char *var_start;
+                        char *op_start;
+                        char *val_start;
+
+                        /* Skip leading whitespace */
+                        while (*cp && isspace((unsigned char)*cp)) cp++;
+                        var_start = cp;
+
+                        /* Find variable name end */
+                        while (*cp && !isspace((unsigned char)*cp) && 
+                               strncmp(cp, "==", 2) != 0 && strncmp(cp, "!=", 2) != 0 &&
+                               strncmp(cp, ">=", 2) != 0 && strncmp(cp, "<=", 2) != 0 &&
+                               *cp != '>' && *cp != '<') cp++;
+                        
+                        {
+                            size_t vlen = (size_t)(cp - var_start);
+                            if (vlen >= sizeof(var)) vlen = sizeof(var) - 1;
+                            strncpy(var, var_start, vlen);
+                            var[vlen] = '\0';
+                            /* Trim trailing whitespace from var */
+                            while (vlen > 0 && isspace((unsigned char)var[vlen-1])) var[--vlen] = '\0';
+                        }
+
+                        /* Skip whitespace before operator */
+                        while (*cp && isspace((unsigned char)*cp)) cp++;
+                        op_start = cp;
+
+                        /* Find operator */
+                        if (strncmp(cp, "==", 2) == 0 || strncmp(cp, "!=", 2) == 0 ||
+                            strncmp(cp, ">=", 2) == 0 || strncmp(cp, "<=", 2) == 0)
+                        {
+                            op[0] = *cp++;
+                            op[1] = *cp++;
+                            op[2] = '\0';
+                        }
+                        else if (*cp == '>' || *cp == '<')
+                        {
+                            op[0] = *cp++;
+                            op[1] = '\0';
+                        }
+                        else
+                        {
+                            op[0] = '\0';
+                        }
+
+                        /* Skip whitespace before value */
+                        while (*cp && isspace((unsigned char)*cp)) cp++;
+                        val_start = cp;
+
+                        /* Check for backtick-quoted value */
+                        if (*cp == '`')
+                        {
+                            char *end_tick = strchr(cp + 1, '`');
+                            if (end_tick != NULL)
+                            {
+                                size_t vlen = (size_t)(end_tick - cp - 1);
+                                if (vlen >= sizeof(val)) vlen = sizeof(val) - 1;
+                                strncpy(val, cp + 1, vlen);
+                                val[vlen] = '\0';
+                            }
+                            else
+                            {
+                                strncpy(val, cp + 1, sizeof(val) - 1);
+                                val[sizeof(val) - 1] = '\0';
+                            }
+                        }
+                        else
+                        {
+                            /* Copy rest as value, trim trailing whitespace */
+                            strncpy(val, val_start, sizeof(val) - 1);
+                            val[sizeof(val) - 1] = '\0';
+                            {
+                                size_t vlen = strlen(val);
+                                while (vlen > 0 && isspace((unsigned char)val[vlen-1])) val[--vlen] = '\0';
+                            }
+                        }
+                    }
+
+                    /* Get variable value and expand macros */
+                    /* First expand macros in var itself (for %{hour} etc) */
+                    script_expand_macros(state, var, var_expanded, sizeof(var_expanded));
+                    
+                    /* If var_expanded is different from var, use it directly
+                     * Otherwise look up as a variable name */
+                    if (strcmp(var, var_expanded) == 0)
+                    {
+                        /* No macro expansion happened, try as variable name */
+                        var_value = script_get_variable_value(state, var);
+                        if (var_value != NULL)
+                        {
+                            script_expand_macros(state, var_value, var_expanded, sizeof(var_expanded));
+                        }
+                        /* else var_expanded already contains the original var string */
+                    }
+                    /* Expand macros in the value */
+                    script_expand_macros(state, val, val_expanded, sizeof(val_expanded));
+
+                    /* Evaluate the comparison */
+                    if (strcmp(op, "==") == 0)
+                    {
+                        clause_result = (script_stringcasecmp(var_expanded, val_expanded) == 0);
+                    }
+                    else if (strcmp(op, "!=") == 0)
+                    {
+                        clause_result = (script_stringcasecmp(var_expanded, val_expanded) != 0);
+                    }
+                    else if (strcmp(op, ">") == 0)
+                    {
+                        clause_result = (atoi(var_expanded) > atoi(val_expanded));
+                    }
+                    else if (strcmp(op, "<") == 0)
+                    {
+                        clause_result = (atoi(var_expanded) < atoi(val_expanded));
+                    }
+                    else if (strcmp(op, ">=") == 0)
+                    {
+                        clause_result = (atoi(var_expanded) >= atoi(val_expanded));
+                    }
+                    else if (strcmp(op, "<=") == 0)
+                    {
+                        clause_result = (atoi(var_expanded) <= atoi(val_expanded));
+                    }
+
+                    /* Combine with previous results */
+                    if (!have_result)
+                    {
+                        current_result = clause_result;
+                        have_result = 1;
+                    }
+                    else if (pending_and)
+                    {
+                        current_result = current_result && clause_result;
+                    }
+                    else if (pending_or)
+                    {
+                        current_result = current_result || clause_result;
+                    }
+
+                    pending_and = 0;
+                    pending_or = 0;
+
+                    /* Move to next clause or exit */
+                    if (next_op == NULL)
+                    {
+                        break;
+                    }
+
+                    if (is_and)
+                    {
+                        pending_and = 1;
+                    }
+                    else
+                    {
+                        pending_or = 1;
+                    }
+
+                    p = next_op + 2;
+                    clause_start = p;
+                }
+
+                final_result = current_result;
             }
 
-            if (op != NULL && !strcmp(op, "=="))
-            {
-                condition = (script_stringcasecmp(current, value) == 0);
-            }
-            else if (op != NULL && !strcmp(op, "!="))
-            {
-                condition = (script_stringcasecmp(current, value) != 0);
-            }
-
-            if (condition)
+            if (final_result)
             {
                 size_t pc;
                 int found = 0;
@@ -1448,6 +1844,175 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 const char *value_text = instruction->arg2 != NULL ? instruction->arg2 : "";
                 script_expand_macros(state, value_text, buffer, sizeof(buffer));
                 script_set_variable_value(state, instruction->arg1, buffer);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_ADD:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int val1, val2;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                val1 = atoi(buf1);
+                val2 = atoi(buf2);
+                snprintf(result, sizeof(result), "%d", val1 + val2);
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_SUB:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int val1, val2;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                val1 = atoi(buf1);
+                val2 = atoi(buf2);
+                snprintf(result, sizeof(result), "%d", val1 - val2);
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_MUL:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int val1, val2;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                val1 = atoi(buf1);
+                val2 = atoi(buf2);
+                snprintf(result, sizeof(result), "%d", val1 * val2);
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_DIV:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int val1, val2;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                val1 = atoi(buf1);
+                val2 = atoi(buf2);
+                if (val2 != 0)
+                {
+                    snprintf(result, sizeof(result), "%d", val1 / val2);
+                }
+                else
+                {
+                    snprintf(result, sizeof(result), "0");
+                }
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_MOD:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int val1, val2;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                val1 = atoi(buf1);
+                val2 = atoi(buf2);
+                if (val2 != 0)
+                {
+                    snprintf(result, sizeof(result), "%d", val1 % val2);
+                }
+                else
+                {
+                    snprintf(result, sizeof(result), "0");
+                }
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_RANDOM:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL && instruction->arg3 != NULL)
+            {
+                char buf1[64], buf2[64], result[64];
+                int min_val, max_val, rand_val;
+                script_expand_macros(state, instruction->arg2, buf1, sizeof(buf1));
+                script_expand_macros(state, instruction->arg3, buf2, sizeof(buf2));
+                min_val = atoi(buf1);
+                max_val = atoi(buf2);
+                if (max_val > min_val)
+                {
+                    rand_val = min_val + (rand() % (max_val - min_val + 1));
+                }
+                else
+                {
+                    rand_val = min_val;
+                }
+                snprintf(result, sizeof(result), "%d", rand_val);
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_STRLEN:
+        {
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL)
+            {
+                char expanded[512], result[64];
+                const char *source = script_get_variable_value(state, instruction->arg2);
+                if (source == NULL) source = "";
+                script_expand_macros(state, source, expanded, sizeof(expanded));
+                snprintf(result, sizeof(result), "%d", (int)strlen(expanded));
+                script_set_variable_value(state, instruction->arg1, result);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_HASKEY:
+        {
+            /* Check if user has a specific key
+             * Keys are stored as a space or comma-separated list
+             * e.g., "A B C" or "A,B,C" or "A, B, C"
+             */
+            if (instruction->arg1 != NULL && instruction->arg2 != NULL)
+            {
+                const char *user_keys = state->host.get_user_keys != NULL ? 
+                    state->host.get_user_keys(state->host.context) : "";
+                const char *check_key = instruction->arg2;
+                char keys_copy[256];
+                char *key_tok;
+                int found = 0;
+                
+                if (user_keys != NULL && *user_keys != '\0')
+                {
+                    strncpy(keys_copy, user_keys, sizeof(keys_copy) - 1);
+                    keys_copy[sizeof(keys_copy) - 1] = '\0';
+                    
+                    /* Tokenize on space, comma, or both */
+                    key_tok = strtok(keys_copy, " ,");
+                    while (key_tok != NULL && !found)
+                    {
+                        if (script_stringcasecmp(key_tok, check_key) == 0)
+                        {
+                            found = 1;
+                        }
+                        key_tok = strtok(NULL, " ,");
+                    }
+                }
+                
+                script_set_variable_value(state, instruction->arg1, found ? "1" : "0");
             }
         }
         break;
@@ -2191,6 +2756,117 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
             {
                 replacement = "";
             }
+        }
+        else if (script_stringcasecmp(macro_name, "hour") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", local_tm->tm_hour);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "0";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "minute") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", local_tm->tm_min);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "0";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "dayofweek") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", local_tm->tm_wday);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "0";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "day") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", local_tm->tm_mday);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "1";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "month") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", local_tm->tm_mon + 1);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "1";
+            }
+        }
+        else if (script_stringcasecmp(macro_name, "year") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *local_tm = localtime(&now);
+            if (local_tm != NULL)
+            {
+                snprintf(temp, sizeof(temp), "%d", 1900 + local_tm->tm_year);
+                replacement = temp;
+            }
+            else
+            {
+                replacement = "1970";
+            }
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "accesslevel") == 0)
+        {
+            int level = state->host.get_user_accesslevel != NULL ? state->host.get_user_accesslevel(state->host.context) : 0;
+            snprintf(temp, sizeof(temp), "%d", level);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userid") == 0)
+        {
+            int user_id = state->host.get_user_id != NULL ? state->host.get_user_id(state->host.context) : 0;
+            snprintf(temp, sizeof(temp), "%d", user_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "registered") == 0)
+        {
+            int user_id = state->host.get_user_id != NULL ? state->host.get_user_id(state->host.context) : 0;
+            replacement = user_id > 0 ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "sysop") == 0)
+        {
+            int is_sysop = state->host.get_user_sysop != NULL ? state->host.get_user_sysop(state->host.context) : 0;
+            replacement = is_sysop ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "keys") == 0)
+        {
+            const char *keys = state->host.get_user_keys != NULL ? state->host.get_user_keys(state->host.context) : "";
+            replacement = (keys != NULL) ? keys : "";
         }
         else
         {
@@ -3301,6 +3977,7 @@ static int script_process_embedded_block(script_state *state, const char *buffer
         script_buffer_clear(&command);
         {
             int in_quote = 0;
+            int in_macro = 0; /* Track %{...} macro depth */
             while (*index < length)
             {
                 ch = buffer[*index];
@@ -3335,9 +4012,20 @@ static int script_process_embedded_block(script_state *state, const char *buffer
                     result = 0;
                     break;
                 }
-                else if (!in_quote && (ch == ',' || ch == '}'))
+                else if (!in_quote && !in_macro && (ch == ',' || ch == '}'))
                 {
                     break;
+                }
+                
+                /* Track %{ macro start */
+                if (!in_quote && ch == '%' && *index + 1 < length && buffer[*index + 1] == '{')
+                {
+                    in_macro++;
+                }
+                /* Track } that closes a macro */
+                else if (!in_quote && in_macro > 0 && ch == '}')
+                {
+                    in_macro--;
                 }
 
                 if (!script_buffer_append_char(&command, ch))

@@ -3,15 +3,40 @@ Converse LineTask Script Language
 
 Overview
 --------
-LineTask now drives caller interaction via lightweight scripts stored in
-`<Converse$Dir>.BBS`. Each line runs `<Converse$Dir>.BBS.Start` when a
-session connects. Scripts are plain text, one instruction per line. 
-Labels end with `:` and serve as jump targets.
+LineTask drives caller interaction via scripts stored in `<Converse$Dir>.BBS`.
+The prelogon script (configured in System config) runs when a session connects.
+After successful authentication, the postlogon script runs.
+
+Script Format
+-------------
+Scripts support two formats:
+
+**Plain Text Format**
+One instruction per line. Labels end with `:` and serve as jump targets.
+Comments start with `#`.
+
+**Embedded Block Format**
+Text outside `{...}` blocks is sent directly to the caller as output.
+Commands inside `{...}` blocks are executed. This allows mixing ANSI art
+with script logic:
+
+    Welcome to the BBS!
+    {
+        set name `Guest`
+        prompt name line echo
+    }
+    Hello, %{name}!
+    {
+        goto menu
+    }
+
+Use `{{` to output a literal `{` character in embedded format.
 
 General Rules
 -------------
 - Leading/trailing whitespace is ignored.
-- Lines beginning with `#` are comments.
+- Lines beginning with `#` are comments (plain format).
+- Block comments `/* ... */` work in both formats.
 - Commands and labels are case-insensitive.
 - Multi-word arguments can be wrapped in backticks (`` `like this` ``) to
   preserve spacing; otherwise tokens are split on whitespace.
@@ -19,219 +44,416 @@ General Rules
 
 Instructions
 ------------
-`PRINT <text>`
-    Sends text to the caller. Text supports macros (see below) and escape
-    sequences (`\r`, `\n`, `\t`, `\\`). Example:
-        print `Welcome to Converse, line %{line}!\r\n`
+
+Flow Control
+~~~~~~~~~~~~
+`LABEL <name>` or `<name>:`
+    Defines a jump target. Example:
+        label main_menu
+        main_menu:
 
 `GOTO <label>`
-    Moves execution to the instruction following `<label>:`. Example:
+    Moves execution to the named label. Example:
         goto main_menu
 
-`PROMPT <variable> <mode> <echo>`
-    Requests input from the caller. `mode` is `char` or `line`. `echo` is
-    `echo` or `noecho`. The captured value is stored in the named
-    variable and execution pauses until the user responds. Example:
-        prompt selection char echo
-
-`IF <variable> <op> <value> GOTO <label>`
-    Compares a variable with a literal value using `==` or `!=` (case
-    insensitive). On success, execution jumps to `<label>`. Values can be
-    wrapped in backticks to include spaces. Example:
-        if selection == `1` goto launch_door
-
-`SET <variable> <value>`
-    Assigns a literal string (with macro expansion) to a variable.
-    Example:
-        set greeting `Hello %{line}`
-
-`CALL <action> [argument]`
-    Invokes a host callback. Supported actions:
-    - `time` — prints the current timestamp.
-    - `lineinfo` — prints session/door status.
-    - `door <command>` — launches a RiscBBS door; waits until it exits.
-    - `disconnect` — reminds the caller to hang up.
-    - `message <text>` — prints text (after macro expansion).
-
-`DOING <text>`
-    Updates the server status window's activity column for the current
-    line so the sysop can see what the caller is doing. Text supports
-    macros and escape sequences; use an empty string to reset to the
-    default "no activity" message.
-
-`LOGOFF`
-    Ends the script and asks the server to drop the current connection.
-    Use this instead of `call disconnect` when you want an immediate
-    hangup once any farewell text has been sent.
-
-`LOGON`
-    Initiates the user login flow. Prompts for a username, then for a
-    password (with no echo). Users can type "NEW" instead of a username
-    to begin the new user registration flow.
+`IF <condition> [&& <condition>]... [|| <condition>]... GOTO <label>`
+    Evaluates conditions and jumps if the result is true.
     
-    Authentication flow:
-    1. Display prompt message
-    2. Prompt for username (echoed)
-    3. If "NEW" is entered, run the newuser script and exit
-    4. Prompt for password (not echoed)
-    5. Authenticate via Filer module
-    6. If successful, run the postlogon script
-    7. If failed, allow up to 3 retries
-    8. After 3 failures, disconnect the user
+    Each condition: `<operand> <op> <operand>`
     
-    On successful login:
-    - User ID is stored in Support module's line state
-    - User's access level and keys are made available for filebase access
-    - postlogon script (from config) is executed
+    Both operands are macro-expanded before comparison, so you can use
+    macros like `%{hour}` directly:
     
-    Example prelogon script:
-    ```
-    type `<Converse$Dir>.BBS.ANSI.Header`
-    print `\r\n`
-    logon
-    ```
+        if %{hour} < 12 goto morning
+        if %{day} == 25 && %{month} == 12 goto christmas
     
-    The logon command handles all prompts internally and terminates the
-    current script after authentication. The postlogon or newuser script
-    runs next.
+    String operators (case-insensitive):
+    - `==` — equals
+    - `!=` — not equals
+    
+    Numeric operators (converted to integers):
+    - `>` — greater than
+    - `<` — less than
+    - `>=` — greater than or equal
+    - `<=` — less than or equal
+    
+    Compound conditions:
+    - `&&` — AND (both must be true)
+    - `||` — OR (either can be true)
+    
+    Conditions are evaluated left-to-right.
+    
+    Examples:
+        if selection == `1` goto option_one
+        if counter > 10 goto too_many
+        if %{accesslevel} >= 100 goto sysop_menu
+        if %{hour} >= 18 || %{hour} < 6 goto after_hours
+        if %{registered} == 1 && %{accesslevel} >= 50 goto premium
 
 `RETURN` or `STOP`
     Ends the script immediately.
 
+`SCRIPT <filename>`
+    Loads and runs another script, replacing the current one. Example:
+        script `<Converse$Dir>.BBS.SubMenu`
+
 `PAUSE <milliseconds>`
-    Sleeps for the specified duration (minimum 1 tick) before continuing.
+    Pauses execution for the specified duration.
+
+Output
+~~~~~~
+`PRINT <text>`
+    Sends text to the caller. Supports macros and escape sequences
+    (`\r`, `\n`, `\t`, `\\`). Example:
+        print `Welcome to Converse, line %{line}!\r\n`
 
 `TYPE <filename>`
-    Streams a text/ANSI file to the caller. The filename may use macros and
-    backtick quoting. Example: `type `<Converse$Dir>.BBS.Art.Welcome``.
-
-`ANYKEY [variable]`
-    Waits for a single keypress. The character is stored in `variable`
-    (default `_key`) but the usual use-case is simply to pause until the
-    user presses a key.
-
-`FG <colour>` / `BG <colour>` / `FGBG <fg> <bg>`
-    Emits ANSI colour sequences. Colours are numbered 0-7 (standard ANSI
-    palette) and values outside the range are clamped. `FGBG` changes both
-    at once.
+    Streams a text/ANSI file to the caller. Example:
+        type `<Converse$Dir>.BBS.Art.Welcome`
 
 `CLS`
-    Clears the terminal (`ESC[2J`) and moves the cursor to the home
-    position (`ESC[H`).
+    Clears the terminal (ESC[2J) and homes the cursor (ESC[H).
 
 `POS <column> <row>`
-    Moves the cursor to the specified 1-based column/row pair using
-    `ESC[row;colH]`.
+    Moves cursor to 1-based position using ANSI escape.
 
-`SCRIPT <filename>`
-    Loads and immediately runs another script file. The current script is
-    torn down, so use this to chain menus together (e.g. `script
-    `<Converse$Dir>.BBS.SubMenu``). The new script can later return to the
-    original by running `script <Converse$Dir>.BBS.Start`.
+`FG <colour>`
+    Sets foreground colour (0-7).
 
-`FILEBASE <subcommand> [argument]`
-    Interacts with the Filer module's filebase system. Supported
-    subcommands:
-    - `list` — Lists all accessible filebases (filtered by access level).
-    - `select <id>` — Selects a filebase for browsing.
-    - `areas` — Lists areas within the selected filebase.
-    - `area <id>` — Selects an area (0 = all files in filebase).
-    - `files` — Lists files in the selected filebase/area.
-    - `info <file_id>` — Shows detailed file information.
-    - `download <file_id>` — Initiates download of a file (requires
-      transfer protocol support).
-    - `reset` — Clears filebase selection.
+`BG <colour>`
+    Sets background colour (0-7).
+
+`FGBG <fg> <bg>`
+    Sets both foreground and background colours.
+
+Input
+~~~~~
+`PROMPT <variable> <mode> <echo>`
+    Requests input from the caller.
+    - `mode`: `char` (single character) or `line` (full line)
+    - `echo`: `echo` (show input) or `noecho` (hide input)
     
     Example:
-        filebase list
-        filebase select 1
-        filebase areas
-        filebase area 2
-        filebase files
-        filebase info 5
-        filebase download 5
+        prompt selection char echo
+        prompt password line noecho
 
+`ANYKEY [variable]`
+    Waits for a single keypress. Stores in variable (default `_key`).
+
+Variables
+~~~~~~~~~
+`SET <variable> <value>`
+    Assigns a value (with macro expansion) to a variable. Example:
+        set greeting `Hello %{line}`
+        set counter 0
+
+Math Operations
+~~~~~~~~~~~~~~~
+All math commands perform integer arithmetic. Operands are macro-expanded
+and converted to integers.
+
+`ADD <result> <operand1> <operand2>`
+    Stores operand1 + operand2 in result. Example:
+        add total count 1
+
+`SUB <result> <operand1> <operand2>`
+    Stores operand1 - operand2 in result. Example:
+        sub remaining total used
+
+`MUL <result> <operand1> <operand2>`
+    Stores operand1 * operand2 in result. Example:
+        mul doubled value 2
+
+`DIV <result> <operand1> <operand2>`
+    Stores operand1 / operand2 in result. Division by zero returns 0.
+
+`MOD <result> <operand1> <operand2>`
+    Stores operand1 % operand2 in result. Modulo by zero returns 0.
+
+`RANDOM <result> <min> <max>`
+    Generates random integer in [min, max] inclusive. Example:
+        random dice 1 6
+        print `You rolled a %{dice}!\r\n`
+
+String Operations
+~~~~~~~~~~~~~~~~~
+`STRLEN <result> <source_variable>`
+    Stores the length of the source variable's value in result. Example:
+        strlen len username
+        if len == 0 goto no_input
+
+`HASKEY <result> <key>`
+    Checks if the logged-in user has a specific access key. Stores "1"
+    in result if the key is found, "0" otherwise. Keys are case-insensitive.
+    Example:
+        haskey has_download D
+        if has_download == 0 goto no_download_access
+        
+        haskey is_premium P
+        if is_premium == 1 goto premium_features
+
+User Authentication
+~~~~~~~~~~~~~~~~~~~
+`LOGON`
+    Initiates user login. Prompts for username and password.
+    
+    - Users can type "NEW" to begin registration
+    - Authenticates via Filer module
+    - Allows up to 3 retries before disconnect
+    - On success, runs postlogon script
+    - Sets user_id, access_level, keys in session state
+
+`LOGOFF`
+    Ends the session and disconnects the caller.
+
+`ONLINE`
+    Lists all connected users showing:
+    - Line number
+    - Real name (or "Guest")
+    - Online duration
+    - Current activity
+    - [SYSOP] tag for administrators
+
+Status & Information
+~~~~~~~~~~~~~~~~~~~~
+`DOING <text>`
+    Updates the server's activity display for this line. Example:
+        doing `Reading messages`
+        doing ``  /* Reset to default */
+
+`CALL <action> [argument]`
+    Invokes host callbacks:
+    - `time` — prints current timestamp
+    - `lineinfo` — prints session/door status
+    - `door <command>` — launches a RiscBBS door
+    - `arcbbsdoor <number> <command>` — launches an ARCbbs door
+    - `disconnect` — prints hangup reminder
+    - `message <text>` — prints text with macro expansion
+
+Filebase Commands
+~~~~~~~~~~~~~~~~~
+`FILEBASE <subcommand> [argument]`
+    Interacts with the filebase system:
+    - `list` — Lists accessible filebases
+    - `select <id>` — Selects a filebase
+    - `areas` — Lists areas in selected filebase
+    - `area <id>` — Selects an area (0 = all files)
+    - `files` — Lists files in current selection
+    - `info <file_id>` — Shows file details
+    - `download <file_id>` — Initiates download
+    - `reset` — Clears selection
+
+File Transfer
+~~~~~~~~~~~~~
 `SENDFILE <file_id> [protocol]`
-    Initiates a file transfer using the selected filebase. The file_id
-    refers to a file in the currently selected filebase. The protocol
-    argument selects the transfer protocol to use:
-    
-    - `xmodem` — Standard XMODEM (128-byte blocks, checksum)
-    - `xmodem-crc` — XMODEM with CRC-16 (default, recommended)
-    - `xmodem-1k` — XMODEM with 1024-byte blocks and CRC-16
-    
-    Before using SENDFILE, you must:
-    1. Select a filebase with `filebase select <id>`
-    2. Optionally select an area with `filebase area <id>`
-    3. Know the file ID (from `filebase files` or `filebase info`)
-    
-    The command displays a prompt asking the user to start their receiver,
-    then waits for the receiver's start signal (NAK for checksum mode,
-    'C' for CRC mode). Once the transfer completes (success or failure),
-    script execution resumes.
+    Downloads a file to the user. Protocols:
+    - `xmodem` — 128-byte blocks, checksum
+    - `xmodem-crc` — 128-byte blocks, CRC-16
+    - `xmodem-1k` — 1024-byte blocks, CRC-16
+    - `ymodem` — Batch mode with filename/size header
+    - `ymodem-g` — Streaming YMODEM (no per-block ACK)
+    - `zmodem` — Full ZMODEM with CRC-32 and streaming (recommended)
     
     Example:
         filebase select 1
         filebase files
         prompt file_id line echo
-        sendfile %{file_id} xmodem-crc
-        print `\r\nTransfer complete.\r\n`
-    
-    Note: The user's terminal emulator must support XMODEM file transfers.
-    Most modern terminal programs include this capability.
+        sendfile %{file_id} zmodem
 
-`ONLINE`
-    Lists currently connected users with their line numbers, usernames,
-    online duration, and current activity.
+`RECEIVEFILE <path> [protocol]`
+    Uploads a file from the user to the specified path.
+    Same protocol options as SENDFILE.
 
 Macros
 ------
-Macros substitute runtime values inside `PRINT`, `SET`, and `CALL`
-arguments. Use either `§name§` (legacy section sign) or `%{name}` (ASCII).
-Built-in macros:
-- `line` — current line number.
-- `t_handle` — Wimp task handle of LineTask (needed by doors).
-- `time` — `HH:MM:SS` local time when expanded.
-- `date` — `YYYY-MM-DD` local date when expanded.
-Macros also read user-defined variables (e.g. `%{selection}`) for later
-reuse.
+Macros substitute runtime values. Use `%{name}` syntax (or legacy `§name§`).
 
-Example Script
---------------
-```
-print `\r\nWelcome to Converse!\r\n`
-label menu
-print `Choose: 1) Door 2) Time 3) Hangup\r\n`
-prompt choice char echo
-if choice == `1` goto door
-if choice == `2` goto clock
-if choice == `3` goto bye
-print `Unknown choice.\r\n`
-pause 500
-goto menu
+System Macros
+~~~~~~~~~~~~~
+- `%{line}` — Current line number
+- `%{t_handle}` — Wimp task handle (for doors)
+- `%{time}` — Current time (HH:MM:SS)
+- `%{date}` — Current date (YYYY-MM-DD)
 
-label door
-call message `Launching Tetris...\r\n`
-call door `<Converse$Dir>.BBS.Doors.!Tetris %{t_handle}`
-goto menu
+Time Macros
+~~~~~~~~~~~
+- `%{hour}` — Hour (0-23)
+- `%{minute}` — Minute (0-59)
+- `%{dayofweek}` — Day of week (0=Sunday, 6=Saturday)
+- `%{day}` — Day of month (1-31)
+- `%{month}` — Month (1-12)
+- `%{year}` — Four-digit year (e.g., 2025)
 
-label clock
-call time
-pause 750
-goto menu
+User Macros
+~~~~~~~~~~~
+- `%{userid}` — User's ID (0 if not logged in)
+- `%{accesslevel}` — User's access level (0 if not logged in)
+- `%{registered}` — "1" if logged in, "0" if guest
+- `%{sysop}` — "1" if user is a sysop, "0" otherwise
+- `%{keys}` — User's access keys string (e.g., "A B C")
 
-label bye
-call message `Please hang up.\r\n`
-call disconnect
-return
-```
+Variables
+~~~~~~~~~
+Any variable set with `SET` or `PROMPT` can be referenced:
+    set greeting `Hello`
+    print `%{greeting}, world!\r\n`
+
+Examples
+--------
+
+Time-Based Greeting
+~~~~~~~~~~~~~~~~~~~
+{
+    if %{hour} < 12 goto morning
+    if %{hour} < 17 goto afternoon
+    goto evening
+
+    label morning
+    set greeting `Good morning`
+    goto show_greeting
+
+    label afternoon
+    set greeting `Good afternoon`
+    goto show_greeting
+
+    label evening
+    set greeting `Good evening`
+    goto show_greeting
+
+    label show_greeting
+    print `%{greeting}! Today is %{date}.\r\n`
+}
+
+Christmas Banner
+~~~~~~~~~~~~~~~~
+{
+    if %{day} == 25 && %{month} == 12 goto christmas
+    goto normal
+
+    label christmas
+    fgbg 1 0
+    print `*** Merry Christmas! ***\r\n`
+    fgbg 7 0
+
+    label normal
+}
+
+Access Control
+~~~~~~~~~~~~~~
+{
+    if %{sysop} == 1 goto sysop_menu
+    if %{accesslevel} >= 100 goto admin_menu
+    if %{registered} == 0 goto guest_menu
+    goto user_menu
+
+    label sysop_menu
+    print `Welcome, Sysop!\r\n`
+    goto continue
+
+    label admin_menu
+    print `Welcome, Administrator!\r\n`
+    goto continue
+
+    label guest_menu
+    print `Welcome, Guest! Type NEW to register.\r\n`
+    goto continue
+
+    label user_menu
+    print `Welcome back!\r\n`
+
+    label continue
+}
+
+Key-Based Access Control
+~~~~~~~~~~~~~~~~~~~~~~~~
+{
+    /* Check if user has download key */
+    haskey can_download D
+    if can_download == 0 goto no_download
+    
+    print `Download menu available.\r\n`
+    goto continue
+    
+    label no_download
+    print `You don't have download access.\r\n`
+    
+    label continue
+    
+    /* Check for premium features key */
+    haskey is_premium P
+    if is_premium == 1 goto show_premium
+    goto skip_premium
+    
+    label show_premium
+    print `Premium features enabled!\r\n`
+    
+    label skip_premium
+}
+
+Number Guessing Game
+~~~~~~~~~~~~~~~~~~~~
+{
+    print `I'm thinking of a number 1-10...\r\n`
+    random secret 1 10
+    set attempts 0
+
+    label game_loop
+    add attempts attempts 1
+    print `Guess: `
+    prompt guess line echo
+
+    strlen len guess
+    if len == 0 goto quit
+
+    if guess == %{secret} goto win
+    if guess > %{secret} goto too_high
+    print `Too low!\r\n`
+    goto game_loop
+
+    label too_high
+    print `Too high!\r\n`
+    goto game_loop
+
+    label win
+    print `Correct in %{attempts} tries!\r\n`
+    goto done
+
+    label quit
+    print `The answer was %{secret}.\r\n`
+
+    label done
+}
+
+Weekend/Hours Check
+~~~~~~~~~~~~~~~~~~~
+{
+    /* Check for weekend */
+    if %{dayofweek} == 0 || %{dayofweek} == 6 goto closed_weekend
+
+    /* Check business hours (9am-5pm) */
+    if %{hour} < 9 || %{hour} >= 17 goto closed_hours
+
+    /* Open for business */
+    print `Sysop chat is available.\r\n`
+    goto done
+
+    label closed_weekend
+    print `Sorry, chat unavailable on weekends.\r\n`
+    goto done
+
+    label closed_hours
+    print `Sorry, chat only available 9am-5pm.\r\n`
+
+    label done
+}
 
 Tips
 ----
-- Always `prompt` before reading `%{choice}` or similar variables.
-- After `call door`, the interpreter waits until the door disconnects or
-  times out; make sure the script resumes at a logical label.
-- Keep command lines under ~255 characters for Risc OS CLI limits.
-- Use `pause` sparingly to avoid sluggish UI.
-- Call `logoff` after farewell text when you want LineTask to terminate
-    the connection immediately.
+- Always `PROMPT` before using a variable in conditions.
+- Use `DOING` to show activity in the server status window.
+- Keep lines under ~255 characters for RISC OS CLI limits.
+- Use `PAUSE` sparingly to avoid sluggish UI.
+- Test compound conditions carefully — they evaluate left-to-right.
+- ZMODEM is recommended for file transfers (fastest, most reliable).
+- Use `%{registered}` to check if user is logged in before showing
+  user-specific content.

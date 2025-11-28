@@ -5,8 +5,70 @@
     label main_menu
     cls
     fgbg 7 0
+
+    /* Time-based greeting */
+    if %{hour} < 12 goto greet_morning
+    if %{hour} < 17 goto greet_afternoon
+    goto greet_evening
+
+    label greet_morning
+    set greeting `Good morning`
+    goto show_menu
+
+    label greet_afternoon
+    set greeting `Good afternoon`
+    goto show_menu
+
+    label greet_evening
+    set greeting `Good evening`
+    goto show_menu
+
+    label show_menu
     doing `Main Menu`
     type `<Converse$Dir>.BBS.ANSI.Header`
+
+    /* Christmas special */
+    if %{day} == 25 && %{month} == 12 goto christmas_banner
+    goto normal_banner
+
+    label christmas_banner
+    fgbg 1 0
+    print `\r\n*** Merry Christmas! ***\r\n`
+    fgbg 7 0
+    goto after_banner
+
+    label normal_banner
+    /* New Year greeting for first week of January */
+    if %{month} == 1 && %{day} <= 7 goto newyear_banner
+    goto after_banner
+
+    label newyear_banner
+    fgbg 3 0
+    print `\r\n*** Happy New Year %{year}! ***\r\n`
+    fgbg 7 0
+    goto after_banner
+
+    label after_banner
+    print `\r\n%{greeting}! Today is %{date}, the time is %{time}.\r\n`
+
+    /* User status block */
+    if %{registered} == 1 goto show_registered_status
+    fgbg 3 0
+    print `You are browsing as a guest. Why not register for more features?\r\n`
+    fgbg 7 0
+    goto after_user_status
+
+    label show_registered_status
+    print `You have access level %{accesslevel}.`
+    if %{sysop} == 1 goto show_sysop_thanks
+    print ` Thank you for being a registered user!\r\n`
+    goto after_user_status
+
+    label show_sysop_thanks
+    print ` Welcome back, Sysop!\r\n`
+
+    label after_user_status
+
     type `<Converse$Dir>.BBS.Menus.MainMenu`
 
     print `\r\nEnter choice (1-5): `
@@ -18,15 +80,11 @@
     if choice == `4` goto whos_online
     if choice == `5` goto arcbbs_doors
     if choice == `6` goto riscbbs_doors
-    if choice == `F` goto filebase_menu
-    if choice == `f` goto filebase_menu
-    if choice == `M` goto messagebase_menu
-    if choice == `m` goto messagebase_menu
-
-    if choice == `S` goto chat_sysop
-    if choice == `s` goto chat_sysop
-    if choice == `X` goto end_session
-    if choice == `x` goto end_session
+    if choice == `F` || choice == `f` goto filebase_menu
+    if choice == `M` || choice == `m` goto messagebase_menu
+    if choice == `S` || choice == `s` goto chat_sysop
+    if choice == `X` || choice == `x` goto end_session
+    if choice == `R` || choice == `r` goto random_game
 
     print `\r\nUnknown selection '%{choice}', please try again.\r\n`
     goto main_menu
@@ -57,6 +115,46 @@
     print `Current line: %{line}\r\n`
     print `  Time now  : %{time}\r\n`
     print `  Date today: %{date}\r\n`
+    print `  Day of week: `
+    if %{dayofweek} == 0 goto dow_sun
+    if %{dayofweek} == 1 goto dow_mon
+    if %{dayofweek} == 2 goto dow_tue
+    if %{dayofweek} == 3 goto dow_wed
+    if %{dayofweek} == 4 goto dow_thu
+    if %{dayofweek} == 5 goto dow_fri
+    goto dow_sat
+
+    label dow_sun
+    print `Sunday\r\n`
+    goto after_dow
+    label dow_mon
+    print `Monday\r\n`
+    goto after_dow
+    label dow_tue
+    print `Tuesday\r\n`
+    goto after_dow
+    label dow_wed
+    print `Wednesday\r\n`
+    goto after_dow
+    label dow_thu
+    print `Thursday\r\n`
+    goto after_dow
+    label dow_fri
+    print `Friday\r\n`
+    goto after_dow
+    label dow_sat
+    print `Saturday\r\n`
+    goto after_dow
+
+    label after_dow
+    print `  Logged in : `
+    if %{registered} == 1 goto show_logged_in
+    print `No (Guest)\r\n`
+    goto after_login_status
+    label show_logged_in
+    print `Yes (Access Level: %{accesslevel})\r\n`
+    label after_login_status
+
     call lineinfo
     anykey temp
     goto main_menu
@@ -79,7 +177,62 @@
     anykey temp
     goto main_menu
 
+    /* Random number guessing game */
+    label random_game
+    doing `Playing number game`
+    cls
+    fgbg 7 0
+    print `\r\n=== Guess the Number ===\r\n`
+    print `I'm thinking of a number between 1 and 10...\r\n\r\n`
+    random secret 1 10
+    set attempts 0
+
+    label game_loop
+    add attempts attempts 1
+    print `Attempt %{attempts}: Enter your guess (1-10): `
+    prompt guess line echo
+
+    strlen guesslen guess
+    if guesslen == 0 goto game_quit
+
+    if guess == %{secret} goto game_win
+    if guess > %{secret} goto guess_high
+    print `Too low! Try again.\r\n`
+    goto game_loop
+
+    label guess_high
+    print `Too high! Try again.\r\n`
+    goto game_loop
+
+    label game_win
+    fgbg 2 0
+    print `\r\nCorrect! You got it in %{attempts} attempts!\r\n`
+    fgbg 7 0
+    anykey temp
+    goto main_menu
+
+    label game_quit
+    print `\r\nQuitting game...\r\n`
+    anykey temp
+    goto main_menu
+
     label chat_sysop
+    /* Only allow chat during business hours on weekdays */
+    if %{dayofweek} == 0 || %{dayofweek} == 6 goto chat_weekend
+    if %{hour} < 9 || %{hour} >= 17 goto chat_closed
+    goto chat_open
+
+    label chat_weekend
+    print `\r\nSorry, sysop chat is not available on weekends.\r\n`
+    anykey temp
+    goto main_menu
+
+    label chat_closed
+    print `\r\nSorry, sysop chat is only available 9am-5pm on weekdays.\r\n`
+    anykey temp
+    goto main_menu
+
+    label chat_open
     doing `Chatting with Sysop...`
     call arcbbsdoor 101 `<Converse$Dir>.BBS.Doors.ARCbbs.!Natter -door %{line}`
     goto main_menu

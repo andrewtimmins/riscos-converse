@@ -21,6 +21,7 @@ typedef struct script_host
     /* Filebase callbacks */
     void *(*get_filebase_session)(void *context);
     int (*get_user_accesslevel)(void *context);
+    int (*get_user_sysop)(void *context);
     const char *(*get_user_keys)(void *context);
     int (*filebase_download)(void *context, int base_id, int file_id);
     /* Authentication callbacks */
@@ -75,7 +76,15 @@ typedef enum
     SCRIPT_CMD_FILEBASE,
     SCRIPT_CMD_LOGON,
     SCRIPT_CMD_SENDFILE,
-    SCRIPT_CMD_RECEIVEFILE
+    SCRIPT_CMD_RECEIVEFILE,
+    SCRIPT_CMD_ADD,
+    SCRIPT_CMD_SUB,
+    SCRIPT_CMD_MUL,
+    SCRIPT_CMD_DIV,
+    SCRIPT_CMD_MOD,
+    SCRIPT_CMD_RANDOM,
+    SCRIPT_CMD_STRLEN,
+    SCRIPT_CMD_HASKEY
 } script_command_type;
 
 typedef enum

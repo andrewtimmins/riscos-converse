@@ -65,6 +65,11 @@ The workspace includes `SharedLibs` containing:
   - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
   - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
   - **File Transfer** (`LineTask/c/transfer`): Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM, YMODEM-G, and ZMODEM protocols for file downloads and uploads. Non-blocking state machine design integrates with Pipes module for I/O. The `SENDFILE <file_id> [protocol]` and `RECEIVEFILE <path> [protocol]` script commands initiate transfers. Protocol values: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM. YMODEM includes block 0 header with filename/size and batch mode support. ZMODEM features: 32-bit CRC, ZDLE escape encoding, hex (ZHEX) and binary (ZBIN32) frame headers, streaming data with subpacket framing (ZCRCG/ZCRCE/ZCRCQ/ZCRCW), auto-start detection via ZRQINIT, and crash recovery via ZRPOS repositioning. During active transfers, the `transfer_active` flag is set in Support module line state to prevent idle timeout disconnection.
+  - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.
+  - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
+  - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
+  - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
+  - **Conditional Operators**: IF command supports `==`, `!=` (string), `>`, `<`, `>=`, `<=` (numeric). Both operands are macro-expanded. Compound conditions supported with `&&` (AND) and `||` (OR): `if %{day} == 25 && %{month} == 12 goto christmas`.
 
 ## Wimp Messages (LineTask <-> Server)
 
