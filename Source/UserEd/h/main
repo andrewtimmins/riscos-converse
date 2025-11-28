@@ -1,0 +1,46 @@
+/*
+ * UserEd main header
+ */
+
+#ifndef USERED_MAIN_H
+#define USERED_MAIN_H
+
+#include "Desk/Wimp.h"
+#include "Desk/Window.h"
+#include "structs.h"
+
+/* Application constants */
+#define APP_NAME        "UserEd"
+#define APP_DIRECTORY   "<UserEd$Dir>"
+#define SPRITE_NAME     "!converse"
+
+/* Wimp message for broadcast */
+#define MESSAGE_LINE_BROADCAST  0x5AA00
+
+/* Wimp state structure */
+typedef struct {
+    int task_handle;
+    int quit;
+    Desk_window_handle main_window;
+    Desk_window_handle pane_window;
+    Desk_window_handle proginfo_window;
+    int current_user_id;
+    USER_RECORD current_user;
+    int user_loaded;
+} WIMP_STATE;
+
+/* Global state */
+extern WIMP_STATE wimp_state;
+
+/* Function prototypes */
+void load_user(int user_id);
+void save_user(void);
+void delete_user(void);
+void new_user(void);
+void next_user(void);
+void prev_user(void);
+void populate_icons(void);
+void read_icons(void);
+void update_pane_position(void);
+
+#endif /* USERED_MAIN_H */

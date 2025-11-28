@@ -1,0 +1,891 @@
+/*
+ * UserEd - User Editor for Converse BBS
+ * Wimp application for editing user database
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "kernel.h"
+#include "swis.h"
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Window.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Resource.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Error.h"
+
+#include "main.h"
+#include "iconnames.h"
+#include "debug.h"
+
+/* Global state */
+WIMP_STATE wimp_state;
+
+/* Menu handles */
+static Desk_menu_ptr iconbar_menu = NULL;
+
+/* Message buffer */
+static char msg_buffer[256];
+
+/* Forward declarations */
+static Desk_bool click_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool pane_click_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool key_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool menu_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool iconbar_click_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool message_handler(Desk_event_pollblock *event, void *reference);
+static Desk_bool open_handler(Desk_event_pollblock *event, void *reference);
+static void create_iconbar_icon(void);
+static void create_menus(void);
+static void open_main_window(void);
+
+/*
+ * Call Filer userdb SWI
+ */
+static int call_userdb_swi(int cmd, int r1, int r2, int *result_r0, int *result_r1)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+
+    regs.r[0] = cmd;
+    regs.r[1] = r1;
+    regs.r[2] = r2;
+
+    err = _kernel_swi(SWI_FILER_USERDB, &regs, &regs);
+    if (err) {
+        debug_printf("UserEd: SWI error: %s", err->errmess);
+        return -1;
+    }
+
+    if (result_r0) *result_r0 = regs.r[0];
+    if (result_r1) *result_r1 = regs.r[1];
+
+    return 0;
+}
+
+/*
+ * Format time_t as string
+ */
+static void format_time(time_t t, char *buf, int bufsize)
+{
+    struct tm *tm;
+
+    if (t == 0) {
+        snprintf(buf, bufsize, "Never");
+        return;
+    }
+
+    tm = localtime(&t);
+    if (tm) {
+        snprintf(buf, bufsize, "%02d/%02d/%04d %02d:%02d",
+                 tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900,
+                 tm->tm_hour, tm->tm_min);
+    } else {
+        snprintf(buf, bufsize, "Unknown");
+    }
+}
+
+/*
+ * Set icon text (writable or indirected)
+ */
+static void set_icon_text(Desk_window_handle w, Desk_icon_handle i, const char *text)
+{
+    Desk_Icon_SetText(w, i, (char *)text);
+}
+
+/*
+ * Set icon integer value
+ */
+static void set_icon_int(Desk_window_handle w, Desk_icon_handle i, int value)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", value);
+    Desk_Icon_SetText(w, i, buf);
+}
+
+/*
+ * Get icon text
+ */
+static void get_icon_text(Desk_window_handle w, Desk_icon_handle i, char *buf, int bufsize)
+{
+    Desk_icon_block icon;
+
+    Desk_Wimp_GetIconState(w, i, &icon);
+    if (icon.flags.data.indirected) {
+        strncpy(buf, icon.data.indirecttext.buffer, bufsize - 1);
+        buf[bufsize - 1] = '\0';
+    } else {
+        strncpy(buf, icon.data.text, bufsize - 1);
+        buf[bufsize - 1] = '\0';
+    }
+}
+
+/*
+ * Get icon integer value
+ */
+static int get_icon_int(Desk_window_handle w, Desk_icon_handle i)
+{
+    char buf[32];
+    get_icon_text(w, i, buf, sizeof(buf));
+    return atoi(buf);
+}
+
+/*
+ * Get icon selected state (for option icons)
+ */
+static int get_icon_selected(Desk_window_handle w, Desk_icon_handle i)
+{
+    return Desk_Icon_GetSelect(w, i);
+}
+
+/*
+ * Set icon selected state (for option icons)
+ */
+static void set_icon_selected(Desk_window_handle w, Desk_icon_handle i, int selected)
+{
+    Desk_Icon_SetSelect(w, i, selected);
+}
+
+/*
+ * Populate icons from current user record
+ */
+void populate_icons(void)
+{
+    Desk_window_handle w = wimp_state.pane_window;
+
+    debug_printf("UserEd: populate_icons start, pane=%d, loaded=%d", 
+                 (int)w, wimp_state.user_loaded);
+
+    if (!wimp_state.user_loaded) {
+        /* Clear all fields */
+        set_icon_int(w, USERINFO_USERID, 0);
+        set_icon_text(w, USERINFO_USERNAME, "");
+        set_icon_text(w, USERINFO_REALNAME, "");
+        set_icon_text(w, USERINFO_PASSWORD, "");
+        set_icon_text(w, USERINFO_EMAIL, "");
+        set_icon_text(w, USERINFO_KEYS, "");
+        return;
+    }
+
+    debug_printf("UserEd: Setting user info icons");
+
+    /* User info */
+    set_icon_int(w, USERINFO_USERID, wimp_state.current_user.id);
+    set_icon_text(w, USERINFO_USERNAME, wimp_state.current_user.username);
+    set_icon_text(w, USERINFO_REALNAME, wimp_state.current_user.realname);
+    set_icon_text(w, USERINFO_PASSWORD, wimp_state.current_user.password);
+    set_icon_text(w, USERINFO_EMAIL, wimp_state.current_user.email);
+    set_icon_text(w, USERINFO_KEYS, wimp_state.current_user.keys);
+
+    debug_printf("UserEd: Setting flag icons");
+
+    /* Flags */
+    set_icon_selected(w, USERINFO_SYSOP, wimp_state.current_user.user_flags.sysop);
+    set_icon_selected(w, USERINFO_ANSI, wimp_state.current_user.user_flags.ansi);
+    set_icon_selected(w, USERINFO_MORE, wimp_state.current_user.user_flags.more);
+    set_icon_selected(w, USERINFO_CLS, wimp_state.current_user.user_flags.cls);
+    set_icon_selected(w, USERINFO_CLIACCESS, wimp_state.current_user.user_flags.cli);
+    set_icon_selected(w, USERINFO_REGISTERED, wimp_state.current_user.user_flags.registered);
+    set_icon_selected(w, USERINFO_EXPERT, wimp_state.current_user.user_flags.expert);
+    set_icon_selected(w, USERINFO_LOCKEDOUT, wimp_state.current_user.user_flags.lockedout);
+    set_icon_selected(w, USERINFO_UNLIMTEDTME, wimp_state.current_user.user_flags.nolimit);
+    set_icon_selected(w, USERINFO_INVISIBLE, wimp_state.current_user.user_flags.invisible);
+    set_icon_selected(w, USERINFO_CHATALLOWED, wimp_state.current_user.user_flags.chataccess);
+
+    debug_printf("UserEd: Setting numeric icons");
+
+    /* Numeric flags */
+    set_icon_int(w, USERINFO_ACCESSLEVEL, wimp_state.current_user.user_flags.accesslevel);
+    set_icon_int(w, USERINFO_RATIO, wimp_state.current_user.user_flags.ratios);
+    set_icon_int(w, USERINFO_TIME, wimp_state.current_user.user_flags.maxtime);
+    set_icon_int(w, USERINFO_LINES, wimp_state.current_user.user_flags.lines);
+
+    debug_printf("UserEd: Setting stats icons");
+
+    /* Stats */
+    set_icon_int(w, USERINFO_TOTALCALLS, wimp_state.current_user.user_stats.calls);
+    set_icon_int(w, USERINFO_TIMETODAY, wimp_state.current_user.user_stats.todaytime);
+    set_icon_int(w, USERINFO_TOTALKBUP, wimp_state.current_user.user_stats.uploadskb);
+    set_icon_int(w, USERINFO_TOTALKBDOWN, wimp_state.current_user.user_stats.downloadskb);
+    set_icon_int(w, USERINFO_TOTALUPLOADS, wimp_state.current_user.user_stats.uploads);
+    set_icon_int(w, USERINFO_TOTALDOWNLOADS, wimp_state.current_user.user_stats.downloads);
+
+    debug_printf("UserEd: populate_icons complete");
+}
+
+/*
+ * Read icons back into current user record
+ */
+void read_icons(void)
+{
+    Desk_window_handle w = wimp_state.pane_window;
+
+    /* User info - don't read ID, it's read-only */
+    get_icon_text(w, USERINFO_USERNAME, wimp_state.current_user.username, 32);
+    get_icon_text(w, USERINFO_REALNAME, wimp_state.current_user.realname, 64);
+    get_icon_text(w, USERINFO_PASSWORD, wimp_state.current_user.password, 32);
+    get_icon_text(w, USERINFO_EMAIL, wimp_state.current_user.email, 64);
+    get_icon_text(w, USERINFO_KEYS, wimp_state.current_user.keys, 128);
+
+    /* Flags */
+    wimp_state.current_user.user_flags.sysop = get_icon_selected(w, USERINFO_SYSOP);
+    wimp_state.current_user.user_flags.ansi = get_icon_selected(w, USERINFO_ANSI);
+    wimp_state.current_user.user_flags.more = get_icon_selected(w, USERINFO_MORE);
+    wimp_state.current_user.user_flags.cls = get_icon_selected(w, USERINFO_CLS);
+    wimp_state.current_user.user_flags.cli = get_icon_selected(w, USERINFO_CLIACCESS);
+    wimp_state.current_user.user_flags.registered = get_icon_selected(w, USERINFO_REGISTERED);
+    wimp_state.current_user.user_flags.expert = get_icon_selected(w, USERINFO_EXPERT);
+    wimp_state.current_user.user_flags.lockedout = get_icon_selected(w, USERINFO_LOCKEDOUT);
+    wimp_state.current_user.user_flags.nolimit = get_icon_selected(w, USERINFO_UNLIMTEDTME);
+    wimp_state.current_user.user_flags.invisible = get_icon_selected(w, USERINFO_INVISIBLE);
+    wimp_state.current_user.user_flags.chataccess = get_icon_selected(w, USERINFO_CHATALLOWED);
+
+    /* Numeric flags */
+    wimp_state.current_user.user_flags.accesslevel = get_icon_int(w, USERINFO_ACCESSLEVEL);
+    wimp_state.current_user.user_flags.ratios = get_icon_int(w, USERINFO_RATIO);
+    wimp_state.current_user.user_flags.maxtime = get_icon_int(w, USERINFO_TIME);
+    wimp_state.current_user.user_flags.lines = get_icon_int(w, USERINFO_LINES);
+
+    /* Stats - read editable ones */
+    wimp_state.current_user.user_stats.calls = get_icon_int(w, USERINFO_TOTALCALLS);
+    wimp_state.current_user.user_stats.todaytime = get_icon_int(w, USERINFO_TIMETODAY);
+    wimp_state.current_user.user_stats.uploadskb = get_icon_int(w, USERINFO_TOTALKBUP);
+    wimp_state.current_user.user_stats.downloadskb = get_icon_int(w, USERINFO_TOTALKBDOWN);
+    wimp_state.current_user.user_stats.uploads = get_icon_int(w, USERINFO_TOTALUPLOADS);
+    wimp_state.current_user.user_stats.downloads = get_icon_int(w, USERINFO_TOTALDOWNLOADS);
+}
+
+/*
+ * Load a user by ID
+ */
+void load_user(int user_id)
+{
+    int result;
+    USER_RECORD *user_ptr;
+
+    debug_printf("UserEd: Loading user %d", user_id);
+
+    if (call_userdb_swi(FILER_USERDB_CMD_SEARCH, user_id, 0, &result, NULL) < 0) {
+        wimp_state.user_loaded = 0;
+        wimp_state.current_user_id = 0;
+        populate_icons();
+        return;
+    }
+
+    if (result == 0) {
+        debug_printf("UserEd: User %d not found", user_id);
+        wimp_state.user_loaded = 0;
+        wimp_state.current_user_id = 0;
+        populate_icons();
+        return;
+    }
+
+    /* Copy user record from returned pointer */
+    user_ptr = (USER_RECORD *)result;
+    memcpy(&wimp_state.current_user, user_ptr, sizeof(USER_RECORD));
+
+    wimp_state.current_user_id = user_id;
+    wimp_state.user_loaded = 1;
+
+    debug_printf("UserEd: Loaded user '%s' (ID %d)",
+                 wimp_state.current_user.username,
+                 wimp_state.current_user.id);
+
+    populate_icons();
+}
+
+/*
+ * Save current user
+ */
+void save_user(void)
+{
+    int result;
+
+    if (!wimp_state.user_loaded) {
+        debug_printf("UserEd: No user loaded to save");
+        return;
+    }
+
+    /* Read current icon values */
+    read_icons();
+
+    debug_printf("UserEd: Saving user %d", wimp_state.current_user_id);
+
+    if (call_userdb_swi(FILER_USERDB_CMD_UPDATE,
+                        wimp_state.current_user_id,
+                        (int)&wimp_state.current_user,
+                        &result, NULL) < 0) {
+        Desk_Error_Report(1, "Failed to save user record");
+        return;
+    }
+
+    if (result == 0) {
+        Desk_Error_Report(1, "Failed to update user record");
+        return;
+    }
+
+    debug_printf("UserEd: User saved successfully");
+}
+
+/*
+ * Delete current user
+ */
+void delete_user(void)
+{
+    int result;
+
+    if (!wimp_state.user_loaded) {
+        debug_printf("UserEd: No user loaded to delete");
+        return;
+    }
+
+    debug_printf("UserEd: Deleting user %d", wimp_state.current_user_id);
+
+    if (call_userdb_swi(FILER_USERDB_CMD_DELETE,
+                        wimp_state.current_user_id, 0,
+                        &result, NULL) < 0) {
+        Desk_Error_Report(1, "Failed to delete user record");
+        return;
+    }
+
+    if (result == 0) {
+        Desk_Error_Report(1, "Failed to delete user record");
+        return;
+    }
+
+    debug_printf("UserEd: User deleted successfully");
+
+    /* Load next user or clear */
+    next_user();
+}
+
+/*
+ * Create new user
+ */
+void new_user(void)
+{
+    int result;
+
+    debug_printf("UserEd: Creating new user");
+
+    /* Clear current record */
+    memset(&wimp_state.current_user, 0, sizeof(USER_RECORD));
+    strcpy(wimp_state.current_user.username, "newuser");
+    strcpy(wimp_state.current_user.realname, "New User");
+    wimp_state.current_user.user_flags.accesslevel = 10;
+    wimp_state.current_user.user_flags.lines = 24;
+    wimp_state.current_user.user_flags.ansi = 1;
+    wimp_state.current_user.user_flags.more = 1;
+
+    if (call_userdb_swi(FILER_USERDB_CMD_ADD,
+                        (int)&wimp_state.current_user, 0,
+                        &result, NULL) < 0) {
+        Desk_Error_Report(1, "Failed to create new user");
+        return;
+    }
+
+    if (result == 0) {
+        Desk_Error_Report(1, "Failed to add user record");
+        return;
+    }
+
+    /* Load the newly created user */
+    load_user(result);
+
+    debug_printf("UserEd: New user created with ID %d", result);
+}
+
+/*
+ * Navigate to next user
+ */
+void next_user(void)
+{
+    int next_id = wimp_state.current_user_id + 1;
+    int attempts = 0;
+
+    /* Try to find next valid user, with a reasonable limit */
+    while (attempts < 100) {
+        int result;
+
+        if (call_userdb_swi(FILER_USERDB_CMD_SEARCH, next_id, 0, &result, NULL) < 0) {
+            break;
+        }
+
+        if (result != 0) {
+            load_user(next_id);
+            return;
+        }
+
+        next_id++;
+        attempts++;
+    }
+
+    debug_printf("UserEd: No more users found");
+}
+
+/*
+ * Navigate to previous user
+ */
+void prev_user(void)
+{
+    int prev_id = wimp_state.current_user_id - 1;
+
+    if (prev_id < 1) {
+        debug_printf("UserEd: Already at first user");
+        return;
+    }
+
+    /* Try to find previous valid user */
+    while (prev_id >= 1) {
+        int result;
+
+        if (call_userdb_swi(FILER_USERDB_CMD_SEARCH, prev_id, 0, &result, NULL) < 0) {
+            break;
+        }
+
+        if (result != 0) {
+            load_user(prev_id);
+            return;
+        }
+
+        prev_id--;
+    }
+
+    debug_printf("UserEd: No previous user found");
+}
+
+/*
+ * Update pane position to follow main window
+ */
+void update_pane_position(void)
+{
+    Desk_window_state main_state;
+    Desk_window_state pane_state;
+    Desk_icon_block anchor_icon;
+    Desk_window_openblock open;
+    int dx, dy;
+
+    Desk_Wimp_GetWindowState(wimp_state.main_window, &main_state);
+    Desk_Wimp_GetWindowState(wimp_state.pane_window, &pane_state);
+    Desk_Wimp_GetIconState(wimp_state.main_window, USEREDITOR_INFOPANE, &anchor_icon);
+
+    /* Calculate pane position relative to main window */
+    dx = anchor_icon.workarearect.min.x + main_state.openblock.screenrect.min.x -
+         main_state.openblock.scroll.x;
+    dy = anchor_icon.workarearect.max.y + main_state.openblock.screenrect.max.y -
+         main_state.openblock.scroll.y;
+
+    /* Set pane position */
+    open.window = wimp_state.pane_window;
+    open.screenrect.min.x = dx;
+    open.screenrect.min.y = dy - (pane_state.openblock.screenrect.max.y -
+                                   pane_state.openblock.screenrect.min.y);
+    open.screenrect.max.x = dx + (pane_state.openblock.screenrect.max.x -
+                                   pane_state.openblock.screenrect.min.x);
+    open.screenrect.max.y = dy;
+    open.scroll.x = pane_state.openblock.scroll.x;
+    open.scroll.y = pane_state.openblock.scroll.y;
+    open.behind = main_state.openblock.behind;
+
+    Desk_Wimp_OpenWindow(&open);
+}
+
+/*
+ * Adjust numeric icon value with bounds checking
+ */
+static void adjust_icon_value(Desk_window_handle w, Desk_icon_handle icon, int delta)
+{
+    int value = get_icon_int(w, icon);
+    value += delta;
+    if (value < 0) value = 0;
+    if (value > 999) value = 999;
+    set_icon_int(w, icon, value);
+}
+
+/*
+ * Click handler for pane window (bumper buttons)
+ */
+static Desk_bool pane_click_handler(Desk_event_pollblock *event, void *reference)
+{
+    Desk_mouse_block *mouse = &event->data.mouse;
+    Desk_window_handle w = wimp_state.pane_window;
+    int delta;
+
+    (void)reference;
+
+    if (mouse->window != wimp_state.pane_window) {
+        return Desk_FALSE;
+    }
+
+    /* Determine direction: Select = +1, Adjust = -1 */
+    if (mouse->button.data.select) {
+        delta = 1;
+    } else if (mouse->button.data.adjust) {
+        delta = -1;
+    } else {
+        return Desk_FALSE;
+    }
+
+    switch (mouse->icon) {
+        /* Access Level: 37, down=38, up=39 */
+        case USERINFO_ACCESSUP:
+            adjust_icon_value(w, USERINFO_ACCESSLEVEL, delta);
+            return Desk_TRUE;
+        case USERINFO_ACCESSDOWN:
+            adjust_icon_value(w, USERINFO_ACCESSLEVEL, -delta);
+            return Desk_TRUE;
+
+        /* Time: 63, down=41, up=42 */
+        case USERINFO_TIMEUP:
+            adjust_icon_value(w, USERINFO_TIME, delta);
+            return Desk_TRUE;
+        case USERINFO_TIMEDOWN:
+            adjust_icon_value(w, USERINFO_TIME, -delta);
+            return Desk_TRUE;
+
+        /* Ratio: 57, down=59, up=60 */
+        case USERINFO_RATIOUP:
+            adjust_icon_value(w, USERINFO_RATIO, delta);
+            return Desk_TRUE;
+        case USERINFO_RATIODOWN:
+            adjust_icon_value(w, USERINFO_RATIO, -delta);
+            return Desk_TRUE;
+
+        /* Lines: 61, down=62, up=65 */
+        case USERINFO_LINESUP:
+            adjust_icon_value(w, USERINFO_LINES, delta);
+            return Desk_TRUE;
+        case USERINFO_LINESDOWN:
+            adjust_icon_value(w, USERINFO_LINES, -delta);
+            return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
+ * Click handler for main window
+ */
+static Desk_bool click_handler(Desk_event_pollblock *event, void *reference)
+{
+    Desk_mouse_block *mouse = &event->data.mouse;
+
+    (void)reference;
+
+    if (mouse->window != wimp_state.main_window) {
+        return Desk_FALSE;
+    }
+
+    switch (mouse->icon) {
+        case USEREDITOR_PREVIOUS:
+            prev_user();
+            return Desk_TRUE;
+
+        case USEREDITOR_NEXT:
+            next_user();
+            return Desk_TRUE;
+
+        case USEREDITOR_ADDNEW:
+            new_user();
+            return Desk_TRUE;
+
+        case USEREDITOR_UPDATE:
+            save_user();
+            return Desk_TRUE;
+
+        case USEREDITOR_DELETE:
+            delete_user();
+            return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
+ * Key handler
+ */
+static Desk_bool key_handler(Desk_event_pollblock *event, void *reference)
+{
+    (void)reference;
+
+    /* Pass unhandled keys to Wimp */
+    Desk_Wimp_ProcessKey(event->data.key.code);
+
+    return Desk_TRUE;
+}
+
+/*
+ * Open window handler - keeps pane in sync
+ */
+static Desk_bool open_handler(Desk_event_pollblock *event, void *reference)
+{
+    (void)reference;
+
+    if (event->data.openblock.window == wimp_state.main_window) {
+        Desk_Wimp_OpenWindow(&event->data.openblock);
+        update_pane_position();
+        return Desk_TRUE;
+    }
+
+    if (event->data.openblock.window == wimp_state.pane_window) {
+        /* Allow scrolling but keep pane attached to main window */
+        Desk_window_state pane_state;
+        Desk_Wimp_GetWindowState(wimp_state.pane_window, &pane_state);
+        
+        /* Update scroll position from the event, keep screen position */
+        pane_state.openblock.scroll = event->data.openblock.scroll;
+        Desk_Wimp_OpenWindow(&pane_state.openblock);
+        return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
+ * Menu selection handler
+ */
+static Desk_bool menu_handler(Desk_event_pollblock *event, void *reference)
+{
+    int *selection = event->data.selection;
+
+    (void)reference;
+
+    switch (selection[0]) {
+        case 0:  /* Info */
+            /* Show proginfo window */
+            Desk_Window_Show(wimp_state.proginfo_window, Desk_open_CENTERED);
+            break;
+
+        case 1:  /* Quit */
+            wimp_state.quit = 1;
+            break;
+    }
+
+    return Desk_TRUE;
+}
+
+/*
+ * Iconbar click handler
+ */
+static Desk_bool iconbar_click_handler(Desk_event_pollblock *event, void *reference)
+{
+    Desk_mouse_block *mouse = &event->data.mouse;
+
+    (void)reference;
+
+    if (mouse->button.data.select) {
+        /* Select click - open main window */
+        open_main_window();
+        return Desk_TRUE;
+    }
+
+    if (mouse->button.data.menu) {
+        /* Menu click - show iconbar menu */
+        Desk_Menu_Show(iconbar_menu, mouse->pos.x, -1);
+        return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
+ * Message handler
+ */
+static Desk_bool message_handler(Desk_event_pollblock *event, void *reference)
+{
+    Desk_message_block *msg = &event->data.message;
+
+    (void)reference;
+
+    switch (msg->header.action) {
+        case Desk_message_QUIT:
+            wimp_state.quit = 1;
+            return Desk_TRUE;
+
+        case MESSAGE_LINE_BROADCAST:
+            /* Check for quit broadcast from server */
+            if (msg->data.words[0] == 0) {
+                debug_printf("UserEd: Received quit broadcast");
+                wimp_state.quit = 1;
+            }
+            return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
+ * Create iconbar icon
+ */
+static void create_iconbar_icon(void)
+{
+    Desk_icon_createblock icb;
+
+    icb.window = Desk_iconbar_RIGHT;
+    icb.icondata.flags.value = 0x0000311A;  /* Sprite, h-centered, indirected */
+    icb.icondata.workarearect.min.x = 0;
+    icb.icondata.workarearect.min.y = 0;
+    icb.icondata.workarearect.max.x = 68;
+    icb.icondata.workarearect.max.y = 68;
+    icb.icondata.data.indirectsprite.name = SPRITE_NAME;
+    icb.icondata.data.indirectsprite.spritearea = (void *)1;  /* Wimp sprite pool */
+    icb.icondata.data.indirectsprite.nameisname = strlen(SPRITE_NAME);
+
+    Desk_Wimp_CreateIcon(&icb, NULL);
+}
+
+/*
+ * Create menus
+ */
+static void create_menus(void)
+{
+    /* Get menu title and items from Messages file */
+    if (Desk_Msgs_Lookup("usered.ibmt:User Editor", msg_buffer, sizeof(msg_buffer))) {
+        strcpy(msg_buffer, "User Editor");
+    }
+
+    iconbar_menu = Desk_Menu_New(msg_buffer, "Info,Quit");
+
+    if (iconbar_menu) {
+        /* Attach proginfo as submenu of Info item */
+        Desk_Menu_AddSubMenu(iconbar_menu, 0, (Desk_menu_ptr)wimp_state.proginfo_window);
+    }
+}
+
+/*
+ * Open main window with pane
+ */
+static void open_main_window(void)
+{
+    Desk_Window_Show(wimp_state.main_window, Desk_open_CENTERED);
+    update_pane_position();
+    Desk_Window_Show(wimp_state.pane_window, Desk_open_WHEREVER);
+}
+
+/*
+ * Initialise application
+ */
+static int initialise(void)
+{
+    debug_printf("UserEd: Initialising");
+
+    /* Initialise DeskLib */
+    Desk_Resource_Initialise("ConverseRes");
+    Desk_Msgs_LoadFile("Messages");
+    Desk_Template_Initialise();
+    Desk_Template_LoadFile("Templates");
+    Desk_Event_Initialise(APP_NAME);
+    Desk_EventMsg_Initialise();
+    Desk_Screen_CacheModeInfo();
+
+    /* Store task handle */
+    wimp_state.task_handle = Desk_Event_taskhandle;
+
+    /* Create windows from templates */
+    wimp_state.proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+    wimp_state.main_window = Desk_Window_Create("usereditor", Desk_template_TITLEMIN);
+    wimp_state.pane_window = Desk_Window_Create("userinfo", Desk_template_TITLEMIN);
+
+    if (!wimp_state.main_window || !wimp_state.pane_window) {
+        Desk_Error_Report(1, "Failed to create windows from templates");
+        return 0;
+    }
+
+    /* Create iconbar icon */
+    create_iconbar_icon();
+
+    /* Create menus */
+    create_menus();
+
+    /* Register event handlers */
+    Desk_Event_Claim(Desk_event_CLICK, wimp_state.main_window, Desk_event_ANY,
+                     click_handler, NULL);
+    Desk_Event_Claim(Desk_event_CLICK, wimp_state.pane_window, Desk_event_ANY,
+                     pane_click_handler, NULL);
+    Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, Desk_event_ANY,
+                     iconbar_click_handler, NULL);
+    Desk_Event_Claim(Desk_event_KEY, Desk_event_ANY, Desk_event_ANY,
+                     key_handler, NULL);
+    Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
+                     menu_handler, NULL);
+    Desk_Event_Claim(Desk_event_OPEN, wimp_state.main_window, Desk_event_ANY,
+                     open_handler, NULL);
+    Desk_Event_Claim(Desk_event_OPEN, wimp_state.pane_window, Desk_event_ANY,
+                     open_handler, NULL);
+
+    Desk_EventMsg_Claim(Desk_message_QUIT, Desk_event_ANY, message_handler, NULL);
+    Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_BROADCAST, Desk_event_ANY, message_handler, NULL);
+
+    /* Open main window first, then load user data */
+    open_main_window();
+
+    /* Load user 1 on startup */
+    load_user(1);
+
+    debug_printf("UserEd: Initialisation complete");
+
+    return 1;
+}
+
+/*
+ * Main event loop
+ */
+static void poll_loop(void)
+{
+    Desk_event_pollblock event;
+    Desk_event_pollmask mask;
+
+    mask.value = 0;
+
+    while (!wimp_state.quit) {
+        Desk_Wimp_Poll(mask, &event);
+        Desk_Event_Process(&event);
+    }
+}
+
+/*
+ * Shutdown application
+ */
+static void shutdown(void)
+{
+    debug_printf("UserEd: Shutting down");
+
+    if (wimp_state.main_window) {
+        Desk_Window_Delete(wimp_state.main_window);
+    }
+    if (wimp_state.pane_window) {
+        Desk_Window_Delete(wimp_state.pane_window);
+    }
+    if (wimp_state.proginfo_window) {
+        Desk_Window_Delete(wimp_state.proginfo_window);
+    }
+}
+
+/*
+ * Main entry point
+ */
+int main(void)
+{
+    memset(&wimp_state, 0, sizeof(wimp_state));
+
+    if (!initialise()) {
+        return 1;
+    }
+
+    poll_loop();
+
+    shutdown();
+
+    return 0;
+}

@@ -56,3 +56,19 @@ web.ibmt: Web
 web.ibm: >Info,Quit
 web.bind:Unable to bind to interface, is Converse already running?
 web.list:Unable to listen on socket, is Converse already running?
+
+
+usered.ibmt:User Editor
+usered.ibm:Info,Quit
+
+| Errors
+usered.nouser:User not found
+usered.savefail:Failed to save user record
+usered.delfail:Failed to delete user record
+usered.addfail:Failed to create user record
+
+| Program Info Window
+info.name:User Editor
+info.version:1.00 (28 Nov 2025)
+info.author:Converse BBS
+info.purpose:User Database Editor for Converse BBS

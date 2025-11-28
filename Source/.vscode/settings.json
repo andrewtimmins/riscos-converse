@@ -29,6 +29,7 @@
         "config": "cpp",
         "template": "cpp",
         "http": "cpp",
-        "binkp": "cpp"
+        "binkp": "cpp",
+        "iconnames": "cpp"
     }
 }

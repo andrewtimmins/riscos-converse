@@ -656,6 +656,11 @@ Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref
 	struct wimp_components *wimp;
 	wimp = (struct wimp_components *)ref;
 
+	if(event->data.selection[0] == iconbar_menu_usereditor)
+	{
+		Desk_Wimp_StartTask("<Converse$Dir>.Resources.!RunUser");
+	}
+
 	if(event->data.selection[0] == iconbar_menu_quit)
   	{
 		notify_line_tasks_shutdown();

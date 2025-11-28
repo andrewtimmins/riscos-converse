@@ -1,0 +1,74 @@
+/*
+ * UserEd structures
+ * Copy of USER_RECORD and related structures from Filer
+ */
+
+#ifndef USERED_STRUCTS_H
+#define USERED_STRUCTS_H
+
+#include <time.h>
+
+/* User flags */
+typedef struct {
+    int deleted;
+    int ansi;
+    int more;
+    int lines;
+    int cls;
+    int sysop;
+    int cli;
+    int registered;
+    int expert;
+    int lockedout;
+    int nolimit;
+    int invisible;
+    int chataccess;
+    int accesslevel;
+    int ratios;
+    int maxtime;
+} USER_FLAGS;
+
+/* User history */
+typedef struct {
+    time_t firstlogon;
+    time_t lastlogon;
+    time_t lastscan;
+} USER_HISTORY;
+
+/* User stats */
+typedef struct {
+    time_t lastlogon;
+    time_t lastscan;
+    int calls;
+    int todaytime;
+    int uploadskb;
+    int downloadskb;
+    int uploads;
+    int downloads;
+} USER_STATS;
+
+/* Main user record structure */
+typedef struct {
+    int id;
+    char username[32];
+    char realname[64];
+    char email[64];
+    char password[32];
+    char keys[128];
+    char userdir[256];
+    USER_FLAGS user_flags;
+    USER_HISTORY user_history;
+    USER_STATS user_stats;
+} USER_RECORD;
+
+/* Filer userdb SWI commands */
+#define FILER_USERDB_CMD_ADD         0
+#define FILER_USERDB_CMD_UPDATE      1
+#define FILER_USERDB_CMD_DELETE      2
+#define FILER_USERDB_CMD_SEARCH      3
+#define FILER_USERDB_CMD_AUTHENTICATE 4
+
+/* Filer SWI number */
+#define SWI_FILER_USERDB    0x5AA41
+
+#endif /* USERED_STRUCTS_H */
