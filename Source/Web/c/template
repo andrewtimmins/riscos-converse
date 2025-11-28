@@ -246,9 +246,9 @@ char *template_generate_filebase_listing(long *out_len)
     STRING_BUFFER buf;
     _kernel_swi_regs regs;
     _kernel_oserror *err;
-    int base_id;
-    int area_id;
-    int file_id;
+    int base_index;
+    int area_index;
+    int file_index;
     char row[1024];
     char escaped_name[256];
     char escaped_desc[512];
@@ -264,19 +264,20 @@ char *template_generate_filebase_listing(long *out_len)
     buffer_append(&buf,
         "<div class=\"filebase-listing\">\n", -1);
 
-    /* Enumerate filebases (base IDs typically start at 1) */
-    for (base_id = 1; base_id <= 100; base_id++)
+    /* Enumerate filebases using ENUMERATE_BASES */
+    for (base_index = 0; base_index < 100; base_index++)
     {
         FILEBASE_RECORD *base_rec;
-        int has_files = 0;
+        int base_id;
+        int has_content = 0;
 
-        /* Get filebase info */
-        regs.r[0] = FILER_FILEBASE_CMD_INFO;
-        regs.r[1] = base_id;
+        /* Get filebase by index */
+        regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_BASES;
+        regs.r[1] = base_index;
         err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
         if (err != NULL || regs.r[0] == -1)
         {
-            continue;
+            break; /* No more filebases */
         }
 
         base_rec = (FILEBASE_RECORD *)(regs.r[0]);
@@ -285,85 +286,219 @@ char *template_generate_filebase_listing(long *out_len)
             continue;
         }
 
+        base_id = base_rec->id;
         base_count++;
 
         /* Start filebase section */
         html_escape(base_rec->name, escaped_name, sizeof(escaped_name));
         snprintf(row, sizeof(row),
             "  <div class=\"filebase\">\n"
-            "    <h3>%s</h3>\n"
-            "    <table class=\"file-table\">\n"
-            "      <thead>\n"
-            "        <tr>\n"
-            "          <th>Name</th>\n"
-            "          <th>Size</th>\n"
-            "          <th>Description</th>\n"
-            "          <th>Downloads</th>\n"
-            "        </tr>\n"
-            "      </thead>\n"
-            "      <tbody>\n",
+            "    <h3>%s</h3>\n",
             escaped_name);
         buffer_append(&buf, row, -1);
 
-        /* Enumerate files in this filebase (file IDs typically start at 1) */
-        for (file_id = 1; file_id <= 1000; file_id++)
+        /* Enumerate areas within this filebase */
+        for (area_index = 0; area_index < 100; area_index++)
         {
-            FILE_RECORD *file_rec;
+            FILEBASE_AREA_RECORD *area_rec;
+            int area_id;
+            int has_files = 0;
 
-            regs.r[0] = FILER_FILEBASE_CMD_FILE_INFO;
+            /* Get area by index */
+            regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_AREAS;
             regs.r[1] = base_id;
-            regs.r[2] = file_id;
+            regs.r[2] = area_index;
             err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
             if (err != NULL || regs.r[0] == -1)
             {
-                /* No more files or error - break if we've seen 10 consecutive misses */
-                static int miss_count = 0;
-                miss_count++;
-                if (miss_count > 10)
-                {
-                    miss_count = 0;
-                    break;
-                }
-                continue;
+                break; /* No more areas */
             }
 
-            file_rec = (FILE_RECORD *)(regs.r[0]);
-            if (file_rec == NULL || file_rec->deleted)
+            area_rec = (FILEBASE_AREA_RECORD *)(regs.r[0]);
+            if (area_rec == NULL)
             {
                 continue;
             }
 
-            has_files = 1;
+            area_id = area_rec->id;
+            has_content = 1;
 
-            html_escape(file_rec->name, escaped_name, sizeof(escaped_name));
-            html_escape(file_rec->description, escaped_desc, sizeof(escaped_desc));
-            format_filesize(file_rec->filesize, size_str, sizeof(size_str));
-
+            /* Start area section */
+            html_escape(area_rec->name, escaped_name, sizeof(escaped_name));
             snprintf(row, sizeof(row),
-                "        <tr>\n"
-                "          <td>%s</td>\n"
-                "          <td>%s</td>\n"
-                "          <td>%s</td>\n"
-                "          <td>%d</td>\n"
-                "        </tr>\n",
-                escaped_name,
-                size_str,
-                escaped_desc,
-                file_rec->downloads);
+                "    <div class=\"filearea\">\n"
+                "      <h4>%s</h4>\n"
+                "      <table class=\"file-table\">\n"
+                "        <thead>\n"
+                "          <tr>\n"
+                "            <th>Name</th>\n"
+                "            <th>Size</th>\n"
+                "            <th>Description</th>\n"
+                "            <th>Downloads</th>\n"
+                "            <th>Download</th>\n"
+                "          </tr>\n"
+                "        </thead>\n"
+                "        <tbody>\n",
+                escaped_name);
             buffer_append(&buf, row, -1);
+
+            /* Enumerate files in this area */
+            for (file_index = 0; file_index < 1000; file_index++)
+            {
+                FILE_RECORD *file_rec;
+
+                regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_FILES;
+                regs.r[1] = base_id;
+                regs.r[2] = area_id;
+                regs.r[3] = file_index;
+                err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+                if (err != NULL || regs.r[0] == -1)
+                {
+                    break; /* No more files in this area */
+                }
+
+                file_rec = (FILE_RECORD *)(regs.r[0]);
+                if (file_rec == NULL || file_rec->deleted)
+                {
+                    continue;
+                }
+
+                /* Check file belongs to this area */
+                if (file_rec->filebaseareaid != area_id)
+                {
+                    continue;
+                }
+
+                has_files = 1;
+
+                html_escape(file_rec->name, escaped_name, sizeof(escaped_name));
+                html_escape(file_rec->description, escaped_desc, sizeof(escaped_desc));
+                format_filesize(file_rec->filesize, size_str, sizeof(size_str));
+
+                snprintf(row, sizeof(row),
+                    "          <tr>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%d</td>\n"
+                    "            <td><a href=\"/download/%d/%d/%s\">Download</a></td>\n"
+                    "          </tr>\n",
+                    escaped_name,
+                    size_str,
+                    escaped_desc,
+                    file_rec->downloads,
+                    base_id,
+                    file_rec->id,
+                    escaped_name);
+                buffer_append(&buf, row, -1);
+            }
+
+            if (!has_files)
+            {
+                buffer_append(&buf,
+                    "          <tr><td colspan=\"5\"><em>No files in this area</em></td></tr>\n", -1);
+            }
+
+            /* End area section */
+            buffer_append(&buf,
+                "        </tbody>\n"
+                "      </table>\n"
+                "    </div>\n", -1);
         }
 
-        if (!has_files)
+        /* Also show files not in any area (area_id = 0) */
         {
-            buffer_append(&buf,
-                "        <tr><td colspan=\"4\"><em>No files available</em></td></tr>\n", -1);
+            int has_uncat_files = 0;
+            int first_uncat = 1;
+
+            for (file_index = 0; file_index < 1000; file_index++)
+            {
+                FILE_RECORD *file_rec;
+
+                regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_FILES;
+                regs.r[1] = base_id;
+                regs.r[2] = 0; /* area_id = 0 means all files */
+                regs.r[3] = file_index;
+                err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+                if (err != NULL || regs.r[0] == -1)
+                {
+                    break;
+                }
+
+                file_rec = (FILE_RECORD *)(regs.r[0]);
+                if (file_rec == NULL || file_rec->deleted)
+                {
+                    continue;
+                }
+
+                /* Only show files with no area (area_id = 0) */
+                if (file_rec->filebaseareaid != 0)
+                {
+                    continue;
+                }
+
+                /* Start uncategorized section on first file */
+                if (first_uncat)
+                {
+                    buffer_append(&buf,
+                        "    <div class=\"filearea\">\n"
+                        "      <h4>Uncategorized</h4>\n"
+                        "      <table class=\"file-table\">\n"
+                        "        <thead>\n"
+                        "          <tr>\n"
+                        "            <th>Name</th>\n"
+                        "            <th>Size</th>\n"
+                        "            <th>Description</th>\n"
+                        "            <th>Downloads</th>\n"
+                        "            <th>Download</th>\n"
+                        "          </tr>\n"
+                        "        </thead>\n"
+                        "        <tbody>\n", -1);
+                    first_uncat = 0;
+                    has_content = 1;
+                }
+
+                has_uncat_files = 1;
+
+                html_escape(file_rec->name, escaped_name, sizeof(escaped_name));
+                html_escape(file_rec->description, escaped_desc, sizeof(escaped_desc));
+                format_filesize(file_rec->filesize, size_str, sizeof(size_str));
+
+                snprintf(row, sizeof(row),
+                    "          <tr>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%d</td>\n"
+                    "            <td><a href=\"/download/%d/%d/%s\">Download</a></td>\n"
+                    "          </tr>\n",
+                    escaped_name,
+                    size_str,
+                    escaped_desc,
+                    file_rec->downloads,
+                    base_id,
+                    file_rec->id,
+                    escaped_name);
+                buffer_append(&buf, row, -1);
+            }
+
+            /* Close uncategorized section if we started it */
+            if (!first_uncat)
+            {
+                buffer_append(&buf,
+                    "        </tbody>\n"
+                    "      </table>\n"
+                    "    </div>\n", -1);
+            }
+        }
+
+        if (!has_content)
+        {
+            buffer_append(&buf, "    <p><em>No areas or files</em></p>\n", -1);
         }
 
         /* End filebase section */
-        buffer_append(&buf,
-            "      </tbody>\n"
-            "    </table>\n"
-            "  </div>\n", -1);
+        buffer_append(&buf, "  </div>\n", -1);
     }
 
     if (base_count == 0)

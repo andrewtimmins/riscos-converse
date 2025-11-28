@@ -77,6 +77,7 @@
         char closed[4];
         char pager[4];
         char ftnmail[4];
+        char webserver[4];
         char anykey[256];
         char chatstart[256];
         char chatend[256];

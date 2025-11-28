@@ -81,6 +81,14 @@ static char error_listen[100];
 /* Wimp message from Converse Server */
 #define MESSAGE_LINE_BROADCAST  0x5AA00
 
+/* Filer logging SWI */
+#define SWI_FILER_LOGGING       0x5AA40
+#define FILER_LOG_CMD_WEB       4
+
+/* Filer filebase SWI */
+#define SWI_FILER_FILEBASE      0x5AA43
+#define FILER_FILEBASE_CMD_FILE_INFO    11
+
 /* ******************************************************************************************************************************************************** */
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
@@ -88,6 +96,23 @@ static char error_listen[100];
 static void display_error(const char *message)
 {
     Desk_Error_Report(1, (char *)message);
+}
+
+static void web_log(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    _kernel_swi_regs regs;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    regs.r[0] = FILER_LOG_CMD_WEB;
+    regs.r[1] = (int)buffer;
+    _kernel_swi(SWI_FILER_LOGGING, &regs, &regs);
+
+    debug_printf("Web: %s\n", buffer);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -237,7 +262,7 @@ void create_listener(int port)
     }
 
     listen_port = port;
-    debug_printf("Web: Listening on port %d\n", port);
+    web_log("Listening on port %d", port);
 }
 
 void destroy_listener(void)
@@ -260,7 +285,7 @@ void destroy_listener(void)
         listen_socket = -1;
     }
 
-    debug_printf("Web: Listener destroyed\n");
+    web_log("Server stopped");
 }
 
 void check_listener(void)
@@ -317,7 +342,7 @@ void check_listener(void)
         http_send_error(new_socket, 503, "Server busy");
         shutdown(new_socket, 0);
         socketclose(new_socket);
-        debug_printf("Web: Rejected connection - no free slots\n");
+        web_log("Connection rejected - server busy");
         return;
     }
 
@@ -335,7 +360,7 @@ void check_listener(void)
     clients[slot].remote_addr[sizeof(clients[slot].remote_addr) - 1] = '\0';
     active_clients++;
 
-    debug_printf("Web: Accepted connection from %s (slot %d)\n", clients[slot].remote_addr, slot);
+    web_log("Connection from %s", clients[slot].remote_addr);
 }
 
 void close_client(int slot)
@@ -349,7 +374,6 @@ void close_client(int slot)
     {
         shutdown(clients[slot].socket, 0);
         socketclose(clients[slot].socket);
-        debug_printf("Web: Closed connection (slot %d)\n", slot);
     }
 
     clients[slot].socket = 0;
@@ -380,7 +404,7 @@ void poll_clients(void)
         /* Check for timeout */
         if ((now - clients[i].connected) > timeout_ticks)
         {
-            debug_printf("Web: Client timeout (slot %d)\n", i);
+            web_log("Timeout: %s", clients[i].remote_addr);
             close_client(i);
             continue;
         }
@@ -396,7 +420,6 @@ void poll_clients(void)
             int err = errno;
             if (err != EWOULDBLOCK && err != EAGAIN)
             {
-                debug_printf("Web: Read error %d (slot %d)\n", err, i);
                 close_client(i);
             }
             continue;
@@ -405,7 +428,6 @@ void poll_clients(void)
         if (bytes_read == 0)
         {
             /* Connection closed by client */
-            debug_printf("Web: Client disconnected (slot %d)\n", i);
             close_client(i);
             continue;
         }
@@ -430,6 +452,154 @@ void poll_clients(void)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Download Handling                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* FILE_RECORD field offsets for extracting data */
+#define FILE_RECORD_OFFSET_ID           0
+#define FILE_RECORD_OFFSET_FILEBASEID   4
+#define FILE_RECORD_OFFSET_AREAID       8
+#define FILE_RECORD_OFFSET_DELETED      12
+#define FILE_RECORD_OFFSET_ACCESSLEVEL  16
+#define FILE_RECORD_OFFSET_KEYS         20
+#define FILE_RECORD_OFFSET_NAME         148  /* 20 + 128 (keys) */
+#define FILE_RECORD_OFFSET_UPLOADEDBY   212  /* 148 + 64 (name) */
+#define FILE_RECORD_OFFSET_UPLOADDATE   216
+#define FILE_RECORD_OFFSET_DESC         220
+#define FILE_RECORD_OFFSET_FILESIZE     476  /* 220 + 256 (desc) */
+#define FILE_RECORD_OFFSET_DOWNLOADS    480
+
+/* Handle file download from filebase: /download/<base_id>/<file_id>/<filename> */
+static int handle_download_request(int slot, const char *path)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int base_id = 0;
+    int file_id = 0;
+    const char *p;
+    char filepath[512];
+    char *file_record;
+    int *int_ptr;
+    int area_id;
+    int group;
+
+    /* Skip /download/ prefix */
+    p = path + 10;  /* strlen("/download/") */
+
+    /* Parse base_id */
+    while (*p && *p != '/')
+    {
+        if (*p >= '0' && *p <= '9')
+        {
+            base_id = base_id * 10 + (*p - '0');
+        }
+        else
+        {
+            http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Invalid base ID");
+            close_client(slot);
+            return -1;
+        }
+        p++;
+    }
+
+    if (*p != '/')
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Invalid download URL");
+        close_client(slot);
+        return -1;
+    }
+    p++;
+
+    /* Parse file_id */
+    while (*p && *p != '/')
+    {
+        if (*p >= '0' && *p <= '9')
+        {
+            file_id = file_id * 10 + (*p - '0');
+        }
+        else
+        {
+            http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Invalid file ID");
+            close_client(slot);
+            return -1;
+        }
+        p++;
+    }
+
+    debug_printf("Web: Download request - base=%d file=%d\n", base_id, file_id);
+
+    /* Use Filer SWI to get file record */
+    /* FILER_FILEBASE_CMD_FILE_INFO (11): R0=11, R1=base_id, R2=file_id -> R0=FILE_RECORD* or -1 */
+    regs.r[0] = FILER_FILEBASE_CMD_FILE_INFO;
+    regs.r[1] = base_id;
+    regs.r[2] = file_id;
+
+    err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+    if (err != NULL || regs.r[0] == -1)
+    {
+        debug_printf("Web: Filer SWI failed for base=%d file=%d\n", base_id, file_id);
+        http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "File not found in filebase");
+        web_log("%s GET /download/%d/%d - 404 Not Found", clients[slot].remote_addr, base_id, file_id);
+        close_client(slot);
+        return 0;
+    }
+
+    /* Get pointer to FILE_RECORD */
+    file_record = (char *)regs.r[0];
+
+    /* Check if file is deleted */
+    int_ptr = (int *)(file_record + FILE_RECORD_OFFSET_DELETED);
+    if (*int_ptr != 0)
+    {
+        debug_printf("Web: File %d in base %d is deleted\n", file_id, base_id);
+        http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "File not found");
+        web_log("%s GET /download/%d/%d - 404 Deleted", clients[slot].remote_addr, base_id, file_id);
+        close_client(slot);
+        return 0;
+    }
+
+    /* Get area_id for path construction */
+    int_ptr = (int *)(file_record + FILE_RECORD_OFFSET_AREAID);
+    area_id = *int_ptr;
+
+    /* Build file path
+       Path format: <Converse$Dir>.FileBases.<base_id>.Files[.A<area>].G<group>.<file_id>
+       Group = (file_id - 1) / 60, formatted as G00, G01 etc */
+    group = (file_id - 1) / 60;
+
+    if (area_id > 0)
+    {
+        snprintf(filepath, sizeof(filepath), "<Converse$Dir>.FileBases.%04d.Files.A%04d.G%02d.%06d",
+                 base_id, area_id, group, file_id);
+    }
+    else
+    {
+        snprintf(filepath, sizeof(filepath), "<Converse$Dir>.FileBases.%04d.Files.G%02d.%06d",
+                 base_id, group, file_id);
+    }
+
+    debug_printf("Web: Serving file from: %s\n", filepath);
+
+    /* Serve the file */
+    {
+        int result = http_send_file(clients[slot].socket, filepath);
+        char *filename = file_record + FILE_RECORD_OFFSET_NAME;
+
+        if (result >= 0)
+        {
+            web_log("%s GET /download/%d/%d/%s - 200 OK", clients[slot].remote_addr, base_id, file_id, filename);
+        }
+        else
+        {
+            web_log("%s GET /download/%d/%d - 500 Error", clients[slot].remote_addr, base_id, file_id);
+        }
+    }
+
+    close_client(slot);
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Request Handling                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
@@ -451,6 +621,7 @@ void handle_client_request(int slot)
 
     if (parse_result < 0)
     {
+        web_log("%s - 400 Bad Request", clients[slot].remote_addr);
         http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Invalid request");
         close_client(slot);
         return;
@@ -465,14 +636,23 @@ void handle_client_request(int slot)
     /* Only support GET */
     if (strcmp(req.method, "GET") != 0 && strcmp(req.method, "HEAD") != 0)
     {
+        web_log("%s %s %s - 400 Method not supported", clients[slot].remote_addr, req.method, req.path);
         http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Method not supported");
         close_client(slot);
+        return;
+    }
+
+    /* Check for download request - handle specially */
+    if (strncmp(req.path, "/download/", 10) == 0)
+    {
+        handle_download_request(slot, req.path);
         return;
     }
 
     /* Validate path */
     if (!http_validate_path(req.path))
     {
+        web_log("%s %s %s - 403 Forbidden", clients[slot].remote_addr, req.method, req.path);
         http_send_error(clients[slot].socket, HTTP_STATUS_FORBIDDEN, "Access denied");
         close_client(slot);
         return;
@@ -481,13 +661,11 @@ void handle_client_request(int slot)
     /* Build filesystem path */
     if (!http_build_filepath(docroot, req.path, filepath, sizeof(filepath)))
     {
+        web_log("%s %s %s - 500 Path error", clients[slot].remote_addr, req.method, req.path);
         http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Path error");
         close_client(slot);
         return;
     }
-
-    debug_printf("Web: Request from %s: %s %s -> %s\n",
-                 clients[slot].remote_addr, req.method, req.path, filepath);
 
     /* Check if file is HTML and might need template processing */
     {
@@ -517,6 +695,7 @@ void handle_client_request(int slot)
             }
             else
             {
+                web_log("%s %s %s - 404 Not Found", clients[slot].remote_addr, req.method, req.path);
                 http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "File not found");
                 close_client(slot);
                 return;
@@ -542,6 +721,7 @@ void handle_client_request(int slot)
             }
             else
             {
+                web_log("%s %s %s - 404 Directory", clients[slot].remote_addr, req.method, req.path);
                 http_send_error(clients[slot].socket, HTTP_STATUS_NOT_FOUND, "Directory listing not supported");
                 close_client(slot);
                 return;
@@ -593,6 +773,7 @@ void handle_client_request(int slot)
                             http_send_headers(clients[slot].socket, HTTP_STATUS_OK,
                                             "text/html; charset=utf-8", processed_len);
                             http_send_data(clients[slot].socket, processed, processed_len);
+                            web_log("%s %s %s - 200 OK (%ld bytes)", clients[slot].remote_addr, req.method, req.path, processed_len);
                             free(processed);
                             close_client(slot);
                             return;
@@ -606,6 +787,7 @@ void handle_client_request(int slot)
 
     /* Serve the file directly */
     http_send_file(clients[slot].socket, filepath);
+    web_log("%s %s %s - 200 OK", clients[slot].remote_addr, req.method, req.path);
     close_client(slot);
 }
 
@@ -690,7 +872,7 @@ int main(void)
     create_listener(listen_port);
     atexit(destroy_listener);
 
-    debug_printf("Web: Initialisation complete, entering main loop\n");
+    web_log("Server started");
 
     /* Main event loop */
     while (wimp.quit == Desk_bool_FALSE)

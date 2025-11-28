@@ -902,13 +902,13 @@ goto download_done
 ## Web Server Module
 
 ### Overview
-The Web Server module (`Web/`) provides HTTP access to static files and filebase listings. It runs as a Wimp application on port 80.
+The Web Server module (`Web/`) provides HTTP access to static files and filebase downloads. It runs as a Wimp application on port 80.
 
 ### Architecture
 - **Source Files**:
-  - `c/main`: Wimp application, socket handling, multi-client management
+  - `c/main`: Wimp application, socket handling, multi-client management, download handling
   - `c/http`: HTTP/1.0 protocol parser and response builder
-  - `c/template`: Template engine for `{{filebase}}` substitution
+  - `c/template`: Template engine for `{{filebase}}` substitution with hierarchical listing
   - `c/debug`: Debug logging via Reporter module
 - **Resources**:
   - `Resources/Messages`: UI strings
@@ -921,6 +921,7 @@ The Web Server module (`Web/`) provides HTTP access to static files and filebase
 - **Default File**: `index` (no extension)
 - **Max Clients**: 16 simultaneous connections
 - **Client Timeout**: 30 seconds
+- **Server Enable**: `webserver yes` in System config runs `<Converse$Dir>.Resources.!RunFWeb`
 
 ### HTTP Features
 - HTTP/1.0 protocol (Connection: close)
@@ -930,22 +931,101 @@ The Web Server module (`Web/`) provides HTTP access to static files and filebase
 
 ### Template Tags
 HTML files (filetype 0xFAF) are scanned for template tags:
-- `{{filebase}}`: Replaced with HTML table listing all filebases and files
+- `{{filebase}}`: Replaced with hierarchical HTML listing of all filebases, areas, and files
+
+### Template Output Structure
+The `{{filebase}}` tag generates:
+```html
+<div class="filebase-listing">
+  <div class="filebase">
+    <h3>Filebase Name</h3>
+    <div class="filearea">
+      <h4>Area Name</h4>
+      <table class="file-table">
+        <thead>
+          <tr>
+            <th>Name</th><th>Size</th><th>Description</th>
+            <th>Downloads</th><th>Download</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>filename</td><td>1.5 MB</td><td>Description</td>
+            <td>42</td><td><a href="/download/1/5/filename">Download</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="filearea">
+      <h4>Uncategorized</h4>
+      <!-- Files with area_id = 0 -->
+    </div>
+  </div>
+</div>
+```
+
+### Download URL Format
+Files are downloaded via `/download/<base_id>/<file_id>/<filename>`:
+- `base_id`: Filebase ID (integer)
+- `file_id`: File ID within the filebase (integer)
+- `filename`: Display name (ignored, used for browser filename)
+
+### Download Handler (`handle_download_request`)
+1. Parses base_id and file_id from URL
+2. Calls Filer SWI `0x5AA43` with `FILER_FILEBASE_CMD_FILE_INFO` (11)
+3. Checks file is not deleted
+4. Builds filesystem path: `<Converse$Dir>.FileBases.<base_id>.Files[.A<area_id>].G<group>.<file_id>`
+5. Group calculation: `(file_id - 1) / 60`
+6. Serves file via `http_send_file()`
+
+### FILE_RECORD Field Offsets
+Used for parsing SWI return pointer:
+| Field | Offset | Size |
+|-------|--------|------|
+| id | 0 | 4 |
+| filebaseid | 4 | 4 |
+| filebaseareaid | 8 | 4 |
+| deleted | 12 | 4 |
+| accesslevel | 16 | 4 |
+| keys | 20 | 128 |
+| name | 148 | 64 |
+| uploadedby | 212 | 4 |
+| uploaddate | 216 | 4 |
+| description | 220 | 256 |
+| filesize | 476 | 4 |
+| downloads | 480 | 4 |
 
 ### Path Mapping
 URL paths are converted to RISC OS paths:
 - `/` → `<Converse$Dir>.Web.index`
 - `/files/test` → `<Converse$Dir>.Web.files.test`
 - `/about/` → `<Converse$Dir>.Web.about.index`
+- `/download/1/5/test` → Filebase download (special handler)
 
 ### Security
 - Path traversal blocked (rejects `..`, `:`, `@`, `$`, `%`, `^`, `&`, `\`)
 - Request size limit: 4KB
 - No CGI/script execution
+- Download URLs validate base_id/file_id are numeric
+
+### Logging
+Web server logs to `<Converse$Dir>.Logs.Web` via Filer SWI:
+- `SWI_FILER_LOGGING` (0x5AA40) with reason `FILER_LOG_CMD_WEB` (4)
+- Logs: startup, shutdown, connections, requests with status codes, downloads
+
+### Filer SWI Commands Used
+| Command | Value | Purpose |
+|---------|-------|---------|
+| `FILER_FILEBASE_CMD_INFO` | 2 | Get filebase record by ID |
+| `FILER_FILEBASE_CMD_ENUMERATE_BASES` | 8 | Iterate filebases by index |
+| `FILER_FILEBASE_CMD_ENUMERATE_AREAS` | 9 | Iterate areas within filebase |
+| `FILER_FILEBASE_CMD_ENUMERATE_FILES` | 10 | Iterate files within area |
+| `FILER_FILEBASE_CMD_FILE_INFO` | 11 | Get file record by base_id/file_id |
 
 ### Integration
-- Responds to `MESSAGE_LINE_BROADCAST` (0x5AA00) for shutdown
-- Queries Filer module (SWI 0x5AA43) for filebase listings
+- Responds to `MESSAGE_LINE_BROADCAST` (0x5AA00) for shutdown (reason 0 = quit)
+- Launched by Server via `launch_web_task()` when `webserver yes` in config
+- Queries Filer module (SWI 0x5AA43) for filebase listings and downloads
 - Uses Reporter module for debug output
 
 ### Example Web Content
@@ -954,7 +1034,15 @@ Create files in `<Converse$Dir>.Web`:
 <!-- index file (filetype FAF) -->
 <!DOCTYPE html>
 <html>
-<head><title>Converse BBS</title></head>
+<head>
+  <title>Converse BBS</title>
+  <style>
+    .filebase { margin: 20px 0; }
+    .filearea { margin-left: 20px; }
+    .file-table { border-collapse: collapse; width: 100%; }
+    .file-table th, .file-table td { border: 1px solid #ccc; padding: 8px; }
+  </style>
+</head>
 <body>
   <h1>Welcome to Converse BBS</h1>
   <h2>File Downloads</h2>

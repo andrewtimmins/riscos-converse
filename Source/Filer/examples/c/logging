@@ -15,7 +15,8 @@ enum
   FILER_LOG_CMD_SYSTEM = 0,
   FILER_LOG_CMD_LINE,
   FILER_LOG_CMD_CALL,
-  FILER_LOG_CMD_FTN
+  FILER_LOG_CMD_FTN,
+  FILER_LOG_CMD_WEB
 };
 
 #define CONVERSE_FILER_BASE 0x5AA40
@@ -82,7 +83,21 @@ static _kernel_oserror *filer_log_ftn(const char *message, int *status_out)
   return error;
 }
 
-/* Utility helpers **********************************************************************/
+static _kernel_oserror *filer_log_web(const char *message, int *status_out)
+{
+  _kernel_swi_regs regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_LOG_CMD_WEB;
+  regs.r[1] = (int)(uintptr_t)message;
+  _kernel_oserror *error = _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &regs, &regs);
+  if (!error && status_out)
+  {
+    *status_out = regs.r[0];
+  }
+  return error;
+}
+
+/* Utility helpers ***********************************************************************/
 
 static const char *program_leaf(const char *path)
 {
@@ -113,7 +128,9 @@ static void print_usage(const char *invocation)
           "  %s system <text...>\n"
           "  %s line <line> <text...>\n"
           "  %s ftn <text...>\n"
+          "  %s web <text...>\n"
           "  %s call <line> <user> <status_id>\n",
+          prog,
           prog,
           prog,
           prog,
@@ -248,6 +265,22 @@ int main(int argc, char **argv)
 
     rc = handle_status("FTN log",
                        filer_log_ftn(message, &status),
+                       status);
+    free(message);
+    return rc;
+  }
+  else if (strcmp(mode, "web") == 0)
+  {
+    char *message = join_text(2, argc, argv);
+    int rc;
+    if (message == NULL)
+    {
+      fprintf(stderr, "Unable to allocate message buffer.\n");
+      return 1;
+    }
+
+    rc = handle_status("Web log",
+                       filer_log_web(message, &status),
                        status);
     free(message);
     return rc;

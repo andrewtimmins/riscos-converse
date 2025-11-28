@@ -52,7 +52,7 @@ ftn.tossing: Tossing...
 ftn.polling: Polling...
 
 # Web Server Messages
-web.ibmt: Converse
+web.ibmt: Web
 web.ibm: >Info,Quit
 web.bind:Unable to bind to interface, is Converse already running?
 web.list:Unable to listen on socket, is Converse already running?

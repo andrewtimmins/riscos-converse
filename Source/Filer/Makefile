@@ -9,3 +9,5 @@ OBJASMFLAGS = -throwback -NoCache -depend !Depend
 CUSTOMRES   = no
 
 include CModule
+
+# Dynamic dependencies:

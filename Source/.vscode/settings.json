@@ -26,6 +26,9 @@
         "msgbaseconfig": "cpp",
         "tosser": "cpp",
         "transfer": "cpp",
-        "config": "cpp"
+        "config": "cpp",
+        "template": "cpp",
+        "http": "cpp",
+        "binkp": "cpp"
     }
 }

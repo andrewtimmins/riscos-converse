@@ -32,7 +32,7 @@ SWI USAGE GUIDELINES
 0x5AA40 - ConverseFiler_Logging
 
 On Entry:
-            R0: Reason code (0-3).
+            R0: Reason code (0-4).
             R1..R3: Dependent on reason code.
 
 Reason codes:
@@ -51,6 +51,9 @@ Reason codes:
 
             3 (FTN)
               R1: Pointer to C string to append to <Converse$Dir>.Logs.FTN.
+
+            4 (Web)
+              R1: Pointer to C string to append to <Converse$Dir>.Logs.Web.
 
 On Exit:
             R0: 0 on success, -1 if the parameters are invalid or a file write

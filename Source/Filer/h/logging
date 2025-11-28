@@ -9,6 +9,7 @@
 #define CALLLOG "<Converse$Dir>.Logs.Calls"
 #define LINELOG "<Converse$Dir>.Logs.Line_"
 #define FTNLOG "<Converse$Dir>.Logs.FTN"
+#define WEBLOG "<Converse$Dir>.Logs.Web"
 
 #include "structs.h"
 
@@ -20,5 +21,6 @@ void log_system(char *log_entry);
 void log_call(int line_id, int user_id, int status_id);
 void log_line(int line_id, char *log_entry);
 void log_ftn(char *log_entry);
+void log_web(char *log_entry);
 
 #endif

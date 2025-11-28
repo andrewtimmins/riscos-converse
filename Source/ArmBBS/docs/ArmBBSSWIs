@@ -1,0 +1,210 @@
+List of ArmBBS SWIs
+===================
+
+Last updated 23/02/96
+---------------------
+
+Unimplemented ones are :
+
+GetUserData
+UploadFile
+ClaimDriver (not fully)
+ReleaseDriver (not fully)
+
+line = BBS line/'port' (NOT blockdriver port)
+
+82780	ArmBBS_PutByte		(Place byte to ArmBBS port)
+Entry	r0	line
+	r1	character to output
+Exit	r0	-1 if failed (buffer full)
+
+82781	ArmBBS_GetByte		(Receive byte from ArmBBS port)
+Entry	r0	line
+Exit	r0	character received, or -1 if none
+
+82782	ArmBBS_PeekByte		(Examine buffer to find next byte to be read)
+Entry	r0	line
+Exit	r0	character waiting to be received, or -1 if none
+
+82783	ArmBBS_PutString	(Place string to ArmBBS port)
+Entry	r0	line
+	r1	pointer to null terminated string to output
+Exit	r0	number of bytes NOT output (buffer limit exceeded)
+
+82784	ArmBBS_GetString	(Copy contents of receive buffer into door's
+				own buffer)
+Entry	r0	line
+	r1	pointer to buffer to receive data
+	r2	amount of data to copy in bytes
+Exit	r0	number of bytes NOT received (bytes left in buffer)
+
+82785	ArmBBS_DoorInitialise	(Allocates buffer memory and registers door
+				info with ArmBBS server, forces line into
+				'door' mode if not already)
+Entry	r0	line
+	r1	pointer to null terminated title of door
+	r2	Bottom 8 bits : version of armbbs * 100
+		Top   24 bits : various flags :-
+			bit31 : Do not turn caret off
+		(all other bits are reserved and should be zero)
+	r3	size of input/output buffers (defaults to 1024 bytes if zero)
+Exit	r0	-1 if failed
+
+82786	ArmBBS_DoorCloseDown	(Informs ArmBBS server that the door has
+				finished and releases buffer memory,
+				forces line out of door mode)
+Entry	r0	line
+Exit	r0	-1 if failed
+
+82787	ArmBBS_GetUserData	(Returns userblock)
+Entry	r0	line
+	r1	pointer to null terminated username or number
+	r2	pointer to buffer
+	r3	size of buffer
+Exit	r0	-1 if failed
+
+82788	ArmBBS_UploadFile	(Uploads already existing file on disc to
+				filebase)
+Entry	r0	line
+	r1	pointer to null terminated pathname
+	r2	pointer to null terminated filename
+	r3	pointer to null terminated username (uploader)
+	r4	pointer to null terminated username (private receiver)
+	r5	filebase number
+	r6	filearea number
+	r7	flags (private etc)
+Exit	r0	-1 if failed
+
+82789	ArmBBS_ClaimDriver	(Claims serialdriver, disables ArmBBS port
+				and timeouts. e.g. for user file transfer or
+				complete control of serial port)
+Entry	r0	line
+Exit	r0	address of blockdriver on port, or -1 if unavailable/failed
+
+8278a	ArmBBS_ReleaseDriver	(Releases driver and ArmBBS)
+Entry	r0	line
+Exit	r0	-1 if failed/never claimed
+
+8278b	ArmBBS_SendScript	(Sends script command to ArmBBS to interpret)
+Entry	r0	line
+	r1	pointer to null terminated script command string
+
+8278c	ArmBBS_ReturnVariable	(Makes information held in module [read in from
+				Config files] available)
+Entry	r0	line
+	r1	reason code (See below)
+Exit	r0	pointer to information (linked lists/strings) or returns value
+		if numeric.
+
+See the file ArmBBSstr for details of structures (in capitals)
+
+	Reason	Information
+	0	(P) FILE/MSG AREA linked list root for message base
+	1	(P) FILE BASE linked list root
+	2	(P) Pathname of Msgbase directory
+	3	(P) logfile name (depends on value of r0)
+	4	(P) Logfile characters (depends on value of r0)
+	5	(V) Typerate
+	6	(P) Sysopname
+	7	(P) FTN ADDRESSES linked list root
+	8	(P) Pathname of mailer (depends on value of r0)
+	9	(P) Parameters passed to mailer (depends on value of r0)
+	10	(V) Pager flag
+	11	(P) Pathname of users file
+	12	(P) Pathname of PreLogon file
+	13	(P) Pathname of PostLogon file
+	14	(P) Pathname of Newuser file
+	15	(P) Pathname of Logoff file
+	16	(P) Pathname of ChatStart file
+	17	(P) Pathname of ChatEnd file
+	18	(P) Pathname of ChatExcuse file
+	19	(P) Pathname of TimeUp file
+	20	(P) Pathname of Lockedout file
+	21	(P) Pathname of ClosedSys file
+	22	(P) Pathname of MainMenu file
+	23	(P) Serial blockdriver name (depends on value of r0)
+	24	(V) Blockdriver port (depends on value of r0)
+	25	(P) Init string (depends on value of r0)
+	26	(P) Answer string (depends on value of r0)
+	27	(P) Ring string (depends on value of r0)
+	28	(V) Number of rings before answer (depends on value of r0)
+	29	(V) Baud rate (DTE) (depends on value of r0)
+	30	(V) Locked baud rate (DTE) (depends on value of r0)
+	31	(P) Copyright message
+	32	(P) Licence holder
+	33	(P) Status of version
+	34	(V) Serial number
+	35	(P) MailerWatch taskname (depends on value of r0)
+	36	(V) MailerWatch timeout (1/100s) (depends on value of r0)
+	37	(P) Block containing LINE DETAILS (depends on value of r0)
+	38	(P) Linked list of LINE DEFINITIONS for every line configured.
+	39	(P) Date and time when Server last updated
+	40	(P) Pathname of Temp directory
+	41	(P) Pathname of Call Log file
+	42	(P) Pathname of AfterMail script
+	43	(P) Pathname of UserDirs
+	44	(P) Pathname of callcount file
+	45	(P) Pathname of Rescue script
+	46	(V) Ringback max delay before ringback no longer accepted
+	47	(V) Ringback min delay before accepting ringback
+	48	(P) Function key data string (r2=[1 shift, 2 ctrl], r3=key)
+	49	(P) Pointer to ARCbbs style 'GetStatusPointer' block
+	50	(V) Value of fast16screen configuration
+	51	(P) 'Guest' username
+	52	(P) Pointer to root of origin lines linked list
+	53	(V) Returns 255 if server is alive
+
+8278d	ArmBBS_GBFD		(For internal use by ArmBBS)
+8278e	ArmBBS_PBTD		(For internal use)
+8278f	ArmBBS_PBFD		(For internal use)
+
+82790	ArmBBS_SetActivity	(Sets user activity on line)
+Entry	r0	line
+	r1	pointer to null terminated string containing activity
+
+82791	ArmBBS_RequestData	(For internal use by ArmBBS)
+
+82792	ArmBBS_DoorTXPurge	(Purges output buffer)
+Entry	r0	line
+
+82793	ArmBBS_DoorRXPurge	(Purges input buffer)
+Entry	r0	line
+
+82794	ArmBBS_DoorTXCount	(Returns number of bytes in output buffer)
+Entry	r0	line
+Exit	r0	number of bytes in TX buffer
+
+82795	ArmBBS_DoorRXCount	(Returns number of bytes in input buffer)
+Entry	r0	line
+Exit	r0	number of bytes in RX buffer
+
+82796	ArmBBS_NotifyUser	(Sends a 79 or less character message to top of user's screen)
+Entry	r0	line		or negative user number for specific user
+	r1	pointer to null terminated string containing message
+	r2	parameter word :
+		bits 0-7	foreground colour (0-7)  bit 4 set (8+colour) if bold
+		bits 8-15	background colour (0-7)
+		bits 16-28	reserved. must be 0
+		bit 29		send to all linetasks
+		bit 30		flash if set
+		bit 31		beep if set
+
+82797	ArmBBS_UserNameToNumber	(Returns usernumber from name) [cached in memory]
+Entry	r0	line		-1 (if -2, will cause a cache flush)
+	r1	pointer to null terminated string containing name
+Exit	r0	usernumber (-1 if not found otherwise user #)
+	r1	user record position in userbase file
+		if not found, r1 is last usernumber in userbase file
+	r2	if not found, r2 is usernumber of first deleted record in file
+
+82798	ArmBBS_UserNumberToName	(Returns name from usernumber)
+Entry	r0	line		-1
+	r1	usernumber (>1)
+	r2	pointer to data block to receive data (30 characters minimum)
+Exit	r0	-1 if failed (can't open userfile), otherwise 0
+
+82799	ArmBBS_PortStatus	(Returns status for port line)
+Entry	r0	line
+Exit	r0	bit 0 set = user online
+		bit 1 set = SendScript SWI 'task' still in operation.
+	r1	connect speed (DCE)

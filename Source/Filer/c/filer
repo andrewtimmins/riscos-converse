@@ -96,6 +96,7 @@ _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *
 
   log_header(0);
   log_header(3);
+  log_header(4);
 
   (void)filebase_initialise();
   (void)messagebase_initialise();
@@ -122,6 +123,7 @@ _kernel_oserror *module_finalise(int fatal, int podule, void *pw)
 
   log_footer(0);
   log_footer(3);
+  log_footer(4);
 
   {
     int line_id;
@@ -258,6 +260,11 @@ static void filer_swi_logging(_kernel_swi_regs *r)
       log_ftn(log_entry);
       r->r[0] = 0;
       break;
+    case FILER_LOG_CMD_WEB:
+      filer_log_copy(log_entry, sizeof(log_entry), (const char *)r->r[1]);
+      log_web(log_entry);
+      r->r[0] = 0;
+      break;
     default:
       r->r[0] = -1;
       break;
@@ -376,6 +383,7 @@ static void filer_command_show_files(void)
       {"System Log", SYSTEMLOG},
       {"Call Log", CALLLOG},
       {"FTN Log", FTNLOG},
+      {"Web Log", WEBLOG},
       {"User DB", USERDB},
       {"User Index", USERIDX},
       {"User DB Temp", TEMPUSERDB},

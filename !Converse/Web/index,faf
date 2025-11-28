@@ -70,14 +70,14 @@
     </style>
 </head>
 <body>
-    <h1>Converse BBS</h1>
-    <p>Welcome to Converse BBS. Below you can browse the available file downloads.</p>
+    <h1>Converse</h1>
+    <p>Welcome to Converse. Below you can browse the available file downloads.</p>
     
     <h2>File Downloads</h2>
     {{filebase}}
     
     <footer>
-        <p>Powered by Converse BBS &middot; Running on RISC OS</p>
+        <p>Powered by Converse &middot; Running on RISC OS</p>
     </footer>
 </body>
 </html>

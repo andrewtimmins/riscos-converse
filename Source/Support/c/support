@@ -211,6 +211,7 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
                 printf("  Closed       : %s\n", cfg->closed[0] ? cfg->closed : "no");
                 printf("  Pager        : %s\n", cfg->pager[0] ? cfg->pager : "no");
                 printf("  FTN Mail     : %s\n", cfg->ftnmail[0] ? cfg->ftnmail : "no");
+                printf("  Web Server   : %s\n", cfg->webserver[0] ? cfg->webserver : "no");
                 puts("");
                 printf("  Welcome      : %s\n", cfg->welcome[0] ? cfg->welcome : "(not set)");
                 printf("  Pre-Logon    : %s\n", cfg->prelogon[0] ? cfg->prelogon : "(not set)");

@@ -60,6 +60,9 @@ void log_footer(int log_type)
         case 3:
             log_file = fopen(FTNLOG, "a+");
             break;
+        case 4:
+            log_file = fopen(WEBLOG, "a+");
+            break;
         default:
             log_file = fopen(SYSTEMLOG, "a+");
         break;
@@ -233,6 +236,23 @@ void log_ftn(char *log_entry)
     sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
      
     log_file = fopen(FTNLOG, "a+");
+    fprintf(log_file, timestamped_log_entry);
+    fclose(log_file);
+}
+
+void log_web(char *log_entry)
+{
+    FILE *log_file;
+
+    char timestamp[50];
+    char timestamped_log_entry[500];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+
+    strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
+    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+     
+    log_file = fopen(WEBLOG, "a+");
     fprintf(log_file, timestamped_log_entry);
     fclose(log_file);
 }

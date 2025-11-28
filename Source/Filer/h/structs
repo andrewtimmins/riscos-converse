@@ -32,7 +32,8 @@
         FILER_LOG_CMD_SYSTEM = 0,
         FILER_LOG_CMD_LINE,
         FILER_LOG_CMD_CALL,
-        FILER_LOG_CMD_FTN
+        FILER_LOG_CMD_FTN,
+        FILER_LOG_CMD_WEB
     } FILER_LOG_COMMAND;
 
     typedef enum

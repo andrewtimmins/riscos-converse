@@ -87,6 +87,7 @@ static void telnet_handle_option(int socket, unsigned char command, unsigned cha
 static int telnet_filter_input(int socket, char *buffer, int length);
 static void launch_line_tasks(void);
 static void launch_ftn_task(void);
+static void launch_web_task(void);
 static void pipes_reset_line(int line_id);
 static int pipes_input_status(int line_id);
 static int pipes_input_write_block(int line_id, const char *buffer, int length);
@@ -98,6 +99,7 @@ static void close_line_connection(int line_id);
 static void notify_line_tasks_shutdown(void);
 static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column);
 static void send_line_task_view_request(int line_id);
+static void unload_modules(void);
 
 /* ConverseBBS support functions */
 static void support_push_config(void);
@@ -326,6 +328,30 @@ static void launch_ftn_task(void)
 	debug_printf("launch_ftn_task: FTN mailer task started\n");
 }
 
+static void launch_web_task(void)
+{
+	int i;
+	debug_printf("launch_web_task: webserver config value = '%s' (len=%d)\n", 
+		system_configuration[0].webserver, 
+		(int)strlen(system_configuration[0].webserver));
+	debug_printf("launch_web_task: webserver bytes: ");
+	for (i = 0; i < (int)strlen(system_configuration[0].webserver) && i < 10; i++)
+	{
+		debug_printf("%02X ", (unsigned char)system_configuration[0].webserver[i]);
+	}
+	debug_printf("\n");
+
+	if (str_casecmp(system_configuration[0].webserver, "yes") != 0)
+	{
+		debug_printf("launch_web_task: Web server disabled (webserver != 'yes')\n");
+		return;
+	}
+
+	debug_printf("launch_web_task: Starting Web server task\n");
+	Desk_Wimp_StartTask("Run <Converse$Dir>.Resources.!RunWeb");
+	debug_printf("launch_web_task: Web server task started\n");
+}
+
 static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column)
 {
 	int relative;
@@ -454,6 +480,11 @@ static void support_push_config(void)
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"ftnmail";
 	regs.r[2] = (int)system_configuration[0].ftnmail;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"webserver";
+	regs.r[2] = (int)system_configuration[0].webserver;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
 	/* Push script paths */
@@ -1567,6 +1598,14 @@ static void notify_line_tasks_shutdown(void)
 	Desk_Wimp_SendMessage(Desk_event_SEND, &wimp_message, 0, NULL);
 }
 
+static void unload_modules(void)
+{
+	char command[128];
+
+	snprintf(command, sizeof(command), "<Converse$Dir>.Resources.!KillAll");
+	Desk_Wimp_StartTask(command);
+}
+
 static void telnet_advertise_capabilities(int socket)
 {
 	send_byte_to_socket(socket, Telnet_WILL, Option_ECHO);
@@ -1782,6 +1821,7 @@ void load_system_config(void)
 	system_configuration[0].port = 23;
 	system_configuration[0].timeout = 120;
 	strcpy(system_configuration[0].ftnmail, "no");
+	strcpy(system_configuration[0].webserver, "no");
 
 	if ((system_config=fopen("<Converse$Dir>.Config.System","r"))==NULL)
 	{
@@ -1866,6 +1906,10 @@ void load_system_config(void)
 			{
 				strcpy(system_configuration[0].ftnmail, temporary_line);
 			}
+			if (strcmp(config_line,"webserver")==0)
+			{
+				strcpy(system_configuration[0].webserver, temporary_line);
+			}
 			if (strcmp(config_line,"anykey")==0)
 			{
 				strcpy(system_configuration[0].anykey, temporary_line);
@@ -1929,6 +1973,7 @@ void load_system_config(void)
 	sanitize_string(system_configuration[0].closed);
 	sanitize_string(system_configuration[0].pager);
 	sanitize_string(system_configuration[0].ftnmail);
+	sanitize_string(system_configuration[0].webserver);
 	sanitize_string(system_configuration[0].anykey);
 	sanitize_string(system_configuration[0].chatstart);
 	sanitize_string(system_configuration[0].chatend);
@@ -2189,6 +2234,7 @@ int main(void) {
 	}
 	launch_line_tasks();
 	launch_ftn_task();
+	launch_web_task();
 
 	create_line_icons();
 	create_listener();
@@ -2196,6 +2242,9 @@ int main(void) {
 
 	while(wimp.quit == Desk_bool_FALSE) poll_idle();
 
+	unload_modules();
+
  	Desk_Template_ClearAll();
+
 	return(0);
 }
