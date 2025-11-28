@@ -1641,7 +1641,8 @@ static void script_stop_session(line_task_state *state)
         return;
     }
 
-    script_stop(&state->script);
+    /* Reset session clears both program and variables */
+    script_reset_session(&state->script);
 }
 
 static void script_print_time(line_task_state *state)

@@ -47,6 +47,7 @@ typedef enum
     SCRIPT_STATUS_WAIT_LOGON_USERNAME,
     SCRIPT_STATUS_WAIT_LOGON_PASSWORD,
     SCRIPT_STATUS_WAIT_TRANSFER,
+    SCRIPT_STATUS_WAIT_ANSI,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -84,7 +85,8 @@ typedef enum
     SCRIPT_CMD_MOD,
     SCRIPT_CMD_RANDOM,
     SCRIPT_CMD_STRLEN,
-    SCRIPT_CMD_HASKEY
+    SCRIPT_CMD_HASKEY,
+    SCRIPT_CMD_DETECTANSI
 } script_command_type;
 
 typedef enum
@@ -140,12 +142,19 @@ typedef struct script_state
     /* Logon state */
     char logon_username[64];
     int logon_attempts;
+    /* ANSI detection state */
+    clock_t ansi_deadline;
+    char ansi_result_var[32];
+    int ansi_parse_state;  /* 0=idle, 1=got ESC, 2=got [, 3=reading digits, 4=got ; */
+    char ansi_response[32];
+    int ansi_response_len;
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);
 void script_dispose(script_state *state);
 int script_start(script_state *state, const char *path);
 void script_stop(script_state *state);
+void script_reset_session(script_state *state);  /* Clears variables - call on disconnect */
 void script_process(script_state *state);
 int script_handle_user_byte(script_state *state, unsigned char byte);
 void script_notify_door_closed(script_state *state);

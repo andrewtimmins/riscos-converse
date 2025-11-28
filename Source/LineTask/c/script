@@ -18,6 +18,7 @@
 #define SCRIPT_INPUT_BUFFER_CHUNK 64
 #define SCRIPT_LITERAL_BUFFER_CHUNK 256
 #define SCRIPT_MAX_INSTRUCTIONS_PER_POLL 1000  /* Prevent infinite loops from locking up */
+#define SCRIPT_ANSI_DETECT_TIMEOUT_CS 300  /* 3 second timeout in centiseconds */
 
 typedef struct script_buffer
 {
@@ -183,10 +184,23 @@ void script_stop(script_state *state)
     }
 
     script_clear_program(state);
-    script_clear_variables(state);
+    /* NOTE: Do NOT clear variables here - they persist across script transitions
+     * Variables are only cleared on session disconnect via script_reset_session
+     */
     state->program_counter = 0;
     state->status = SCRIPT_STATUS_IDLE;
     script_reset_input(state);
+}
+
+void script_reset_session(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    script_stop(state);
+    script_clear_variables(state);
 }
 
 void script_process(script_state *state)
@@ -202,6 +216,20 @@ void script_process(script_state *state)
     {
         if ((clock_t)clock() >= state->sleep_deadline)
         {
+            state->status = SCRIPT_STATUS_RUNNING;
+        }
+    }
+
+    /* Check for ANSI detection timeout */
+    if (state->status == SCRIPT_STATUS_WAIT_ANSI)
+    {
+        if ((clock_t)clock() >= state->ansi_deadline)
+        {
+            /* Timeout - no ANSI response, assume dumb terminal */
+            debug_printf("ANSI detect: TIMEOUT - no response received\n");
+            script_set_variable_value(state, state->ansi_result_var, "0");
+            state->ansi_parse_state = 0;
+            state->ansi_response_len = 0;
             state->status = SCRIPT_STATUS_RUNNING;
         }
     }
@@ -237,9 +265,100 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
     if (state->status != SCRIPT_STATUS_WAIT_INPUT_CHAR && 
         state->status != SCRIPT_STATUS_WAIT_INPUT_LINE &&
         state->status != SCRIPT_STATUS_WAIT_LOGON_USERNAME &&
-        state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD)
+        state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD &&
+        state->status != SCRIPT_STATUS_WAIT_ANSI)
     {
         return 0;
+    }
+
+    /* Handle ANSI detection response - looking for ESC[<row>;<col>R */
+    if (state->status == SCRIPT_STATUS_WAIT_ANSI)
+    {
+        /* Debug: log each byte we receive during ANSI detection */
+        debug_printf("ANSI detect: byte=0x%02X '%c' state=%d\n", 
+                     byte, (byte >= 32 && byte < 127) ? byte : '.', state->ansi_parse_state);
+        
+        /* State machine to parse ANSI CPR response: ESC [ <digits> ; <digits> R */
+        switch (state->ansi_parse_state)
+        {
+            case 0:  /* Waiting for ESC */
+                if (byte == 0x1B)  /* ESC */
+                {
+                    state->ansi_parse_state = 1;
+                    state->ansi_response_len = 0;
+                }
+                /* Ignore any other characters while waiting */
+                break;
+
+            case 1:  /* Got ESC, expecting [ */
+                if (byte == '[')
+                {
+                    state->ansi_parse_state = 2;
+                }
+                else
+                {
+                    /* Not an ANSI sequence, reset */
+                    state->ansi_parse_state = 0;
+                }
+                break;
+
+            case 2:  /* Got ESC[, reading row digits or waiting for ; or R */
+                if (byte >= '0' && byte <= '9')
+                {
+                    if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
+                    {
+                        state->ansi_response[state->ansi_response_len++] = (char)byte;
+                    }
+                }
+                else if (byte == ';')
+                {
+                    state->ansi_parse_state = 3;
+                }
+                else if (byte == 'R')
+                {
+                    /* Complete! ESC[R or ESC[<row>R - still counts as ANSI */
+                    debug_printf("ANSI detect: SUCCESS (got 'R' in state 2)\n");
+                    script_set_variable_value(state, state->ansi_result_var, "1");
+                    state->ansi_parse_state = 0;
+                    state->ansi_response_len = 0;
+                    state->status = SCRIPT_STATUS_RUNNING;
+                    script_process(state);
+                }
+                else
+                {
+                    /* Unexpected character, reset */
+                    state->ansi_parse_state = 0;
+                    state->ansi_response_len = 0;
+                }
+                break;
+
+            case 3:  /* Got semicolon, reading col digits */
+                if (byte >= '0' && byte <= '9')
+                {
+                    if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
+                    {
+                        state->ansi_response[state->ansi_response_len++] = (char)byte;
+                    }
+                }
+                else if (byte == 'R')
+                {
+                    /* Complete! ANSI terminal detected */
+                    debug_printf("ANSI detect: SUCCESS (got 'R' in state 3)\n");
+                    script_set_variable_value(state, state->ansi_result_var, "1");
+                    state->ansi_parse_state = 0;
+                    state->ansi_response_len = 0;
+                    state->status = SCRIPT_STATUS_RUNNING;
+                    script_process(state);
+                }
+                else
+                {
+                    /* Unexpected character, reset */
+                    state->ansi_parse_state = 0;
+                    state->ansi_response_len = 0;
+                }
+                break;
+        }
+        return 1;  /* Consumed the byte */
     }
 
     if (state->status == SCRIPT_STATUS_WAIT_INPUT_CHAR)
@@ -1394,6 +1513,22 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    /* ANSI terminal detection: detectansi <result_var> [timeout_ms] */
+    if (script_stringcasecmp(token, "detectansi") == 0)
+    {
+        char *result = strtok(NULL, " \t");
+        char *timeout = strtok(NULL, " \t");
+        if (result == NULL)
+        {
+            script_set_error(state, "Malformed detectansi on line %d (usage: detectansi result [timeout_ms])", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_DETECTANSI;
+        instruction->arg1 = script_duplicate_string(result);
+        instruction->arg2 = script_duplicate_string(timeout != NULL ? timeout : "3000");
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -2016,6 +2151,53 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
         }
         break;
+
+        case SCRIPT_CMD_DETECTANSI:
+        {
+            /* ANSI terminal detection using Device Status Report (DSR)
+             * Send ESC[6n (cursor position report request)
+             * ANSI terminals respond with ESC[<row>;<col>R
+             * Dumb terminals don't respond
+             */
+            const char *result_var = instruction->arg1;
+            const char *timeout_str = instruction->arg2;
+            unsigned int timeout_ms;
+            
+            if (result_var == NULL)
+            {
+                break;
+            }
+            
+            /* Parse timeout (default 3000ms) */
+            timeout_ms = (timeout_str != NULL) ? (unsigned int)strtoul(timeout_str, NULL, 10) : 3000;
+            if (timeout_ms < 500) timeout_ms = 500;     /* Minimum 500ms */
+            if (timeout_ms > 10000) timeout_ms = 10000; /* Maximum 10 seconds */
+            
+            /* Store result variable name */
+            strncpy(state->ansi_result_var, result_var, sizeof(state->ansi_result_var) - 1);
+            state->ansi_result_var[sizeof(state->ansi_result_var) - 1] = '\0';
+            
+            /* Reset ANSI detection state */
+            state->ansi_parse_state = 0;
+            state->ansi_response_len = 0;
+            memset(state->ansi_response, 0, sizeof(state->ansi_response));
+            
+            /* Calculate deadline using CLOCKS_PER_SEC for proper timing */
+            {
+                clock_t ticks = (clock_t)(((double)timeout_ms / 1000.0) * CLOCKS_PER_SEC);
+                if (ticks < 1) ticks = 1;
+                state->ansi_deadline = clock() + ticks;
+                debug_printf("ANSI detect: sending ESC[6n, timeout=%ums, CLOCKS_PER_SEC=%d, ticks=%ld\n",
+                             timeout_ms, CLOCKS_PER_SEC, (long)ticks);
+            }
+            
+            /* Send DSR query: ESC[6n */
+            script_write_output(state, "\033[6n");
+            
+            /* Wait for response */
+            state->status = SCRIPT_STATUS_WAIT_ANSI;
+            return;
+        }
 
         case SCRIPT_CMD_CALL:
         {

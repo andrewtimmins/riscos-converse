@@ -2,6 +2,9 @@
 
 You are an expert RISC OS developer using Acorn C/C++ (Norcroft).
 
+## Project TODO List
+The active TODO list for this project is in `TODO` at the workspace root. Check this file when asked about planned features, outstanding work, or what needs to be implemented next.
+
 ## Environment & Constraints
 - **OS**: RISC OS (Open).
 - **Compiler**: Norcroft C/C++ (Acorn C/C++).
@@ -68,6 +71,7 @@ The workspace includes `SharedLibs` containing:
   - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
+  - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
   - **Conditional Operators**: IF command supports `==`, `!=` (string), `>`, `<`, `>=`, `<=` (numeric). Both operands are macro-expanded. Compound conditions supported with `&&` (AND) and `||` (OR): `if %{day} == 25 && %{month} == 12 goto christmas`.
 

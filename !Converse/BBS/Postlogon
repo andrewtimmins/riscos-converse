@@ -3,9 +3,19 @@
 
     /* Main Menu */
     label main_menu
+    if ansi == `1` goto ansi_main_menu
+    goto plain_main_menu
+
+    label ansi_main_menu
     cls
     fgbg 7 0
+    goto show_greeting
 
+    label plain_main_menu
+    print `\r\n----------------------------------------\r\n`
+    goto show_greeting
+
+    label show_greeting
     /* Time-based greeting */
     if %{hour} < 12 goto greet_morning
     if %{hour} < 17 goto greet_afternoon
@@ -25,13 +35,29 @@
 
     label show_menu
     doing `Main Menu`
-    type `<Converse$Dir>.BBS.ANSI.Header`
 
-    /* Christmas special */
+    /* Show ANSI header or plain header */
+    if ansi == `1` goto show_ansi_header
+    print `\r\n        MAIN MENU\r\n`
+    print `----------------------------------------\r\n`
+    goto after_header
+
+    label show_ansi_header
+    type `<Converse$Dir>.BBS.ANSI.Header`
+    goto after_header
+
+    label after_header
+
+    /* Christmas special - only coloured for ANSI */
     if %{day} == 25 && %{month} == 12 goto christmas_banner
     goto normal_banner
 
     label christmas_banner
+    if ansi == `1` goto christmas_ansi
+    print `\r\n*** Merry Christmas! ***\r\n`
+    goto after_banner
+
+    label christmas_ansi
     fgbg 1 0
     print `\r\n*** Merry Christmas! ***\r\n`
     fgbg 7 0
@@ -43,6 +69,11 @@
     goto after_banner
 
     label newyear_banner
+    if ansi == `1` goto newyear_ansi
+    print `\r\n*** Happy New Year %{year}! ***\r\n`
+    goto after_banner
+
+    label newyear_ansi
     fgbg 3 0
     print `\r\n*** Happy New Year %{year}! ***\r\n`
     fgbg 7 0
@@ -53,6 +84,11 @@
 
     /* User status block */
     if %{registered} == 1 goto show_registered_status
+    if ansi == `1` goto guest_ansi
+    print `You are browsing as a guest. Why not register for more features?\r\n`
+    goto after_user_status
+
+    label guest_ansi
     fgbg 3 0
     print `You are browsing as a guest. Why not register for more features?\r\n`
     fgbg 7 0
@@ -103,6 +139,12 @@
 
     label ansi_artwork
     doing `ANSI Artwork`
+    if ansi == `1` goto show_ansi_art
+    print `\r\n[ANSI artwork requires an ANSI terminal]\r\n`
+    anykey temp
+    goto main_menu
+
+    label show_ansi_art
     cls
     fgbg 7 0
     type `<Converse$Dir>.BBS.Art.Demo`
@@ -115,6 +157,13 @@
     print `Current line: %{line}\r\n`
     print `  Time now  : %{time}\r\n`
     print `  Date today: %{date}\r\n`
+    print `  Terminal  : `
+    if ansi == `1` goto term_ansi
+    print `TTY (plain text)\r\n`
+    goto after_term
+    label term_ansi
+    print `ANSI (color/cursor)\r\n`
+    label after_term
     print `  Day of week: `
     if %{dayofweek} == 0 goto dow_sun
     if %{dayofweek} == 1 goto dow_mon
@@ -161,18 +210,29 @@
 
     label demo_message
     doing `Demo message`
+    if ansi == `1` goto demo_ansi
+    print `\r\nHello world. This is a demo message.\r\n`
+    goto demo_done
+    label demo_ansi
     fgbg 2 0
     print `\r\nHello world. This is a demo message.\r\n`
     fgbg 7 0
+    label demo_done
     anykey temp
     goto main_menu
 
     label whos_online
     doing `Viewing online users`
+    if ansi == `1` goto online_ansi
+    print `\r\n           Online Users\r\n`
+    print `----------------------------------------\r\n`
+    goto show_online
+    label online_ansi
     cls
     fgbg 3 6
     print `\r\n                      Online Users                    \r\n`
     fgbg 7 0
+    label show_online
     online
     anykey temp
     goto main_menu
@@ -180,9 +240,14 @@
     /* Random number guessing game */
     label random_game
     doing `Playing number game`
+    if ansi == `1` goto game_ansi
+    print `\r\n=== Guess the Number ===\r\n`
+    goto game_start
+    label game_ansi
     cls
     fgbg 7 0
     print `\r\n=== Guess the Number ===\r\n`
+    label game_start
     print `I'm thinking of a number between 1 and 10...\r\n\r\n`
     random secret 1 10
     set attempts 0
@@ -205,9 +270,14 @@
     goto game_loop
 
     label game_win
+    if ansi == `1` goto win_ansi
+    print `\r\nCorrect! You got it in %{attempts} attempts!\r\n`
+    goto win_done
+    label win_ansi
     fgbg 2 0
     print `\r\nCorrect! You got it in %{attempts} attempts!\r\n`
     fgbg 7 0
+    label win_done
     anykey temp
     goto main_menu
 

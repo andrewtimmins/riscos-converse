@@ -44,9 +44,34 @@ User Management
     - Prompt for username, password, real name, email
     - Set default access level and flags
     - Optional: email validation, sysop approval queue
+
 [ ] User profile editing (change password, email, settings)
-[ ] Sysop user management commands (edit user, delete user, lock/unlock)
-[ ] User search/listing for sysops
+    - Change password command
+    - Change email address
+    - Change real name
+    - Terminal settings menu:
+      - Toggle ANSI support (ansi flag)
+      - Toggle More prompts (more flag)
+      - Set screen lines (lines value, default 24)
+      - Toggle screen clearing (cls flag)
+    - Toggle expert mode (expert flag)
+
+[ ] User search/listing
+    - For all users: search users by username or partial match
+    - Display: username, real name, last logon date
+    - Hide users with invisible flag set
+    - Sysops can see all users including invisible
+
+[ ] Sysop user management commands
+    - Edit any user's details
+    - Delete user account
+    - Lock/unlock user (lockedout flag)
+    - Set access level
+    - Grant/revoke sysop privileges
+    - Set user keys
+    - Toggle invisible flag
+    - Reset password
+
 [ ] Password encryption (currently plaintext in USER_RECORD)
 
 Messagebase System
