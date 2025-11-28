@@ -2291,6 +2291,9 @@ static int script_host_start_transfer(void *context, int base_id, int file_id, i
         case 4:
             xfer_proto = TRANSFER_PROTO_YMODEM_G;
             break;
+        case 5:
+            xfer_proto = TRANSFER_PROTO_ZMODEM;
+            break;
         case 1:
         default:
             xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
@@ -2304,7 +2307,37 @@ static int script_host_start_transfer(void *context, int base_id, int file_id, i
     }
 
     /* Start the new transfer */
-    if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
+    if (xfer_proto == TRANSFER_PROTO_ZMODEM)
+    {
+        /* ZMODEM needs filename from file record */
+        _kernel_swi_regs regs;
+        char filename[128];
+        LINETASK_FILE_RECORD *file_rec;
+
+        regs.r[0] = 11; /* FILEBASE_CMD_FILE_INFO */
+        regs.r[1] = base_id;
+        regs.r[2] = file_id;
+
+        if (_kernel_swi(0x5AA43, &regs, &regs) == NULL && regs.r[0] > 0)
+        {
+            file_rec = (LINETASK_FILE_RECORD *)regs.r[0];
+            strncpy(filename, file_rec->name, sizeof(filename) - 1);
+            filename[sizeof(filename) - 1] = '\0';
+        }
+        else
+        {
+            snprintf(filename, sizeof(filename), "file%d", file_id);
+        }
+
+        if (!transfer_start_send_zmodem(state->line_id, base_id, file_id,
+                                        filename, &state->xfer_session))
+        {
+            debug_printf("script_host_start_transfer: ZMODEM failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
+    }
+    else if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
     {
         /* YMODEM needs filename from file record */
         _kernel_swi_regs regs;
@@ -2377,6 +2410,9 @@ static int script_host_start_receive_transfer(void *context, const char *temp_pa
         case 4:
             xfer_proto = TRANSFER_PROTO_YMODEM_G;
             break;
+        case 5:
+            xfer_proto = TRANSFER_PROTO_ZMODEM;
+            break;
         case 1:
         default:
             xfer_proto = TRANSFER_PROTO_XMODEM_CRC;
@@ -2390,7 +2426,18 @@ static int script_host_start_receive_transfer(void *context, const char *temp_pa
     }
 
     /* Start the receive transfer */
-    if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
+    if (xfer_proto == TRANSFER_PROTO_ZMODEM)
+    {
+        /* ZMODEM receive: temp_path is the directory, filename comes from ZFILE header */
+        if (!transfer_start_receive_zmodem(state->line_id, "<Converse$Dir>.Temp", 
+                                           &state->xfer_session))
+        {
+            debug_printf("script_host_start_receive_transfer: ZMODEM failed to start - %s\n", 
+                         state->xfer_session.error_msg);
+            return 0;
+        }
+    }
+    else if (xfer_proto == TRANSFER_PROTO_YMODEM || xfer_proto == TRANSFER_PROTO_YMODEM_G)
     {
         /* YMODEM receive: temp_path is the directory, filename comes from block 0 */
         if (!transfer_start_receive_ymodem(state->line_id, xfer_proto, "<Converse$Dir>.Temp", 

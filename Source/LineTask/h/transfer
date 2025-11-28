@@ -21,7 +21,8 @@ typedef enum
     TRANSFER_PROTO_XMODEM_CRC,      /* XMODEM-CRC - 128 byte blocks, 16-bit CRC */
     TRANSFER_PROTO_XMODEM_1K,       /* XMODEM-1K - 1024 byte blocks, 16-bit CRC */
     TRANSFER_PROTO_YMODEM,          /* YMODEM - 1024 byte blocks, CRC, filename in block 0 */
-    TRANSFER_PROTO_YMODEM_G         /* YMODEM-G - streaming mode (no per-block ACK) */
+    TRANSFER_PROTO_YMODEM_G,        /* YMODEM-G - streaming mode (no per-block ACK) */
+    TRANSFER_PROTO_ZMODEM           /* ZMODEM - streaming, 32-bit CRC, auto-start, crash recovery */
 } transfer_protocol;
 
 /* ******************************************************************************************************************************************************** */
@@ -63,6 +64,32 @@ typedef enum
     XFER_RECV_READ_BLOCK,           /* Reading block data */
     XFER_RECV_SEND_ACK,             /* Sending ACK after good block */
     XFER_RECV_SEND_NAK,             /* Sending NAK after bad block */
+    
+    /* ZMODEM send states */
+    ZFER_SEND_ZRQINIT,              /* Sending ZRQINIT to start session */
+    ZFER_SEND_WAIT_ZRINIT,          /* Waiting for ZRINIT from receiver */
+    ZFER_SEND_ZFILE,                /* Sending ZFILE header */
+    ZFER_SEND_WAIT_ZRPOS,           /* Waiting for ZRPOS (position to send from) */
+    ZFER_SEND_ZDATA,                /* Sending ZDATA header */
+    ZFER_SEND_DATA,                 /* Streaming file data subpackets */
+    ZFER_SEND_WAIT_DATA_ACK,        /* Waiting for ZACK after data window */
+    ZFER_SEND_ZEOF,                 /* Sending ZEOF */
+    ZFER_SEND_WAIT_ZEOF_ACK,        /* Waiting for ZRINIT after ZEOF */
+    ZFER_SEND_ZFIN,                 /* Sending ZFIN */
+    ZFER_SEND_WAIT_ZFIN_ACK,        /* Waiting for ZFIN response */
+    ZFER_SEND_OO,                   /* Sending "OO" to finish */
+    
+    /* ZMODEM receive states */
+    ZFER_RECV_WAIT_ZRQINIT,         /* Waiting for ZRQINIT to start */
+    ZFER_RECV_SEND_ZRINIT,          /* Sending ZRINIT */
+    ZFER_RECV_WAIT_ZFILE,           /* Waiting for ZFILE header */
+    ZFER_RECV_SEND_ZRPOS,           /* Sending ZRPOS to request data */
+    ZFER_RECV_WAIT_ZDATA,           /* Waiting for ZDATA header */
+    ZFER_RECV_DATA,                 /* Receiving streaming data */
+    ZFER_RECV_WAIT_ZEOF,            /* Waiting for ZEOF */
+    ZFER_RECV_SEND_ZRINIT_NEXT,     /* Sending ZRINIT for next file */
+    ZFER_RECV_WAIT_ZFIN,            /* Waiting for ZFIN */
+    ZFER_RECV_SEND_ZFIN,            /* Sending ZFIN response */
     
     /* Terminal states */
     XFER_COMPLETE,                  /* Transfer completed successfully */
@@ -111,6 +138,85 @@ typedef enum
 #define XMODEM_CAN_COUNT        2       /* Number of CANs to send for abort */
 
 /* ******************************************************************************************************************************************************** */
+/* ZMODEM Protocol Constants                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/* ZMODEM special characters */
+#define ZDLE                    0x18    /* Escape character (same as CAN) */
+#define ZPAD                    '*'     /* Padding before hex header */
+#define ZBIN                    'A'     /* Binary header with CRC-16 */
+#define ZHEX                    'B'     /* Hex header with CRC-16 */
+#define ZBIN32                  'C'     /* Binary header with CRC-32 */
+
+/* ZMODEM frame types */
+#define ZRQINIT                 0       /* Request receive init */
+#define ZRINIT                  1       /* Receive init */
+#define ZSINIT                  2       /* Send init sequence */
+#define ZACK                    3       /* ACK */
+#define ZFILE                   4       /* File header */
+#define ZSKIP                   5       /* Skip this file */
+#define ZNAK                    6       /* NAK - request retransmit */
+#define ZABORT                  7       /* Abort transfer */
+#define ZFIN                    8       /* Finish session */
+#define ZRPOS                   9       /* Resume at position */
+#define ZDATA                   10      /* Data packet follows */
+#define ZEOF                    11      /* End of file */
+#define ZFERR                   12      /* File error */
+#define ZCRC                    13      /* CRC request */
+#define ZCHALLENGE              14      /* Challenge */
+#define ZCOMPL                  15      /* Complete */
+#define ZCAN                    16      /* CAN - abort */
+#define ZFREECNT                17      /* Free count request */
+#define ZCOMMAND                18      /* Command */
+#define ZSTDERR                 19      /* Stderr data */
+
+/* ZMODEM subpacket types (frame end) */
+#define ZCRCE                   'h'     /* CRC next, frame ends, header follows */
+#define ZCRCG                   'i'     /* CRC next, frame continues nonstop */
+#define ZCRCQ                   'j'     /* CRC next, frame continues, ZACK expected */
+#define ZCRCW                   'k'     /* CRC next, frame ends, ZACK expected */
+
+/* ZMODEM ZDLE escape sequences */
+#define ZRUB0                   'l'     /* Translate to 0x7F (DEL) */
+#define ZRUB1                   'm'     /* Translate to 0xFF */
+
+/* ZRINIT capability flags (ZF0) */
+#define CANFDX                  0x01    /* Full duplex */
+#define CANOVIO                 0x02    /* Can overlap I/O */
+#define CANBRK                  0x04    /* Can send break */
+#define CANCRY                  0x08    /* Can encrypt */
+#define CANLZW                  0x10    /* Can LZW compress */
+#define CANFC32                 0x20    /* Can use CRC-32 */
+#define ESCCTL                  0x40    /* Escape control chars */
+#define ESC8                    0x80    /* Escape 8th bit chars */
+
+/* ZFILE conversion options (ZF0) */
+#define ZCBIN                   1       /* Binary transfer */
+#define ZCNL                    2       /* Convert NL to local EOL */
+#define ZCRESUM                 3       /* Resume interrupted transfer */
+
+/* ZFILE management options (ZF1) */
+#define ZMNEWL                  1       /* Transfer if source newer or longer */
+#define ZMCRC                   2       /* Transfer if CRC differs */
+#define ZMAPND                  3       /* Append */
+#define ZMCLOB                  4       /* Replace existing file */
+#define ZMNEW                   5       /* Transfer if source newer */
+#define ZMDIFF                  6       /* Transfer if dates/lengths differ */
+#define ZMPROT                  7       /* Protect: no overwrite */
+#define ZMCHNG                  8       /* Changed: only if changed */
+
+/* ZMODEM buffer sizes */
+#define ZMODEM_MAX_BLOCK        1024    /* Max data bytes per subpacket */
+#define ZMODEM_HEADER_SIZE      4       /* 4 flag bytes in header */
+#define ZMODEM_RX_BUFFER_SIZE   2048    /* Receive buffer size */
+#define ZMODEM_WINDOW_SIZE      4096    /* Bytes before expecting ZACK */
+
+/* ZMODEM timeouts */
+#define ZMODEM_RQINIT_TIMEOUT   60000   /* 60s for initial ZRQINIT */
+#define ZMODEM_HEADER_TIMEOUT   10000   /* 10s for header response */
+#define ZMODEM_DATA_TIMEOUT     15000   /* 15s for data */
+
+/* ******************************************************************************************************************************************************** */
 /* Transfer Session Structure                                                                                                                                 */
 /* ******************************************************************************************************************************************************** */
 
@@ -153,6 +259,25 @@ typedef struct
     char ymodem_filename[128];          /* Filename from/for YMODEM block 0 */
     long ymodem_filesize;               /* File size from YMODEM block 0 */
     time_t ymodem_modtime;              /* Modification time from block 0 */
+    
+    /* ZMODEM specific */
+    int is_zmodem;                      /* ZMODEM protocol active */
+    int zmodem_crc32;                   /* Use CRC-32 (vs CRC-16) */
+    int zmodem_escctl;                  /* Escape control characters */
+    uint8_t zmodem_rxflags[4];          /* Receiver capability flags */
+    uint8_t zmodem_txflags[4];          /* Transmitter flags */
+    uint8_t zmodem_rx_hdr[4];           /* Last received header data */
+    int zmodem_rx_type;                 /* Last received header type */
+    uint8_t zmodem_rx_buf[ZMODEM_RX_BUFFER_SIZE];  /* Receive assembly buffer */
+    int zmodem_rx_pos;                  /* Position in receive buffer */
+    int zmodem_rx_state;                /* Sub-state for frame parsing */
+    int zmodem_zdle_pending;            /* ZDLE escape pending */
+    long zmodem_txpos;                  /* Current transmit file position */
+    long zmodem_rxpos;                  /* Position receiver wants data from */
+    int zmodem_window_count;            /* Bytes since last ZACK */
+    int zmodem_attn_seq;                /* Attention sequence index */
+    char zmodem_attn[32];               /* Attention string from ZSINIT */
+    int zmodem_rqinit_count;            /* ZRQINIT retry count */
     
     /* Statistics */
     long bytes_transferred;             /* Total bytes sent/received */
@@ -247,6 +372,37 @@ int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
                                   transfer_session *session);
 
 /*
+ * Start a ZMODEM file send transfer (user downloading from BBS).
+ * ZMODEM sends ZRQINIT to initiate auto-download on receiver.
+ *
+ * line         - Pipe line number
+ * filebase_id  - Filer filebase ID containing the file
+ * file_id      - File ID within the filebase
+ * filename     - Filename to send in ZFILE header
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_send_zmodem(int line,
+                               int filebase_id, int file_id,
+                               const char *filename,
+                               transfer_session *session);
+
+/*
+ * Start a ZMODEM file receive transfer (user uploading to BBS).
+ * Waits for ZRQINIT/ZFILE from sender.
+ *
+ * line         - Pipe line number
+ * upload_dir   - Directory to save received file
+ * session      - Session structure to initialise
+ *
+ * Returns: 1 on success, 0 on failure (check session->error_msg)
+ */
+int transfer_start_receive_zmodem(int line,
+                                  const char *upload_dir,
+                                  transfer_session *session);
+
+/*
  * Poll the transfer state machine.
  * Must be called frequently from the main loop.
  *
@@ -313,6 +469,17 @@ uint16_t transfer_crc16(const uint8_t *data, int length);
  * Returns: 8-bit checksum
  */
 uint8_t transfer_checksum(const uint8_t *data, int length);
+
+/*
+ * Calculate ZMODEM CRC-32 (polynomial 0xEDB88320, reflected).
+ *
+ * crc          - Initial CRC value (use 0xFFFFFFFF for first call)
+ * data         - Data buffer
+ * length       - Number of bytes
+ *
+ * Returns: 32-bit CRC value (XOR with 0xFFFFFFFF for final)
+ */
+uint32_t transfer_crc32(uint32_t crc, const uint8_t *data, int length);
 
 /* ******************************************************************************************************************************************************** */
 /* Internal Helpers (exposed for testing)                                                                                                                     */

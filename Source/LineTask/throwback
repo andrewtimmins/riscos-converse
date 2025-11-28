@@ -1,25 +1,8 @@
-do mkdir -p o
-do mkdir -p od
-do mkdir -p oz
-do mkdir -p aof
-do mkdir -p linked
-Touch o._dirs
 cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.transfer c.transfer
 Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
-cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.script c.script
-Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
-"c.script", line 719: Warning: unused earlier static declaration of 'script_parse_line'
-"c.script", line 1648: Error: undeclared name, inventing 'extern int debug_printf()'
-"c.script", line 1971: Warning: unused earlier static declaration of 'script_emit_macro_replacement'
-"c.script", line 2043: Warning: unused earlier static declaration of 'script_expand_macros_to_buffer'
-"c.script", line 2642: Warning: unused earlier static declaration of 'script_duplicate_range'
-"c.script", line 2688: Warning: unused earlier static declaration of 'script_buffer_clear'
-"c.script", line 2752: Warning: unused earlier static declaration of 'script_buffer_trim_trailing_whitespace'
-"c.script", line 2918: Warning: unused earlier static declaration of 'script_append_print_literal'
-"c.script", line 2993: Warning: unused earlier static declaration of 'script_execute_inline_command'
-"c.script", line 3036: Warning: unused earlier static declaration of 'script_skip_comment'
-"c.script", line 3066: Warning: unused earlier static declaration of 'script_process_embedded_block'
-c.script: 10 warnings, 1 error, 0 serious errors
+"c.transfer", line 327: Warning: lower precision in wider context: '-'
+"c.transfer", line 3434: Error: undeclared name, inventing 'extern int transfer_check_timeout()'
+c.transfer: 1 warning, 1 error, 0 serious errors
 AMU: *** exit (1) ***
 
 AMU: *** 'all' not re-made because of errors ***

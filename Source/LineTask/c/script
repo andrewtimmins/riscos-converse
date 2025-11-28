@@ -1918,6 +1918,10 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 {
                     protocol = 4;
                 }
+                else if (script_stringcasecmp(expanded_proto, "zmodem") == 0)
+                {
+                    protocol = 5;
+                }
             }
 
             if (file_id <= 0)
@@ -1973,8 +1977,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.start_transfer != NULL)
             {
                 char msg[128];
-                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G"};
-                const char *proto_name = (protocol >= 0 && protocol <= 4) ? proto_names[protocol] : "XMODEM-CRC";
+                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
+                const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
 
                 snprintf(msg, sizeof(msg), 
                          "\r\n\033[1;33mStarting %s transfer. Start your receiver now...\033[0m\r\n",
@@ -2048,6 +2052,10 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 {
                     protocol = 4;
                 }
+                else if (script_stringcasecmp(expanded_proto, "zmodem") == 0)
+                {
+                    protocol = 5;
+                }
             }
 
             if (expanded_filename[0] == '\0')
@@ -2096,8 +2104,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.start_receive_transfer != NULL)
             {
                 char msg[256];
-                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G"};
-                const char *proto_name = (protocol >= 0 && protocol <= 4) ? proto_names[protocol] : "XMODEM-CRC";
+                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
+                const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
 
                 snprintf(msg, sizeof(msg), 
                          "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"
