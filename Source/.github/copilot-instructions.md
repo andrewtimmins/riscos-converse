@@ -1051,3 +1051,99 @@ Create files in `<Converse$Dir>.Web`:
 </html>
 ```
 
+## FTN Mailer Module
+
+### Overview
+The FTN Mailer (`FTN/`) is a Wimp application that implements the BinkP protocol for FidoNet Technology Network mail exchange. It runs as a separate task from the main Converse Server.
+
+### Architecture
+- **Source Files**:
+  - `c/mailer`: Main application, Wimp interface, session management, socket handling
+  - `c/binkp`: BinkP/1.0 protocol implementation
+  - `c/queue`: BSO outbound queue management
+  - `c/tosser`: Inbound packet processing
+  - `c/timer`: Timer utilities
+  - `c/ftnlog`: Scrolling log window
+- **Resources**:
+  - `Resources/Messages`: UI strings (tokens: `ftn.ibmt`, `ftn.ibm`, `ftn.mailmt`, `ftn.mailm`)
+  - `Resources/Templates`: Window definitions (`proginfo`, `status`, `ftnstatus`, `ftnlog`)
+
+### UI Windows
+- **Iconbar Icon**: Click=open log, Adjust=show status window, Menu=operations
+- **ftnlog**: Scrolling connection log showing BinkP handshake and file transfers
+- **ftnstatus**: Small status window showing current operation and status text
+
+### Socket Error Handling (RISC OS)
+RISC OS's `strerror()` does not recognize BSD socket error codes. Use a lookup table:
+```c
+static const char *socket_error_string(int err)
+{
+    switch (err)
+    {
+        case 35:  return "Resource temporarily unavailable";  /* EAGAIN/EWOULDBLOCK */
+        case 36:  return "Operation now in progress";         /* EINPROGRESS */
+        case 51:  return "Network is unreachable";            /* ENETUNREACH */
+        case 54:  return "Connection reset by peer";          /* ECONNRESET */
+        case 57:  return "Socket is not connected";           /* ENOTCONN */
+        case 60:  return "Operation timed out";               /* ETIMEDOUT */
+        case 61:  return "Connection refused";                /* ECONNREFUSED */
+        case 65:  return "No route to host";                  /* EHOSTUNREACH */
+        default:  return NULL;
+    }
+}
+```
+
+### Non-Blocking Connect Check
+**CRITICAL**: Do NOT use `send(..., 0)` to check if a non-blocking connect completed - this returns `ENOTCONN` (57) on RISC OS. Use `getsockopt(SO_ERROR)` instead:
+```c
+int so_error = 0;
+int so_len = sizeof(so_error);
+if (getsockopt(session->socket, SOL_SOCKET, SO_ERROR, &so_error, &so_len) < 0)
+{
+    /* getsockopt failed - still connecting */
+}
+else if (so_error == 0)
+{
+    /* Connected successfully */
+}
+else if (so_error != EINPROGRESS && so_error != EWOULDBLOCK)
+{
+    /* Connection failed with so_error */
+}
+```
+
+### BinkP Logging Convention
+- `>>` prefix = outgoing frames (what we send)
+- `<<` prefix = incoming frames (what remote sends)
+- Log both to `ftnlog_printf()` for the scrolling log window
+- Log important events to `mailer_log_ftn()` for the FTN log file
+
+### Session State Machine
+```c
+SESSION_STATE_CONNECTING    /* TCP connect in progress (outbound) */
+SESSION_STATE_WAIT_NUL      /* Waiting for M_NUL options */
+SESSION_STATE_WAIT_PWD      /* Waiting for M_PWD (inbound) */
+SESSION_STATE_WAIT_OK       /* Waiting for M_OK (outbound) */
+SESSION_STATE_AUTHENTICATED /* Password accepted */
+SESSION_STATE_TRANSFER      /* Exchanging files */
+SESSION_STATE_CLOSING       /* Session ending normally */
+SESSION_STATE_ERROR         /* Session ended due to error */
+```
+
+### File Naming Conversion
+DOS filenames (with dots) must be converted for RISC OS:
+- `filename_dos_to_riscos()`: "packet.pkt" → "packetpkt"
+- `filename_riscos_to_dos()`: "packetpkt" → "packet.pkt"
+
+### Password Lookup
+`binkp_get_password_for_node()` searches uplink configurations via Support module SWI 0x5AA86:
+1. Call reason 7 (COUNT_UPLINKS) to get count
+2. Iterate with reason 4 (GET_UPLINK) comparing addresses
+3. Return matching uplink's password or empty string
+
+### Wimp Integration
+- Responds to `MESSAGE_LINE_BROADCAST` (0x5AA00) for shutdown
+- Uses `Desk_Wimp_Poll3` / `Desk_Wimp_PollIdle3` for cooperative multitasking
+- Status window updates via `ftnstatus_set_operation()` and `ftnstatus_update()`
+- Force redraws with `ftnstatus_force_redraw()` which does a single poll cycle
+

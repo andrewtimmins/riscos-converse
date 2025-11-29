@@ -9,6 +9,7 @@
 #include "swis.h"
 
 #include "debug.h"
+#include "ftnlog.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Debug Output                                                                                                                                             */
@@ -27,4 +28,6 @@ void debug_printf(const char *format, ...)
     /* Output via Reporter module if available */
     regs.r[0] = (int)buffer;
     _kernel_swi(0x54C80, &regs, &regs);  /* Report_Text0 */
+
+    ftnlog_append(buffer);
 }

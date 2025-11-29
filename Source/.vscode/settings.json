@@ -33,6 +33,7 @@
         "iconnames": "cpp",
         "queue": "cpp",
         "msgs": "cpp",
-        "menu": "cpp"
+        "menu": "cpp",
+        "ftnlog": "cpp"
     }
 }

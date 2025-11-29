@@ -1,22 +1,66 @@
 # Make file for FTN Mailer
 
 COMPONENT 	= FTN
-OBJS        = debug timer mailer binkp queue tosser
+OBJS        = debug timer ftnlog mailer binkp queue tosser
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
 include CApp
 
 # Dynamic dependencies:
-o.debug:	c.debug
-o.debug:	C:h.kernel
-o.debug:	C:h.swis
-o.debug:	h.debug
 o.timer:	c.timer
 o.timer:	C:h.kernel
 o.timer:	C:h.swis
 o.timer:	h.timer
 o.timer:	h.debug
+o.debug:	c.debug
+o.debug:	C:h.kernel
+o.debug:	C:h.swis
+o.debug:	h.debug
+o.debug:	h.ftnlog
+o.debug:	C:Desk.h.Wimp
+o.debug:	C:Desk.h.Core
+o.debug:	C:h.kernel
+o.ftnlog:	c.ftnlog
+o.ftnlog:	C:Desk.h.Core
+o.ftnlog:	C:h.kernel
+o.ftnlog:	C:Desk.h.Event
+o.ftnlog:	C:Desk.h.Wimp
+o.ftnlog:	C:Desk.h.GFX
+o.ftnlog:	C:Desk.h.Wimp
+o.ftnlog:	C:Desk.h.WimpSWIs
+o.ftnlog:	C:Desk.h.Error2
+o.ftnlog:	C:Desk.h.Error
+o.ftnlog:	C:Desk.h.JumpRaw
+o.ftnlog:	C:Desk.h.Debug
+o.ftnlog:	C:Desk.h.Window
+o.ftnlog:	C:Desk.h.Pointer
+o.ftnlog:	C:Desk.h.Icon
+o.ftnlog:	C:Desk.h.DragASpr
+o.ftnlog:	C:Desk.h.Coord
+o.ftnlog:	C:Desk.h.Core
+o.ftnlog:	h.ftnlog
+o.ftnlog:	C:Desk.h.Wimp
+o.queue:	c.queue
+o.queue:	C:h.kernel
+o.queue:	C:h.swis
+o.queue:	h.queue
+o.queue:	h.mailer
+o.queue:	C:Desk.h.Wimp
+o.queue:	C:Desk.h.Core
+o.queue:	C:h.kernel
+o.queue:	h.mailer
+o.queue:	h.debug
+o.tosser:	c.tosser
+o.tosser:	C:h.kernel
+o.tosser:	C:h.swis
+o.tosser:	h.tosser
+o.tosser:	h.mailer
+o.tosser:	C:Desk.h.Wimp
+o.tosser:	C:Desk.h.Core
+o.tosser:	C:h.kernel
+o.tosser:	h.mailer
+o.tosser:	h.debug
 o.mailer:	c.mailer
 o.mailer:	C:h.kernel
 o.mailer:	C:h.swis
@@ -95,6 +139,8 @@ o.mailer:	h.tosser
 o.mailer:	h.mailer
 o.mailer:	h.timer
 o.mailer:	h.debug
+o.mailer:	h.ftnlog
+o.mailer:	C:Desk.h.Wimp
 o.binkp:	c.binkp
 o.binkp:	C:h.kernel
 o.binkp:	C:h.swis
@@ -107,23 +153,5 @@ o.binkp:	h.mailer
 o.binkp:	h.queue
 o.binkp:	h.mailer
 o.binkp:	h.debug
-o.queue:	c.queue
-o.queue:	C:h.kernel
-o.queue:	C:h.swis
-o.queue:	h.queue
-o.queue:	h.mailer
-o.queue:	C:Desk.h.Wimp
-o.queue:	C:Desk.h.Core
-o.queue:	C:h.kernel
-o.queue:	h.mailer
-o.queue:	h.debug
-o.tosser:	c.tosser
-o.tosser:	C:h.kernel
-o.tosser:	C:h.swis
-o.tosser:	h.tosser
-o.tosser:	h.mailer
-o.tosser:	C:Desk.h.Wimp
-o.tosser:	C:Desk.h.Core
-o.tosser:	C:h.kernel
-o.tosser:	h.mailer
-o.tosser:	h.debug
+o.binkp:	h.ftnlog
+o.binkp:	C:Desk.h.Wimp

@@ -1,6 +1,5 @@
 ;
-; FTN (FidoNet Technology Network) Configuration
-; Converted from binkd.conf
+; FTN Configuration
 ;
 
 ; System information for mailer
@@ -32,7 +31,7 @@ address 1
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -43,7 +42,7 @@ address 2
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -54,7 +53,7 @@ address 3
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -65,7 +64,7 @@ address 4
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -76,7 +75,7 @@ address 5
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -87,7 +86,7 @@ address 6
     node            8
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 

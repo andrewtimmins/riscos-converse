@@ -17,6 +17,7 @@ Features
 * Multiple network addresses (up to 8)
 * Multiple uplink definitions
 * Scrolling connection log window
+* Status window for operation feedback
 * Integration with Converse Server via Wimp messages
 
 
@@ -29,10 +30,29 @@ The FTN mailer consists of several components:
   queue.c    - Outbound queue management (BSO structure)
   tosser.c   - Inbound packet processing
   timer.c    - Timer utilities for polling
+  ftnlog.c   - Scrolling log window implementation
 
 The mailer communicates with other Converse modules:
 * Support Module (0x5AA86) - Reads FTN configuration
 * Filer Module (0x5AA40) - Writes to FTN log
+
+
+User Interface
+--------------
+Iconbar Icon:
+  - Select (left click): Opens the scrolling connection log window
+  - Adjust (right click): Opens the status window at bottom-left
+  - Menu: Shows Info/Mail/Quit menu
+
+Connection Log Window (ftnlog):
+  - Scrolling display of BinkP handshake and file transfer activity
+  - Shows both outgoing (>>) and incoming (<<) frames
+  - Useful for debugging connection issues
+
+Status Window (ftnstatus):
+  - Shows current operation (e.g., "Polling uplinks...")
+  - Shows detailed status (e.g., "Connecting to node...")
+  - Positioned at bottom-left above the iconbar
 
 
 BinkP Protocol
@@ -84,6 +104,35 @@ Outbound (calling) session:
   10. Close connection
 
 
+Non-Blocking Socket Handling
+----------------------------
+CRITICAL: RISC OS socket behaviour differs from other BSD implementations.
+
+Checking connect() completion:
+  Do NOT use send(..., 0) to test if a non-blocking connect succeeded.
+  This returns ENOTCONN (57) on RISC OS even for pending connections.
+  
+  Instead, use getsockopt(SO_ERROR):
+    int so_error = 0;
+    int so_len = sizeof(so_error);
+    getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+    if (so_error == 0) { /* Connected */ }
+    else if (so_error == EINPROGRESS) { /* Still connecting */ }
+    else { /* Connection failed */ }
+
+Socket error messages:
+  RISC OS's strerror() doesn't recognise BSD socket error codes.
+  Use a custom lookup table to convert errno values to messages:
+    35 = EWOULDBLOCK   - Resource temporarily unavailable
+    36 = EINPROGRESS   - Operation now in progress
+    51 = ENETUNREACH   - Network is unreachable
+    54 = ECONNRESET    - Connection reset by peer
+    57 = ENOTCONN      - Socket is not connected
+    60 = ETIMEDOUT     - Operation timed out
+    61 = ECONNREFUSED  - Connection refused
+    65 = EHOSTUNREACH  - No route to host
+
+
 BSO Directory Structure
 -----------------------
 The mailer uses BSO (Binkley-Style Outbound) structure, adapted for RISC OS
@@ -116,29 +165,31 @@ File names are converted for RISC OS compatibility:
   - Maximum 10 character leafnames
   - Invalid characters are replaced or removed
 
+Functions:
+  filename_dos_to_riscos() - Convert "file.pkt" to "filepkt"
+  filename_riscos_to_dos() - Convert "filepkt" to "file.pkt"
+
 Incoming files are placed in the temp inbound directory first, then moved
 to the main inbound directory on successful completion.
 
 
 Session State Machine
 ---------------------
-  IDLE        - No active session
-  CONNECTING  - TCP connect in progress (outbound)
-  WAIT_NUL    - Waiting for M_NUL options
-  WAIT_ADR    - Waiting for M_ADR
-  WAIT_PWD    - Waiting for M_PWD (inbound)
-  WAIT_OK     - Waiting for M_OK (outbound)
+  CONNECTING    - TCP connect in progress (outbound, non-blocking)
+  WAIT_NUL      - Waiting for M_NUL options
+  WAIT_ADR      - Waiting for M_ADR
+  WAIT_PWD      - Waiting for M_PWD (inbound)
+  WAIT_OK       - Waiting for M_OK (outbound)
   AUTHENTICATED - Password accepted, ready for transfer
-  TRANSFER    - Exchanging files
-  WAIT_EOB    - Waiting for end of batch
-  CLOSING     - Session ending normally
-  ERROR       - Session ended due to error
+  TRANSFER      - Exchanging files
+  CLOSING       - Session ending normally
+  ERROR         - Session ended due to error
 
 
 Wimp Integration
 ----------------
 The mailer runs as a Wimp task with:
-* Iconbar icon - Click to open connection log, menu for poll/toss/quit
+* Iconbar icon - Click=log window, Adjust=status window, Menu=operations
 * Connection log window - Scrolling display of session activity
 * Status window - Shows current operation during poll/toss
 
@@ -146,6 +197,19 @@ Wimp Messages:
   0x5AA00 (LINE_BROADCAST) - Shutdown request from Server (reason 0)
 
 The mailer quits when it receives the shutdown broadcast from the Server.
+
+
+Logging Convention
+------------------
+In the connection log window:
+  >> prefix = Outgoing frames (what we send to remote)
+  << prefix = Incoming frames (what remote sends to us)
+
+This makes it easy to see both sides of the BinkP handshake:
+  binkp: >> M_NUL SYS My BBS Name
+  binkp: << M_NUL SYS Remote BBS Name
+  binkp: >> M_ADR 2:250/1
+  binkp: << M_ADR 2:250/0
 
 
 CLI Operations (via menu)
@@ -168,6 +232,7 @@ Error Handling
 * Session timeouts (5 minutes of inactivity)
 * Password failures logged and session closed
 * File transfer errors reported via M_ERR
+* All errors include human-readable messages via socket_error_string()
 
 
 Logging

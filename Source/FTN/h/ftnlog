@@ -1,0 +1,15 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Log Window Interface                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FTNLOG_H
+#define FTNLOG_H
+
+#include "C:Desk.Wimp.h"
+
+void ftnlog_initialise(Desk_window_handle window);
+void ftnlog_open(void);
+void ftnlog_append(const char *text);
+void ftnlog_printf(const char *format, ...);
+
+#endif
