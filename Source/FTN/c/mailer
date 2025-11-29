@@ -56,9 +56,10 @@
 
 WIMP_STATE wimp;
 MAILER_STATE mailer;
-Desk_dialog2_block *proginfo_window;
+Desk_window_handle proginfo_window;
 Desk_window_handle ftnstatus_window;
 Desk_window_handle ftnconnect_window;
+Desk_menu_ptr mail_menu;
 
 /* Number of status lines in ftnconnect window */
 #define FTNCONNECT_NUM_LINES 16
@@ -71,13 +72,19 @@ static const int ftnconnect_status_icons[FTNCONNECT_NUM_LINES] = {
     FTNCONNECT_STATUS13, FTNCONNECT_STATUS14, FTNCONNECT_STATUS15, FTNCONNECT_STATUS16
 };
 
-/* Menu entries */
+/* Iconbar menu entries */
 enum
 {
     ICONBAR_MENU_INFO = 0,
-    ICONBAR_MENU_POLL,
-    ICONBAR_MENU_TOSS,
+    ICONBAR_MENU_MAIL,
     ICONBAR_MENU_QUIT
+};
+
+/* Mail submenu entries */
+enum
+{
+    MAIL_MENU_POLL = 0,
+    MAIL_MENU_TOSS
 };
 
 /* ******************************************************************************************************************************************************** */
@@ -1038,10 +1045,11 @@ void mailer_finalise(void)
 /* Wimp Handlers                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
+/* Forward declaration */
+static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref);
+
 static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 {
-    Desk_UNUSED(ref);
-
     if (event->data.mouse.button.data.select)
     {
         /* Open connection log window */
@@ -1057,50 +1065,65 @@ static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *re
 
 static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref)
 {
-    Desk_UNUSED(ref);
+    debug_printf("mailer: Menu selection [0]=%d [1]=%d", 
+                 event->data.selection[0], event->data.selection[1]);
 
+    /* Check for submenu selection (Mail submenu) */
+    if (event->data.selection[0] == ICONBAR_MENU_MAIL && event->data.selection[1] != -1)
+    {
+        debug_printf("mailer: Mail submenu selection %d", event->data.selection[1]);
+        switch (event->data.selection[1])
+        {
+            case MAIL_MENU_POLL:
+                /* Force poll now with status and connection windows */
+                ftnconnect_open("");
+                ftnconnect_log("Scanning outbound queue...");
+                queue_scan_outbound();
+                ftnconnect_log("Polling all uplinks...");
+                mailer_poll_all_uplinks();
+                ftnconnect_log("Poll complete");
+                /* Leave ftnconnect open so user can see the log */
+                break;
+
+            case MAIL_MENU_TOSS:
+                /* Process inbound mail with status window */
+                ftnconnect_open("");
+                ftnstatus_open("ftn.tossing");
+                ftnstatus_update("Scanning inbound...");
+                ftnconnect_log("Scanning inbound directory...");
+                tosser_set_status_callback(ftnstatus_update);
+                {
+                    int count = tosser_process_inbound();
+                    tosser_set_status_callback(NULL);
+                    if (count > 0)
+                    {
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Tossed %d messages", count);
+                        ftnstatus_update(msg);
+                        ftnconnect_log(msg);
+                        mailer_log("Tossed %d messages", count);
+                    }
+                    else
+                    {
+                        ftnstatus_update("No packets found");
+                        ftnconnect_log("No packets found");
+                    }
+                }
+                ftnstatus_close();
+                break;
+        }
+        return Desk_bool_TRUE;
+    }
+
+    /* Handle main menu selections */
     switch (event->data.selection[0])
     {
         case ICONBAR_MENU_INFO:
-            /* Show info window */
+            /* Show info window - handled by Menu_Warn */
             break;
 
-        case ICONBAR_MENU_POLL:
-            /* Force poll now with status and connection windows */
-            ftnconnect_open("");
-            ftnconnect_log("Scanning outbound queue...");
-            queue_scan_outbound();
-            ftnconnect_log("Polling all uplinks...");
-            mailer_poll_all_uplinks();
-            ftnconnect_log("Poll complete");
-            /* Leave ftnconnect open so user can see the log */
-            break;
-
-        case ICONBAR_MENU_TOSS:
-            /* Process inbound mail with status window */
-            ftnconnect_open("");
-            ftnstatus_open("ftn.tossing");
-            ftnstatus_update("Scanning inbound...");
-            ftnconnect_log("Scanning inbound directory...");
-            tosser_set_status_callback(ftnstatus_update);
-            {
-                int count = tosser_process_inbound();
-                tosser_set_status_callback(NULL);
-                if (count > 0)
-                {
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "Tossed %d messages", count);
-                    ftnstatus_update(msg);
-                    ftnconnect_log(msg);
-                    mailer_log("Tossed %d messages", count);
-                }
-                else
-                {
-                    ftnstatus_update("No packets found");
-                    ftnconnect_log("No packets found");
-                }
-            }
-            ftnstatus_close();
+        case ICONBAR_MENU_MAIL:
+            /* Submenu - no direct action */
             break;
 
         case ICONBAR_MENU_QUIT:
@@ -1171,35 +1194,47 @@ static Desk_bool wimp_handle_broadcast_message(Desk_event_pollblock *event, void
     return Desk_bool_FALSE;
 }
 
-static Desk_bool wimp_open_proginfo_window(Desk_event_pollblock *event, void *ref)
-{
-    if (event->data.message.data.menuwarn.selection[0] != ICONBAR_MENU_INFO)
-    {
-        return Desk_bool_FALSE;
-    }
-
-    Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
-
-    return Desk_bool_TRUE;
-}
-
 /* ******************************************************************************************************************************************************** */
 /* Wimp Setup                                                                                                                                               */
 /* ******************************************************************************************************************************************************** */
 
 static void create_iconbar_icon(void)
 {
-    wimp.iconbar_icon = Desk_Icon_BarIcon("!ftn", Desk_iconbar_RIGHT);
+    wimp.iconbar_icon = Desk_Icon_BarIcon("!FTN", Desk_iconbar_RIGHT);
+}
+
+static void lookup_menu_string(const char *tag, char *buffer, size_t size, const char *fallback)
+{
+    /* Desk_Msgs_Lookup returns zero on success; populate fallback if it fails */
+    if (Desk_Msgs_Lookup(tag, buffer, (int)size))
+    {
+        strncpy(buffer, fallback, size - 1);
+        buffer[size - 1] = '\0';
+    }
 }
 
 static void create_iconbar_menu(void)
 {
     char iconbar_menu[100];
     char iconbar_menu_title[30];
+    char mail_menu_items[100];
+    char mail_menu_title[30];
 
-    Desk_Msgs_Lookup("ftn.ibmt", iconbar_menu_title, 30);
-    Desk_Msgs_Lookup("ftn.ibm", iconbar_menu, 100);
+    /* Create main iconbar menu */
+    lookup_menu_string("ftn.ibmt", iconbar_menu_title, sizeof(iconbar_menu_title), "Mailer");
+    lookup_menu_string("ftn.ibm", iconbar_menu, sizeof(iconbar_menu), "Info,Mail,Quit");
     wimp.iconbar_menu_handle = Desk_Menu_New(iconbar_menu_title, iconbar_menu);
+
+    /* Create Mail submenu */
+    lookup_menu_string("ftn.mailmt", mail_menu_title, sizeof(mail_menu_title), "Mail");
+    lookup_menu_string("ftn.mailm", mail_menu_items, sizeof(mail_menu_items), "Poll,Toss");
+    mail_menu = Desk_Menu_New(mail_menu_title, mail_menu_items);
+
+    /* Attach Mail submenu to Mail item if both menus were created */
+    if (wimp.iconbar_menu_handle != NULL && mail_menu != NULL)
+    {
+        Desk_Menu_AddSubMenu(wimp.iconbar_menu_handle, ICONBAR_MENU_MAIL, mail_menu);
+    }
 }
 
 static void poll_idle(void)
@@ -1242,14 +1277,17 @@ int main(int argc, char *argv[])
     /* Create UI elements */
     create_iconbar_icon();
     create_iconbar_menu();
-    proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
+    proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
     ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
     ftnconnect_window = Desk_Window_Create("ftnconnect", Desk_template_TITLEMIN);
 
-    /* Register menu warning for proginfo */
-    Desk_Menu_Warn(wimp.iconbar_menu_handle, ICONBAR_MENU_INFO, Desk_bool_TRUE,
-                   wimp_open_proginfo_window, (void *)proginfo_window);
+    /* Attach proginfo dialog as submenu of the Info entry */
+    if (wimp.iconbar_menu_handle != NULL && proginfo_window != NULL)
+    {
+        Desk_Menu_AddSubMenu(wimp.iconbar_menu_handle, ICONBAR_MENU_INFO,
+                             (Desk_menu_ptr)proginfo_window);
+    }
 
     /* Register event handlers */
     Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, Desk_event_ANY,

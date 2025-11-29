@@ -19,11 +19,13 @@ Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
 "c.mailer", line 23: Warning: extern 'proginfo_window' not declared in header
 "c.mailer", line 24: Warning: extern 'ftnstatus_window' not declared in header
 "c.mailer", line 25: Warning: extern 'ftnconnect_window' not declared in header
-"c.mailer", line 436: Warning: implicit narrowing cast: '='
-"c.mailer", line 730: Error: undeclared name, inventing 'extern int SESSION_STATE_CONNECTED'
-"c.mailer", line 730: Warning: '=': cast of 'int' to differing enum
-"c.mailer", line 736: Error: undeclared name, inventing 'extern int binkp_send_init()'
-c.mailer: 5 warnings, 2 errors, 0 serious errors
+"c.mailer", line 26: Warning: extern 'mail_menu' not declared in header
+"c.mailer", line 443: Warning: implicit narrowing cast: '='
+"c.mailer", line 1023: Error: undeclared name, inventing 'extern int wimp_handle_iconbar_menu_choice'
+"c.mailer", line 1023: Error: <argument 4 to 'Desk_Event_Claim'>: cast between function pointer and non-function object
+"c.mailer", line 1030: Serious error: type disagreement for 'wimp_handle_iconbar_menu_choice'
+"c.mailer", line 1030: Error: linkage disagreement for 'wimp_handle_iconbar_menu_choice' - treated as 'extern'
+c.mailer: 5 warnings, 3 errors, 1 serious error
 AMU: *** exit (1) ***
 
 AMU: *** 'all' not re-made because of errors ***
