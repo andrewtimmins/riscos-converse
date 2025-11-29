@@ -1,14 +1,15 @@
 ;
 ; FTN (FidoNet Technology Network) Configuration
+; Converted from binkd.conf
 ;
 
 ; System information for mailer
-sysop               Andrew Timmins
+sysop               Andy Timmins
 system              Converse BBS
-location            United Kingdom
+location            Halesowen, West Midlands, UK
 phone               -Unpublished-
 speed               115200
-flags               CM,XA,V34
+flags               CM,TCP,BINKP
 
 ; Paths
 inbound             <Converse$Dir>.FTN.Inbound
@@ -21,14 +22,14 @@ max_packet_size     32768
 
 ; ----------------------------------------------------------------------------
 ; Network Addresses
-; Define each network we participate in
+; Our addresses in each network we participate in
 ; ----------------------------------------------------------------------------
 
 address 1
     network         Fidonet
     zone            2
-    net             2500
-    node            622
+    net             250
+    node            9
     point           0
     type            5d
     packet_password 
@@ -36,10 +37,54 @@ address 1
 endaddress
 
 address 2
-    network         Converse
-    zone            25
+    network         CNet
+    zone            64
+    net             500
+    node            9
+    point           0
+    type            5d
+    packet_password 
+    areafix_password
+endaddress
+
+address 3
+    network         PiNet
+    zone            314
+    net             314
+    node            9
+    point           0
+    type            5d
+    packet_password 
+    areafix_password
+endaddress
+
+address 4
+    network         RetroNet
+    zone            80
+    net             774
+    node            9
+    point           0
+    type            5d
+    packet_password 
+    areafix_password
+endaddress
+
+address 5
+    network         HobbyNet
+    zone            954
     net             44
-    node            1
+    node            9
+    point           0
+    type            5d
+    packet_password 
+    areafix_password
+endaddress
+
+address 6
+    network         AmigaNet
+    zone            39
+    net             136
+    node            8
     point           0
     type            5d
     packet_password 
@@ -48,19 +93,59 @@ endaddress
 
 ; ----------------------------------------------------------------------------
 ; Uplinks
-; Define routing for each network
+; Define routing and hub connections for each network
 ; ----------------------------------------------------------------------------
 
 uplink 1
-    address         2:2500/622.0
+    address         2:250/0.0
     network         Fidonet
-    password        Hello123$$
+    host            applewoodbbs.linkpc.net
+    port            24554
+    password        sQwHveWd1Zt4n
     groups          A,B,C
 enduplink
 
 uplink 2
-    address         25:44/0.0
-    network         Converse
-    password        Hello123$$
-    groups          A
+    address         64:500/0.0
+    network         CNet
+    host            call.rofbbs.com
+    port            24556
+    password        5SBE737Z
+    groups          A,B,C
+enduplink
+
+uplink 3
+    address         314:314/0.0
+    network         PiNet
+    host            call.rofbbs.com
+    port            24556
+    password        5SBE737Z
+    groups          A,B,C
+enduplink
+
+uplink 4
+    address         80:774/0.0
+    network         RetroNet
+    host            call.rofbbs.com
+    port            24556
+    password        5SBE737Z
+    groups          A,B,C
+enduplink
+
+uplink 5
+    address         954:44/0.0
+    network         HobbyNet
+    host            otherhub.abad1dea.to
+    port            24554
+    password        PKYEGB7A
+    groups          A,B,C
+enduplink
+
+uplink 6
+    address         39:13/0.0
+    network         AmigaNet
+    host            bbs.zeusdev.co.uk
+    port            24554
+    password        IRM76TQL
+    groups          A,B,C
 enduplink

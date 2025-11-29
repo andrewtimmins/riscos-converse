@@ -106,6 +106,7 @@ QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node);
 QUEUE_NODE *queue_get_next_poll_node(void);
 void queue_schedule_retry(QUEUE_NODE *node, int delay_seconds);
 void queue_mark_node_busy(const FTN_ADDR *addr, int busy);
+void queue_add_uplinks_for_poll(void);
 
 /* BSO path helpers */
 void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr);

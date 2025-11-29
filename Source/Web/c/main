@@ -830,7 +830,7 @@ int main(void)
         strcpy(error_listen, "Failed to listen on socket");
     }
 
-    Desk_Event_Initialise("WebServer");
+    Desk_Event_Initialise("Web Server");
     Desk_EventMsg_Initialise();
     Desk_Screen_CacheModeInfo();
 

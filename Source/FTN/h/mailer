@@ -14,7 +14,7 @@
 
 #define MAILER_VERSION              "0.01"
 #define MAILER_NAME                 "Converse"
-#define MAILER_TASK_NAME            "Converse FTN"
+#define MAILER_TASK_NAME            "Mailer"
 
 /* BinkP default port */
 #define BINKP_DEFAULT_PORT          24554
@@ -104,7 +104,7 @@ typedef struct
     int socket;
     SESSION_STATE state;
     SESSION_DIRECTION direction;
-    
+
     /* Remote node info */
     FTN_ADDR remote_addr;           /* Address reported by remote in M_ADR */
     FTN_ADDR target_addr;           /* For outbound: address we're calling (for password lookup) */
@@ -112,25 +112,25 @@ typedef struct
     char remote_system[64];
     char remote_location[64];
     char remote_hostname[64];
-    
+
     /* Authentication */
     int authenticated;
     char password[32];
     int cram_enabled;
     char cram_challenge[64];
-    
+
     /* Timing */
     time_t connect_time;
     time_t last_activity;
     long timeout;
-    
+
     /* Buffers */
     unsigned char rx_buffer[MAILER_BUFFER_SIZE];
     int rx_length;
     unsigned char tx_buffer[MAILER_BUFFER_SIZE];
     int tx_length;
     int tx_offset;
-    
+
     /* File transfer */
     FILE_TRANSFER send_file;
     FILE_TRANSFER recv_file;
@@ -138,7 +138,7 @@ typedef struct
     int files_received;
     long bytes_sent;
     long bytes_received;
-    
+
     /* End of batch flags */
     int local_eob;
     int remote_eob;
@@ -169,26 +169,26 @@ typedef struct
     char inbound_path[MAILER_PATH_SIZE];
     char outbound_path[MAILER_PATH_SIZE];
     char temp_inbound[MAILER_PATH_SIZE];
-    
+
     /* Our addresses */
     FTN_ADDR our_addrs[8];
     int our_addr_count;
-    
+
     /* System info */
     char sysop[64];
     char system_name[64];
     char location[64];
     int speed;
     char flags[64];
-    
+
     /* Listener */
     int listen_socket;
     int listener_active;
-    
+
     /* Sessions */
     MAILER_SESSION sessions[MAILER_MAX_SESSIONS];
     int active_sessions;
-    
+
     /* Statistics */
     int total_sessions;
     int total_files_sent;
@@ -229,6 +229,7 @@ void mailer_check_timeouts(void);
 /* Outbound connections */
 int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port);
 void mailer_poll_outbound(void);
+void mailer_poll_all_uplinks(void);
 
 /* Statistics */
 void mailer_update_stats(MAILER_SESSION *session);

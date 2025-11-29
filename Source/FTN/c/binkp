@@ -1011,12 +1011,14 @@ const char *binkp_get_password_for_node(const FTN_ADDR *addr)
         r2.r[1] = i;
         if (_kernel_swi(0x5AA86, &r2, &r2) == NULL && r2.r[0] != 0)
         {
-            /* Uplink config structure */
+            /* Uplink config structure - must match FTN_UPLINK_CONFIG in Support module */
             typedef struct
             {
                 int id;
                 char address[64];
                 char network[64];
+                char host[64];
+                int port;
                 char password[32];
                 char groups[64];
             } UPLINK_CFG;

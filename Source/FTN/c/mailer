@@ -620,6 +620,7 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
 {
     char addr_str[64];
     int received_files = session->files_received;
+    FTN_ADDR remote_addr = session->remote_addr;  /* Save before freeing */
 
     ftn_addr_to_string(&session->remote_addr, addr_str, sizeof(addr_str));
 
@@ -635,6 +636,17 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
     mailer.total_bytes_received += session->bytes_received;
 
     mailer_free_session(session);
+
+    /* Schedule next poll for this node - don't poll again immediately */
+    /* Wait 5 minutes (300 seconds) before polling this uplink again */
+    {
+        QUEUE_NODE *node = queue_find_node(&remote_addr);
+        if (node != NULL)
+        {
+            node->next_poll = time(NULL) + 300;
+            debug_printf("mailer: Next poll for %s in 5 minutes", addr_str);
+        }
+    }
 
     /* Auto-toss if we received any files */
     if (received_files > 0)
@@ -744,6 +756,31 @@ void mailer_process_sessions(void)
         /* Handle based on state */
         switch (session->state)
         {
+            case SESSION_STATE_CONNECTING:
+                /* For non-blocking connect, try to send 0 bytes to check if connected */
+                {
+                    int result = send(session->socket, "", 0, 0);
+                    if (result >= 0)
+                    {
+                        /* Connected successfully - start handshake */
+                        session->state = SESSION_STATE_WAIT_NUL;
+                        session->last_activity = time(NULL);
+                        ftnconnect_log("Connected to %s", session->remote_hostname);
+                        mailer_log_ftn("Connected to %s", session->remote_hostname);
+
+                        /* Start BinkP handshake */
+                        binkp_send_handshake(session);
+                    }
+                    else if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINPROGRESS)
+                    {
+                        /* Connect failed */
+                        ftnconnect_log("Connection failed to %s", session->remote_hostname);
+                        session->state = SESSION_STATE_ERROR;
+                    }
+                    /* else still connecting, wait more */
+                }
+                break;
+
             case SESSION_STATE_CLOSING:
             case SESSION_STATE_ERROR:
                 mailer_close_session(session, 
@@ -869,25 +906,70 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     return 1;
 }
 
-void mailer_poll_outbound(void)
+/*
+ * Poll all configured uplinks.
+ * This connects to each uplink in sequence, waiting for each session
+ * to complete before moving to the next.
+ * Called on startup and when user clicks Poll menu.
+ */
+void mailer_poll_all_uplinks(void)
 {
-    QUEUE_NODE *node;
+    int i;
+    int poll_count = 0;
 
-    /* Don't poll if we're at max sessions */
-    if (mailer.active_sessions >= mailer.max_sessions)
-    {
-        return;
-    }
+    debug_printf("mailer: Polling all uplinks... node_count=%d", outbound_queue.node_count);
+    ftnconnect_log("Found %d nodes in queue", outbound_queue.node_count);
 
-    node = queue_get_next_poll_node();
-    if (node != NULL)
+    for (i = 0; i < outbound_queue.node_count; i++)
     {
-        if (!mailer_connect_to_node(&node->addr, node->hostname, node->port))
+        QUEUE_NODE *node = &outbound_queue.nodes[i];
+        char addr_str[64];
+
+        ftn_addr_to_string(&node->addr, addr_str, sizeof(addr_str));
+
+        /* Skip nodes without hostname */
+        if (node->hostname[0] == '\0')
         {
-            /* Connection failed, schedule retry */
-            queue_schedule_retry(node, 300);  /* Retry in 5 minutes */
+            ftnconnect_log("Skipping %s (no hostname)", addr_str);
+            continue;
+        }
+
+        ftnconnect_log("Node %d: %s -> %s:%d", i, addr_str, node->hostname, node->port);
+
+        /* Wait for any active session to complete */
+        while (mailer.active_sessions > 0)
+        {
+            Desk_event_pollblock event;
+            Desk_event_pollmask mask;
+            mask.value = 0;
+            Desk_Wimp_Poll3(mask, &event, NULL);
+            Desk_Event_Process(&event);
+        }
+
+        /* Connect to this node */
+        ftnconnect_log("Polling %s", addr_str);
+        if (mailer_connect_to_node(&node->addr, node->hostname, node->port))
+        {
+            poll_count++;
+
+            /* Wait for this session to complete */
+            while (mailer.active_sessions > 0)
+            {
+                Desk_event_pollblock event;
+                Desk_event_pollmask mask;
+                mask.value = 0;
+                Desk_Wimp_Poll3(mask, &event, NULL);
+                Desk_Event_Process(&event);
+            }
+        }
+        else
+        {
+            ftnconnect_log("Failed to connect to %s", addr_str);
         }
     }
+
+    debug_printf("mailer: Poll complete, connected to %d nodes", poll_count);
+    ftnconnect_log("Poll complete: %d nodes", poll_count);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -986,14 +1068,11 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
         case ICONBAR_MENU_POLL:
             /* Force poll now with status and connection windows */
             ftnconnect_open("");
-            ftnstatus_open("ftn.polling");
-            ftnstatus_update("Scanning outbound...");
             ftnconnect_log("Scanning outbound queue...");
             queue_scan_outbound();
-            ftnstatus_update("Connecting to nodes...");
-            mailer_poll_outbound();
-            ftnstatus_update("Complete");
-            ftnstatus_close();
+            ftnconnect_log("Polling all uplinks...");
+            mailer_poll_all_uplinks();
+            ftnconnect_log("Poll complete");
             /* Leave ftnconnect open so user can see the log */
             break;
 
@@ -1063,8 +1142,7 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     /* Check for timeouts */
     mailer_check_timeouts();
 
-    /* Poll outbound queue */
-    mailer_poll_outbound();
+    /* Note: No automatic outbound polling - user must click Poll menu */
 
     return Desk_bool_TRUE;
 }
@@ -1195,10 +1273,15 @@ int main(int argc, char *argv[])
     /* Create listener */
     mailer_create_listener();
 
-    /* Initial queue scan */
+    /* Initial queue scan and poll all uplinks */
     queue_scan_outbound();
 
     mailer_log_ftn("Mailer ready (%s %s)", MAILER_NAME, MAILER_VERSION);
+
+    /* Poll all uplinks on startup */
+    ftnconnect_open("");
+    ftnconnect_log("Startup poll...");
+    mailer_poll_all_uplinks();
 
     /* Main loop */
     while (wimp.quit == Desk_bool_FALSE)

@@ -36,6 +36,8 @@ typedef struct
     int id;                                     /* uplink ID (1-based) */
     char address[FTN_CONFIG_NAME_LEN];          /* uplink address string */
     char network[FTN_CONFIG_NAME_LEN];          /* network this uplink belongs to */
+    char host[FTN_CONFIG_NAME_LEN];             /* hostname or IP address */
+    int port;                                   /* port number (default 24554) */
     char password[FTN_CONFIG_PASSWORD_LEN];     /* session password */
     char groups[FTN_CONFIG_GROUPS_LEN];         /* groups we receive from this uplink */
 } FTN_UPLINK_CONFIG;

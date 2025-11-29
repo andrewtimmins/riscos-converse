@@ -30,6 +30,7 @@
         "template": "cpp",
         "http": "cpp",
         "binkp": "cpp",
-        "iconnames": "cpp"
+        "iconnames": "cpp",
+        "queue": "cpp"
     }
 }

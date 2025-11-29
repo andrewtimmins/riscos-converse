@@ -815,12 +815,14 @@ typedef struct
     char areafix_password[32];
 } FTN_ADDR_RECORD;
 
-/* FTN uplink structure for Support module */
+/* FTN uplink structure for Support module - must match Support/h/ftnconfig FTN_UPLINK_CONFIG */
 typedef struct
 {
     int id;
     char address[MAX_NAME];
     char network[MAX_NAME];
+    char host[MAX_NAME];
+    int port;
     char password[32];
     char groups[64];
 } FTN_UPLINK_RECORD;
@@ -953,6 +955,7 @@ void load_ftn_config(void)
                     /* Start uplink block */
                     memset(&current_uplink, 0, sizeof(current_uplink));
                     current_uplink.id = atoi(value);
+                    current_uplink.port = 24554;  /* Default BinkP port */
                     state = PARSE_STATE_UPLINK;
                     debug_printf("config: Parsing FTN uplink %d", current_uplink.id);
                 }
@@ -1013,8 +1016,9 @@ void load_ftn_config(void)
                     regs.r[1] = current_uplink.id;
                     regs.r[2] = (int)&current_uplink;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
-                    debug_printf("config: Stored FTN uplink %d: %s (%s)",
-                                 current_uplink.id, current_uplink.address, current_uplink.network);
+                    debug_printf("config: Stored FTN uplink %d: %s (%s) -> %s:%d",
+                                 current_uplink.id, current_uplink.address, current_uplink.network,
+                                 current_uplink.host, current_uplink.port);
                     state = PARSE_STATE_GLOBAL;
                 }
                 else if (strcmp(key, "address") == 0 && value != NULL)
@@ -1024,6 +1028,14 @@ void load_ftn_config(void)
                 else if (strcmp(key, "network") == 0 && value != NULL)
                 {
                     strncpy(current_uplink.network, value, sizeof(current_uplink.network) - 1);
+                }
+                else if (strcmp(key, "host") == 0 && value != NULL)
+                {
+                    strncpy(current_uplink.host, value, sizeof(current_uplink.host) - 1);
+                }
+                else if (strcmp(key, "port") == 0 && value != NULL)
+                {
+                    current_uplink.port = atoi(value);
                 }
                 else if (strcmp(key, "password") == 0 && value != NULL)
                 {

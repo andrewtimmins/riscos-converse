@@ -750,12 +750,20 @@ static void create_iconbar_icon(void)
  */
 static void create_menus(void)
 {
-    /* Get menu title and items from Messages file */
-    if (Desk_Msgs_Lookup("usered.ibmt:User Editor", msg_buffer, sizeof(msg_buffer))) {
-        strcpy(msg_buffer, "User Editor");
+    char menu_title[64];
+    char menu_items[128];
+
+    /* Get menu title from Messages file */
+    if (Desk_Msgs_Lookup("usered.ibmt", menu_title, sizeof(menu_title))) {
+        strcpy(menu_title, "User Editor");
     }
 
-    iconbar_menu = Desk_Menu_New(msg_buffer, "Info,Quit");
+    /* Get menu items from Messages file */
+    if (Desk_Msgs_Lookup("usered.ibm", menu_items, sizeof(menu_items))) {
+        strcpy(menu_items, "Info,Quit");
+    }
+
+    iconbar_menu = Desk_Menu_New(menu_title, menu_items);
 
     if (iconbar_menu) {
         /* Attach proginfo as submenu of Info item */

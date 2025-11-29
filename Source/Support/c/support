@@ -407,8 +407,10 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
                 for (i = 0; i < cfg->uplink_count; i++)
                 {
                     const FTN_UPLINK_CONFIG *uplink = &cfg->uplinks[i];
-                    printf("  %d. %s (%s) groups=%s\n",
+                    printf("  %d. %s (%s) -> %s:%d groups=%s\n",
                            uplink->id, uplink->address, uplink->network,
+                           uplink->host[0] ? uplink->host : "(no host)",
+                           uplink->port,
                            uplink->groups[0] ? uplink->groups : "(none)");
                 }
             }

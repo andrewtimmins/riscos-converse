@@ -1,6 +1,0 @@
-| Web Server Run File
-|
-Set WebRes$Dir <Obey$Dir>
-Set WebRes$Path <WebRes$Dir>.
-IconSprites <WebRes$Dir>.!Sprites
-Run <Converse$Dir>.Resources.!RunWeb

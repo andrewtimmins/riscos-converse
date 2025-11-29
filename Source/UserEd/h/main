@@ -10,9 +10,8 @@
 #include "structs.h"
 
 /* Application constants */
-#define APP_NAME        "UserEd"
-#define APP_DIRECTORY   "<UserEd$Dir>"
-#define SPRITE_NAME     "!converse"
+#define APP_NAME        "User Editor"
+#define SPRITE_NAME     "!UserEd"
 
 /* Wimp message for broadcast */
 #define MESSAGE_LINE_BROADCAST  0x5AA00

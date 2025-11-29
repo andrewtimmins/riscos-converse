@@ -15,6 +15,9 @@
 #include "mailer.h"
 #include "debug.h"
 
+/* SWI numbers */
+#define SWI_SUPPORT_FTN     0x5AA86
+
 /* ******************************************************************************************************************************************************** */
 /* Global Queue                                                                                                                                             */
 /* ******************************************************************************************************************************************************** */
@@ -41,49 +44,55 @@ void queue_finalise(void)
 /* ******************************************************************************************************************************************************** */
 
 /*
- * BSO (Binkley-Style Outbound) directory structure:
- * <outbound>/              - Zone 2 (default zone)
- * <outbound>.001/          - Zone 1
- * <outbound>.003/          - Zone 3
+ * BSO (Binkley-Style Outbound) directory structure for RISC OS:
+ * Note: RISC OS doesn't use file extensions, so we append them directly to filenames.
  * 
- * Within each zone directory:
- * NNNNNNNN.OUT             - Normal mail (net/node as hex)
- * NNNNNNNN.HUT             - Hold mail
- * NNNNNNNN.DUT             - Direct mail
- * NNNNNNNN.CUT             - Crash mail
- * NNNNNNNN.IUT             - Immediate mail
- * NNNNNNNN.FLO             - Normal file attach list
- * NNNNNNNN.HLO             - Hold file attach list
+ * <outbound>               - Zone 2 (default zone)
+ * <outbound>001            - Zone 1 (sibling directory with zone as hex suffix)
+ * <outbound>003            - Zone 3
+ * 
+ * Within each zone directory (RISC OS style - no dots in filenames):
+ * NNNNNNNNout              - Normal mail (net/node as 8 hex chars)
+ * NNNNNNNNhut              - Hold mail
+ * NNNNNNNNdut              - Direct mail
+ * NNNNNNNNcut              - Crash mail
+ * NNNNNNNNiut              - Immediate mail
+ * NNNNNNNNflo              - Normal file attach list
+ * NNNNNNNNhlo              - Hold file attach list
  * etc.
- * NNNNNNNN.PNT/            - Point directory
- * NNNNNNNN.PNT/PPPPPPPP.*  - Point files
+ * NNNNNNNNpnt              - Point directory
+ * NNNNNNNNpnt.PPPPPPPP*    - Point files
  */
 
 void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr)
 {
-    char zone_ext[8];
-
     if (addr->zone == 2)
     {
         /* Zone 2 is default, no extension */
-        zone_ext[0] = '\0';
+        if (addr->point == 0)
+        {
+            snprintf(buffer, size, "%s.%04x%04x",
+                     mailer.outbound_path, addr->net, addr->node);
+        }
+        else
+        {
+            snprintf(buffer, size, "%s.%04x%04xpnt.%08x",
+                     mailer.outbound_path, addr->net, addr->node, addr->point);
+        }
     }
     else
     {
-        snprintf(zone_ext, sizeof(zone_ext), ".%03x", addr->zone);
-    }
-
-    if (addr->point == 0)
-    {
-        /* Node address */
-        snprintf(buffer, size, "%s%s.%04x%04x",
-                 mailer.outbound_path, zone_ext, addr->net, addr->node);
-    }
-    else
-    {
-        /* Point address */
-        snprintf(buffer, size, "%s%s.%04x%04x.pnt.%08x",
-                 mailer.outbound_path, zone_ext, addr->net, addr->node, addr->point);
+        /* Other zones have zone suffix on outbound directory */
+        if (addr->point == 0)
+        {
+            snprintf(buffer, size, "%s%03x.%04x%04x",
+                     mailer.outbound_path, addr->zone, addr->net, addr->node);
+        }
+        else
+        {
+            snprintf(buffer, size, "%s%03x.%04x%04xpnt.%08x",
+                     mailer.outbound_path, addr->zone, addr->net, addr->node, addr->point);
+        }
     }
 }
 
@@ -97,17 +106,20 @@ void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr,
     }
     else
     {
-        snprintf(zone_dir, sizeof(zone_dir), "%s.%03x", mailer.outbound_path, addr->zone);
+        /* Zone directory is outbound path with 3-digit hex zone appended */
+        snprintf(zone_dir, sizeof(zone_dir), "%s%03x", mailer.outbound_path, addr->zone);
     }
 
     if (addr->point == 0)
     {
-        snprintf(buffer, size, "%s.%04x%04x.%s",
+        /* Node: NNNNNNNNext (no dot before extension) */
+        snprintf(buffer, size, "%s.%04x%04x%s",
                  zone_dir, addr->net, addr->node, ext);
     }
     else
     {
-        snprintf(buffer, size, "%s.%04x%04x.pnt.%08x.%s",
+        /* Point: NNNNNNNNpnt.PPPPPPPPext */
+        snprintf(buffer, size, "%s.%04x%04xpnt.%08x%s",
                  zone_dir, addr->net, addr->node, addr->point, ext);
     }
 }
@@ -389,15 +401,378 @@ int queue_parse_flo_file(QUEUE_NODE *node, const char *path, QUEUE_FLAVOUR flavo
 /* Outbound Scanning                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/*
+ * Parse FTN address from BSO hex filename (e.g., "00fa0009" = net 250, node 9)
+ */
+static int parse_bso_hex_addr(const char *name, int zone, FTN_ADDR *addr)
+{
+    unsigned int net, node;
+    int len = strlen(name);
+
+    /* Must be at least 8 hex chars for net/node */
+    if (len < 8)
+    {
+        return 0;
+    }
+
+    /* Parse hex: first 4 chars = net, next 4 = node */
+    if (sscanf(name, "%04x%04x", &net, &node) != 2)
+    {
+        return 0;
+    }
+
+    memset(addr, 0, sizeof(FTN_ADDR));
+    addr->zone = zone;
+    addr->net = (int)net;
+    addr->node = (int)node;
+    addr->point = 0;
+
+    return 1;
+}
+
+/*
+ * Get flavour from RISC OS style extension (last 3 chars of filename)
+ * e.g., "00fa0009out" -> NORMAL, "00fa0009cut" -> CRASH
+ */
+static int get_flavour_from_name(const char *name, QUEUE_FLAVOUR *flavour, int *is_flo)
+{
+    int len = strlen(name);
+    const char *ext;
+
+    *is_flo = 0;
+
+    if (len < 11)  /* 8 hex + 3 ext */
+    {
+        return 0;
+    }
+
+    ext = name + 8;  /* Extension starts after 8 hex digits */
+
+    /* Check for packet files (.?ut) */
+    if ((ext[0] == 'o' || ext[0] == 'O') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
+    {
+        *flavour = QUEUE_FLAVOUR_NORMAL;
+        return 1;
+    }
+    if ((ext[0] == 'h' || ext[0] == 'H') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
+    {
+        *flavour = QUEUE_FLAVOUR_HOLD;
+        return 1;
+    }
+    if ((ext[0] == 'd' || ext[0] == 'D') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
+    {
+        *flavour = QUEUE_FLAVOUR_DIRECT;
+        return 1;
+    }
+    if ((ext[0] == 'c' || ext[0] == 'C') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
+    {
+        *flavour = QUEUE_FLAVOUR_CRASH;
+        return 1;
+    }
+    if ((ext[0] == 'i' || ext[0] == 'I') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
+    {
+        *flavour = QUEUE_FLAVOUR_IMMEDIATE;
+        return 1;
+    }
+
+    /* Check for flow files (.?lo) */
+    if ((ext[0] == 'f' || ext[0] == 'F') && (ext[1] == 'l' || ext[1] == 'L') && (ext[2] == 'o' || ext[2] == 'O'))
+    {
+        *flavour = QUEUE_FLAVOUR_NORMAL;
+        *is_flo = 1;
+        return 1;
+    }
+    if ((ext[0] == 'h' || ext[0] == 'H') && (ext[1] == 'l' || ext[1] == 'L') && (ext[2] == 'o' || ext[2] == 'O'))
+    {
+        *flavour = QUEUE_FLAVOUR_HOLD;
+        *is_flo = 1;
+        return 1;
+    }
+    if ((ext[0] == 'd' || ext[0] == 'D') && (ext[1] == 'l' || ext[1] == 'L') && (ext[2] == 'o' || ext[2] == 'O'))
+    {
+        *flavour = QUEUE_FLAVOUR_DIRECT;
+        *is_flo = 1;
+        return 1;
+    }
+    if ((ext[0] == 'c' || ext[0] == 'C') && (ext[1] == 'l' || ext[1] == 'L') && (ext[2] == 'o' || ext[2] == 'O'))
+    {
+        *flavour = QUEUE_FLAVOUR_CRASH;
+        *is_flo = 1;
+        return 1;
+    }
+    if ((ext[0] == 'i' || ext[0] == 'I') && (ext[1] == 'l' || ext[1] == 'L') && (ext[2] == 'o' || ext[2] == 'O'))
+    {
+        *flavour = QUEUE_FLAVOUR_IMMEDIATE;
+        *is_flo = 1;
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
+ * Look up uplink info for a node address to get hostname and port.
+ * Returns 1 if found, 0 if not.
+ */
+static int lookup_uplink_for_node(const FTN_ADDR *addr, char *hostname, size_t host_size, int *port)
+{
+    _kernel_swi_regs regs;
+    int i;
+    int uplink_count;
+
+    /* Get uplink count */
+    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    uplink_count = regs.r[0];
+
+    /* Check each uplink */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            /* FTN_UPLINK_CONFIG structure */
+            typedef struct
+            {
+                int id;
+                char address[64];
+                char network[64];
+                char host[64];
+                int port;
+                char password[32];
+                char groups[64];
+            } UPLINK_CFG;
+
+            UPLINK_CFG *uplink = (UPLINK_CFG *)regs.r[0];
+            FTN_ADDR uplink_addr;
+
+            /* Parse the uplink address */
+            if (ftn_string_to_addr(uplink->address, &uplink_addr))
+            {
+                /* Check if this uplink handles our zone/net */
+                /* Uplink addresses are typically hubs like 2:250/0 */
+                if (uplink_addr.zone == addr->zone)
+                {
+                    /* Found matching zone - use this uplink */
+                    if (uplink->host[0] != '\0')
+                    {
+                        strncpy(hostname, uplink->host, host_size - 1);
+                        hostname[host_size - 1] = '\0';
+                        *port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * Scan a single zone directory for outbound mail.
+ * Zone directory format: <outbound> for zone 2, <outbound>xxx for other zones
+ * where xxx is 3-digit hex zone number.
+ */
+static int scan_zone_directory(const char *path, int zone)
+{
+    _kernel_swi_regs regs;
+    char buffer[256];
+    int count = 0;
+    int context = 0;
+    int read_count;
+
+    debug_printf("queue: Scanning zone %d directory: %s", zone, path);
+
+    /* Use OS_GBPB 9 to enumerate directory */
+    do
+    {
+        regs.r[0] = 9;  /* Read directory entries */
+        regs.r[1] = (int)path;
+        regs.r[2] = (int)buffer;
+        regs.r[3] = 1;  /* Read 1 entry at a time */
+        regs.r[4] = context;
+        regs.r[5] = sizeof(buffer);
+        regs.r[6] = 0;  /* Match all */
+
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        context = regs.r[4];
+        read_count = regs.r[3];
+
+        if (read_count > 0)
+        {
+            /* buffer contains: load, exec, length, attr, type, name */
+            char *name = buffer + 20;  /* Name starts at offset 20 */
+            int objtype = *((int *)(buffer + 16));
+            FTN_ADDR addr;
+            QUEUE_FLAVOUR flavour;
+            int is_flo;
+
+            /* Skip directories (point directories would be objtype 2) */
+            if (objtype == 1)  /* Regular file */
+            {
+                /* Try to parse as BSO filename */
+                if (parse_bso_hex_addr(name, zone, &addr) &&
+                    get_flavour_from_name(name, &flavour, &is_flo))
+                {
+                    QUEUE_NODE *node;
+                    char filepath[MAILER_PATH_SIZE];
+
+                    snprintf(filepath, sizeof(filepath), "%s.%s", path, name);
+
+                    /* Find or create node in queue */
+                    node = queue_find_node(&addr);
+                    if (node == NULL)
+                    {
+                        node = queue_add_node(&addr);
+                        if (node != NULL)
+                        {
+                            /* Look up uplink for hostname/port */
+                            if (!lookup_uplink_for_node(&addr, node->hostname,
+                                    sizeof(node->hostname), &node->port))
+                            {
+                                /* No uplink found - can't poll this node */
+                                debug_printf("queue: No uplink for %d:%d/%d",
+                                             addr.zone, addr.net, addr.node);
+                            }
+                        }
+                    }
+
+                    if (node != NULL)
+                    {
+                        if (is_flo)
+                        {
+                            /* Parse FLO file for file list */
+                            int files = queue_parse_flo_file(node, filepath, flavour);
+                            debug_printf("queue: Parsed %s: %d files", name, files);
+                            count += files;
+                        }
+                        else
+                        {
+                            /* Direct packet file */
+                            if (queue_add_file(node, filepath, QUEUE_FILE_PKT, flavour))
+                            {
+                                count++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } while (context != -1);
+
+    return count;
+}
+
+/*
+ * Get zone number from zone extension.
+ * e.g., "001" -> 1, "003" -> 3, "" -> 2 (default)
+ */
+static int get_zone_from_extension(const char *ext)
+{
+    unsigned int zone;
+
+    if (ext == NULL || ext[0] == '\0')
+    {
+        return 2;  /* Default zone */
+    }
+
+    if (sscanf(ext, "%03x", &zone) == 1)
+    {
+        return (int)zone;
+    }
+
+    return 2;
+}
+
 void queue_scan_outbound(void)
 {
-    /* TODO: Implement BSO directory scanning */
-    /* This would iterate through the outbound directory structure */
-    /* looking for .OUT, .FLO, .HUT, .HLO, .CUT, .CLO, etc. files */
+    _kernel_swi_regs regs;
+    char buffer[256];
+    int context = 0;
+    int read_count;
+    int total_files = 0;
+    char parent_path[MAILER_PATH_SIZE];
+    char *last_dot;
+    char base_name[64];
 
     debug_printf("queue: Scanning outbound: %s", mailer.outbound_path);
 
+    /* Clear existing queue */
+    outbound_queue.node_count = 0;
+
+    /* Scan the main outbound directory (zone 2 default) */
+    total_files += scan_zone_directory(mailer.outbound_path, 2);
+
+    /* Now scan for zone extension directories */
+    /* They are siblings of the outbound directory with zone extension */
+    /* e.g., if outbound is "<path>.Outbound", zone 1 is "<path>.Outbound001" */
+
+    /* Get parent directory and base name */
+    strncpy(parent_path, mailer.outbound_path, sizeof(parent_path) - 1);
+    last_dot = strrchr(parent_path, '.');
+    if (last_dot != NULL)
+    {
+        strncpy(base_name, last_dot + 1, sizeof(base_name) - 1);
+        *last_dot = '\0';  /* Truncate to parent */
+
+        /* Enumerate parent directory looking for zone directories */
+        context = 0;
+        do
+        {
+            regs.r[0] = 9;
+            regs.r[1] = (int)parent_path;
+            regs.r[2] = (int)buffer;
+            regs.r[3] = 1;
+            regs.r[4] = context;
+            regs.r[5] = sizeof(buffer);
+            regs.r[6] = 0;
+
+            if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+            {
+                break;
+            }
+
+            context = regs.r[4];
+            read_count = regs.r[3];
+
+            if (read_count > 0)
+            {
+                char *name = buffer + 20;
+                int objtype = *((int *)(buffer + 16));
+                size_t base_len = strlen(base_name);
+
+                /* Looking for directories like "Outbound001" */
+                if (objtype == 2 &&  /* Directory */
+                    strncmp(name, base_name, base_len) == 0 &&
+                    strlen(name) == base_len + 3)  /* 3 hex digits */
+                {
+                    char zone_path[MAILER_PATH_SIZE];
+                    int zone = get_zone_from_extension(name + base_len);
+
+                    snprintf(zone_path, sizeof(zone_path), "%s.%s", parent_path, name);
+                    total_files += scan_zone_directory(zone_path, zone);
+                }
+            }
+        } while (context != -1);
+    }
+
     outbound_queue.last_scan = time(NULL);
+
+    /* Add configured uplinks as poll targets for checking incoming mail */
+    queue_add_uplinks_for_poll();
+
+    debug_printf("queue: Scan complete: %d nodes, %d files",
+                 outbound_queue.node_count, total_files);
+    queue_dump_status();
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -414,8 +789,14 @@ QUEUE_NODE *queue_get_next_poll_node(void)
     {
         QUEUE_NODE *node = &outbound_queue.nodes[i];
 
-        /* Skip if busy or not ready */
-        if (node->busy || node->file_count == 0)
+        /* Skip if busy */
+        if (node->busy)
+        {
+            continue;
+        }
+
+        /* Skip if no hostname configured */
+        if (node->hostname[0] == '\0')
         {
             continue;
         }
@@ -426,14 +807,116 @@ QUEUE_NODE *queue_get_next_poll_node(void)
             continue;
         }
 
-        /* Prefer higher priority (crash > direct > normal > hold) */
-        if (best == NULL || node->max_flavour > best->max_flavour)
+        /* Prefer nodes with outbound mail, then by priority */
+        if (best == NULL)
         {
+            best = node;
+        }
+        else if (node->file_count > 0 && best->file_count == 0)
+        {
+            /* Prefer nodes with mail to send */
+            best = node;
+        }
+        else if (node->file_count > 0 && best->file_count > 0 &&
+                 node->max_flavour > best->max_flavour)
+        {
+            /* Among nodes with mail, prefer higher priority */
             best = node;
         }
     }
 
     return best;
+}
+
+/*
+ * Add all configured uplinks as poll targets.
+ * This ensures we connect to uplinks to check for incoming mail
+ * even if we have nothing to send.
+ */
+void queue_add_uplinks_for_poll(void)
+{
+    _kernel_swi_regs regs;
+    int i;
+    int uplink_count;
+
+    /* Get uplink count */
+    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        debug_printf("queue: Failed to get uplink count from Support module");
+        return;
+    }
+    uplink_count = regs.r[0];
+
+    if (uplink_count == 0)
+    {
+        debug_printf("queue: No uplinks configured in Support module - check FTN config was loaded");
+    }
+    else
+    {
+        debug_printf("queue: Adding %d uplinks for polling", uplink_count);
+    }
+
+    /* Add each uplink as a poll target */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            /* FTN_UPLINK_CONFIG structure */
+            typedef struct
+            {
+                int id;
+                char address[64];
+                char network[64];
+                char host[64];
+                int port;
+                char password[32];
+                char groups[64];
+            } UPLINK_CFG;
+
+            UPLINK_CFG *uplink = (UPLINK_CFG *)regs.r[0];
+            FTN_ADDR uplink_addr;
+            QUEUE_NODE *node;
+
+            /* Skip uplinks without host configured */
+            if (uplink->host[0] == '\0')
+            {
+                debug_printf("queue: Uplink %d has no host, skipping", i);
+                continue;
+            }
+
+            /* Parse the uplink address */
+            if (!ftn_string_to_addr(uplink->address, &uplink_addr))
+            {
+                debug_printf("queue: Failed to parse uplink address: %s", uplink->address);
+                continue;
+            }
+
+            /* Check if this node is already in the queue */
+            node = queue_find_node(&uplink_addr);
+            if (node == NULL)
+            {
+                /* Add new node for this uplink */
+                node = queue_add_node(&uplink_addr);
+                if (node == NULL)
+                {
+                    debug_printf("queue: Failed to add uplink node");
+                    continue;
+                }
+            }
+
+            /* Update/set hostname and port */
+            strncpy(node->hostname, uplink->host, sizeof(node->hostname) - 1);
+            node->hostname[sizeof(node->hostname) - 1] = '\0';
+            node->port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
+
+            debug_printf("queue: Added uplink %d:%d/%d.%d -> %s:%d",
+                         uplink_addr.zone, uplink_addr.net, uplink_addr.node, uplink_addr.point,
+                         node->hostname, node->port);
+        }
+    }
 }
 
 void queue_schedule_retry(QUEUE_NODE *node, int delay_seconds)
