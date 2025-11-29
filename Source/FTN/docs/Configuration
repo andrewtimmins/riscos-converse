@@ -248,51 +248,6 @@ Troubleshooting
 "Connection timeout"    - Verify hostname and port, check network connectivity
 "Session busy"          - Remote system has no free sessions, retry later
 
-Common Socket Errors:
-  "Network is unreachable"              - Check your internet connection
-  "Connection refused"                  - Remote host not accepting connections
-  "No route to host"                    - DNS or routing problem
-  "Operation timed out"                 - Firewall blocking or host offline
-  "Connection reset by peer"            - Remote system closed connection
-
-The FTN mailer provides human-readable error messages for BSD socket errors
-that RISC OS's standard library doesn't recognise.
-
-
-Using the Connection Log
-------------------------
-Click the FTN iconbar icon to open the scrolling connection log window.
-This shows the BinkP handshake in progress:
-
-  >> frames = What we send to the remote system
-  << frames = What the remote system sends to us
-
-Example successful handshake:
-  binkp: >> M_NUL OPT NR
-  binkp: >> M_NUL SYS My BBS Name
-  binkp: >> M_NUL ZYZ John Smith
-  binkp: << M_NUL SYS Remote BBS
-  binkp: << M_NUL ZYZ Remote Sysop
-  binkp: << M_NUL LOC City, Country
-  binkp: << M_NUL VER binkd/1.1
-  binkp: >> M_ADR 2:2500/622
-  binkp: << M_ADR 2:2500/0
-  binkp: >> M_PWD SecretPassword
-  binkp: << M_OK
-
-If you don't see << frames from the remote system, check:
-* The remote hostname resolves correctly
-* Port 24554 is not blocked by a firewall
-* The uplink system is online and accepting connections
-
-
-Status Window
--------------
-Adjust-click (right-click) the FTN iconbar icon to open the status window.
-This shows:
-* Current operation (e.g., "Polling uplinks...")
-* Detailed status (e.g., "Connecting to 2:2500/0...")
-
 
 Security Notes
 --------------
