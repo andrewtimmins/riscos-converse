@@ -116,14 +116,49 @@ static unsigned long tosser_hash_string(const char *str)
     return hash;
 }
 
+/*
+ * Create a directory, including any missing parent directories.
+ * Similar to 'mkdir -p' behaviour - creates the full path hierarchy.
+ */
 static void tosser_ensure_directory(const char *path)
 {
     _kernel_swi_regs regs;
-    
-    regs.r[0] = 8;  /* Create directory */
+    char parent[TOSSER_MAX_PATH];
+    char *last_dot;
+
+    if (path == NULL || path[0] == '\0')
+    {
+        return;
+    }
+
+    /* First, try to create the directory directly */
+    regs.r[0] = 8;  /* OS_File 8 = Create directory */
     regs.r[1] = (int)path;
-    regs.r[4] = 0;
-    _kernel_swi(OS_File, &regs, &regs);
+    regs.r[4] = 0;  /* Default number of entries */
+
+    if (_kernel_swi(OS_File, &regs, &regs) == NULL)
+    {
+        return;  /* Success or already exists */
+    }
+
+    /* Failed - try to create parent directory first */
+    strncpy(parent, path, sizeof(parent) - 1);
+    parent[sizeof(parent) - 1] = '\0';
+
+    last_dot = strrchr(parent, '.');
+    if (last_dot != NULL && last_dot != parent)
+    {
+        *last_dot = '\0';  /* Truncate to parent path */
+
+        /* Recursively ensure parent exists */
+        tosser_ensure_directory(parent);
+
+        /* Now try again to create the original directory */
+        regs.r[0] = 8;
+        regs.r[1] = (int)path;
+        regs.r[4] = 0;
+        _kernel_swi(OS_File, &regs, &regs);
+    }
 }
 
 static int tosser_file_exists(const char *path)

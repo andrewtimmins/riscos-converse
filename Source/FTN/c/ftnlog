@@ -1,0 +1,449 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Log Window Implementation                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.GFX.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Window.h"
+
+#include "ftnlog.h"
+
+#define FTNLOG_MAX_LINES        512
+#define FTNLOG_LINE_CHARS       256
+#define FTNLOG_MIN_COLUMNS      80
+#define FTNLOG_CHAR_WIDTH_SHIFT 4
+#define FTNLOG_CHAR_HEIGHT_SHIFT 5
+#define FTNLOG_CHAR_WIDTH       (1 << FTNLOG_CHAR_WIDTH_SHIFT)
+#define FTNLOG_CHAR_HEIGHT      (1 << FTNLOG_CHAR_HEIGHT_SHIFT)
+
+static Desk_window_handle ftnlog_window;
+static char ftnlog_lines[FTNLOG_MAX_LINES][FTNLOG_LINE_CHARS];
+static uint16_t ftnlog_line_lengths[FTNLOG_MAX_LINES];
+static int ftnlog_start_index;
+static int ftnlog_line_count;
+static int ftnlog_longest_length = FTNLOG_MIN_COLUMNS;
+static Desk_bool ftnlog_longest_valid = Desk_bool_TRUE;
+static Desk_bool ftnlog_follow_tail = Desk_bool_TRUE;
+static int ftnlog_extent_min_x = 0;
+static int ftnlog_extent_min_y = -(FTNLOG_CHAR_HEIGHT);
+static int ftnlog_extent_max_x = FTNLOG_MIN_COLUMNS * FTNLOG_CHAR_WIDTH;
+static int ftnlog_extent_max_y = 0;
+
+static void ftnlog_recalculate_longest(void);
+static void ftnlog_store_line(const char *line);
+static void ftnlog_refresh_rectangle(Desk_window_redrawblock *redraw);
+static void ftnlog_draw_row(int row, int left, int right, int origin_x, int origin_y);
+static const char *ftnlog_get_line(int row);
+static void ftnlog_update_extent(void);
+static void ftnlog_force_redraw(void);
+static void ftnlog_scroll_to_bottom(void);
+static Desk_bool ftnlog_handle_redraw(Desk_event_pollblock *event, void *ref);
+static Desk_bool ftnlog_handle_scroll(Desk_event_pollblock *event, void *ref);
+static Desk_bool ftnlog_window_is_open(void);
+
+void ftnlog_initialise(Desk_window_handle window)
+{
+    ftnlog_window = window;
+
+    if (ftnlog_window == 0)
+    {
+        return;
+    }
+
+    Desk_Event_Claim(Desk_event_REDRAW, ftnlog_window, Desk_event_ANY,
+                     ftnlog_handle_redraw, NULL);
+    Desk_Event_Claim(Desk_event_SCROLL, ftnlog_window, Desk_event_ANY,
+                     ftnlog_handle_scroll, NULL);
+
+    ftnlog_update_extent();
+}
+
+void ftnlog_open(void)
+{
+    if (ftnlog_window == 0)
+    {
+        return;
+    }
+
+    ftnlog_follow_tail = Desk_bool_TRUE;
+    Desk_Window_Show(ftnlog_window, Desk_open_NEARLAST);
+    ftnlog_scroll_to_bottom();
+}
+
+void ftnlog_append(const char *text)
+{
+    char line[FTNLOG_LINE_CHARS];
+    int length = 0;
+    Desk_bool emitted = Desk_bool_FALSE;
+    const char *cursor;
+
+    if (text == NULL)
+    {
+        return;
+    }
+
+    cursor = text;
+    while (*cursor != '\0')
+    {
+        char ch = *cursor++;
+
+        if (ch == '\r')
+        {
+            continue;
+        }
+
+        if (ch == '\n')
+        {
+            line[length] = '\0';
+            ftnlog_store_line(line);
+            length = 0;
+            emitted = Desk_bool_TRUE;
+            continue;
+        }
+
+        line[length++] = ch;
+
+        if (length >= FTNLOG_LINE_CHARS - 1)
+        {
+            line[length] = '\0';
+            ftnlog_store_line(line);
+            length = 0;
+            emitted = Desk_bool_TRUE;
+        }
+    }
+
+    if (length > 0 || emitted == Desk_bool_FALSE)
+    {
+        line[length] = '\0';
+        ftnlog_store_line(line);
+    }
+
+    ftnlog_update_extent();
+    ftnlog_force_redraw();
+
+    if (ftnlog_follow_tail && ftnlog_window_is_open())
+    {
+        ftnlog_scroll_to_bottom();
+    }
+}
+
+void ftnlog_printf(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+
+    if (format == NULL)
+    {
+        return;
+    }
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    ftnlog_append(buffer);
+}
+
+static void ftnlog_store_line(const char *line)
+{
+    size_t len;
+    int insert_index;
+
+    if (line == NULL)
+    {
+        line = "";
+    }
+
+    len = strlen(line);
+    if (len >= (size_t)FTNLOG_LINE_CHARS)
+    {
+        len = FTNLOG_LINE_CHARS - 1;
+    }
+
+    if (ftnlog_line_count < FTNLOG_MAX_LINES)
+    {
+        insert_index = (ftnlog_start_index + ftnlog_line_count) % FTNLOG_MAX_LINES;
+        ftnlog_line_count++;
+    }
+    else
+    {
+        insert_index = ftnlog_start_index;
+        if (ftnlog_line_lengths[insert_index] == (uint16_t)ftnlog_longest_length)
+        {
+            ftnlog_longest_valid = Desk_bool_FALSE;
+        }
+        ftnlog_start_index = (ftnlog_start_index + 1) % FTNLOG_MAX_LINES;
+    }
+
+    if (len > 0)
+    {
+        memcpy(ftnlog_lines[insert_index], line, len);
+    }
+    ftnlog_lines[insert_index][len] = '\0';
+    ftnlog_line_lengths[insert_index] = (uint16_t)len;
+
+    if ((int)len > ftnlog_longest_length)
+    {
+        ftnlog_longest_length = (int)len;
+        ftnlog_longest_valid = Desk_bool_TRUE;
+    }
+    else if (!ftnlog_longest_valid)
+    {
+        ftnlog_recalculate_longest();
+    }
+}
+
+static void ftnlog_recalculate_longest(void)
+{
+    int i;
+    int max_length = FTNLOG_MIN_COLUMNS;
+
+    for (i = 0; i < ftnlog_line_count; i++)
+    {
+        int index = (ftnlog_start_index + i) % FTNLOG_MAX_LINES;
+        if ((int)ftnlog_line_lengths[index] > max_length)
+        {
+            max_length = ftnlog_line_lengths[index];
+        }
+    }
+
+    ftnlog_longest_length = max_length;
+    ftnlog_longest_valid = Desk_bool_TRUE;
+}
+
+static void ftnlog_update_extent(void)
+{
+    int width_cols = ftnlog_longest_length;
+    int height_rows = (ftnlog_line_count > 0) ? ftnlog_line_count : 1;
+
+    if (width_cols < FTNLOG_MIN_COLUMNS)
+    {
+        width_cols = FTNLOG_MIN_COLUMNS;
+    }
+
+    ftnlog_extent_min_x = 0;
+    ftnlog_extent_min_y = -(height_rows * FTNLOG_CHAR_HEIGHT);
+    ftnlog_extent_max_x = width_cols * FTNLOG_CHAR_WIDTH;
+    ftnlog_extent_max_y = 0;
+
+    if (ftnlog_window != 0)
+    {
+        Desk_Window_SetExtent(ftnlog_window,
+                              ftnlog_extent_min_x,
+                              ftnlog_extent_min_y,
+                              ftnlog_extent_max_x,
+                              ftnlog_extent_max_y);
+    }
+}
+
+static void ftnlog_force_redraw(void)
+{
+    if (ftnlog_window == 0)
+    {
+        return;
+    }
+
+    Desk_Window_ForceRedraw(ftnlog_window,
+                            ftnlog_extent_min_x,
+                            ftnlog_extent_min_y,
+                            ftnlog_extent_max_x,
+                            ftnlog_extent_max_y);
+}
+
+static void ftnlog_scroll_to_bottom(void)
+{
+    Desk_window_state state;
+    int extent_height;
+    int visible_height;
+    int desired_scroll;
+
+    if (ftnlog_window == 0)
+    {
+        return;
+    }
+
+    Desk_Wimp_GetWindowState(ftnlog_window, &state);
+
+    extent_height = -ftnlog_extent_min_y;
+    visible_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+    desired_scroll = visible_height - extent_height;
+    if (desired_scroll > 0)
+    {
+        desired_scroll = 0;
+    }
+
+    state.openblock.scroll.y = desired_scroll;
+    Desk_Wimp_OpenWindow(&state.openblock);
+}
+
+static Desk_bool ftnlog_window_is_open(void)
+{
+    if (ftnlog_window == 0)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    return Desk_Window_IsOpen(ftnlog_window);
+}
+
+static Desk_bool ftnlog_handle_redraw(Desk_event_pollblock *event, void *ref)
+{
+    Desk_window_redrawblock redraw;
+    Desk_bool more;
+
+    (void)event;
+    (void)ref;
+
+    if (ftnlog_window == 0)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    redraw.window = ftnlog_window;
+    Desk_Wimp_RedrawWindow(&redraw, &more);
+    while (more)
+    {
+        ftnlog_refresh_rectangle(&redraw);
+        Desk_Wimp_GetRectangle(&redraw, &more);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool ftnlog_handle_scroll(Desk_event_pollblock *event, void *ref)
+{
+    (void)ref;
+
+    if (ftnlog_window == 0 || event == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    Desk_Wimp_OpenWindow(&event->data.scroll.openblock);
+    ftnlog_follow_tail = Desk_bool_FALSE;
+
+    return Desk_bool_TRUE;
+}
+
+static void ftnlog_refresh_rectangle(Desk_window_redrawblock *redraw)
+{
+    int left;
+    int right;
+    int top;
+    int bottom;
+    int total_rows = ftnlog_line_count;
+
+    if (total_rows <= 0)
+    {
+        return;
+    }
+
+    left = (redraw->cliprect.min.x - redraw->rect.min.x + redraw->scroll.x) >> FTNLOG_CHAR_WIDTH_SHIFT;
+    right = (redraw->cliprect.max.x - redraw->rect.min.x + redraw->scroll.x) >> FTNLOG_CHAR_WIDTH_SHIFT;
+    top = (redraw->rect.max.y - redraw->cliprect.max.y - redraw->scroll.y + 1) >> FTNLOG_CHAR_HEIGHT_SHIFT;
+    bottom = (redraw->rect.max.y - redraw->cliprect.min.y - redraw->scroll.y + 1) >> FTNLOG_CHAR_HEIGHT_SHIFT;
+
+    if (left < 0)
+    {
+        left = 0;
+    }
+    if (right < 0)
+    {
+        return;
+    }
+    if (top < 0)
+    {
+        top = 0;
+    }
+    if (bottom >= total_rows)
+    {
+        bottom = total_rows - 1;
+    }
+    if (bottom < top)
+    {
+        return;
+    }
+
+    for (; top <= bottom; top++)
+    {
+        ftnlog_draw_row(top, left, right,
+                        redraw->rect.min.x - redraw->scroll.x,
+                        redraw->rect.max.y - redraw->scroll.y);
+    }
+}
+
+static void ftnlog_draw_row(int row, int left, int right, int origin_x, int origin_y)
+{
+    const char *line = ftnlog_get_line(row);
+    int length;
+    int start_col;
+    int end_col;
+    int count;
+    char draw_buffer[FTNLOG_LINE_CHARS];
+    int i;
+
+    if (line == NULL)
+    {
+        return;
+    }
+
+    length = (int)strlen(line);
+    if (length == 0)
+    {
+        return;
+    }
+
+    start_col = left;
+    end_col = right;
+    if (start_col < 0)
+    {
+        start_col = 0;
+    }
+    if (end_col >= length)
+    {
+        end_col = length - 1;
+    }
+
+    count = end_col - start_col + 1;
+    if (count <= 0)
+    {
+        return;
+    }
+    if (count >= FTNLOG_LINE_CHARS)
+    {
+        count = FTNLOG_LINE_CHARS - 1;
+    }
+
+    for (i = 0; i < count; i++)
+    {
+        char ch = line[start_col + i];
+        if ((unsigned char)ch < 32)
+        {
+            ch = '.';
+        }
+        draw_buffer[i] = ch;
+    }
+    draw_buffer[count] = '\0';
+
+    Desk_GFX_Move(origin_x + (start_col << FTNLOG_CHAR_WIDTH_SHIFT),
+                  origin_y - (row << FTNLOG_CHAR_HEIGHT_SHIFT) - 1);
+    Desk_GFX_WriteN(draw_buffer, count);
+}
+
+static const char *ftnlog_get_line(int row)
+{
+    if (row < 0 || row >= ftnlog_line_count)
+    {
+        return NULL;
+    }
+
+    return ftnlog_lines[(ftnlog_start_index + row) % FTNLOG_MAX_LINES];
+}

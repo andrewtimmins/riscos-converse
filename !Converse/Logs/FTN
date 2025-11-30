@@ -1,0 +1,350 @@
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 27/11/2025 | 11:21:35 | Listening on port 24554
+| 27/11/2025 | 11:21:35 | Mailer ready (Converse FTN Mailer 0.01)
+| 27/11/2025 | 11:22:50 | Incoming connection from 10.10.10.2
+| 27/11/2025 | 11:23:10 | Session closed with 0:0/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 29/11/2025 | 23:46:29 | Listening on port 24554
+| 29/11/2025 | 23:46:29 | Mailer ready (Converse 0.01)
+| 29/11/2025 | 23:46:29 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 29/11/2025 | 23:46:30 | Connected to applewoodbbs.linkpc.net
+| 29/11/2025 | 23:46:30 | Remote address: 2:250/1.0
+| 29/11/2025 | 23:46:30 | Session established, remote reports "secure"
+| 29/11/2025 | 23:46:30 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:30 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:30 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:46:30 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:30 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:46:30 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:30 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:46:30 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:31 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 29/11/2025 | 23:46:31 | Connected to otherhub.abad1dea.to
+| 29/11/2025 | 23:46:31 | Remote address: 2:301/1.0
+| 29/11/2025 | 23:46:31 | Session established, remote reports "secure"
+| 29/11/2025 | 23:46:31 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:31 | Session closed with 2:301/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:31 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 29/11/2025 | 23:46:31 | Connected to bbs.zeusdev.co.uk
+| 29/11/2025 | 23:46:32 | Remote address: 2:250/2.0
+| 29/11/2025 | 23:46:34 | Session established, remote reports "secure"
+| 29/11/2025 | 23:46:34 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:34 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:46:34 | Session closed with 2:250/2@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:30 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 29/11/2025 | 23:47:30 | Connected to applewoodbbs.linkpc.net
+| 29/11/2025 | 23:47:30 | Remote address: 2:250/1.0
+| 29/11/2025 | 23:47:31 | Session established, remote reports "secure"
+| 29/11/2025 | 23:47:31 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:31 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:31 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:47:31 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:31 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:47:31 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:31 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 29/11/2025 | 23:47:31 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:31 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 29/11/2025 | 23:47:31 | Connected to otherhub.abad1dea.to
+| 29/11/2025 | 23:47:31 | Remote address: 2:301/1.0
+| 29/11/2025 | 23:47:32 | Session established, remote reports "secure"
+| 29/11/2025 | 23:47:32 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:32 | Session closed with 2:301/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:32 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 29/11/2025 | 23:47:32 | Connected to bbs.zeusdev.co.uk
+| 29/11/2025 | 23:47:33 | Remote address: 2:250/2.0
+| 29/11/2025 | 23:47:35 | Session established, remote reports "secure"
+| 29/11/2025 | 23:47:35 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:35 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:35 | Session closed with 2:250/2@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 29/11/2025 | 23:47:48 | Mailer shutdown
+| 30/11/2025 | 00:00:25 | Listening on port 24554
+| 30/11/2025 | 00:00:25 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:00:25 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:00:25 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:00:25 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:00:25 | Session established, remote reports "secure"
+| 30/11/2025 | 00:00:25 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:25 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:00:26 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:00:26 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:00:26 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:00:26 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:00:26 | Remote address: 2:301/1.0
+| 30/11/2025 | 00:00:26 | Session established, remote reports "secure"
+| 30/11/2025 | 00:00:26 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Session closed with 2:301/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:00:26 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:00:27 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:00:27 | Remote address: 2:250/2.0
+| 30/11/2025 | 00:00:29 | Session established, remote reports "secure"
+| 30/11/2025 | 00:00:29 | Receiving: d20d85f8.SA0 (1481 bytes)
+| 30/11/2025 | 00:02:44 | Listening on port 24554
+| 30/11/2025 | 00:02:44 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:02:44 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:02:44 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:02:44 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:02:44 | Session established, remote reports "secure"
+| 30/11/2025 | 00:02:44 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:44 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:44 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:02:44 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:44 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:02:45 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:45 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:02:45 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:45 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:02:45 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:02:45 | Remote address: 2:301/1.0
+| 30/11/2025 | 00:02:45 | Session established, remote reports "secure"
+| 30/11/2025 | 00:02:45 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:45 | Session closed with 2:301/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:02:45 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:02:45 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:02:46 | Remote address: 2:250/2.0
+| 30/11/2025 | 00:02:49 | Remote busy: Secure AKA 39:136/8@amiganet busy
+| 30/11/2025 | 00:02:49 | Session closed with 2:250/2@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:07 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:03:07 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:03:08 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:03:08 | Session established, remote reports "secure"
+| 30/11/2025 | 00:03:08 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:08 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:08 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:03:08 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:08 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:03:08 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:08 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:03:08 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:08 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:03:08 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:03:09 | Remote address: 2:301/1.0
+| 30/11/2025 | 00:03:09 | Session established, remote reports "secure"
+| 30/11/2025 | 00:03:09 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:09 | Session closed with 2:301/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:03:09 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:03:09 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:03:09 | Remote address: 2:250/2.0
+| 30/11/2025 | 00:03:11 | Remote busy: Secure AKA 39:136/8@amiganet busy
+| 30/11/2025 | 00:03:11 | Session closed with 2:250/2@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:07:36 | Mailer shutdown
+| 30/11/2025 | 00:16:37 | Listening on port 24554
+| 30/11/2025 | 00:16:37 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:16:46 | Listening on port 24554
+| 30/11/2025 | 00:16:46 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:16:54 | Listening on port 24554
+| 30/11/2025 | 00:16:54 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:21:37 | Listening on port 24554
+| 30/11/2025 | 00:21:37 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:21:38 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:21:38 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:21:38 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:21:38 | Session established, remote reports "secure"
+| 30/11/2025 | 00:21:38 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:38 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:38 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:38 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:21:38 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:38 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:21:38 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:21:48 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:48 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:48 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:21:48 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:21:48 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:48 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:21:48 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:21:50 | Mailer shutdown
+| 30/11/2025 | 00:26:19 | Listening on port 24554
+| 30/11/2025 | 00:26:19 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:26:19 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:26:19 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:26:19 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:26:19 | Session established, remote reports "secure"
+| 30/11/2025 | 00:26:19 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:19 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:19 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:19 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:26:19 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:19 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:26:19 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:24 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:26:24 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:25 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:25 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:25 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:25 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:25 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:26:25 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:25 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:26:25 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:26:25 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:26:25 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:28:45 | Mailer shutdown
+| 30/11/2025 | 00:29:02 | Listening on port 24554
+| 30/11/2025 | 00:29:02 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:29:02 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:29:02 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:29:02 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:29:02 | Session established, remote reports "secure"
+| 30/11/2025 | 00:29:02 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:02 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:02 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:02 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:02 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:02 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:02 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:29:02 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:29:02 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:02 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:29:02 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:29:02 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:29:13 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:29:13 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:29:13 | Session established, remote reports "secure"
+| 30/11/2025 | 00:29:13 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:13 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:13 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:13 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:13 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:29:13 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:29:13 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:29:13 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:29:13 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:29:13 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:29:13 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:29:13 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:10 | Mailer shutdown
+| 30/11/2025 | 00:30:23 | Listening on port 24554
+| 30/11/2025 | 00:30:23 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:30:23 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:30:23 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:23 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:30:23 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:23 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:30:23 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:23 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:30:23 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:23 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:30:23 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:23 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:30:23 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:30:28 | Mailer shutdown
+| 30/11/2025 | 00:32:27 | Listening on port 24554
+| 30/11/2025 | 00:32:27 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:32:27 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:32:27 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:32:27 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:27 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:27 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:27 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:27 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:27 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:27 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:27 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:27 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:27 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:27 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:32:27 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:32:27 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:27 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:32:27 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:32:27 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:32:34 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:32:34 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:34 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:34 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:34 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:34 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:34 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:34 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:32:34 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:32:34 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:34 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:32:34 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:32:34 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:32:47 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:32:47 | Session closed with 2:250/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:47 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:47 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:47 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:47 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:32:47 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:32:47 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:32:47 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:32:47 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:47 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:32:47 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:32:47 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:32:53 | Mailer shutdown
+| 30/11/2025 | 00:34:11 | Listening on port 24554
+| 30/11/2025 | 00:34:11 | Mailer ready (Converse 0.01)
+| 30/11/2025 | 00:34:11 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 30/11/2025 | 00:34:11 | Connected to applewoodbbs.linkpc.net
+| 30/11/2025 | 00:34:11 | Remote address: 2:250/1.0
+| 30/11/2025 | 00:34:11 | Session established, remote reports "secure"
+| 30/11/2025 | 00:34:11 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Session closed with 2:250/1@fidonet: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:34:11 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:34:11 | Session closed with 64:500/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:34:11 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:34:11 | Session closed with 314:314/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 30/11/2025 | 00:34:11 | Connected to call.rofbbs.com
+| 30/11/2025 | 00:34:11 | Session closed with 80:774/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 30/11/2025 | 00:34:11 | Connected to otherhub.abad1dea.to
+| 30/11/2025 | 00:34:11 | Session closed with 954:44/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:34:11 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 30/11/2025 | 00:34:11 | Connected to bbs.zeusdev.co.uk
+| 30/11/2025 | 00:34:11 | Session closed with 39:13/0: Error (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 30/11/2025 | 00:36:06 | Mailer shutdown

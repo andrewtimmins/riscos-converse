@@ -49,6 +49,7 @@
 #include "tosser.h"
 #include "timer.h"
 #include "debug.h"
+#include "ftnlog.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variables                                                                                                                                         */
@@ -58,19 +59,8 @@ WIMP_STATE wimp;
 MAILER_STATE mailer;
 Desk_window_handle proginfo_window;
 Desk_window_handle ftnstatus_window;
-Desk_window_handle ftnconnect_window;
+Desk_window_handle ftnlog_window;
 Desk_menu_ptr mail_menu;
-
-/* Number of status lines in ftnconnect window */
-#define FTNCONNECT_NUM_LINES 16
-
-/* Status line icon numbers (STATUS1=4, STATUS2=5, etc) */
-static const int ftnconnect_status_icons[FTNCONNECT_NUM_LINES] = {
-    FTNCONNECT_STATUS1, FTNCONNECT_STATUS2, FTNCONNECT_STATUS3, FTNCONNECT_STATUS4,
-    FTNCONNECT_STATUS5, FTNCONNECT_STATUS6, FTNCONNECT_STATUS7, FTNCONNECT_STATUS8,
-    FTNCONNECT_STATUS9, FTNCONNECT_STATUS10, FTNCONNECT_STATUS11, FTNCONNECT_STATUS12,
-    FTNCONNECT_STATUS13, FTNCONNECT_STATUS14, FTNCONNECT_STATUS15, FTNCONNECT_STATUS16
-};
 
 /* Iconbar menu entries */
 enum
@@ -200,9 +190,15 @@ void mailer_log(const char *format, ...)
 /* FTN Status Window                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/*
+ * Open the ftnstatus window positioned at bottom-left, just above iconbar.
+ * Sets the operation text from the message tag.
+ */
 static void ftnstatus_open(const char *operation_msg_tag)
 {
     char operation[64];
+    Desk_window_state state;
+    int win_width, win_height;
     
     /* Look up operation string from Messages file */
     Desk_Msgs_Lookup(operation_msg_tag, operation, sizeof(operation));
@@ -213,8 +209,18 @@ static void ftnstatus_open(const char *operation_msg_tag)
     /* Clear status */
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "");
     
-    /* Show window centered */
-    Desk_Window_Show(ftnstatus_window, Desk_open_CENTERED);
+    /* Position window at bottom-left, just above iconbar */
+    Desk_Wimp_GetWindowState(ftnstatus_window, &state);
+    win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+    win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+    
+    state.openblock.screenrect.min.x = 16;
+    state.openblock.screenrect.max.x = 16 + win_width;
+    state.openblock.screenrect.min.y = 134;  /* Just above iconbar (128) + margin */
+    state.openblock.screenrect.max.y = 134 + win_height;
+    state.openblock.behind = -1;  /* Open at front */
+    
+    Desk_Wimp_OpenWindow(&state.openblock);
     
     /* Force a redraw so user sees it immediately */
     {
@@ -225,6 +231,9 @@ static void ftnstatus_open(const char *operation_msg_tag)
     }
 }
 
+/*
+ * Update the status text in the ftnstatus window.
+ */
 static void ftnstatus_update(const char *status)
 {
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, (char *)status);
@@ -238,58 +247,16 @@ static void ftnstatus_update(const char *status)
     }
 }
 
-static void ftnstatus_close(void)
-{
-    Desk_Window_Hide(ftnstatus_window);
-}
-
-/* ******************************************************************************************************************************************************** */
-/* FTN Connect Window - Scrolling Log Display                                                                                                               */
-/* ******************************************************************************************************************************************************** */
-
 /*
- * Open the ftnconnect window and set the hostname.
- * Clears all status lines ready for new log entries.
+ * Set the ftnstatus window to idle state.
+ * Shows "Idle..." and "Waiting for connection."
  */
-void ftnconnect_open(const char *hostname)
+static void ftnstatus_set_idle(void)
 {
-    int i;
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
     
-    /* Set hostname */
-    Desk_Icon_SetText(ftnconnect_window, FTNCONNECT_HOSTNAME, (char *)hostname);
-    
-    /* Clear all status lines */
-    for (i = 0; i < FTNCONNECT_NUM_LINES; i++)
-    {
-        Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[i], "");
-    }
-    
-    /* Position window at bottom-right, just above iconbar */
-    {
-        Desk_window_state state;
-        int screen_width, screen_height;
-        int win_width, win_height;
-        
-        /* Get current screen size */
-        screen_width = Desk_screen_size.x;
-        screen_height = Desk_screen_size.y;
-        
-        /* Get window dimensions */
-        Desk_Wimp_GetWindowState(ftnconnect_window, &state);
-        win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
-        win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
-        
-        /* Position at bottom-right, above iconbar */
-        state.openblock.screenrect.min.x = screen_width - win_width - 16;
-        state.openblock.screenrect.max.x = screen_width - 16;
-        state.openblock.screenrect.min.y = 126 + 16;  /* Iconbar + margin */
-        state.openblock.screenrect.max.y = 126 + 16 + win_height;
-        state.openblock.behind = -1;  /* Open at front */
-        
-        Desk_Wimp_OpenWindow(&state.openblock);
-    }
-    
-    /* Force redraw */
+    /* Force a redraw so user sees update */
     {
         Desk_event_pollblock event;
         Desk_event_pollmask mask;
@@ -299,59 +266,29 @@ void ftnconnect_open(const char *hostname)
 }
 
 /*
- * Add a log line to the ftnconnect window.
- * Scrolls existing lines up and adds new line at the bottom.
+ * Open the ftnstatus window in idle state at bottom-left.
  */
-void ftnconnect_log(const char *format, ...)
+static void ftnstatus_open_idle(void)
 {
-    char buffer[256];
-    va_list args;
-    int i;
-    Desk_icon_block icon_info;
-    char line_buffer[256];
+    Desk_window_state state;
+    int win_width, win_height;
     
-    /* Format the message */
-    va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
+    /* Set idle text */
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
     
-    /* Scroll lines up: copy line N+1 to line N */
-    for (i = 0; i < FTNCONNECT_NUM_LINES - 1; i++)
-    {
-        /* Get text from next line */
-        Desk_Wimp_GetIconState(ftnconnect_window, ftnconnect_status_icons[i + 1], &icon_info);
-        if (icon_info.flags.data.indirected && icon_info.data.indirecttext.buffer != NULL)
-        {
-            strncpy(line_buffer, icon_info.data.indirecttext.buffer, sizeof(line_buffer) - 1);
-            line_buffer[sizeof(line_buffer) - 1] = '\0';
-        }
-        else
-        {
-            line_buffer[0] = '\0';
-        }
-        
-        /* Set it to current line */
-        Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[i], line_buffer);
-    }
+    /* Position window at bottom-left, just above iconbar */
+    Desk_Wimp_GetWindowState(ftnstatus_window, &state);
+    win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+    win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
     
-    /* Add new message at the bottom */
-    Desk_Icon_SetText(ftnconnect_window, ftnconnect_status_icons[FTNCONNECT_NUM_LINES - 1], buffer);
+    state.openblock.screenrect.min.x = 16;
+    state.openblock.screenrect.max.x = 16 + win_width;
+    state.openblock.screenrect.min.y = 134;  /* Just above iconbar (128) + margin */
+    state.openblock.screenrect.max.y = 134 + win_height;
+    state.openblock.behind = -1;  /* Open at front */
     
-    /* Force redraw so user sees update */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
-    }
-}
-
-/*
- * Close the ftnconnect window.
- */
-void ftnconnect_close(void)
-{
-    Desk_Window_Hide(ftnconnect_window);
+    Desk_Wimp_OpenWindow(&state.openblock);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -565,9 +502,10 @@ void mailer_accept_connection(void)
     strncpy(session->remote_hostname, inet_ntoa(client_addr.sin_addr),
             sizeof(session->remote_hostname) - 1);
 
-    /* Open connection window for incoming call */
-    ftnconnect_open(session->remote_hostname);
-    ftnconnect_log("Incoming connection from %s", session->remote_hostname);
+    /* Open status window for incoming call */
+    ftnstatus_open("ftn.incoming");
+    ftnstatus_update(session->remote_hostname);
+    ftnlog_printf("Incoming connection from %s", session->remote_hostname);
 
     mailer_log_ftn("Incoming connection from %s", session->remote_hostname);
     mailer.total_sessions++;
@@ -664,6 +602,9 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
             mailer_log_ftn("Auto-tossed %d messages", tossed);
         }
     }
+
+    /* Reset status window to idle state */
+    ftnstatus_set_idle();
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -764,27 +705,52 @@ void mailer_process_sessions(void)
         switch (session->state)
         {
             case SESSION_STATE_CONNECTING:
-                /* For non-blocking connect, try to send 0 bytes to check if connected */
+                /* Check if non-blocking connect has completed using getsockopt(SO_ERROR) */
                 {
-                    int result = send(session->socket, "", 0, 0);
-                    if (result >= 0)
+                    int so_error = -1;  /* Init to invalid value */
+                    socklen_t so_len = sizeof(so_error);
+                    int gso_result;
+                    
+                    gso_result = getsockopt(session->socket, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+                    
+                    debug_printf("mailer: getsockopt result=%d, so_error=%d, errno=%d", 
+                                 gso_result, so_error, errno);
+                    
+                    if (gso_result == 0)
                     {
-                        /* Connected successfully - start handshake */
-                        session->state = SESSION_STATE_WAIT_NUL;
-                        session->last_activity = time(NULL);
-                        ftnconnect_log("Connected to %s", session->remote_hostname);
-                        mailer_log_ftn("Connected to %s", session->remote_hostname);
+                        if (so_error == 0)
+                        {
+                            /* Connected successfully - start handshake */
+                            session->state = SESSION_STATE_WAIT_NUL;
+                            session->last_activity = time(NULL);
+                            ftnlog_printf("Connected to %s", session->remote_hostname);
+                            mailer_log_ftn("Connected to %s", session->remote_hostname);
 
-                        /* Start BinkP handshake */
-                        binkp_send_handshake(session);
+                            /* Start BinkP handshake */
+                            binkp_send_handshake(session);
+                        }
+                        else if (so_error == EINPROGRESS)
+                        {
+                            /* Still connecting, wait more */
+                        }
+                        else
+                        {
+                            /* Connect failed with error */
+                            ftnlog_printf("Connection failed to %s (err %d)", session->remote_hostname, so_error);
+                            session->state = SESSION_STATE_ERROR;
+                        }
                     }
-                    else if (errno != EWOULDBLOCK && errno != EAGAIN && errno != EINPROGRESS)
+                    else
                     {
-                        /* Connect failed */
-                        ftnconnect_log("Connection failed to %s", session->remote_hostname);
-                        session->state = SESSION_STATE_ERROR;
+                        /* getsockopt failed - check errno */
+                        debug_printf("mailer: getsockopt failed, errno=%d", errno);
+                        if (errno != EINPROGRESS && errno != EWOULDBLOCK)
+                        {
+                            ftnlog_printf("Connection check failed to %s", session->remote_hostname);
+                            session->state = SESSION_STATE_ERROR;
+                        }
+                        /* else still connecting */
                     }
-                    /* else still connecting, wait more */
                 }
                 break;
 
@@ -904,8 +870,8 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     queue_mark_node_busy(addr, 1);
 
     /* Log to connection window */
-    ftnconnect_log("Connecting to %s:%d", hostname, port);
-    ftnconnect_log("Node: %s", addr_str);
+    ftnlog_printf("Connecting to %s:%d", hostname, port);
+    ftnlog_printf("Node: %s", addr_str);
 
     mailer_log_ftn("Connecting to %s (%s:%d)", addr_str, hostname, port);
     mailer.total_sessions++;
@@ -925,7 +891,7 @@ void mailer_poll_all_uplinks(void)
     int poll_count = 0;
 
     debug_printf("mailer: Polling all uplinks... node_count=%d", outbound_queue.node_count);
-    ftnconnect_log("Found %d nodes in queue", outbound_queue.node_count);
+    ftnlog_printf("Found %d nodes in queue", outbound_queue.node_count);
 
     for (i = 0; i < outbound_queue.node_count; i++)
     {
@@ -937,11 +903,11 @@ void mailer_poll_all_uplinks(void)
         /* Skip nodes without hostname */
         if (node->hostname[0] == '\0')
         {
-            ftnconnect_log("Skipping %s (no hostname)", addr_str);
+            ftnlog_printf("Skipping %s (no hostname)", addr_str);
             continue;
         }
 
-        ftnconnect_log("Node %d: %s -> %s:%d", i, addr_str, node->hostname, node->port);
+        ftnlog_printf("Node %d: %s -> %s:%d", i, addr_str, node->hostname, node->port);
 
         /* Wait for any active session to complete */
         while (mailer.active_sessions > 0)
@@ -954,7 +920,7 @@ void mailer_poll_all_uplinks(void)
         }
 
         /* Connect to this node */
-        ftnconnect_log("Polling %s", addr_str);
+        ftnlog_printf("Polling %s", addr_str);
         if (mailer_connect_to_node(&node->addr, node->hostname, node->port))
         {
             poll_count++;
@@ -971,37 +937,112 @@ void mailer_poll_all_uplinks(void)
         }
         else
         {
-            ftnconnect_log("Failed to connect to %s", addr_str);
+            ftnlog_printf("Failed to connect to %s", addr_str);
         }
     }
 
     debug_printf("mailer: Poll complete, connected to %d nodes", poll_count);
-    ftnconnect_log("Poll complete: %d nodes", poll_count);
+    ftnlog_printf("Poll complete: %d nodes", poll_count);
 }
 
 /* ******************************************************************************************************************************************************** */
 /* Initialisation                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
 
+/*
+ * Create a directory, including any missing parent directories.
+ * Similar to 'mkdir -p' behaviour - creates the full path hierarchy.
+ */
 static void ensure_directory_exists(const char *path)
 {
     _kernel_swi_regs regs;
+    char parent[MAILER_PATH_SIZE];
+    char *last_dot;
 
-    /* OS_File 8 = Create directory */
-    regs.r[0] = 8;
+    if (path == NULL || path[0] == '\0')
+    {
+        return;
+    }
+
+    /* First, try to create the directory directly */
+    regs.r[0] = 8;  /* OS_File 8 = Create directory */
     regs.r[1] = (int)path;
     regs.r[4] = 0;  /* Default number of entries */
-    _kernel_swi(OS_File, &regs, &regs);
+
+    if (_kernel_swi(OS_File, &regs, &regs) == NULL)
+    {
+        return;  /* Success or already exists */
+    }
+
+    /* Failed - try to create parent directory first */
+    strncpy(parent, path, sizeof(parent) - 1);
+    parent[sizeof(parent) - 1] = '\0';
+
+    last_dot = strrchr(parent, '.');
+    if (last_dot != NULL && last_dot != parent)
+    {
+        *last_dot = '\0';  /* Truncate to parent path */
+
+        /* Recursively ensure parent exists */
+        ensure_directory_exists(parent);
+
+        /* Now try again to create the original directory */
+        regs.r[0] = 8;
+        regs.r[1] = (int)path;
+        regs.r[4] = 0;
+        _kernel_swi(OS_File, &regs, &regs);
+    }
+}
+
+/*
+ * Check if a path exists (file or directory).
+ * Returns: 0 = not found, 1 = file, 2 = directory
+ */
+static int path_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 17;  /* OS_File 17 = Read catalogue info, no path */
+    regs.r[1] = (int)path;
+
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return regs.r[0];  /* 0=not found, 1=file, 2=directory */
 }
 
 static void mailer_create_directories(void)
 {
-    /* Ensure all FTN directories exist */
+    char processed_path[MAILER_PATH_SIZE];
+    char bad_path[MAILER_PATH_SIZE];
+
+    debug_printf("mailer: Creating FTN directory structure...");
+
+    /* Create main FTN directories */
     ensure_directory_exists(mailer.inbound_path);
     ensure_directory_exists(mailer.outbound_path);
     ensure_directory_exists(mailer.temp_inbound);
 
-    debug_printf("mailer: Created directories");
+    /* Create tosser subdirectories under Inbound */
+    snprintf(processed_path, sizeof(processed_path), "%s.Processed", mailer.inbound_path);
+    snprintf(bad_path, sizeof(bad_path), "%s.Bad", mailer.inbound_path);
+
+    ensure_directory_exists(processed_path);
+    ensure_directory_exists(bad_path);
+
+    /* Log what we created/verified */
+    debug_printf("mailer:   Inbound: %s %s", mailer.inbound_path,
+                 path_exists(mailer.inbound_path) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Outbound: %s %s", mailer.outbound_path,
+                 path_exists(mailer.outbound_path) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Temp: %s %s", mailer.temp_inbound,
+                 path_exists(mailer.temp_inbound) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Processed: %s %s", processed_path,
+                 path_exists(processed_path) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Bad: %s %s", bad_path,
+                 path_exists(bad_path) == 2 ? "(OK)" : "(FAILED)");
 }
 
 void mailer_initialise(void)
@@ -1050,10 +1091,17 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
 
 static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 {
+    (void)ref;
+
     if (event->data.mouse.button.data.select)
     {
-        /* Open connection log window */
-        ftnconnect_open("");
+        /* Open log window */
+        ftnlog_open();
+    }
+    else if (event->data.mouse.button.data.adjust)
+    {
+        /* Open status window in idle state */
+        ftnstatus_open_idle();
     }
     else if (event->data.mouse.button.data.menu)
     {
@@ -1065,6 +1113,8 @@ static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *re
 
 static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref)
 {
+    (void)ref;
+
     debug_printf("mailer: Menu selection [0]=%d [1]=%d", 
                  event->data.selection[0], event->data.selection[1]);
 
@@ -1075,22 +1125,23 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
         switch (event->data.selection[1])
         {
             case MAIL_MENU_POLL:
-                /* Force poll now with status and connection windows */
-                ftnconnect_open("");
-                ftnconnect_log("Scanning outbound queue...");
+                /* Force poll now with status window */
+                ftnstatus_open("ftn.polling");
+                ftnstatus_update("Scanning outbound...");
+                ftnlog_printf("Scanning outbound queue...");
                 queue_scan_outbound();
-                ftnconnect_log("Polling all uplinks...");
+                ftnstatus_update("Polling uplinks...");
+                ftnlog_printf("Polling all uplinks...");
                 mailer_poll_all_uplinks();
-                ftnconnect_log("Poll complete");
-                /* Leave ftnconnect open so user can see the log */
+                ftnlog_printf("Poll complete");
+                ftnstatus_set_idle();
                 break;
 
             case MAIL_MENU_TOSS:
                 /* Process inbound mail with status window */
-                ftnconnect_open("");
                 ftnstatus_open("ftn.tossing");
                 ftnstatus_update("Scanning inbound...");
-                ftnconnect_log("Scanning inbound directory...");
+                ftnlog_printf("Scanning inbound directory...");
                 tosser_set_status_callback(ftnstatus_update);
                 {
                     int count = tosser_process_inbound();
@@ -1100,16 +1151,16 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
                         char msg[64];
                         snprintf(msg, sizeof(msg), "Tossed %d messages", count);
                         ftnstatus_update(msg);
-                        ftnconnect_log(msg);
+                        ftnlog_printf("%s", msg);
                         mailer_log("Tossed %d messages", count);
                     }
                     else
                     {
                         ftnstatus_update("No packets found");
-                        ftnconnect_log("No packets found");
+                        ftnlog_printf("No packets found");
                     }
                 }
-                ftnstatus_close();
+                ftnstatus_set_idle();
                 break;
         }
         return Desk_bool_TRUE;
@@ -1280,7 +1331,10 @@ int main(int argc, char *argv[])
     proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
     ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
-    ftnconnect_window = Desk_Window_Create("ftnconnect", Desk_template_TITLEMIN);
+    ftnlog_window = Desk_Window_Create("ftnlog", Desk_template_TITLEMIN);
+
+    /* Initialise ftnlog module */
+    ftnlog_initialise(ftnlog_window);
 
     /* Attach proginfo dialog as submenu of the Info entry */
     if (wimp.iconbar_menu_handle != NULL && proginfo_window != NULL)
@@ -1317,8 +1371,7 @@ int main(int argc, char *argv[])
     mailer_log_ftn("Mailer ready (%s %s)", MAILER_NAME, MAILER_VERSION);
 
     /* Poll all uplinks on startup */
-    ftnconnect_open("");
-    ftnconnect_log("Startup poll...");
+    ftnlog_printf("Startup poll...");
     mailer_poll_all_uplinks();
 
     /* Main loop */
