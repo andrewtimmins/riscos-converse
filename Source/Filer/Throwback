@@ -1,0 +1,4 @@
+Processing: HostFS::HostFS.$.Projects.riscos-converse.Source.Filer.c.userdb
+Errors in : HostFS::HostFS.$.Projects.riscos-converse.Source.Filer.c.userdb
+   227 E undeclared name, inventing 'extern int userdb_string_casecmp()'
+   307 E linkage disagreement for 'userdb_string_casecmp' - treated as 'extern'

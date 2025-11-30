@@ -24,6 +24,7 @@ static void userdb_decrypt_payload(USER_RECORD *record);
 static void userdb_normalise_strings(USER_RECORD *record);
 static void userdb_log_event(const char *message, int user_id);
 static USER_RECORD *userdb_find_record_by_username(const char *username);
+static int userdb_string_casecmp(const char *lhs, const char *rhs);
 
 /* ******************************************************************************************************************************************************** */
 /* User Database Routines                                                                                                                                   */
@@ -193,54 +194,74 @@ int userdb_delete_record(int user_id)
 
 USER_RECORD *userdb_authenticate(const char *username, const char *password, FILER_USERDB_AUTH_RESULT *result)
 {
-    USER_RECORD *record;
+    FILE *file;
+    USER_RECORD record;
 
     if (result != NULL)
     {
         *result = FILER_USERDB_AUTH_NO_USER;
     }
 
-    if (username == NULL || password == NULL)
+    if (username == NULL || password == NULL || *username == '\0')
     {
         return NULL;
     }
 
-    record = userdb_find_record_by_username(username);
-    if (record == NULL)
+    /* Open the database file */
+    file = fopen(USERDB, "rb");
+    if (file == NULL)
     {
         return NULL;
     }
 
-    if (record->user_flags.deleted != 0)
+    /* Search for the user by username - use local record to avoid race conditions */
+    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
     {
-        return NULL;
-    }
+        userdb_decrypt_payload(&record);
+        userdb_normalise_strings(&record);
 
-    if (record->user_flags.lockedout != 0)
-    {
-        if (result != NULL)
+        if (record.user_flags.deleted != 0)
         {
-            *result = FILER_USERDB_AUTH_LOCKED;
+            continue;
         }
-        return NULL;
-    }
 
-    if (strcmp(record->password, password) != 0)
-    {
-        if (result != NULL)
+        if (userdb_string_casecmp(record.username, username) == 0)
         {
-            *result = FILER_USERDB_AUTH_BAD_PASSWORD;
+            /* Found the user - check password while still holding local copy */
+            fclose(file);
+
+            if (record.user_flags.lockedout != 0)
+            {
+                if (result != NULL)
+                {
+                    *result = FILER_USERDB_AUTH_LOCKED;
+                }
+                return NULL;
+            }
+
+            if (strcmp(record.password, password) != 0)
+            {
+                if (result != NULL)
+                {
+                    *result = FILER_USERDB_AUTH_BAD_PASSWORD;
+                }
+                return NULL;
+            }
+
+            /* Password matches - copy to cached record and return */
+            if (result != NULL)
+            {
+                *result = FILER_USERDB_AUTH_SUCCESS;
+            }
+
+            userdb_cached_record = record;
+            userdb_log_event("Authenticated user: #%d", record.id);
+            return &userdb_cached_record;
         }
-        return NULL;
     }
 
-    if (result != NULL)
-    {
-        *result = FILER_USERDB_AUTH_SUCCESS;
-    }
-
-    userdb_log_event("Authenticated user: #%d", record->id);
-    return record;
+    fclose(file);
+    return NULL;
 }
 
 static void userdb_encrypt_payload(USER_RECORD *record)
