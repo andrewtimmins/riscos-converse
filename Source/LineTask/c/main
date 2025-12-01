@@ -11,6 +11,7 @@
 #include "C:Desk.Event.h"
 #include "C:Desk.EventMsg.h"
 #include "C:Desk.Handler.h"
+#include "C:Desk.Icon.h"
 #include "C:Desk.Msgs.h"
 #include "C:Desk.Resource.h"
 #include "C:Desk.Screen.h"
@@ -165,10 +166,25 @@ typedef struct
     int user_accesslevel;
     int user_sysop;
     char user_keys[128];
+    /* Sysop chat state */
+    Desk_bool chat_paging;              /* Pager window is open */
+    Desk_bool chat_active;              /* Chat session is active */
+    clock_t chat_pager_deadline;        /* 30 second timeout */
+    clock_t chat_next_beep;             /* Next beep time */
+    char chat_reason[256];              /* User's reason for paging */
+    char chat_user_buffer[1024];        /* What user is typing */
+    char chat_sysop_buffer[1024];       /* What sysop is typing */
+    int chat_user_len;
+    int chat_sysop_len;
+    int chat_user_row;                  /* Current row in user's ANSI area */
+    int chat_sysop_row;                 /* Current row in sysop's ANSI area */
+    char chat_sysop_prev[1024];         /* Previous sysop field content for change detection */
 } line_task_state;
 
 static line_task_state task_state;
 static Desk_window_handle main_window_handle;
+static Desk_window_handle chatpager_window_handle;
+static Desk_window_handle chat_window_handle;
 
 static char app_compiled[]=__DATE__" at "__TIME__;
 
@@ -243,9 +259,25 @@ static void script_host_start_newuser(void *context);
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
 static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
 static int script_host_get_user_id(void *context);
+static void script_host_start_chat_pager(void *context, const char *reason);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
 static void poll_idle(void);
+/* Sysop chat functions */
+static void chat_reset_state(line_task_state *state);
+static void chat_start_pager(line_task_state *state, const char *reason);
+static void chat_close_pager(line_task_state *state, int accepted);
+static void chat_start_session(line_task_state *state);
+static void chat_end_session(line_task_state *state);
+static void chat_process(line_task_state *state);
+static void chat_handle_user_byte(line_task_state *state, unsigned char byte);
+static void chat_send_sysop_char(line_task_state *state, char ch);
+static void chat_send_sysop_backspace(line_task_state *state);
+static void chat_setup_split_screen(line_task_state *state);
+static void chat_beep(void);
+static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_chat_key(Desk_event_pollblock *event, void *ref);
 
 static void poll_idle(void)
 {
@@ -306,6 +338,12 @@ int main(int argc, char **argv)
     Desk_Event_Claim(Desk_event_USERMESSAGERECORDED, Desk_event_ANY, Desk_event_ANY, handle_message_event, &task_state);
 
     initialise_resources();
+    
+    /* Register click handlers for chat windows */
+    Desk_Event_Claim(Desk_event_CLICK, chatpager_window_handle, Desk_event_ANY, handle_chatpager_click, &task_state);
+    Desk_Event_Claim(Desk_event_CLICK, chat_window_handle, Desk_event_ANY, handle_chat_click, &task_state);
+    Desk_Event_Claim(Desk_event_KEY, chat_window_handle, Desk_event_ANY, handle_chat_key, &task_state);
+    
     notify_server_ready(&task_state);
 
     while (task_state.quit_requested == Desk_bool_FALSE)
@@ -380,6 +418,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.start_transfer = script_host_start_transfer;
         host.start_receive_transfer = script_host_start_receive_transfer;
         host.get_user_id = script_host_get_user_id;
+        host.start_chat_pager = script_host_start_chat_pager;
         script_initialise(&state->script, &host);
     }
 
@@ -388,6 +427,9 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     
     /* Initialise transfer session */
     memset(&state->xfer_session, 0, sizeof(state->xfer_session));
+    
+    /* Initialise chat state */
+    chat_reset_state(state);
     
     state->user_id = 0;
     state->user_accesslevel = 0;
@@ -403,6 +445,8 @@ static void initialise_resources(void)
     Desk_Template_UseOutlineFonts();
     Desk_Template_LoadFile("Templates");
     main_window_handle = Desk_Window_Create("main", NULL);
+    chatpager_window_handle = Desk_Window_Create("chatpager", NULL);
+    chat_window_handle = Desk_Window_Create("chat", NULL);
     update_main_window_title(&task_state);
 }
 
@@ -410,6 +454,8 @@ static void shutdown_resources(void)
 {
     Desk_Template_ClearAll();
     main_window_handle = 0;
+    chatpager_window_handle = 0;
+    chat_window_handle = 0;
 }
 
 static void show_main_window(void)
@@ -571,6 +617,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
         botstopper_process(state);
         door_process(state);
         arcbbs_door_process(state);
+        chat_process(state);
     }
     
     script_process(&state->script);
@@ -1248,6 +1295,13 @@ static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
 
     if (state->arcbbs_door_launch_pending != Desk_bool_FALSE)
     {
+        return;
+    }
+
+    /* Handle chat mode - user typing goes to chat system */
+    if (state->chat_active)
+    {
+        chat_handle_user_byte(state, byte);
         return;
     }
 
@@ -2492,6 +2546,502 @@ static int script_host_get_user_id(void *context)
     }
 
     return state->user_id;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Sysop Chat Functions                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+#define CHAT_PAGER_TIMEOUT_SECS  30
+#define CHAT_BEEP_INTERVAL_CS    50    /* Centiseconds between beeps */
+#define CHAT_SPLIT_ROW           12    /* Row where screen splits (1-based) */
+#define CHAT_SYSOP_START_ROW     2     /* Sysop text starts at row 2 */
+#define CHAT_USER_START_ROW      14    /* User text starts at row 14 */
+#define CHAT_MAX_COLS            80
+
+static void chat_reset_state(line_task_state *state)
+{
+    state->chat_paging = Desk_bool_FALSE;
+    state->chat_active = Desk_bool_FALSE;
+    state->chat_pager_deadline = 0;
+    state->chat_next_beep = 0;
+    state->chat_reason[0] = '\0';
+    state->chat_user_buffer[0] = '\0';
+    state->chat_sysop_buffer[0] = '\0';
+    state->chat_user_len = 0;
+    state->chat_sysop_len = 0;
+    state->chat_user_row = CHAT_USER_START_ROW;
+    state->chat_sysop_row = CHAT_SYSOP_START_ROW;
+    state->chat_sysop_prev[0] = '\0';
+}
+
+static void chat_beep(void)
+{
+    /* Send VDU 7 (bell) to the system */
+    _kernel_oswrch(7);
+}
+
+static void chat_setup_split_screen(line_task_state *state)
+{
+    char buffer[256];
+
+    /* Clear screen */
+    pipes_output_write_string(state->line_id, "\033[2J");
+    
+    /* Draw header */
+    pipes_output_write_string(state->line_id, "\033[1;1H");  /* Row 1 */
+    pipes_output_write_string(state->line_id, "\033[1;36m=== SYSOP CHAT ===\033[0m\r\n");
+    
+    /* Draw divider line at row 13 */
+    pipes_output_write_string(state->line_id, "\033[13;1H");
+    pipes_output_write_string(state->line_id, "\033[1;33m");
+    {
+        int i;
+        for (i = 0; i < CHAT_MAX_COLS; i++)
+        {
+            pipes_output_write_string(state->line_id, "-");
+        }
+    }
+    pipes_output_write_string(state->line_id, "\033[0m");
+    
+    /* Position cursor for user input area */
+    snprintf(buffer, sizeof(buffer), "\033[%d;1H", CHAT_USER_START_ROW);
+    pipes_output_write_string(state->line_id, buffer);
+    pipes_output_write_string(state->line_id, "\033[1;32mYou: \033[0m");
+    
+    /* Position cursor for user typing */
+    snprintf(buffer, sizeof(buffer), "\033[%d;6H", CHAT_USER_START_ROW);
+    pipes_output_write_string(state->line_id, buffer);
+    
+    /* Label sysop area */
+    snprintf(buffer, sizeof(buffer), "\033[%d;1H", CHAT_SYSOP_START_ROW);
+    pipes_output_write_string(state->line_id, buffer);
+    pipes_output_write_string(state->line_id, "\033[1;35mSysop: \033[0m");
+    
+    /* Back to user area */
+    snprintf(buffer, sizeof(buffer), "\033[%d;6H", CHAT_USER_START_ROW);
+    pipes_output_write_string(state->line_id, buffer);
+}
+
+static void chat_start_pager(line_task_state *state, const char *reason)
+{
+    clock_t now;
+    _kernel_swi_regs regs;
+    char user_label[64];
+    
+    /* Store reason */
+    strncpy(state->chat_reason, reason, sizeof(state->chat_reason) - 1);
+    state->chat_reason[sizeof(state->chat_reason) - 1] = '\0';
+    
+    /* Get current monotonic time */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    now = regs.r[0];
+    
+    /* Set timeout (30 seconds = 3000 centiseconds) */
+    state->chat_pager_deadline = now + (CHAT_PAGER_TIMEOUT_SECS * 100);
+    state->chat_next_beep = now;  /* Beep immediately */
+    
+    /* Set window icons */
+    Desk_Icon_SetText(chatpager_window_handle, CHATPAGER_REASON, state->chat_reason);
+    
+    /* Build user label from userdb or use line number */
+    if (state->user_id > 0)
+    {
+        snprintf(user_label, sizeof(user_label), "User #%d on Line %d", state->user_id, state->line_id);
+    }
+    else
+    {
+        snprintf(user_label, sizeof(user_label), "Line %d (not logged in)", state->line_id);
+    }
+    Desk_Icon_SetText(chatpager_window_handle, CHATPAGER_USER, user_label);
+    
+    /* Open window centered */
+    Desk_Window_Show(chatpager_window_handle, Desk_open_CENTERED);
+    
+    state->chat_paging = Desk_bool_TRUE;
+    
+    /* Tell user to wait */
+    pipes_output_write_string(state->line_id, "\r\n\033[1;33mPaging sysop, please wait...\033[0m\r\n");
+    
+    /* Set script status */
+    state->script.status = SCRIPT_STATUS_WAIT_CHAT;
+    
+    log_line_event(state->line_id, "Sysop chat pager started");
+}
+
+static void chat_close_pager(line_task_state *state, int accepted)
+{
+    /* Hide pager window */
+    Desk_Window_Hide(chatpager_window_handle);
+    state->chat_paging = Desk_bool_FALSE;
+    
+    if (accepted)
+    {
+        /* Start chat session */
+        chat_start_session(state);
+    }
+    else
+    {
+        /* Rejected/timeout - sorry message */
+        pipes_output_write_string(state->line_id, "\r\n\033[1;31mSorry, the sysop is not available right now.\033[0m\r\n\r\n");
+        
+        /* Resume script */
+        state->script.status = SCRIPT_STATUS_RUNNING;
+        script_process(&state->script);
+        
+        log_line_event(state->line_id, "Sysop chat pager timed out or ignored");
+    }
+}
+
+static void chat_start_session(line_task_state *state)
+{
+    char user_label[64];
+    
+    /* Initialize chat buffers */
+    state->chat_user_buffer[0] = '\0';
+    state->chat_sysop_buffer[0] = '\0';
+    state->chat_user_len = 0;
+    state->chat_sysop_len = 0;
+    state->chat_user_row = CHAT_USER_START_ROW;
+    state->chat_sysop_row = CHAT_SYSOP_START_ROW;
+    state->chat_sysop_prev[0] = '\0';
+    
+    /* Set up chat window icons */
+    if (state->user_id > 0)
+    {
+        snprintf(user_label, sizeof(user_label), "User #%d", state->user_id);
+    }
+    else
+    {
+        snprintf(user_label, sizeof(user_label), "Line %d", state->line_id);
+    }
+    Desk_Icon_SetText(chat_window_handle, CHAT_USER, user_label);
+    Desk_Icon_SetText(chat_window_handle, CHAT_SYSOP, "Sysop");
+    Desk_Icon_SetText(chat_window_handle, CHAT_USERCHAT, "");
+    Desk_Icon_SetText(chat_window_handle, CHAT_SYSOPCHAT, "");
+    Desk_Icon_SetText(chat_window_handle, CHAT_TIME, "0:00");
+    
+    /* Open chat window */
+    Desk_Window_Show(chat_window_handle, Desk_open_CENTERED);
+    
+    /* Place caret in sysop input field */
+    Desk_Icon_SetCaret(chat_window_handle, CHAT_SYSOPCHAT);
+    
+    state->chat_active = Desk_bool_TRUE;
+    
+    /* Set up split screen on user's terminal */
+    chat_setup_split_screen(state);
+    
+    /* Tell user chat started */
+    pipes_output_write_string(state->line_id, "\033[1;32mChat session started. Type to chat.\033[0m");
+    
+    /* Position for user typing */
+    {
+        char buffer[32];
+        snprintf(buffer, sizeof(buffer), "\033[%d;6H", CHAT_USER_START_ROW);
+        pipes_output_write_string(state->line_id, buffer);
+    }
+    
+    log_line_event(state->line_id, "Sysop chat session started");
+}
+
+static void chat_end_session(line_task_state *state)
+{
+    /* Hide chat window */
+    Desk_Window_Hide(chat_window_handle);
+    state->chat_active = Desk_bool_FALSE;
+    
+    /* Send goodbye to user */
+    pipes_output_write_string(state->line_id, "\033[2J\033[1;1H");  /* Clear screen */
+    pipes_output_write_string(state->line_id, "\r\n\033[1;36mChat session ended. Thank you!\033[0m\r\n\r\n");
+    
+    /* Reset chat state */
+    chat_reset_state(state);
+    
+    /* Resume script */
+    state->script.status = SCRIPT_STATUS_RUNNING;
+    script_process(&state->script);
+    
+    log_line_event(state->line_id, "Sysop chat session ended");
+}
+
+static void chat_handle_user_byte(line_task_state *state, unsigned char byte)
+{
+    char buffer[64];
+    
+    /* Handle backspace */
+    if (byte == 8 || byte == 127)
+    {
+        if (state->chat_user_len > 0)
+        {
+            state->chat_user_len--;
+            state->chat_user_buffer[state->chat_user_len] = '\0';
+            
+            /* Update Wimp icon */
+            Desk_Icon_SetText(chat_window_handle, CHAT_USERCHAT, state->chat_user_buffer);
+            
+            /* Send backspace-space-backspace to user terminal */
+            pipes_output_write_string(state->line_id, "\b \b");
+        }
+        return;
+    }
+    
+    /* Handle CR - new line in user area */
+    if (byte == '\r')
+    {
+        /* Move to next row in user area */
+        state->chat_user_row++;
+        if (state->chat_user_row > 23)  /* Scroll would happen, cap it */
+        {
+            state->chat_user_row = 23;
+        }
+        
+        /* Clear buffer for new line */
+        state->chat_user_buffer[0] = '\0';
+        state->chat_user_len = 0;
+        Desk_Icon_SetText(chat_window_handle, CHAT_USERCHAT, "");
+        
+        /* Send CRLF and position to user */
+        pipes_output_write_string(state->line_id, "\r\n");
+        return;
+    }
+    
+    /* Ignore LF */
+    if (byte == '\n')
+    {
+        return;
+    }
+    
+    /* Printable character */
+    if (byte >= 32 && byte < 127 && state->chat_user_len < (int)(sizeof(state->chat_user_buffer) - 1))
+    {
+        state->chat_user_buffer[state->chat_user_len++] = (char)byte;
+        state->chat_user_buffer[state->chat_user_len] = '\0';
+        
+        /* Update Wimp icon */
+        Desk_Icon_SetText(chat_window_handle, CHAT_USERCHAT, state->chat_user_buffer);
+        
+        /* Echo to user terminal */
+        buffer[0] = (char)byte;
+        buffer[1] = '\0';
+        pipes_output_write_string(state->line_id, buffer);
+    }
+}
+
+static void chat_send_sysop_char(line_task_state *state, char ch)
+{
+    char buffer[64];
+    
+    if (state->chat_sysop_len < (int)(sizeof(state->chat_sysop_buffer) - 1))
+    {
+        state->chat_sysop_buffer[state->chat_sysop_len++] = ch;
+        state->chat_sysop_buffer[state->chat_sysop_len] = '\0';
+        
+        /* Save cursor, move to sysop area, print char, restore cursor */
+        snprintf(buffer, sizeof(buffer), "\033[s\033[%d;%dH%c\033[u", 
+                 state->chat_sysop_row, 8 + state->chat_sysop_len - 1, ch);
+        pipes_output_write_string(state->line_id, buffer);
+    }
+}
+
+static void chat_send_sysop_backspace(line_task_state *state)
+{
+    char buffer[64];
+    
+    if (state->chat_sysop_len > 0)
+    {
+        state->chat_sysop_len--;
+        state->chat_sysop_buffer[state->chat_sysop_len] = '\0';
+        
+        /* Save cursor, move to sysop area, erase char, restore cursor */
+        snprintf(buffer, sizeof(buffer), "\033[s\033[%d;%dH \033[u", 
+                 state->chat_sysop_row, 8 + state->chat_sysop_len);
+        pipes_output_write_string(state->line_id, buffer);
+    }
+}
+
+static void chat_process(line_task_state *state)
+{
+    _kernel_swi_regs regs;
+    clock_t now;
+    
+    /* Get current time */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    now = regs.r[0];
+    
+    /* Process pager timeout and beeps */
+    if (state->chat_paging)
+    {
+        /* Check timeout */
+        if (now >= state->chat_pager_deadline)
+        {
+            chat_close_pager(state, 0);  /* Timed out */
+            return;
+        }
+        
+        /* Beep at interval */
+        if (now >= state->chat_next_beep)
+        {
+            chat_beep();
+            state->chat_next_beep = now + CHAT_BEEP_INTERVAL_CS;
+        }
+    }
+    
+    /* Process active chat - check for sysop typing changes */
+    if (state->chat_active)
+    {
+        char current_text[1024];
+        int current_len, prev_len;
+        
+        /* Read current content of sysop input field */
+        Desk_Icon_GetText(chat_window_handle, CHAT_SYSOPCHAT, current_text);
+        current_len = (int)strlen(current_text);
+        prev_len = (int)strlen(state->chat_sysop_prev);
+        
+        /* Detect changes */
+        if (current_len > prev_len)
+        {
+            /* Characters added - send new chars to user */
+            int i;
+            for (i = prev_len; i < current_len; i++)
+            {
+                chat_send_sysop_char(state, current_text[i]);
+            }
+        }
+        else if (current_len < prev_len)
+        {
+            /* Characters deleted - send backspaces */
+            int deletes = prev_len - current_len;
+            int i;
+            for (i = 0; i < deletes; i++)
+            {
+                chat_send_sysop_backspace(state);
+            }
+            /* Update our buffer to match */
+            state->chat_sysop_len = current_len;
+            strncpy(state->chat_sysop_buffer, current_text, sizeof(state->chat_sysop_buffer) - 1);
+            state->chat_sysop_buffer[sizeof(state->chat_sysop_buffer) - 1] = '\0';
+        }
+        
+        /* Update previous text */
+        strncpy(state->chat_sysop_prev, current_text, sizeof(state->chat_sysop_prev) - 1);
+        state->chat_sysop_prev[sizeof(state->chat_sysop_prev) - 1] = '\0';
+    }
+}
+
+static void script_host_start_chat_pager(void *context, const char *reason)
+{
+    line_task_state *state = (line_task_state *)context;
+    
+    if (state == NULL || reason == NULL)
+    {
+        return;
+    }
+    
+    chat_start_pager(state, reason);
+}
+
+static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    int icon;
+    
+    if (event == NULL || state == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    icon = event->data.mouse.icon;
+    
+    if (icon == CHATPAGER_START)
+    {
+        /* Start chat */
+        chat_close_pager(state, 1);
+        return Desk_bool_TRUE;
+    }
+    
+    if (icon == CHATPAGER_IGNORE)
+    {
+        /* Ignore/cancel */
+        chat_close_pager(state, 0);
+        return Desk_bool_TRUE;
+    }
+    
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    int icon;
+    
+    if (event == NULL || state == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    icon = event->data.mouse.icon;
+    
+    if (icon == CHAT_ENDCHAT)
+    {
+        chat_end_session(state);
+        return Desk_bool_TRUE;
+    }
+    
+    if (icon == CHAT_SAVECHAT)
+    {
+        /* TODO: Implement save chat log */
+        return Desk_bool_TRUE;
+    }
+    
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_chat_key(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    int key;
+    
+    if (event == NULL || state == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    key = event->data.key.code;
+    
+    /* Handle Return in sysop field - move to new line in sysop area */
+    if (key == 13 && state->chat_active)
+    {
+        char buffer[64];
+        
+        /* Move to next line in sysop display area */
+        state->chat_sysop_row++;
+        if (state->chat_sysop_row > 11)  /* Don't cross divider */
+        {
+            state->chat_sysop_row = 11;
+        }
+        
+        /* Reset sysop line buffer */
+        state->chat_sysop_buffer[0] = '\0';
+        state->chat_sysop_len = 0;
+        
+        /* Clear the sysop input field */
+        Desk_Icon_SetText(chat_window_handle, CHAT_SYSOPCHAT, "");
+        state->chat_sysop_prev[0] = '\0';
+        
+        /* Send newline to user's sysop area */
+        snprintf(buffer, sizeof(buffer), "\033[s\033[%d;8H\033[K\033[u", state->chat_sysop_row);
+        pipes_output_write_string(state->line_id, buffer);
+        
+        /* Reset caret */
+        Desk_Icon_SetCaret(chat_window_handle, CHAT_SYSOPCHAT);
+        
+        return Desk_bool_TRUE;
+    }
+    
+    /* Pass other keys to Wimp */
+    Desk_Wimp_ProcessKey(key);
+    return Desk_bool_TRUE;
 }
 
 static void log_line_event(int line_id, const char *message)

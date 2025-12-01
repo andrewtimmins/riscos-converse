@@ -121,6 +121,7 @@
     if choice == `S` || choice == `s` goto chat_sysop
     if choice == `X` || choice == `x` goto end_session
     if choice == `R` || choice == `r` goto random_game
+    if choice == `C` || choice == `c` goto sysop_chat
 
     print `\r\nUnknown selection '%{choice}', please try again.\r\n`
     goto main_menu
@@ -306,6 +307,10 @@
     doing `Chatting with Sysop...`
     call arcbbsdoor 101 `<Converse$Dir>.BBS.Doors.ARCbbs.!Natter -door %{line}`
     goto main_menu
+
+    label sysop_chat
+    doing `Chatting with Sysop using Converse`
+    sysopchat
 
     label end_session
     logoff

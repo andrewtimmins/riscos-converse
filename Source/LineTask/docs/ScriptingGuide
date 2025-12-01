@@ -447,6 +447,40 @@ Weekend/Hours Check
     label done
 }
 
+SYSOPCHAT - Interactive Sysop Chat
+----------------------------------
+
+The `SYSOPCHAT` command allows users to page and chat with the sysop in
+real-time. When executed:
+
+1. User is prompted to enter a reason for wanting to chat
+2. Pressing Enter with no reason cancels the request
+3. If a reason is given, a pager window appears on the sysop's desktop
+4. The pager beeps repeatedly for 30 seconds
+5. Sysop can click "Start" to begin chat, or "Ignore" to decline
+6. If the timeout expires, user sees a "not available" message
+
+During chat:
+- The user's terminal shows a split-screen interface (ANSI)
+- Top half shows sysop's typing
+- Bottom half shows user's typing
+- Sysop types in a Wimp window, text appears on user's screen
+- User types on their terminal, text appears in Wimp window
+- Chat ends when sysop clicks "End Chat"
+
+Example:
+{
+    /* Only offer chat during business hours */
+    if %{hour} < 9 || %{hour} >= 17 goto nochat
+    
+    prompt choice `Would you like to chat with the sysop? (Y/N): `
+    if %{choice} != Y && %{choice} != y goto nochat
+    
+    sysopchat
+    
+    label nochat
+}
+
 Tips
 ----
 - Always `PROMPT` before using a variable in conditions.

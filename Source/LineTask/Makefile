@@ -11,6 +11,18 @@ clean::
 	${WIPE} ${INSTAPP} ${WFLAGS}
 
 # Dynamic dependencies:
+o.script:	c.script
+o.script:	C:h.kernel
+o.script:	C:h.swis
+o.script:	h.debug
+o.script:	h.script
+o.script:	h.filebase
+o.transfer:	c.transfer
+o.transfer:	C:h.kernel
+o.transfer:	C:h.swis
+o.transfer:	h.transfer
+o.transfer:	h.filebase
+o.transfer:	h.debug
 o.debug:	c.debug
 o.debug:	C:oslib.h.report
 o.debug:	C:oslib.h.types
@@ -27,18 +39,6 @@ o.filebase:	C:h.kernel
 o.filebase:	C:h.swis
 o.filebase:	h.filebase
 o.filebase:	h.debug
-o.transfer:	c.transfer
-o.transfer:	C:h.kernel
-o.transfer:	C:h.swis
-o.transfer:	h.transfer
-o.transfer:	h.filebase
-o.transfer:	h.debug
-o.script:	c.script
-o.script:	C:h.kernel
-o.script:	C:h.swis
-o.script:	h.debug
-o.script:	h.script
-o.script:	h.filebase
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -48,6 +48,8 @@ o.main:	C:Desk.h.Event
 o.main:	C:Desk.h.Wimp
 o.main:	C:Desk.h.EventMsg
 o.main:	C:Desk.h.Handler
+o.main:	C:Desk.h.Icon
+o.main:	C:Desk.h.DragASpr
 o.main:	C:Desk.h.Msgs
 o.main:	C:Desk.h.Resource
 o.main:	C:Desk.h.Sprite
@@ -63,8 +65,6 @@ o.main:	C:Desk.h.Error
 o.main:	C:Desk.h.JumpRaw
 o.main:	C:Desk.h.Debug
 o.main:	C:Desk.h.Pointer
-o.main:	C:Desk.h.Icon
-o.main:	C:Desk.h.DragASpr
 o.main:	C:Desk.h.WimpSWIs
 o.main:	h.script
 o.main:	h.filebase

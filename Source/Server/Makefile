@@ -11,6 +11,27 @@ clean::
 	${WIPE} ${INSTAPP} ${WFLAGS}
 
 # Dynamic dependencies:
+o.config:	c.config
+o.config:	C:h.kernel
+o.config:	C:h.swis
+o.config:	h.config
+o.config:	h.debug
+o.debug:	c.debug
+o.debug:	C:oslib.h.report
+o.debug:	C:oslib.h.types
+o.debug:	C:oslib.h.os
+o.debug:	C:oslib.h.oscore32
+o.debug:	C:oslib.h.osf32
+o.debug:	C:oslib.h.wimp
+o.debug:	C:oslib.h.osspriteop
+o.debug:	C:oslib.h.font
+o.debug:	C:oslib.h.wimp32
+o.debug:	h.debug
+o.timer:	c.timer
+o.timer:	C:oslib.h.os
+o.timer:	C:oslib.h.types
+o.timer:	C:oslib.h.oscore32
+o.timer:	C:oslib.h.osf32
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -88,24 +109,3 @@ o.main:	h.iconnames
 o.main:	h.ansi
 o.main:	h.debug
 o.main:	h.config
-o.config:	c.config
-o.config:	C:h.kernel
-o.config:	C:h.swis
-o.config:	h.config
-o.config:	h.debug
-o.debug:	c.debug
-o.debug:	C:oslib.h.report
-o.debug:	C:oslib.h.types
-o.debug:	C:oslib.h.os
-o.debug:	C:oslib.h.oscore32
-o.debug:	C:oslib.h.osf32
-o.debug:	C:oslib.h.wimp
-o.debug:	C:oslib.h.osspriteop
-o.debug:	C:oslib.h.font
-o.debug:	C:oslib.h.wimp32
-o.debug:	h.debug
-o.timer:	c.timer
-o.timer:	C:oslib.h.os
-o.timer:	C:oslib.h.types
-o.timer:	C:oslib.h.oscore32
-o.timer:	C:oslib.h.osf32

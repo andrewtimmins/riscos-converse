@@ -34,6 +34,8 @@ typedef struct script_host
     int (*start_receive_transfer)(void *context, const char *temp_path, int protocol);
     /* Get current user ID for upload attribution */
     int (*get_user_id)(void *context);
+    /* Sysop chat callback - starts the pager with given reason */
+    void (*start_chat_pager)(void *context, const char *reason);
 } script_host;
 
 typedef enum
@@ -48,6 +50,8 @@ typedef enum
     SCRIPT_STATUS_WAIT_LOGON_PASSWORD,
     SCRIPT_STATUS_WAIT_TRANSFER,
     SCRIPT_STATUS_WAIT_ANSI,
+    SCRIPT_STATUS_WAIT_CHAT_REASON,
+    SCRIPT_STATUS_WAIT_CHAT,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -86,7 +90,8 @@ typedef enum
     SCRIPT_CMD_RANDOM,
     SCRIPT_CMD_STRLEN,
     SCRIPT_CMD_HASKEY,
-    SCRIPT_CMD_DETECTANSI
+    SCRIPT_CMD_DETECTANSI,
+    SCRIPT_CMD_SYSOPCHAT
 } script_command_type;
 
 typedef enum
@@ -159,6 +164,7 @@ void script_process(script_state *state);
 int script_handle_user_byte(script_state *state, unsigned char byte);
 void script_notify_door_closed(script_state *state);
 void script_notify_transfer_complete(script_state *state);
+void script_notify_chat_ended(script_state *state);
 script_status script_get_status(const script_state *state);
 const char *script_get_last_error(const script_state *state);
 const char *script_get_variable(const script_state *state, const char *name);

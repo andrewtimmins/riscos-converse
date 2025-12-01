@@ -266,9 +266,86 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         state->status != SCRIPT_STATUS_WAIT_INPUT_LINE &&
         state->status != SCRIPT_STATUS_WAIT_LOGON_USERNAME &&
         state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD &&
-        state->status != SCRIPT_STATUS_WAIT_ANSI)
+        state->status != SCRIPT_STATUS_WAIT_ANSI &&
+        state->status != SCRIPT_STATUS_WAIT_CHAT_REASON &&
+        state->status != SCRIPT_STATUS_WAIT_CHAT)
     {
         return 0;
+    }
+
+    /* Handle chat reason input */
+    if (state->status == SCRIPT_STATUS_WAIT_CHAT_REASON)
+    {
+        /* Handle backspace */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Ignore LF */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR - end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Empty reason = cancel */
+            if (state->input_length == 0)
+            {
+                script_write_output(state, "\r\n\033[1;33mChat request cancelled.\033[0m\r\n\r\n");
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Have a reason - start pager via callback */
+            if (state->host.start_chat_pager != NULL)
+            {
+                state->host.start_chat_pager(state->host.context, state->input_buffer);
+            }
+            /* Status will be set to WAIT_CHAT by the callback */
+            return 1;
+        }
+
+        /* Accumulate character */
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        if (state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        return 1;
     }
 
     /* Handle ANSI detection response - looking for ESC[<row>;<col>R */
@@ -689,6 +766,21 @@ void script_notify_transfer_complete(script_state *state)
     }
 
     if (state->status == SCRIPT_STATUS_WAIT_TRANSFER)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+    }
+}
+
+void script_notify_chat_ended(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->status == SCRIPT_STATUS_WAIT_CHAT || 
+        state->status == SCRIPT_STATUS_WAIT_CHAT_REASON)
     {
         state->status = SCRIPT_STATUS_RUNNING;
         script_process(state);
@@ -1529,6 +1621,13 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    /* Sysop chat: sysopchat - prompts for reason then pages sysop */
+    if (script_stringcasecmp(token, "sysopchat") == 0)
+    {
+        instruction->type = SCRIPT_CMD_SYSOPCHAT;
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -2196,6 +2295,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
             
             /* Wait for response */
             state->status = SCRIPT_STATUS_WAIT_ANSI;
+            return;
+        }
+
+        case SCRIPT_CMD_SYSOPCHAT:
+        {
+            /* Sysop chat - prompt for reason then page sysop */
+            script_write_output(state, "\r\n\033[1;36mEnter reason to chat with sysop (or press Enter to cancel):\033[0m\r\n");
+            script_write_output(state, "> ");
+            
+            /* Reset input buffer for reason collection */
+            state->input_echo = 1;
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
+            {
+                state->input_buffer[0] = '\0';
+            }
+            
+            state->status = SCRIPT_STATUS_WAIT_CHAT_REASON;
             return;
         }
 
