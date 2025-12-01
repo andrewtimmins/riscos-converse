@@ -164,7 +164,6 @@ void script_process(script_state *state);
 int script_handle_user_byte(script_state *state, unsigned char byte);
 void script_notify_door_closed(script_state *state);
 void script_notify_transfer_complete(script_state *state);
-void script_notify_chat_ended(script_state *state);
 script_status script_get_status(const script_state *state);
 const char *script_get_last_error(const script_state *state);
 const char *script_get_variable(const script_state *state, const char *name);

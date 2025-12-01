@@ -1,0 +1,57 @@
+                Node Door by Richard Paddle
+                ===========================
+
+This program is (C)1993 Richard Paddle.
+However, you may freely distribute it and use it so long as
+all files are copied and this copyright notice is displayed.
+
+If you have any comments and would like to get in touch, I
+can be e-mailed at:
+
+Richard Paddle@2:252/102.0  Fidonet
+Richard@cryton.demon.co.uk  Internet
+
+or by snail mail at:
+
+Green Shutters,
+13 Orchard Road,
+Bromley,
+Kent.
+BR1 2PR
+
+
+          How to set the door up
+          ======================
+
+What you need to do:
+
+Firstly you will need to edit the config file
+ Set the doornumber you wish Node Door to repond to.
+ Alter BBSname to your system name
+ Set the path of the Nodelist you want the prog to scan
+ Set the Quit delay.
+
+Next you need to write the Menu data files for ARCbbs an example is
+given below.
+
+|Node search
+DOING"Nodelist search"
+OSCLI "WimpTask <ARCserver$Dir>.^.Doors.!NodeDoor"
+DOOR 8
+GOTO public.main
+
+The Door will search a copy of the nodelist specified in NodePath.
+There are ~20,000 entries in the full nodelist which takes a few
+minutes to search! Therefore, I would suggest you only have a
+selection of the full node list so as to reduce scanning time.
+Here at Rich in Paradise BBS I just have the entries for Zone 2.
+
+I hope you find the door useful.
+
+All the best,
+
+Richard Paddle...
+
+Acks.: Many thanks to Hugo Fiennes for the idea for this door.
+       Also to Steve Pursey for all his suggestions for improvememts
+       and to David Dade for his comments and support.

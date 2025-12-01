@@ -20,8 +20,6 @@ ftnmail    yes
 webserver  yes
 
 anykey      <Converse$Dir>.BBS.System.AnyKey
-chatstart   <Converse$Dir>.BBS.System.ChatStart
-chatend     <Converse$Dir>.BBS.System.ChatEnd
 protocol    <Converse$Dir>.BBS.System.Protocol
 search      <Converse$Dir>.BBS.System.Search
 

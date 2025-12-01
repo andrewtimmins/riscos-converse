@@ -772,21 +772,6 @@ void script_notify_transfer_complete(script_state *state)
     }
 }
 
-void script_notify_chat_ended(script_state *state)
-{
-    if (state == NULL)
-    {
-        return;
-    }
-
-    if (state->status == SCRIPT_STATUS_WAIT_CHAT || 
-        state->status == SCRIPT_STATUS_WAIT_CHAT_REASON)
-    {
-        state->status = SCRIPT_STATUS_RUNNING;
-        script_process(state);
-    }
-}
-
 script_status script_get_status(const script_state *state)
 {
     if (state == NULL)

@@ -1,0 +1,34 @@
+Node List Door History file:
+
+  1.00 10th June 1993
+
+Finished version 1.00                   
+
+  1.01 11th June 1993
+
+Only a day after the 1st release and here comes the second!
++ Now puts 'Mail Only' instead of tel. no. for MO flag BBS.
++ Also "Node Down" and "Node on hold" reported as well.
++ Config enhanced for Nodelist Path.
++ Screen made a little more attractive!
++ ~100% faster as it is now compiled.
+
+  1.02 15th June 1993
+
++ Case insensitive searching
++ More? Prompts
++ CTRL D to abort search
+: Bug fixes (Node down problem)
+
+  1.02b 18th June 1993
+
++ EOF character used rather than [1a]
++ Basic version for RISC OS 2 users
+
+  1.03 26th June 1993
+
+: Bug fixes (Didn't realise that Region and Zone entries were
+             host numbers as well, whoops!)
+: Changed abort to CTRL-C as ARCbbs style
+
+Richard...
