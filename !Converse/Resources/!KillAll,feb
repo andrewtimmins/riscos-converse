@@ -2,7 +2,5 @@ RMKill ConverseBBS
 RMKill ConverseFiler
 RMKill ConversePipes
 RMKill ARCbbs_Doors
-|RMKill ArmBBS
-|RMKill NewsFlash
 
 Unset Converse$Loaded

@@ -1,0 +1,13 @@
+Set Parlez$Dir <Obey$Dir>
+
+IconSprites <Parlez$Dir>.!Sprites
+
+Set ArcBBS164$DoorModule "Yes"
+RMEnsure ArcBBS_Doors 0.07 Set ArcBBS164$DoorModule "No"
+
+Set Parlez$Message "Yes"
+|Set Parlez$Message "No"
+
+WimpSlot -Min 64K -Max 64K
+
+Run <Parlez$Dir>.!RunImage

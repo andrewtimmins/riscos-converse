@@ -243,6 +243,47 @@ Filebase Commands
     - `download <file_id>` — Initiates download
     - `reset` — Clears selection
 
+Messagebase Commands
+~~~~~~~~~~~~~~~~~~~~
+`MESSAGEBASE <subcommand> [argument]`
+    Interacts with the messagebase system:
+    - `list` — Lists accessible messagebases
+    - `select <id>` — Selects a messagebase
+    - `areas` — Lists areas in selected messagebase
+    - `area <id>` — Selects an area (0 = all messages)
+    - `messages` — Lists messages in current selection
+    - `read [id]` — Opens message viewer (or first unread)
+    - `info <id>` — Shows message details
+    - `post` — Starts message composer
+    - `reset` — Clears selection
+
+    Area types determine posting behaviour:
+    - LOCAL — Local-only messages
+    - ECHO — FTN echomail (exported to uplink)
+    - NETMAIL — FTN netmail (requires destination address)
+    - OTHER — Private user-to-user mail (local only)
+
+    The message viewer displays messages with ANSI formatting:
+    - Header shows From, To, Subject, Date
+    - Body is paginated (press Enter for more)
+    - Navigation: [N]ext, [P]rev, [R]eply, [Q]uit
+
+    The message composer prompts for:
+    - To (for private/netmail areas)
+    - FTN address (for netmail only, e.g., 1:234/567)
+    - Subject line
+    - Body text (line by line, blank line to finish)
+    - Confirmation before posting
+
+    Example:
+        messagebase list
+        messagebase select 1
+        messagebase areas
+        messagebase area 3
+        messagebase messages
+        messagebase read 1
+        messagebase post
+
 File Transfer
 ~~~~~~~~~~~~~
 `SENDFILE <file_id> [protocol]`

@@ -1,0 +1,3 @@
+Set Store$Dir <Obey$Dir>
+IconSprites <Store$Dir>.!Sprites
+Set File$Type_0FD GTHS

@@ -1,0 +1,7 @@
+|
+| Converse Chat Door
+| © 1995 Ben Ingram
+|
+
+Set Converse$Dir <Obey$Dir>
+Iconsprites <Converse$Dir>.!Sprites

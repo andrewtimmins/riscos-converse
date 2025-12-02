@@ -1,0 +1,160 @@
+
+                        Parlez internal messaging door
+
+
+                                                                              
+                                                .o8b                          
+                                               o888P                          
+                                              .8P  `                          
+           odboooo                            88                              
+       .o8888P""888o                         ]88                              
+      dP"  88`   Y88[                        ]88                              
+     dP    88     888                        ]88                              
+    ]8`    88     ]88                        ]88                              
+    88     88     ]88      oooo       o      ]88        .o,             .d    
+    88     88     ]8[    .888888[   .88[.888 ]88       d888[     .8888888P    
+    88,    88     d8`   d8""""88   d888b8888 ]8P      dP ]88     d888888P     
+    88b    88    d8P   .8[    88  Y""888" '" ]8[     .8`  88     8"   dP      
+    Y88   .88, od8"    d8`    88     88[     ]8[     d8  .8P     P   d8`      
+    'P    ]8888""      88     88     88[     ]8[     88  dP      `  .8`       
+          ]88          88     88     88      ]8[     88 dP         .8`        
+          ]88          88     88     88      ]8[     88dP         .8P     .   
+          ]88          88     88     88      ]8[     88P          8P     .8,  
+          ]88          88,   d88   , 88      ]8[   d 88      ]   dP      Y8[  
+          ]88          88[  d888[.dP 88      ]8b .dP 88[    oP  d8bo     '8`  
+          ]88          888od8`8888"  88      ]8888P  ]88, .d8` d88888o,  .P   
+     ]88888888888"     ]8888` 888`   88      '888P    88888P   P`"Y888888P    
+     """"""""""`        Y8"   YP`    "`       '"`     'Y8"`         ""Y8"     
+                                                                              
+
+
+
+About Parlez:
+
+     This door behaves in a similar way to the 'Subspace' door, but the 
+     interfacing, features and methods are different (probably because I wrote 
+     it after gallons of wine and huge Christmas dinner!)
+
+
+Installing Parlez:
+
+     Right. To install, load the <Parlez$Dir>.Configure file. It's really 
+     simple, for a change... The number you see is the number that the door 
+     will be. Enter your chosen number and save.
+
+
+     This is an example menu.data file to call Parlez.
+
+          DOING "Parlez door"
+          OSCLI "WimpTask scsi::BBS.$.Doors.BudgieSoft.!Parlez"
+          DOOR 28
+          ECHO "{_>0023 bfgbg wb _>3223}Press any key{eol std}"
+          ANYKEY
+          GOTO mainmenu
+
+     If for some reason you don't want messages to be uploaded on 1.64, then 
+     set the system variable Parlez$Message to "No"... But your users may get 
+     upset........
+
+     After much hassling from, say, John Stonier and oh, John Stonier (subtle 
+     hint there! :-) ), I have included a wonderous facility to boot the user 
+     off if their time hits the big 0. So no more late night chatting for 
+     hours. Gives user warnings at 5mins, 2 mins and 1 min (remaining).
+
+     After my disc problems, I had to patch this together from bits and 
+     pieces. I think I've done it all. If I've missed anything - let me
+     know will ya!
+
+
+Versions:
+
+     1.00 First creation. Monochrome. Worked between ports 32 & 33 only.
+     1.01 Now asked user which port to send message to.
+     1.02 Still sent to port 33. That's fixed. :-)
+     1.04 ANSI colour added.
+     1.05 Information added. Screen displays tidied up.
+     1.06 Problem if port quit during message write. Put routine to rescan
+          the ports.
+     1.07 Problem if port quit between rescanning and sending message. Highly 
+          unlikely this will happen (we're talking 100ths of a second!) but it 
+          might? Sending a disconnect door request cures this.
+          1.07 is the current version.
+     1.08 Program spewed piles of junk on ArcBBS1.63 when scanning ports over 
+          12. This has now been fixed, by detecting the DoorModule in use 
+          (0.07 for 1.64, and less assumed to be 1.63).
+     1.09 Now checks to see if user on port # is already in a door. ArcBBS 
+          1.63 and CastAVote would respond as port busy, but Graham Cant has 
+          had trouble with claiming from his door. Now if the status byte is 
+          255 the door isn't claimed and the message isn't sent.
+     1.10 If the message send fails, and ArcBBS 1.64 is used, the message will 
+          be placed in the users mailbox, addressed from the sender of the 
+          message.
+     1.10B Slight tweaks.
+     1.11 Implemented BudgieSoft &16F00 broadcast to CastAVote, and tweaked 
+          further.
+     1.12 Now checks flag 27 after claiming port. If the user doesn't want to 
+          be hassled, Parlez will release the port transparently, otherwise 
+          send the message.
+     1.14 Some testing and ideas. New help text blah blah blah...
+     1.15 Squished and disabling the message generation.
+     1.16 "Parle" changed to "Parlez", get my French grammer correct. :-)
+          The INFO keypress changed to Ctrl+\ and the Ctrl+I was the TAB key!
+          Now you do not see users "Logging on" or New User".
+     1.18 Some small tweaks/changes.
+          PLEASE NOTE: Parlez will not have an option to 'open a channel' with 
+          another user. This door is for inter-BBS messaging. It is not 
+          Subspace.
+     1.19 Bug fixed. Entering ports to message >35 or <0 would create a
+          "Subcript out of range" error.
+     1.20 The help text is now external to make it easier to play with. Note 
+          that it's encoded... 
+          Now all users that are preoccupied or in other ways unavailable for 
+          messages are shown with their user number in RED.
+          The user now has the option to open a private chat with the 
+          recipient.
+     1.21 Chat bit tidied up a tad or two. :-)
+     1.22 Never released.
+     1.24 Tidied up information and fixed a few small glitches.
+     1.28 Time function implemented, Ctrl+T returns time left.
+     1.30 General tweaks.
+     1.31 Version 1.21 rescued from disc failure and patched up.
+     1.32 Chat tidied up. Time function now works. Can handle user dropping
+          carrier. Keeps users up-to-date on other users status. Now has
+          a time-out facility, much requested. :-)
+     1.40 This version:
+          Handles remote user actions better. Display tidied up a little. 
+          Polls a little less often so should run faster without noticably 
+          affecting BBS operation. Should /hopefully/ only change the cursor 
+          colour when a different person starts typing. Internal messages 
+          moved into a MESSAGES file, in anticipation. :-)
+
+
+To come:
+     1. Wrapping the text.
+     2. Possibly split-screen style chat. No guarantees though.
+     3. Use of MESSAGES for multilingual operation.
+
+
+Support:
+
+     Send messages to:
+
+     Richard Murray  at  2:254/86.1 @ Fidonet
+          or
+     rmurray@digibank.demon.co.uk
+
+
+End user license conditions and the world according to Murray:
+
+     Oh, I'm sure you know this cr*p by now. ;^)
+
+     BBSs can distribute this code for free. The Serial Port or agents of can 
+     distribute this code with ArcBBS for a nominal fee, or free. Coverdiscs 
+     and PD libraries must NOT distribute this code without permission.
+     Accessing the source code is forbidden. I can't stop you, but if I find 
+     out, your license to use this software will be revoked. No warranties as 
+     to the suitability of this software are given. Etc.
+
+                                 Byeeeee!!!!
+
+

@@ -1,0 +1,4 @@
+Set SnakeDoor$Dir <Obey$Dir>
+Iconsprites <SnakeDoor$Dir>.!Sprites
+WimpSlot -Min 64k -Max 64k
+Run <SnakeDoor$Dir>.!RunImage

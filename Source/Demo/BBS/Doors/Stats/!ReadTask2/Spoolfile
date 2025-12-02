@@ -1,0 +1,17 @@
+
+Here it is! The *second* program from BUDGIESOFT.
+
+!ReadTasks 2 is an ArcBBS door that will display all the active tasks
+operating on the DeskTop to a user.
+
+This is version 2 of the program. It'll automatically detect if the user
+has an ANSI terminal, and if so it'll output in colour!
+
+This may not be the easiest ArcBBS door to set up, but it is written in
+BASIC and has been made easy to adjust. Don't like the colours used?
+No problem!
+
+So, if you are a SysOp... Stop wasting time reading this and press [Q].
+:-)
+                                                                 
+(C) BudgieSoft/R.Murray June 1994.                      !! Press [Q] now !!

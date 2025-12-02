@@ -11,6 +11,7 @@
 #include "debug.h"
 #include "script.h"
 #include "filebase.h"
+#include "messagebase.h"
 
 #define SCRIPT_DEFAULT_INSTRUCTION_CAPACITY 32
 #define SCRIPT_DEFAULT_LABEL_CAPACITY 16
@@ -79,6 +80,7 @@ static int script_handle_embedded_text_as_instruction(script_state *state, const
 static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context);
 static int script_handle_embedded_text_as_output(script_state *state, const char *text, size_t length, int line_number, void *context);
 static int script_handle_embedded_command_as_output(script_state *state, const char *command_text, int line_number, void *context);
+static void script_save_user_history(script_state *state);
 
 void script_initialise(script_state *state, const script_host *host)
 {
@@ -440,6 +442,69 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
 
     if (state->status == SCRIPT_STATUS_WAIT_INPUT_CHAR)
     {
+        /* Check if messagebase viewer is active and handle input there */
+        if (state->host.get_messagebase_session != NULL)
+        {
+            messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            if (session != NULL && messagebase_viewer_is_active(session))
+            {
+                int action = messagebase_viewer_handle_input(session, (char)byte,
+                                                              (void (*)(void*, const char*))script_write_output, state);
+
+                switch (action)
+                {
+                    case VIEWER_ACTION_CONTINUE:
+                        /* Stay in viewer, waiting for more input */
+                        return 1;
+
+                    case VIEWER_ACTION_NEXT:
+                        if (!messagebase_viewer_goto_next(session,
+                                                          (void (*)(void*, const char*))script_write_output, state))
+                        {
+                            /* No more messages - return to script */
+                            state->status = SCRIPT_STATUS_RUNNING;
+                            script_process(state);
+                        }
+                        return 1;
+
+                    case VIEWER_ACTION_PREV:
+                        messagebase_viewer_goto_prev(session,
+                                                      (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_REPLY:
+                        if (messagebase_viewer_start_reply(session,
+                                                            (void (*)(void*, const char*))script_write_output, state))
+                        {
+                            /* Composer is now active - switch to line input */
+                            state->input_echo = 1;
+                            state->input_length = 0;
+                            if (state->input_buffer != NULL)
+                            {
+                                state->input_buffer[0] = '\0';
+                            }
+                            state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                        }
+                        else
+                        {
+                            /* Reply failed - return to script */
+                            state->status = SCRIPT_STATUS_RUNNING;
+                            script_process(state);
+                        }
+                        return 1;
+
+                    case VIEWER_ACTION_QUIT:
+                    default:
+                        /* Quit viewer - return to script */
+                        messagebase_viewer_close(session);
+                        state->status = SCRIPT_STATUS_RUNNING;
+                        script_process(state);
+                        return 1;
+                }
+            }
+        }
+
+        /* Normal char input handling (not viewer) */
         if (byte == '\r' || byte == '\n')
         {
             return 1;
@@ -481,6 +546,36 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             {
                 state->host.write_text(state->host.context, "\r\n");
             }
+
+            /* Check if messagebase composer is active and handle input there */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+                if (session != NULL && messagebase_composer_is_active(session))
+                {
+                    int result = messagebase_composer_handle_line(session, state->input_buffer,
+                                                                   (void (*)(void*, const char*))script_write_output, state);
+                    state->input_length = 0;
+                    if (state->input_buffer != NULL)
+                    {
+                        state->input_buffer[0] = '\0';
+                    }
+
+                    if (result > 0)
+                    {
+                        /* Composer needs more input - stay in WAIT_INPUT_LINE */
+                        return 1;
+                    }
+                    else
+                    {
+                        /* Composer finished (sent, cancelled, or error) - resume script */
+                        state->status = SCRIPT_STATUS_RUNNING;
+                        script_process(state);
+                        return 1;
+                    }
+                }
+            }
+
             script_set_variable_value(state, state->input_target, state->input_buffer);
             state->status = SCRIPT_STATUS_RUNNING;
             script_process(state);
@@ -1613,6 +1708,29 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    /* Messagebase: messagebase <subcommand> [args] */
+    if (script_stringcasecmp(token, "messagebase") == 0)
+    {
+        char *subcmd = strtok(NULL, " \t");
+        char *arg_text = strtok(NULL, "");
+        char *value_string = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_MESSAGEBASE;
+        instruction->arg1 = script_duplicate_string(subcmd != NULL ? subcmd : "list");
+
+        if (arg_text != NULL)
+        {
+            arg_text = script_trim(arg_text);
+            if (!script_parse_backtick_string(arg_text, &consumed, &value_string))
+            {
+                value_string = script_duplicate_string(arg_text);
+            }
+            instruction->arg2 = value_string;
+        }
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -2301,6 +2419,226 @@ static void script_execute_instruction(script_state *state, script_instruction *
             return;
         }
 
+        case SCRIPT_CMD_MESSAGEBASE:
+        {
+            const char *subcmd = instruction->arg1 != NULL ? instruction->arg1 : "list";
+            const char *arg_raw = instruction->arg2;
+            char arg_expanded[256];
+            const char *arg;
+            messagebase_session *session = NULL;
+
+            /* Expand macros in argument */
+            if (arg_raw != NULL)
+            {
+                script_expand_macros(state, arg_raw, arg_expanded, sizeof(arg_expanded));
+                arg = arg_expanded;
+            }
+            else
+            {
+                arg = NULL;
+            }
+
+            /* Get messagebase session from host */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            }
+
+            if (session == NULL)
+            {
+                script_write_output(state, "\r\n[Messagebase not available]\r\n");
+                break;
+            }
+
+            /* Update session access level from current user */
+            if (state->host.get_user_accesslevel != NULL)
+            {
+                int level = state->host.get_user_accesslevel(state->host.context);
+                const char *keys = NULL;
+                int user_id = 0;
+                if (state->host.get_user_keys != NULL)
+                {
+                    keys = state->host.get_user_keys(state->host.context);
+                }
+                if (state->host.get_user_id != NULL)
+                {
+                    user_id = state->host.get_user_id(state->host.context);
+                }
+                messagebase_session_set_access(session, user_id, level, keys, NULL);
+            }
+
+            if (script_stringcasecmp(subcmd, "list") == 0)
+            {
+                messagebase_list_bases(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "select") == 0)
+            {
+                int base_id;
+                LINETASK_MESSAGEBASE_RECORD record;
+                char msg[128];
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: messagebase select <id>]\r\n");
+                    break;
+                }
+
+                base_id = atoi(arg);
+                if (base_id <= 0)
+                {
+                    script_write_output(state, "\r\n[Invalid messagebase ID]\r\n");
+                    break;
+                }
+
+                if (!messagebase_get_info(base_id, &record))
+                {
+                    script_write_output(state, "\r\n[Messagebase not found]\r\n");
+                    break;
+                }
+
+                if (!messagebase_check_access(record.accesslevel, record.keys,
+                                               session->user_accesslevel, session->user_keys))
+                {
+                    script_write_output(state, "\r\n[Access denied]\r\n");
+                    break;
+                }
+
+                session->current_messagebase = base_id;
+                session->current_area = 0;
+                script_save_user_history(state);
+                snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected messagebase: %s\033[0m\r\n", record.name);
+                script_write_output(state, msg);
+            }
+            else if (script_stringcasecmp(subcmd, "areas") == 0)
+            {
+                messagebase_list_areas(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "area") == 0)
+            {
+                int area_id;
+                LINETASK_MESSAGEBASE_AREA_RECORD area_record;
+                char msg[128];
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: messagebase area <id>]\r\n");
+                    break;
+                }
+
+                area_id = atoi(arg);
+                if (area_id <= 0)
+                {
+                    script_write_output(state, "\r\n[Invalid area ID]\r\n");
+                    break;
+                }
+
+                if (!messagebase_get_area_info(session->current_messagebase, area_id, &area_record))
+                {
+                    script_write_output(state, "\r\n[Area not found]\r\n");
+                    break;
+                }
+
+                /* Note: Messagebase areas don't have their own access control - 
+                 * access is controlled at the messagebase level, which was already
+                 * checked when the messagebase was selected */
+
+                session->current_area = area_id;
+                script_save_user_history(state);
+                snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected area: %s\033[0m\r\n", area_record.name);
+                script_write_output(state, msg);
+            }
+            else if (script_stringcasecmp(subcmd, "messages") == 0)
+            {
+                messagebase_list_messages(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "read") == 0)
+            {
+                int msg_id;
+                LINETASK_MESSAGE_RECORD msg_record;
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    msg_id = messagebase_get_first_message_id(session);
+                }
+                else
+                {
+                    msg_id = atoi(arg);
+                }
+
+                if (msg_id <= 0)
+                {
+                    script_write_output(state, "\r\n[No messages available]\r\n");
+                    break;
+                }
+
+                if (!messagebase_get_message_info(session->current_messagebase, msg_id, &msg_record))
+                {
+                    script_write_output(state, "\r\n[Message not found]\r\n");
+                    break;
+                }
+
+                if (!messagebase_can_read_message(session, &msg_record))
+                {
+                    script_write_output(state, "\r\n[Access denied]\r\n");
+                    break;
+                }
+
+                messagebase_viewer_init(session, msg_id);
+                messagebase_viewer_show_header(session, (void (*)(void*, const char*))script_write_output, state);
+                messagebase_viewer_show_body(session, (void (*)(void*, const char*))script_write_output, state);
+                messagebase_viewer_show_prompt(session, (void (*)(void*, const char*))script_write_output, state);
+
+                state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+                state->input_echo = 0;
+                return;
+            }
+            else if (script_stringcasecmp(subcmd, "post") == 0)
+            {
+                if (session->current_messagebase <= 0 || session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n[Select a messagebase and area first]\r\n");
+                    break;
+                }
+
+                messagebase_composer_start_post(session, (void (*)(void*, const char*))script_write_output, state);
+
+                state->input_echo = 1;
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                return;
+            }
+            else if (script_stringcasecmp(subcmd, "reset") == 0)
+            {
+                messagebase_session_reset(session);
+                script_write_output(state, "\r\n[Messagebase selection reset]\r\n");
+            }
+            else if (script_stringcasecmp(subcmd, "info") == 0)
+            {
+                int msg_id;
+
+                if (arg == NULL || *arg == '\0')
+                {
+                    script_write_output(state, "\r\n[Usage: messagebase info <id>]\r\n");
+                    break;
+                }
+
+                msg_id = atoi(arg);
+                messagebase_show_message_info(session, msg_id,
+                                              (void (*)(void*, const char*))script_write_output, state);
+            }
+            else
+            {
+                char msg[128];
+                snprintf(msg, sizeof(msg), "\r\n[Unknown messagebase command: %s]\r\n", subcmd);
+                script_write_output(state, msg);
+            }
+        }
+        break;
+
         case SCRIPT_CMD_CALL:
         {
             const char *action = instruction->arg1 != NULL ? instruction->arg1 : "";
@@ -2560,6 +2898,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
                 session->current_filebase = base_id;
                 session->current_area = 0;
+                script_save_user_history(state);
                 snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected filebase: %s\033[0m\r\n", record.name);
                 script_write_output(state, msg);
             }
@@ -2617,6 +2956,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 }
 
                 session->current_area = area_id;
+                script_save_user_history(state);
                 script_write_output(state, msg);
             }
             else if (script_stringcasecmp(subcmd, "files") == 0)
@@ -2984,6 +3324,64 @@ static void script_execute_instruction(script_state *state, script_instruction *
     }
 }
 
+/* Helper to save user history when messagebase/filebase selections change */
+#define SWI_CONVERSE_FILER_USERDB 0x5AA41
+#define FILER_USERDB_CMD_UPDATE_HISTORY 5
+
+typedef struct {
+    int messagebase;
+    int messagebasearea;
+    int filebase;
+    int filebasearea;
+} script_user_history;
+
+static void script_save_user_history(script_state *state)
+{
+    _kernel_swi_regs regs;
+    script_user_history history;
+    filebase_session *fb = NULL;
+    messagebase_session *mb = NULL;
+    int user_id = 0;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    /* Get user ID - only save for authenticated users */
+    if (state->host.get_user_id != NULL)
+    {
+        user_id = state->host.get_user_id(state->host.context);
+    }
+    if (user_id <= 0)
+    {
+        return;
+    }
+
+    /* Get current session states */
+    if (state->host.get_filebase_session != NULL)
+    {
+        fb = (filebase_session *)state->host.get_filebase_session(state->host.context);
+    }
+    if (state->host.get_messagebase_session != NULL)
+    {
+        mb = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    /* Build history structure */
+    history.messagebase = (mb != NULL) ? mb->current_messagebase : 0;
+    history.messagebasearea = (mb != NULL) ? mb->current_area : 0;
+    history.filebase = (fb != NULL) ? fb->current_filebase : 0;
+    history.filebasearea = (fb != NULL) ? fb->current_area : 0;
+
+    /* Call Filer SWI to update history */
+    regs.r[0] = FILER_USERDB_CMD_UPDATE_HISTORY;
+    regs.r[1] = user_id;
+    regs.r[2] = (int)&history;
+
+    _kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs);
+}
+
 static int script_emit_macro_replacement(script_state *state, const char *macro_name, script_buffer *buffer)
 {
     const char *replacement = NULL;
@@ -3151,6 +3549,132 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         {
             const char *keys = state->host.get_user_keys != NULL ? state->host.get_user_keys(state->host.context) : "";
             replacement = (keys != NULL) ? keys : "";
+        }
+        /* Filebase selection macros */
+        else if (state != NULL && script_stringcasecmp(macro_name, "filebaseid") == 0)
+        {
+            filebase_session *fb = state->host.get_filebase_session != NULL ? 
+                (filebase_session *)state->host.get_filebase_session(state->host.context) : NULL;
+            int fb_id = (fb != NULL) ? fb->current_filebase : 0;
+            snprintf(temp, sizeof(temp), "%d", fb_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "filebasename") == 0)
+        {
+            filebase_session *fb = state->host.get_filebase_session != NULL ?
+                (filebase_session *)state->host.get_filebase_session(state->host.context) : NULL;
+            if (fb != NULL && fb->current_filebase > 0)
+            {
+                LINETASK_FILEBASE_RECORD rec;
+                if (filebase_get_info(fb->current_filebase, &rec))
+                {
+                    strncpy(temp, rec.name, sizeof(temp) - 1);
+                    temp[sizeof(temp) - 1] = '\0';
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "";
+                }
+            }
+            else
+            {
+                replacement = "";
+            }
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "filebaseareaid") == 0)
+        {
+            filebase_session *fb = state->host.get_filebase_session != NULL ?
+                (filebase_session *)state->host.get_filebase_session(state->host.context) : NULL;
+            int area_id = (fb != NULL) ? fb->current_area : 0;
+            snprintf(temp, sizeof(temp), "%d", area_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "filebaseareaname") == 0)
+        {
+            filebase_session *fb = state->host.get_filebase_session != NULL ?
+                (filebase_session *)state->host.get_filebase_session(state->host.context) : NULL;
+            if (fb != NULL && fb->current_filebase > 0 && fb->current_area > 0)
+            {
+                LINETASK_FILEBASE_AREA_RECORD rec;
+                if (filebase_get_area_info(fb->current_filebase, fb->current_area, &rec))
+                {
+                    strncpy(temp, rec.name, sizeof(temp) - 1);
+                    temp[sizeof(temp) - 1] = '\0';
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "";
+                }
+            }
+            else
+            {
+                replacement = "";
+            }
+        }
+        /* Messagebase selection macros */
+        else if (state != NULL && script_stringcasecmp(macro_name, "messagebaseid") == 0)
+        {
+            messagebase_session *mb = state->host.get_messagebase_session != NULL ?
+                (messagebase_session *)state->host.get_messagebase_session(state->host.context) : NULL;
+            int mb_id = (mb != NULL) ? mb->current_messagebase : 0;
+            snprintf(temp, sizeof(temp), "%d", mb_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "messagebasename") == 0)
+        {
+            messagebase_session *mb = state->host.get_messagebase_session != NULL ?
+                (messagebase_session *)state->host.get_messagebase_session(state->host.context) : NULL;
+            if (mb != NULL && mb->current_messagebase > 0)
+            {
+                LINETASK_MESSAGEBASE_RECORD rec;
+                if (messagebase_get_info(mb->current_messagebase, &rec))
+                {
+                    strncpy(temp, rec.name, sizeof(temp) - 1);
+                    temp[sizeof(temp) - 1] = '\0';
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "";
+                }
+            }
+            else
+            {
+                replacement = "";
+            }
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "messagebaseareaid") == 0)
+        {
+            messagebase_session *mb = state->host.get_messagebase_session != NULL ?
+                (messagebase_session *)state->host.get_messagebase_session(state->host.context) : NULL;
+            int area_id = (mb != NULL) ? mb->current_area : 0;
+            snprintf(temp, sizeof(temp), "%d", area_id);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "messagebaseareaname") == 0)
+        {
+            messagebase_session *mb = state->host.get_messagebase_session != NULL ?
+                (messagebase_session *)state->host.get_messagebase_session(state->host.context) : NULL;
+            if (mb != NULL && mb->current_messagebase > 0 && mb->current_area > 0)
+            {
+                LINETASK_MESSAGEBASE_AREA_RECORD rec;
+                if (messagebase_get_area_info(mb->current_messagebase, mb->current_area, &rec))
+                {
+                    strncpy(temp, rec.name, sizeof(temp) - 1);
+                    temp[sizeof(temp) - 1] = '\0';
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "";
+                }
+            }
+            else
+            {
+                replacement = "";
+            }
         }
         else
         {

@@ -1,0 +1,4 @@
+| !Run file for !BBSStats
+Set BBSStats$Dir <Obey$Dir>
+WimpSlot 16k 16k
+Run <BBSStats$Dir>.!RunImage

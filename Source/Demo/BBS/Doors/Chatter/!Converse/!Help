@@ -1,0 +1,212 @@
++------------------------------------------------------------------------------+
+|             ______                                                           |
+|            / ____/____   ____  _   __ ___   _____ _____ ___                  |
+|           / /    / __ \ / __ \| | / // _ \ / ___// ___// _ \                 |
+|          / /___ / /_/ // / / /| |/ //  __// /   (__  )/  __/                 |
+|          \____/ \____//_/ /_/ |___/ \___//_/   /____/ \___/ v2.00a           |
+|                                                                              |
+|                        © DizzyWizard Software 1995.                          |
+|                           © Prodigy Systems 1995.                            |
+|                                                                              |
+|                   ----=== Written by Ben Ingram. ===----                     |
++------------------------------------------------------------------------------+
+
+Introduction to Converse - the ultimate in 8-way communications!
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Converse is an 8-way split screen chat door for Arc/ArmBBS. It should also work
+with NewsFlash, which also provides (albeit limited) ArcBBS doors emulation.
+
+Until recently, the excellent Virtual Cafe has stood practically unchallenged in
+the field of split-screen chats. Unfortunately, VC only provides a 4-way chat.
+Some BBSes have now got 4 or more lines, creating obvious problems as often
+some users are left out of the conversation. To solve this problem I designed
+and programmed Converse - the ultimate in 8-way communications!
+
+Converse is written in 100% hand-crafted assembler for speed. This makes an
+8-way chat feasible, because there is little processor time used. A by-product
+of this is the fact that Converse takes up extremely small amounts of memory on
+the server machine. In fact, Converse fits comfortably into 32k, so there are
+no problems there.
+
+Also - another first for Converse! The paging system used here is superior to
+any other previous pagers - as it updates the list of users in realtime.
+Therefore, you can sit in the paging screen quite happily and watch all the
+users go about their business. This is pretty useful, as you can wait until a
+user comes out of another door before attempting to page him.
+
+
+How do I use Converse?
+~~~~~~~~~~~~~~~~~~~~~~
+This archive will only really be of use to sysops of Arc/ArmBBS (or NewsFlash)
+systems. However, as will be discussed below these sysops are more than welcome
+to provide this documentation for their users' information. Therefore, here are
+instructions on using Converse from a users' point of view!
+
+After entering the door from the BBS, you are faced with the main chat screen.
+From here, you can do several things, as listed below....
+
+Ctrl+R  Redraw screen
+Ctrl+L  Clear text window
+Ctrl+C  Quit
+Ctrl+Q  Quit
+Ctrl+T  Show time remaining
+Ctrl+P  Enter paging screen
+
+These are all pretty straightforward...
+
+On entering the paging screen, you are presented with a list of users. This
+list is updated in realtime as mentioned earlier. After typing your desired
+port number that user will be paged (in an extremely polite fashion). Should
+there be any problems (like the user is in another door) then you will be
+informed of this.
+
+
+Using Converse with *your* BBS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Here are some skeletal instructions for setting Converse up for use with your
+BBS. Obviously this will only make sense to sysops, and many sysops may wish to
+alter these entry routines to make them more 'sophisticated'. However, this is
+how you do it, basically...
+
+
+
+ARCbbs Instructions:
+
+OSCLI "WimpTask  <ArmBBS$Dir>.Doors.!Converse -door 69"
+DOOR 69
+
+
+
+ArmBBS Instructions:
+
+  defitem H
+  help `Converse`
+  access
+  [
+    doing `Converse`
+    door `1 69 <ArmBBS$Dir>.Doors.!Converse -door 69`
+    anykey
+  ]
+  enditem
+
+
+
+Newsflash Instructions:
+
+if option="6" then
+report "Converse 8 Way Chat"
+print "Converse"
+runtask "<NewsFlash$BBS>Chats.!Converse -door 69"
+startarcbbsdoor 69
+attr 7,0
+anykey
+endif
+
+
+Any problems, get in touch.
+
+
+Forseeable Improvements
+~~~~~~~~~~~~~~~~~~~~~~~
+This door is now 'finished' - in that I won't probably be doing much more work
+on it. Any suggestions will however be appriciated, but only if they are
+attached to a ten pound note.... ;D
+
+
+Credits
+~~~~~~~
+Thanks must go to...
+
+* David Dade, John Stonier, Chris Jackson and Alex Howarth for testing Converse
+on their BBSes - without their help Converse certainly wouldn't be where it is
+today.
+
+* Richard Sargeant for pointing out mistakes in my code and giving me ideas
+about various things.
+
+* Graham Cant for information about implementing chat programs. Virtual Cafe is
+of course copyright © Graham Cant.
+
+* Andy Jones for giving me some friendly competition, helping this door become
+finished more quickly. Competition always helps a project along.
+
+* James Larcombe for some graphics, design, documentation and suggestions.
+
+* Quintin Parker and Owen Shave for early slagging offs, and suggestions for a
+colour change.
+
+* Various pieces of music including Highlights from Phantom of the Opera, Les
+Miserables, Green Day and anything that was played on TFM 96.6FM radio
+station. (Who use Acorns BTW).
+
+                         ______________
+
+
+Dedicated to Esther for defining the real meaning of  beautiful,
+when I thought it was a Risc PC 700.
+
+
+                         ______________
+
+
+Legal
+~~~~~
+The  contents of this package is a proprietary product of DizzyWizard Software
+and is protected by copyright law. You may not disassemble, reverse engineer or
+in any way modify the program code or merge it into another program.
+
+In no event will DizzyWizard Software or Prodigy Systems (DWS and PSS) be
+liable to you for damages, including any loss of profits, lost savings, or
+other incidental or consequential damages arising out of your use or inability
+to use this program.
+
+This program may only be distributed by DizzyWizard Software and Prodigy Systems or by the servants thereof.
+
+Having said all that, sysops of BBSes are more than welcome to use this door
+on their systems. Also, they are free to distribute this documentation to their
+users if they should so wish.
+
+If they should send me some money (tenner?) then I would be more than happy to
+provide a 'registered' copy, with any particular graphical customisations they
+should wish. Converse is a rather large program, and has taken a lot of effort
+to develop and test. Please reward this effort in some way, as even though we
+are distributing this software for no cost it would be lovely for someone to
+recognize the large amounts of hard work involved.
+
+
+Contact:
+~~~~~~~~
+Snail Mail:        Ben Ingram                  Chris Jackson
+                   54 Tunstall Avenue          15 Red Beck Vale
+                   Billingham                  Shipley
+                   Cleveland                   West Yorkshire
+                   TS23 3SP                    BD18 3BN
+
+Internet: randall@digibank.demon.co.uk         cjackson@digibank.demon.co.uk
+          randall@arcade.demon.co.uk
+
+          dizzywiz@digibank.demon.co.uk
+
+I can also be contacted at the following BBSes:
+
+The Northern Arm BBS       -> 01274 530831 (28k8)
+The Digital Databank BBS   -> 01707 329306 (28k8)
+Arcade BBS                 -> 0181 654 2212 (28k8)
+
+
+DizzyWizard Software
+~~~~~~~~~~~~~~~~~~~~
+DWS is a group of Acorn enthusiasts who enjoy producing software for the lovely Acorn 32-bit range of computers.
+   
+Keep watching our area on The Digital Databank BBS (01707 323531/01707 329306) and watch out for future releases.
+
+Contact DizzyWizard Software on the above BBS, or by fidonet netmail to "Dizzy
+Wizard Software" at 2:257/501.0 or Ben Ingram at 2:250/372.5, or alternatively
+by internet. Our internet address is 'dizzywiz@digibank.demon.co.uk'. Major
+thanks must go to John Stonier for giving us a central contact point - call his
+BBS now!
+
+
+We hope you derive a certain amount of enjoyment from using Converse...
+
+...the ultimate in 8-way communications!

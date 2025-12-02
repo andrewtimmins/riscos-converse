@@ -67,12 +67,15 @@ The workspace includes `SharedLibs` containing:
   - **Authentication**: The `LOGON` script command prompts for username/password and authenticates via Filer SWI 0x5AA41. On success, it stores user_id, access_level, and keys in the task state, updates the Support module line state, and sends a `MESSAGE_LINE_USER` (0x5AA05) Wimp message to update the Server's status window.
   - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
   - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
+  - **Messagebase Support** (`LineTask/c/messagebase`): Provides `MESSAGEBASE` script command for reading and posting messages. Uses Filer SWIs at 0x5AA42. Commands: `list`, `select <id>`, `areas`, `area <id>`, `messages`, `read [id]`, `info <id>`, `post`, `reset`. Supports local message areas, private user mail, FTN echomail, and FTN netmail. ANSI message viewer with paged display and navigation prompts. Message composer with To, Subject, Body input phases. Access controlled by user level, keys, and message type (private messages only visible to sender/recipient).
   - **File Transfer** (`LineTask/c/transfer`): Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM, YMODEM-G, and ZMODEM protocols for file downloads and uploads. Non-blocking state machine design integrates with Pipes module for I/O. The `SENDFILE <file_id> [protocol]` and `RECEIVEFILE <path> [protocol]` script commands initiate transfers. Protocol values: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM. YMODEM includes block 0 header with filename/size and batch mode support. ZMODEM features: 32-bit CRC, ZDLE escape encoding, hex (ZHEX) and binary (ZBIN32) frame headers, streaming data with subpacket framing (ZCRCG/ZCRCE/ZCRCQ/ZCRCW), auto-start detection via ZRQINIT, and crash recovery via ZRPOS repositioning. During active transfers, the `transfer_active` flag is set in Support module line state to prevent idle timeout disconnection.
   - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
+  - **Selection Macros**: `%{filebaseid}`, `%{filebasename}`, `%{filebaseareaid}`, `%{filebaseareaname}`, `%{messagebaseid}`, `%{messagebasename}`, `%{messagebaseareaid}`, `%{messagebaseareaname}`. Returns current user's selected filebase/messagebase and area IDs and names. Returns empty string or 0 if nothing selected.
+  - **User History Persistence**: When a user selects a filebase/messagebase/area via script commands, the selection is automatically saved to their `USER_HISTORY` record in the userdb. On next login, these selections are restored to the session state automatically.
   - **Conditional Operators**: IF command supports `==`, `!=` (string), `>`, `<`, `>=`, `<=` (numeric). Both operands are macro-expanded. Compound conditions supported with `&&` (AND) and `||` (OR): `if %{day} == 25 && %{month} == 12 goto christmas`.
 
 ## Wimp Messages (LineTask <-> Server)
@@ -167,9 +170,15 @@ typedef struct {
 | password | 164 | 32 |
 | keys | 196 | 128 |
 | userdir | 324 | 256 |
-| user_flags | 580 | 72 |
+| user_flags | 580 | 76 |
 | user_flags.sysop | 600 | 4 |
 | user_flags.accesslevel | 640 | 4 |
+| user_history | 656 | 16 |
+| user_history.messagebase | 656 | 4 |
+| user_history.messagebasearea | 660 | 4 |
+| user_history.filebase | 664 | 4 |
+| user_history.filebasearea | 668 | 4 |
+| user_stats | 672 | 40 |
 
 ```c
 typedef struct {
@@ -314,6 +323,7 @@ void log_ftn(char *entry);
   - 2 (Delete): R1=ID
   - 3 (Search): R1=ID -> R0=RecordPtr
   - 4 (Authenticate): R1=Username, R2=Password -> R0=AuthResult, R1=RecordPtr
+  - 5 (UpdateHistory): R1=ID, R2=USER_HISTORY* -> R0=Success(1)/Failure(0)
 - **Messagebase (0x5AA42) & Filebase (0x5AA43)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord

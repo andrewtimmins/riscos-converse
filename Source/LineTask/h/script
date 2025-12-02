@@ -24,6 +24,8 @@ typedef struct script_host
     int (*get_user_sysop)(void *context);
     const char *(*get_user_keys)(void *context);
     int (*filebase_download)(void *context, int base_id, int file_id);
+    /* Messagebase callbacks */
+    void *(*get_messagebase_session)(void *context);
     /* Authentication callbacks */
     int (*authenticate_user)(void *context, const char *username, const char *password, int *auth_result);
     void (*start_postlogon)(void *context);
@@ -91,7 +93,8 @@ typedef enum
     SCRIPT_CMD_STRLEN,
     SCRIPT_CMD_HASKEY,
     SCRIPT_CMD_DETECTANSI,
-    SCRIPT_CMD_SYSOPCHAT
+    SCRIPT_CMD_SYSOPCHAT,
+    SCRIPT_CMD_MESSAGEBASE
 } script_command_type;
 
 typedef enum

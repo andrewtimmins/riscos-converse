@@ -1,0 +1,353 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask Messagebase Support                                                                                                                             */
+/*                                                                                                                                                          */
+/* Provides messagebase browsing, message viewing, and composition via the Filer module SWIs.                                                               */
+/* Supports local messages, private user-to-user mail, FTN echomail, and FTN netmail.                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_MESSAGEBASE_H
+#define LINETASK_MESSAGEBASE_H
+
+#include <time.h>
+
+/* Filer module SWI base - may already be defined in filebase.h */
+#ifndef FILER_SWI_BASE
+#define FILER_SWI_BASE              0x5AA40
+#endif
+#define SWI_FILER_MESSAGEBASE       (FILER_SWI_BASE + 2)
+#define SWI_FILER_USERDB            (FILER_SWI_BASE + 1)
+
+/* Support module SWI for FTN config */
+#define SWI_SUPPORT_FTNCONFIG       0x5AA86
+#define SWI_SUPPORT_MSGBASECONFIG   0x5AA84
+
+/* Messagebase SWI reason codes */
+#define FILER_MESSAGEBASE_CMD_CREATE              0
+#define FILER_MESSAGEBASE_CMD_UPDATE              1
+#define FILER_MESSAGEBASE_CMD_INFO                2
+#define FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD        3
+#define FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK        4
+#define FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK      5
+#define FILER_MESSAGEBASE_CMD_STORE_AREA          6
+#define FILER_MESSAGEBASE_CMD_AREA_INFO           7
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_BASES     8
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS     9
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES  10
+#define FILER_MESSAGEBASE_CMD_MESSAGE_INFO        11
+#define FILER_MESSAGEBASE_CMD_UPDATE_MESSAGE      12
+
+/* Userdb SWI reason codes */
+#define USERDB_CMD_SEARCH                   3
+
+/* FTN config reason codes */
+#define FTN_CONFIG_GET_GLOBAL               0
+#define FTN_CONFIG_GET_ADDRESS              2
+
+/* Msgbase config reason codes */
+#define MSGBASE_CONFIG_GET_AREA             4
+
+/* Field sizes (must match Filer/h/structs) */
+#define MB_MAX_NAME                 64
+#define MB_MAX_DESC                 256
+#define MB_MAX_KEYS                 128
+#define MB_MAX_DIR                  256
+#define MB_MAX_DOMAIN               100
+
+/* Message types */
+#define MSG_TYPE_LOCAL              0   /* Locally written, for export or local-only */
+#define MSG_TYPE_ECHO               1   /* FTN echomail (imported or exported) */
+#define MSG_TYPE_NETMAIL            2   /* FTN netmail */
+#define MSG_TYPE_PRIVATE            3   /* Private user-to-user (local only) */
+
+/* Area types */
+#define AREA_TYPE_LOCAL             0   /* Local-only message area */
+#define AREA_TYPE_ECHO              1   /* FTN echomail area */
+#define AREA_TYPE_NETMAIL           2   /* FTN netmail area */
+#define AREA_TYPE_JUNK              3   /* Junk/moderated area */
+#define AREA_TYPE_OTHER             4   /* Other (private mail) */
+#define AREA_TYPE_FILE              5   /* File announcements */
+#define AREA_TYPE_TICK              6   /* TIC file area */
+
+/* Viewer/composer state constants */
+#define MAX_COMPOSER_LINES          100
+#define MAX_LINE_WIDTH              80
+#define MAX_DATE_STR                32
+#define MAX_TO_NAME                 64
+#define MAX_FROM_NAME               64
+#define VIEWER_LINE_BUFFER_SIZE     1024
+
+/* Viewer action codes */
+#define VIEWER_ACTION_CONTINUE      0
+#define VIEWER_ACTION_NEXT          1
+#define VIEWER_ACTION_PREV          2
+#define VIEWER_ACTION_REPLY         3
+#define VIEWER_ACTION_QUIT          4
+#define VIEWER_ACTION_INVALID       (-1)
+
+/* Viewer phase enum */
+typedef enum
+{
+    MESSAGE_VIEW_IDLE = 0,
+    MESSAGE_VIEW_HEADER,
+    MESSAGE_VIEW_BODY,
+    MESSAGE_VIEW_PROMPT
+} message_view_phase;
+
+/* Composer phase enum */
+typedef enum
+{
+    MESSAGE_COMPOSE_IDLE = 0,
+    MESSAGE_COMPOSE_TO_NAME,
+    MESSAGE_COMPOSE_ADDRESS,
+    MESSAGE_COMPOSE_SUBJECT,
+    MESSAGE_COMPOSE_BODY,
+    MESSAGE_COMPOSE_CONFIRM
+} message_compose_phase;
+
+/* FTN address structure */
+typedef struct
+{
+    char domain[MB_MAX_DOMAIN];
+    int zone;
+    int net;
+    int node;
+    int point;
+} LINETASK_FTN_ADDRESS;
+
+/* Messagebase record structure (mirrors Filer module) */
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[MB_MAX_KEYS];
+    char name[MB_MAX_NAME];
+    char messagebasedir[MB_MAX_DIR];
+} LINETASK_MESSAGEBASE_RECORD;
+
+/* Messagebase area record structure - must match Filer MESSAGEBASE_AREA */
+typedef struct
+{
+    int id;
+    char name[MB_MAX_NAME];
+    char tag[MB_MAX_NAME];
+    int daystokeep;
+    int akause;
+    short areatype;
+} LINETASK_MESSAGEBASE_AREA_RECORD;
+
+/* Message record structure */
+typedef struct
+{
+    int id;
+    int messagebaseid;
+    int messagebaseareaid;
+    int type;
+    int deleted;
+    int accesslevel;
+    char keys[MB_MAX_KEYS];
+    int sentby;
+    int receivedby;
+    LINETASK_FTN_ADDRESS orgaddr;
+    LINETASK_FTN_ADDRESS dstaddr;
+    time_t imported;
+    time_t sent;
+    time_t read_time;
+    int timesread;
+    long bodysize;
+    char subject[MB_MAX_DESC];
+} LINETASK_MESSAGE_RECORD;
+
+/* Message viewer state */
+typedef struct
+{
+    message_view_phase phase;
+    int message_id;
+    long body_offset;
+    long body_size;
+    int current_line;
+    int page_lines;
+    int is_ansi;
+} message_viewer_state;
+
+/* Message composer state */
+typedef struct
+{
+    message_compose_phase phase;
+    int reply_to_id;
+    int is_ftn;
+    int is_private;
+    char to_name[MAX_TO_NAME];
+    int to_user_id;
+    LINETASK_FTN_ADDRESS to_ftn_address;
+    char subject[MB_MAX_DESC];
+    char body[MAX_COMPOSER_LINES][MAX_LINE_WIDTH];
+    int body_lines;
+} message_composer_state;
+
+/* Session messagebase state */
+typedef struct
+{
+    int current_messagebase;
+    int current_area;
+    int user_accesslevel;
+    int user_id;
+    char user_keys[MB_MAX_KEYS];
+    char user_realname[MAX_FROM_NAME];
+    message_viewer_state viewer;
+    message_composer_state composer;
+} messagebase_session;
+
+/* ******************************************************************************************************************************************************** */
+/* Session Management                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+void messagebase_session_init(messagebase_session *session);
+void messagebase_session_reset(messagebase_session *session);
+void messagebase_session_set_access(messagebase_session *session, int user_id,
+                                    int accesslevel, const char *keys, const char *realname);
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Wrappers                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_get_info(int base_id, LINETASK_MESSAGEBASE_RECORD *record_out);
+int messagebase_get_area_info(int base_id, int area_id, LINETASK_MESSAGEBASE_AREA_RECORD *record_out);
+int messagebase_get_message_info(int base_id, int message_id, LINETASK_MESSAGE_RECORD *record_out);
+int messagebase_download_block(int base_id, int message_id, void *buffer, long offset, int length);
+int messagebase_update_message(int base_id, LINETASK_MESSAGE_RECORD *record);
+
+/* FTN AKA Helpers */
+int messagebase_get_aka(int aka_index, LINETASK_FTN_ADDRESS *addr);
+
+/* ******************************************************************************************************************************************************** */
+/* Listing Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_list_bases(messagebase_session *session,
+                           void (*output)(void *ctx, const char *text),
+                           void *ctx);
+
+int messagebase_list_areas(messagebase_session *session,
+                           void (*output)(void *ctx, const char *text),
+                           void *ctx);
+
+int messagebase_list_messages(messagebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int messagebase_show_message_info(messagebase_session *session,
+                                  int message_id,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+
+/* ******************************************************************************************************************************************************** */
+/* Message Viewer                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_viewer_init(messagebase_session *session, int message_id);
+int messagebase_viewer_close(messagebase_session *session);
+int messagebase_viewer_show_header(messagebase_session *session,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+int messagebase_viewer_show_body(messagebase_session *session,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_show_prompt(messagebase_session *session,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+int messagebase_viewer_at_end(messagebase_session *session);
+int messagebase_viewer_is_active(messagebase_session *session);
+int messagebase_viewer_close(messagebase_session *session);
+int messagebase_viewer_handle_input(messagebase_session *session, char input,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx);
+int messagebase_viewer_goto_next(messagebase_session *session,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_goto_prev(messagebase_session *session,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_start_reply(messagebase_session *session,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+
+/* ******************************************************************************************************************************************************** */
+/* Message Composer                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_composer_init(messagebase_session *session, int reply_to_id);
+int messagebase_composer_reset(messagebase_session *session);
+int messagebase_composer_start_post(messagebase_session *session,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx);
+int messagebase_composer_start_reply(messagebase_session *session,
+                                      int message_id,
+                                      void (*output)(void *ctx, const char *text),
+                                      void *ctx);
+int messagebase_composer_handle_line(messagebase_session *session,
+                                      const char *line,
+                                      void (*output)(void *ctx, const char *text),
+                                      void *ctx);
+int messagebase_composer_is_active(messagebase_session *session);
+int messagebase_composer_set_to(messagebase_session *session,
+                                 const char *to_name,
+                                 void (*output)(void *ctx, const char *text),
+                                 void *ctx);
+int messagebase_composer_set_subject(messagebase_session *session,
+                                      const char *subject,
+                                      void (*output)(void *ctx, const char *text),
+                                      void *ctx);
+int messagebase_composer_add_line(messagebase_session *session,
+                                   const char *line);
+int messagebase_composer_show_preview(messagebase_session *session,
+                                       void (*output)(void *ctx, const char *text),
+                                       void *ctx);
+int messagebase_composer_send(messagebase_session *session,
+                               void (*output)(void *ctx, const char *text),
+                               void *ctx);
+
+/* ******************************************************************************************************************************************************** */
+/* Access Control                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_check_access(int required_level, const char *required_keys,
+                             int user_level, const char *user_keys);
+
+int messagebase_can_read_message(messagebase_session *session, 
+                                 const LINETASK_MESSAGE_RECORD *msg);
+
+int messagebase_can_post_to_area(messagebase_session *session, int base_id, int area_id);
+
+/* ******************************************************************************************************************************************************** */
+/* Navigation Helpers                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_get_next_message_id(messagebase_session *session, int current_id);
+int messagebase_get_prev_message_id(messagebase_session *session, int current_id);
+int messagebase_get_first_message_id(messagebase_session *session);
+
+/* ******************************************************************************************************************************************************** */
+/* FTN Address Helpers                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_parse_ftn_address(const char *str, LINETASK_FTN_ADDRESS *addr);
+void messagebase_format_ftn_address(const LINETASK_FTN_ADDRESS *addr, char *buffer, int size);
+int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka);
+int messagebase_get_area_type(messagebase_session *session, int area_id);
+
+/* ******************************************************************************************************************************************************** */
+/* User Lookup                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+int messagebase_lookup_user_by_id(int user_id, char *realname_out, int realname_size);
+int messagebase_lookup_user_by_name(const char *username, int *user_id_out);
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+void messagebase_format_date(time_t timestamp, char *buffer, int buffer_size);
+void messagebase_format_datetime(time_t timestamp, char *buffer, int buffer_size);
+
+#endif

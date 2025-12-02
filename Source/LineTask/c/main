@@ -23,6 +23,7 @@
 #include "C:Desk.WimpSWIs.h"
 #include "script.h"
 #include "filebase.h"
+#include "messagebase.h"
 #include "transfer.h"
 #include "debug.h"
 #include "iconnames.h"
@@ -199,6 +200,8 @@ typedef struct
     script_state script;
     /* Filebase session */
     filebase_session fb_session;
+    /* Messagebase session */
+    messagebase_session mb_session;
     /* File transfer session */
     transfer_session xfer_session;
     /* User session state */
@@ -297,6 +300,7 @@ static void script_host_report_online_users(void *context);
 static int script_host_get_line_id(void *context);
 static int script_host_get_task_handle(void *context);
 static void *script_host_get_filebase_session(void *context);
+static void *script_host_get_messagebase_session(void *context);
 static int script_host_get_user_accesslevel(void *context);
 static int script_host_get_user_sysop(void *context);
 static const char *script_host_get_user_keys(void *context);
@@ -474,6 +478,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_line_id = script_host_get_line_id;
         host.get_task_handle = script_host_get_task_handle;
         host.get_filebase_session = script_host_get_filebase_session;
+        host.get_messagebase_session = script_host_get_messagebase_session;
         host.get_user_accesslevel = script_host_get_user_accesslevel;
         host.get_user_sysop = script_host_get_user_sysop;
         host.get_user_keys = script_host_get_user_keys;
@@ -490,6 +495,9 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
 
     /* Initialise filebase session */
     filebase_session_init(&state->fb_session);
+    
+    /* Initialise messagebase session */
+    messagebase_session_init(&state->mb_session);
     
     /* Initialise transfer session */
     memset(&state->xfer_session, 0, sizeof(state->xfer_session));
@@ -925,8 +933,9 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
             {
                 arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
             }
-            /* Reset filebase session and user state on disconnect */
+            /* Reset filebase and messagebase session and user state on disconnect */
             filebase_session_reset(&state->fb_session);
+            messagebase_session_reset(&state->mb_session);
             state->user_id = 0;
             state->user_accesslevel = 0;
             state->user_sysop = 0;
@@ -2277,6 +2286,12 @@ static void *script_host_get_filebase_session(void *context)
     return (state != NULL) ? &state->fb_session : NULL;
 }
 
+static void *script_host_get_messagebase_session(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    return (state != NULL) ? &state->mb_session : NULL;
+}
+
 static int script_host_get_user_accesslevel(void *context)
 {
     line_task_state *state = (line_task_state *)context;
@@ -2438,6 +2453,41 @@ static int script_host_authenticate_user(void *context, const char *username, co
         else
         {
             snprintf(state->user_realname, sizeof(state->user_realname), "User #%d", user_id);
+        }
+        
+        /* Load user's last accessed messagebase/filebase selections from USER_HISTORY */
+        {
+            /* USER_HISTORY offsets within USER_RECORD:
+             * userdir ends at 580, user_flags is 76 bytes (19 ints), so user_history starts at 656 */
+            #define USER_RECORD_OFFSET_HISTORY_MESSAGEBASE     656
+            #define USER_RECORD_OFFSET_HISTORY_MESSAGEBASEAREA 660
+            #define USER_RECORD_OFFSET_HISTORY_FILEBASE        664
+            #define USER_RECORD_OFFSET_HISTORY_FILEBASEAREA    668
+            
+            int last_messagebase = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_MESSAGEBASE));
+            int last_messagebasearea = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_MESSAGEBASEAREA));
+            int last_filebase = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_FILEBASE));
+            int last_filebasearea = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_FILEBASEAREA));
+            
+            /* Set filebase session state */
+            state->fb_session.current_filebase = last_filebase;
+            state->fb_session.current_area = last_filebasearea;
+            state->fb_session.user_accesslevel = access_level;
+            strncpy(state->fb_session.user_keys, state->user_keys, sizeof(state->fb_session.user_keys) - 1);
+            state->fb_session.user_keys[sizeof(state->fb_session.user_keys) - 1] = '\0';
+            
+            /* Set messagebase session state */
+            state->mb_session.current_messagebase = last_messagebase;
+            state->mb_session.current_area = last_messagebasearea;
+            state->mb_session.user_id = user_id;
+            state->mb_session.user_accesslevel = access_level;
+            strncpy(state->mb_session.user_keys, state->user_keys, sizeof(state->mb_session.user_keys) - 1);
+            state->mb_session.user_keys[sizeof(state->mb_session.user_keys) - 1] = '\0';
+            strncpy(state->mb_session.user_realname, state->user_realname, sizeof(state->mb_session.user_realname) - 1);
+            state->mb_session.user_realname[sizeof(state->mb_session.user_realname) - 1] = '\0';
+            
+            debug_printf("Loaded user history: fb=%d/%d mb=%d/%d", 
+                last_filebase, last_filebasearea, last_messagebase, last_messagebasearea);
         }
         
         /* Send user name to Server to update status window */

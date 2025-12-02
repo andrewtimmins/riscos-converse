@@ -136,7 +136,7 @@
     script `<Converse$Dir>.BBS.Filebase`
 
     label messagebase_menu
-    script `<Converse$Dir>.BBS.Msgbase`
+    script `<Converse$Dir>.BBS.Messagebase`
 
     label ansi_artwork
     doing `ANSI Artwork`
@@ -309,7 +309,7 @@
     goto main_menu
 
     label sysop_chat
-    doing `Chatting with Sysop using Converse`
+    doing `Chatting with Sysop...`
     sysopchat
 
     label end_session

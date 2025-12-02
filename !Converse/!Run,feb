@@ -20,8 +20,7 @@ RMEnsure ConverseBBS 0.01 RMLoad <Converse$Dir>.Resources.Support
 RMEnsure ConverseFiler 0.01 RMLoad <Converse$Dir>.Resources.Filer
 RMEnsure ConversePipes 0.01 RMLoad <Converse$Dir>.Resources.Pipes
 RMEnsure ARCbbs_Doors 0.01 RMLoad <Converse$Dir>.Resources.ARCbbs
-|RMEnsure ArmBBS 0.01 RMLoad <Converse$Dir>.Resources.ArmBBS
-|RMEnsure NewsFlash 0.01 RMLoad <Converse$Dir>.Resources.NewsFlash
+
 
 WimpSlot -Min 64k -Max 64k
 Run <Converse$Dir>.Resources.ResFind Converse

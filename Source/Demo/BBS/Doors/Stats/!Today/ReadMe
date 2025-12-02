@@ -1,0 +1,34 @@
+What this application does, is create a file called
+<ArmBBS$Dir>.BBS.Today, which gives some day
+specific information.  Without using a door!
+
+In order for this to be used, you need to add the
+command 'type <ArmBBS$Dir>.BBS.Today' at the end of
+your BBS.Login file.  This will display the info,
+then ask for a key to be pressed.  The application
+must be re-run every day to update the file.  This
+is best be done using a repeating task alarm from
+!Alarm (in my opinion).
+
+Please tell me if you find any bugs. I don't think
+it's perfect, but adding in a blank line at the end
+of each file should fix a possible bug.  I only
+wrote it today (7/8/94) in about an hour from when I
+got the 'today' files, so it's bound to have at
+least one flaw.
+
+This program is totally uncopyrighted because it is
+_so_ simple anyone could do it, and I'm just saving
+them the trouble!  Feel free to adjust it to your
+own personal needs, 'cos I don't care.  And if you
+want to design a sprite, then do.  I can't draw to
+save my life!
+
+Oh yeah, the format of the cookie file is:
+[0c] (ie ASCII 12)
+<Text>
+....
+Simple, eh?  For the format of the today files,
+read !Today.Today.Today_Doc
+
+Alex Fraser.

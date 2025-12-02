@@ -1,0 +1,9 @@
+BBSstats (c)CJ/AH 1995
+For ARMbbs and NewsFlashBBS servers
+
+* ArmBBS users alter the !RunImage file to ensure bbstype%=0
+* NewsFlash users alter the !RunImage file to ensure bbstype=3
+
+NewsFlash sysops - see addtional help text in !BBSstats dir
+
+

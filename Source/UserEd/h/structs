@@ -8,58 +8,75 @@
 
 #include <time.h>
 
-/* User flags */
-typedef struct {
-    int deleted;
-    int ansi;
-    int more;
-    int lines;
-    int cls;
-    int sysop;
-    int cli;
-    int registered;
-    int expert;
-    int lockedout;
-    int nolimit;
-    int invisible;
-    int chataccess;
-    int accesslevel;
-    int ratios;
-    int maxtime;
-} USER_FLAGS;
+#define MAX_USERNAME                32
+#define MAX_REALNAME                64
+#define MAX_EMAIL                   64
+#define MAX_PASSWORD                32
+#define MAX_KEYS                    128
+#define MAX_DIR                     256
 
-/* User history */
-typedef struct {
-    time_t firstlogon;
-    time_t lastlogon;
-    time_t lastscan;
-} USER_HISTORY;
+#define MAX_NAME                    64
+#define MAX_DESC                    256
 
-/* User stats */
-typedef struct {
-    time_t lastlogon;
-    time_t lastscan;
-    int calls;
-    int todaytime;
-    int uploadskb;
-    int downloadskb;
-    int uploads;
-    int downloads;
-} USER_STATS;
+/* ******************************************************************************************************************************************************** */
+    /* User Database                                                                                                                                            */
+    /* ******************************************************************************************************************************************************** */
 
-/* Main user record structure */
-typedef struct {
-    int id;
-    char username[32];
-    char realname[64];
-    char email[64];
-    char password[32];
-    char keys[128];
-    char userdir[256];
-    USER_FLAGS user_flags;
-    USER_HISTORY user_history;
-    USER_STATS user_stats;
-} USER_RECORD;
+    typedef struct
+    {
+        int deleted;                    /* is this user deleted? */
+        int ansi;                       /* user's terminal supports ansi */
+        int more;                       /* user wants prompts every screenfull */
+        int lines;                      /* screen lines to pass before more? prompt appears */
+        int cls;                        /* user wants screen clearing codes */
+        int sysop;                      /* user has sysop privileges */
+        int cli;                        /* user has cli access */
+        int registered;                 /* user is registered with the system */
+        int expert;                     /* user has expert menus */
+        int lockedout;                  /* user is barred from entry to the system */
+        int nolimit;                    /* user has no time limits */
+        int invisible;                  /* user is invisible (online users, userlist, user search, etc) */
+        int userdir;                    /* user has optional user private directory */
+        int chataccess;                 /* chat access (0=normal, 1=always, 2=never) */
+        int resettime;                  /* reset time on login */
+        int accesslevel;                /* access level the user has got */
+        int ratios;                     /* download/upload ratio */
+        int maxtime;                    /* amount of time in minutes the user is allowed in one day */
+        int defaultprotocol;            /* default file transfer protocol (0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM) */
+    } USER_FLAGS;
+
+    typedef struct
+    {
+        time_t lastlogon;               /* time & date when user last logged on */
+        time_t lastscan;                /* time & date of last message/file newscan */
+        int calls;                      /* number of calls the user has made so far */
+        int todaytime;                  /* number of minutes used today */
+        int uploadskb;                  /* number of kilobytes uploaded */
+        int downloadskb;                /* number of kilobytes downloaded */
+        int uploads;                    /* number of uploads */
+        int downloads;                  /* number of downloads */
+    } USER_STATS;
+
+    typedef struct
+    {
+        int messagebase;                /* the id of the last accessed messagebase */
+        int messagebasearea;            /* the id of the last accessed messagebase area */
+        int filebase;                   /* the id of the last accessed filebase */
+        int filebasearea;               /* the id of the last accessed filebase area */
+    } USER_HISTORY;
+
+    typedef struct {
+        int id;                         /* the id of the user */
+        char username[MAX_USERNAME];    /* user's username */
+        char realname[MAX_REALNAME];    /* user's real name */
+        char email[MAX_EMAIL];          /* user's email address */
+        char password[MAX_PASSWORD];    /* user's password */
+        char keys[MAX_KEYS];            /* access keys allocated to user */
+        char userdir[MAX_DIR];          /* path of the user's personal directory */
+        USER_FLAGS user_flags;
+        USER_HISTORY user_history;
+        USER_STATS user_stats;
+    } USER_RECORD;
 
 /* Filer userdb SWI commands */
 #define FILER_USERDB_CMD_ADD         0

@@ -42,7 +42,8 @@
         FILER_USERDB_CMD_UPDATE,
         FILER_USERDB_CMD_DELETE,
         FILER_USERDB_CMD_SEARCH,
-        FILER_USERDB_CMD_AUTHENTICATE
+        FILER_USERDB_CMD_AUTHENTICATE,
+        FILER_USERDB_CMD_UPDATE_HISTORY
     } FILER_USERDB_COMMAND;
 
     typedef enum
@@ -70,7 +71,12 @@
         FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK,
         FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK,
         FILER_MESSAGEBASE_CMD_STORE_AREA,
-        FILER_MESSAGEBASE_CMD_AREA_INFO
+        FILER_MESSAGEBASE_CMD_AREA_INFO,
+        FILER_MESSAGEBASE_CMD_ENUMERATE_BASES,
+        FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS,
+        FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES,
+        FILER_MESSAGEBASE_CMD_MESSAGE_INFO,
+        FILER_MESSAGEBASE_CMD_UPDATE_MESSAGE
     } FILER_MESSAGEBASE_COMMAND;
 
     typedef enum
@@ -130,6 +136,7 @@
         int accesslevel;                /* access level the user has got */
         int ratios;                     /* download/upload ratio */
         int maxtime;                    /* amount of time in minutes the user is allowed in one day */
+        int defaultprotocol;            /* default file transfer protocol (0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM) */
     } USER_FLAGS;
 
     typedef struct
@@ -147,7 +154,9 @@
     typedef struct
     {
         int messagebase;                /* the id of the last accessed messagebase */
+        int messagebasearea;            /* the id of the last accessed messagebase area */
         int filebase;                   /* the id of the last accessed filebase */
+        int filebasearea;               /* the id of the last accessed filebase area */
     } USER_HISTORY;
 
     typedef struct {

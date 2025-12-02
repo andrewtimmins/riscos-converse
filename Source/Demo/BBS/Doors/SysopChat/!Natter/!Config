@@ -1,0 +1,23 @@
+Door:101
+Sysop:Andrew Timmins
+Screen:ANSIFade
+Excuse:Please try again after 18:00...
+RandomExcuse:N
+ChatType:1
+Reason:Y
+Beep:Y
+CtrlG:Y
+Logging:N
+Pounder:Y
+AskQuit:Y
+Ports:YYYYYYYYYYNNNNNNNNNNNNNNNNNNNNNNNNNN
+SendMail:N
+ReportReason:Y
+Templates:StyleGuide
+UsePageOff:N
+PageOff:2330
+PageOn:1030
+SetTime:Y
+Fontname:SystemFont
+Fontwidth:0
+Fontheight:0

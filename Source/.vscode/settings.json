@@ -33,6 +33,8 @@
         "iconnames": "cpp",
         "queue": "cpp",
         "msgs": "cpp",
-        "menu": "cpp"
+        "menu": "cpp",
+        "messagebase": "cpp",
+        "buffer": "cpp"
     }
 }

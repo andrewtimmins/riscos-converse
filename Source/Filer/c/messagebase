@@ -34,6 +34,8 @@ static MESSAGE_RECORD messagebase_message_cache;
 
 static void messagebase_create_directory(const char *path);
 static void messagebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id);
+static void messagebase_format_area_db_path(char *buffer, size_t length, int base_id);
+static void messagebase_format_message_db_path(char *buffer, size_t length, int base_id);
 static int messagebase_format_message_path(char *buffer, size_t length, int base_id, int area_id, int file_id);
 static int messagebase_ensure_group_directory(int base_id, int area_id, int file_id);
 static void messagebase_assign_directory(MESSAGEBASE_RECORD *record);
@@ -48,6 +50,7 @@ static int messagebase_find_base_record(int id, MESSAGEBASE_RECORD *record_out);
 static int messagebase_allocate_message_id(int base_id, int *new_id);
 static int messagebase_append_message_record(int base_id, const MESSAGE_RECORD *record);
 static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_RECORD *record_out);
+static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *record);
 static int messagebase_update_messagesize(int base_id, int file_id, size_t delta);
 static int messagebase_allocate_area_id(int base_id, int *new_id);
 static int messagebase_store_area_record(int base_id, const MESSAGEBASE_AREA *record);
@@ -284,38 +287,48 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       MESSAGE_RECORD record;
       FILE *file;
 
+      debug_printf("UPLOAD_BLOCK: base=%d msg=%d len=%u", base_id, message_id, (unsigned)length);
+
       if (base_id <= 0 || message_id <= 0 || data == NULL)
       {
+        debug_printf("UPLOAD_BLOCK: invalid params");
         r->r[0] = -1;
         return;
       }
 
       if (length == 0)
       {
+        debug_printf("UPLOAD_BLOCK: zero length");
         r->r[0] = 0;
         return;
       }
 
       if (!messagebase_find_message_record(base_id, message_id, &record))
       {
+        debug_printf("UPLOAD_BLOCK: message not found");
         r->r[0] = -1;
         return;
       }
 
       if (!messagebase_format_message_path(path, sizeof(path), base_id, record.messagebaseareaid, message_id))
       {
+        debug_printf("UPLOAD_BLOCK: path format failed");
         r->r[0] = -1;
         return;
       }
+      debug_printf("UPLOAD_BLOCK: path=%s", path);
+
       file = fopen(path, "ab");
       if (file == NULL)
       {
+        debug_printf("UPLOAD_BLOCK: fopen failed");
         r->r[0] = -1;
         return;
       }
 
       if (fwrite(data, 1, length, file) != length)
       {
+        debug_printf("UPLOAD_BLOCK: fwrite failed");
         fclose(file);
         r->r[0] = -1;
         return;
@@ -325,10 +338,12 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
 
       if (!messagebase_update_messagesize(base_id, message_id, length))
       {
+        debug_printf("UPLOAD_BLOCK: update size failed");
         r->r[0] = -1;
         return;
       }
 
+      debug_printf("UPLOAD_BLOCK: success, wrote %u bytes", (unsigned)length);
       r->r[0] = (int)length;
       break;
     }
@@ -345,26 +360,35 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       FILE *file;
       size_t transferred;
 
+      debug_printf("DOWNLOAD_BLOCK: base=%d msg=%d off=%ld req=%u", base_id, message_id, offset, (unsigned)request);
+
       if (base_id <= 0 || message_id <= 0 || target == NULL)
       {
+        debug_printf("DOWNLOAD_BLOCK: invalid params");
         r->r[0] = -1;
         return;
       }
 
       if (!messagebase_find_message_record(base_id, message_id, &record))
       {
+        debug_printf("DOWNLOAD_BLOCK: message not found");
         r->r[0] = -1;
         return;
       }
+      debug_printf("DOWNLOAD_BLOCK: record bodysize=%ld", record.bodysize);
 
       if (!messagebase_format_message_path(path, sizeof(path), base_id, record.messagebaseareaid, message_id))
       {
+        debug_printf("DOWNLOAD_BLOCK: path format failed");
         r->r[0] = -1;
         return;
       }
+      debug_printf("DOWNLOAD_BLOCK: path=%s", path);
+
       file = fopen(path, "rb");
       if (file == NULL)
       {
+        debug_printf("DOWNLOAD_BLOCK: fopen failed");
         r->r[0] = -1;
         return;
       }
@@ -376,6 +400,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
 
       if (offset > 0 && fseek(file, offset, SEEK_SET) != 0)
       {
+        debug_printf("DOWNLOAD_BLOCK: fseek failed");
         fclose(file);
         r->r[0] = -1;
         return;
@@ -383,6 +408,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
 
       if (request == 0)
       {
+        debug_printf("DOWNLOAD_BLOCK: zero request");
         fclose(file);
         r->r[0] = 0;
         return;
@@ -390,6 +416,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
 
       transferred = fread(target, 1, request, file);
       fclose(file);
+      debug_printf("DOWNLOAD_BLOCK: transferred %u bytes", (unsigned)transferred);
       r->r[0] = (int)transferred;
       break;
     }
@@ -476,6 +503,178 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       }
 
       r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_ENUMERATE_BASES:
+    {
+      /* R1 = index (0-based), returns pointer to record in R0 or -1 if end */
+      int index = r->r[1];
+      FILE *file;
+      int current = 0;
+
+      if (index < 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      file = fopen(MESSAGEBASE_DB_PATH, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&messagebase_info_cache, sizeof(MESSAGEBASE_RECORD), 1, file) == 1)
+      {
+        if (current == index)
+        {
+          fclose(file);
+          messagebase_assign_directory(&messagebase_info_cache);
+          r->r[0] = (int)(uintptr_t)&messagebase_info_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      r->r[0] = -1; /* No more records */
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS:
+    {
+      /* R1 = base_id, R2 = index (0-based), returns pointer to area record or -1 */
+      int base_id = r->r[1];
+      int index = r->r[2];
+      char path[300];
+      FILE *file;
+      int current = 0;
+
+      if (base_id <= 0 || index < 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_format_area_db_path(path, sizeof(path), base_id);
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&messagebase_area_cache, sizeof(MESSAGEBASE_AREA), 1, file) == 1)
+      {
+        if (current == index)
+        {
+          fclose(file);
+          r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      r->r[0] = -1;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES:
+    {
+      /* R1 = base_id, R2 = area_id (0 for all), R3 = index, returns pointer or -1 */
+      int base_id = r->r[1];
+      int area_id = r->r[2];
+      int index = r->r[3];
+      char path[300];
+      FILE *file;
+      int current = 0;
+
+      if (base_id <= 0 || index < 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_format_message_db_path(path, sizeof(path), base_id);
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1)
+      {
+        /* Skip deleted messages */
+        if (messagebase_message_cache.deleted)
+        {
+          continue;
+        }
+
+        /* Filter by area if specified */
+        if (area_id > 0 && messagebase_message_cache.messagebaseareaid != area_id)
+        {
+          continue;
+        }
+
+        if (current == index)
+        {
+          fclose(file);
+          r->r[0] = (int)(uintptr_t)&messagebase_message_cache;
+          return;
+        }
+        current++;
+      }
+
+      fclose(file);
+      r->r[0] = -1;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_MESSAGE_INFO:
+    {
+      /* R1 = base_id, R2 = message_id, returns pointer to MESSAGE_RECORD or -1 */
+      int base_id = r->r[1];
+      int message_id = r->r[2];
+
+      if (base_id <= 0 || message_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = (int)(uintptr_t)&messagebase_message_cache;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_UPDATE_MESSAGE:
+    {
+      /* R1 = base_id, R2 = pointer to MESSAGE_RECORD, returns 0 on success or -1 */
+      int base_id = r->r[1];
+      MESSAGE_RECORD *input = (MESSAGE_RECORD *)r->r[2];
+
+      if (base_id <= 0 || input == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      if (!messagebase_update_message_record(base_id, input))
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      r->r[0] = 0;
       break;
     }
 
@@ -1113,28 +1312,35 @@ static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *
   FILE *source;
   FILE *temp;
   int updated = 0;
+  MESSAGE_RECORD read_buffer;  /* Local buffer - don't clobber the global cache! */
 
   messagebase_format_message_db_path(source_path, sizeof(source_path), base_id);
   messagebase_format_base_path(temp_path, sizeof(temp_path), base_id);
   strncat(temp_path, ".Temp", sizeof(temp_path) - strlen(temp_path) - 1);
 
+  debug_printf("update_message_record: source=%s temp=%s id=%d bodysize=%ld", 
+               source_path, temp_path, record->id, record->bodysize);
+
   source = fopen(source_path, "rb");
   if (source == NULL)
   {
+    debug_printf("update_message_record: source fopen failed");
     return 0;
   }
 
   temp = fopen(temp_path, "wb");
   if (temp == NULL)
   {
+    debug_printf("update_message_record: temp fopen failed");
     fclose(source);
     return 0;
   }
 
-  while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, source) == 1)
+  while (fread(&read_buffer, sizeof(MESSAGE_RECORD), 1, source) == 1)
   {
-    if (messagebase_message_cache.id == record->id)
+    if (read_buffer.id == record->id)
     {
+      debug_printf("update_message_record: writing updated record bodysize=%ld", record->bodysize);
       if (fwrite(record, sizeof(MESSAGE_RECORD), 1, temp) != 1)
       {
         fclose(source);
@@ -1145,7 +1351,7 @@ static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *
     }
     else
     {
-      if (fwrite(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, temp) != 1)
+      if (fwrite(&read_buffer, sizeof(MESSAGE_RECORD), 1, temp) != 1)
       {
         fclose(source);
         fclose(temp);
@@ -1159,12 +1365,25 @@ static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *
 
   if (!updated)
   {
+    debug_printf("update_message_record: record not found in db");
     remove(temp_path);
     return 0;
   }
 
-  remove(source_path);
-  rename(temp_path, source_path);
+  debug_printf("update_message_record: removing %s", source_path);
+  if (remove(source_path) != 0)
+  {
+    debug_printf("update_message_record: remove failed");
+  }
+  
+  debug_printf("update_message_record: renaming %s to %s", temp_path, source_path);
+  if (rename(temp_path, source_path) != 0)
+  {
+    debug_printf("update_message_record: rename failed");
+    return 0;
+  }
+  
+  debug_printf("update_message_record: success");
   return 1;
 }
 
@@ -1174,14 +1393,19 @@ static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_REC
   FILE *file;
 
   messagebase_format_message_db_path(path, sizeof(path), base_id);
+  debug_printf("find_message_record: path=%s looking for id=%d", path, file_id);
+  
   file = fopen(path, "rb");
   if (file == NULL)
   {
+    debug_printf("find_message_record: fopen failed");
     return 0;
   }
 
   while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1)
   {
+    debug_printf("find_message_record: read id=%d bodysize=%ld", 
+                 messagebase_message_cache.id, messagebase_message_cache.bodysize);
     if (messagebase_message_cache.id == file_id)
     {
       if (record_out != NULL)
@@ -1189,23 +1413,38 @@ static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_REC
         *record_out = messagebase_message_cache;
       }
       fclose(file);
+      debug_printf("find_message_record: found! bodysize=%ld", messagebase_message_cache.bodysize);
       return 1;
     }
   }
 
   fclose(file);
+  debug_printf("find_message_record: not found");;
   return 0;
 }
 
 static int messagebase_update_messagesize(int base_id, int message_id, size_t delta)
 {
+  debug_printf("update_messagesize: base=%d msg=%d delta=%u", base_id, message_id, (unsigned)delta);
+
   if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
   {
+    debug_printf("update_messagesize: find_message_record failed");
     return 0;
   }
 
+  debug_printf("update_messagesize: old bodysize=%ld", messagebase_message_cache.bodysize);
   messagebase_message_cache.bodysize += (long)delta;
-  return messagebase_update_message_record(base_id, &messagebase_message_cache);
+  debug_printf("update_messagesize: new bodysize=%ld", messagebase_message_cache.bodysize);
+
+  if (!messagebase_update_message_record(base_id, &messagebase_message_cache))
+  {
+    debug_printf("update_messagesize: update_message_record failed");
+    return 0;
+  }
+
+  debug_printf("update_messagesize: success");
+  return 1;
 }
 
 static void messagebase_log(const char *format, ...)

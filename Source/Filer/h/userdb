@@ -24,6 +24,7 @@ typedef enum
 int userdb_get_next_id(void);
 int userdb_add_record(USER_RECORD *user_record);
 int userdb_update_record(int user_id, USER_RECORD *user_record);
+int userdb_update_history(int user_id, const USER_HISTORY *history);
 USER_RECORD *userdb_search_record(int user_id);
 int userdb_delete_record(int user_id);
 USER_RECORD *userdb_find_username(const char *username);

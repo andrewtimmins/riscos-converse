@@ -1,0 +1,9 @@
+Set Advertiser$Dir <Obey$Dir>
+Iconsprites <Advertiser$Dir>.!Sprites
+WimpSlot -Min 64k -Max 64k
+RMEnsure ABCLibrary 0.00 RMLoad System:Modules.ABCLib
+RMEnsure ABCLibrary 0.00 Error You need the ABC Library for this program
+
+IF "<Advertiser$running>" = "yes" THEN Run <Advertiser$Dir>.!RunImage -WAIT
+
+IF "<Advertiser$running>" = "" THEN Run <Advertiser$Dir>.!RunImage

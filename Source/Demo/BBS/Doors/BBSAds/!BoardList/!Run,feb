@@ -1,0 +1,3 @@
+Set boardlister$Dir <Obey$Dir>
+WimpSlot 32k 32k
+Run <boardlister$Dir>.!RunImage %*0

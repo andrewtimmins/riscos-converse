@@ -1,0 +1,80 @@
+=================================
+Help for !WorldTime version 1.00
+(c) Matthew Page 1996 
+=================================
+
+Whilst trying a number of PC BB's one weekend, I came across a door that
+gave world times, in a style that you may find at an airport. 
+
+I thaught that this would be a good door to port over to the Acorn system,
+so here it is!
+
+If you wanna give me some dosh, or you find any bugs in this door, please
+get in touch.  
+
+I can be contacted at:
+
+mpage@mossoft.demon.co.uk
+7:44/106.0 @ Riscnet
+2:256/701.11 @ Fidonet
+50:12/1.0 @ X-Net
+
+online: ARM Pit BBS - number is published on all good Acorn BB's
+
+==================================
+Instalation
+==================================
+
+This door will work on any ArcBBS compatible server, just set your desired
+door number in the `configure` file, within this directory, and call as you
+would any other door.
+
+eg.
+
+ArmBBS:
+
+ defitem W
+ display `World Time`
+ [
+   doing `Seeing World Time`
+   log `>World Time`
+   door `1 33 <ArmBBS$Dir>.Doors.Utils.!WorldTime`
+ ]
+ enditem
+
+ArcBBS:
+
+OSCLI "WimpTask <ArcBBS$Dir>.Doors.!WorldTime"
+DOOR 33
+
+Any other server:
+
+ erm...work it out yourself! ;-)
+
+==================================
+Disclaimery type bit
+==================================
+
+  THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+  OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+  LIABILITY, OR SORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+  OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+  SUCH DAMAGE.
+
+Andrew Lobel has also written a similar door to this, and no doubt he 
+will probably make a fuss about this one. BUT....my version better than his
+because:
+
+ > Andrew Lobels' doesn't work out the times correctly
+ > Andrew Lobels' has a crappy Intercomm BBS advert at the end
+ > Andrew Lobels' is written by Andrew Lobel (i.e nobody wants to use his 
+                                              version, coz no-one likes him)
+
+I thaught I should get that off my chest ;-D
+Ok, there is nothing more to say, apart from, have fun! and see ya round!

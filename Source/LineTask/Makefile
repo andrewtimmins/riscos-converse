@@ -1,7 +1,7 @@
 # Make file for LineTask
 
 COMPONENT   = Line
-OBJS        = debug filebase main script transfer
+OBJS        = debug filebase main messagebase script transfer
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan
 OBJASMFLAGS = -throwback -NoCache -depend !Depend

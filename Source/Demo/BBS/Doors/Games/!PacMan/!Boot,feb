@@ -1,0 +1,2 @@
+Set PacMan$Dir <Obey$Dir>
+IconSprites <PacMan$Dir>.!Sprites

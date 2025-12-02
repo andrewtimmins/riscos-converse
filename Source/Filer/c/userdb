@@ -14,6 +14,7 @@
 #include "logging.h"
 #include "misc.h"
 #include "encrypt.h"
+#include "debug.h"
 
 #define USERDB_LOG_ENTRY_LENGTH 256
 
@@ -120,6 +121,52 @@ int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
     fclose(file);
     return 0;
 }
+
+int userdb_update_history(int user_id, const USER_HISTORY *history)
+{
+    USER_RECORD stored_record = {0};
+    FILE *file;
+
+    if (history == NULL) {
+        return 0;
+    }
+    file = fopen(USERDB, "r+b");
+    if (file == NULL) {
+        return 0;
+    }
+
+    while (fread(&stored_record, sizeof(USER_RECORD), 1, file) == 1) {
+        if (stored_record.id == user_id) {
+            /* Decrypt the record to work with it */
+            userdb_decrypt_payload(&stored_record);
+            
+            /* Update just the history portion */
+            stored_record.user_history = *history;
+            
+            /* Re-encrypt and write back */
+            userdb_encrypt_payload(&stored_record);
+
+            if (fseek(file, -(long)sizeof(USER_RECORD), SEEK_CUR) != 0 ||
+                fwrite(&stored_record, sizeof(USER_RECORD), 1, file) != 1) {
+                fclose(file);
+                return 0;
+            }
+
+            fclose(file);
+            {
+                char log_msg[128];
+                snprintf(log_msg, sizeof(log_msg), "Updated history for user: #%d (mb=%d/%d fb=%d/%d)", 
+                    user_id, history->messagebase, history->messagebasearea,
+                    history->filebase, history->filebasearea);
+                log_system(log_msg);
+            }
+            return 1;
+        }
+    }
+
+    fclose(file);
+    return 0;
+}
  
 USER_RECORD *userdb_search_record(int user_id)
 {
@@ -196,6 +243,9 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
 {
     FILE *file;
     USER_RECORD record;
+    int record_count = 0;
+
+    debug_printf("userdb_authenticate: username='%s'", username != NULL ? username : "(null)");
 
     if (result != NULL)
     {
@@ -204,6 +254,7 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
 
     if (username == NULL || password == NULL || *username == '\0')
     {
+        debug_printf("userdb_authenticate: null/empty username or password");
         return NULL;
     }
 
@@ -211,14 +262,21 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
     file = fopen(USERDB, "rb");
     if (file == NULL)
     {
+        debug_printf("userdb_authenticate: failed to open %s", USERDB);
         return NULL;
     }
+
+    debug_printf("userdb_authenticate: opened database, searching...");
 
     /* Search for the user by username - use local record to avoid race conditions */
     while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
     {
+        record_count++;
         userdb_decrypt_payload(&record);
         userdb_normalise_strings(&record);
+
+        debug_printf("userdb_authenticate: record %d id=%d username='%s' deleted=%d",
+                     record_count, record.id, record.username, record.user_flags.deleted);
 
         if (record.user_flags.deleted != 0)
         {
@@ -228,10 +286,12 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
         if (userdb_string_casecmp(record.username, username) == 0)
         {
             /* Found the user - check password while still holding local copy */
+            debug_printf("userdb_authenticate: found matching user id=%d", record.id);
             fclose(file);
 
             if (record.user_flags.lockedout != 0)
             {
+                debug_printf("userdb_authenticate: user is locked out");
                 if (result != NULL)
                 {
                     *result = FILER_USERDB_AUTH_LOCKED;
@@ -241,6 +301,7 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
 
             if (strcmp(record.password, password) != 0)
             {
+                debug_printf("userdb_authenticate: password mismatch");
                 if (result != NULL)
                 {
                     *result = FILER_USERDB_AUTH_BAD_PASSWORD;
@@ -249,6 +310,7 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
             }
 
             /* Password matches - copy to cached record and return */
+            debug_printf("userdb_authenticate: password correct, success");
             if (result != NULL)
             {
                 *result = FILER_USERDB_AUTH_SUCCESS;
@@ -260,6 +322,7 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
         }
     }
 
+    debug_printf("userdb_authenticate: user not found after %d records", record_count);
     fclose(file);
     return NULL;
 }

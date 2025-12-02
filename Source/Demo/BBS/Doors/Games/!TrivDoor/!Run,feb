@@ -1,0 +1,4 @@
+Set TrivDoor$Dir <Obey$Dir>
+Iconsprites <TrivDoor$Dir>.!Sprites
+WimpSlot -Min 64k -Max 64k
+Run <TrivDoor$Dir>.!RunImage

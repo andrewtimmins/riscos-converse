@@ -9,6 +9,24 @@
     type `<Converse$Dir>.BBS.ANSI.Header`
     type `<Converse$Dir>.BBS.Menus.FileMenu`
 
+    /* Show current selection status */
+    if %{filebaseid} == 0 goto fb_no_selection
+    if %{filebaseareaid} == 0 goto fb_base_only
+    fg 6
+    print `\r\nCurrent: %{filebasename} > %{filebaseareaname}\r\n`
+    fg 7
+    goto fb_show_prompt
+    label fb_base_only
+    fg 6
+    print `\r\nCurrent: %{filebasename} (all areas)\r\n`
+    fg 7
+    goto fb_show_prompt
+    label fb_no_selection
+    fg 3
+    print `\r\nNo filebase selected\r\n`
+    fg 7
+    label fb_show_prompt
+
     print `\r\nEnter choice (1-7, X): `
     prompt choice char echo
 

@@ -1,0 +1,8 @@
+| Hunt The Sysop
+| (C) Copyright Steve Smale, 1996
+
+Set HuntSysop$Dir <Obey$Dir>
+Iconsprites <HuntSysop$Dir>.!Sprites
+RmEnsure UtilityModule 3.50 Iconsprites <HuntSysop$Dir>.Resources.Sprites350
+Wimpslot 48k 48k
+Run <HuntSysop$Dir>.Resources.!RunImage

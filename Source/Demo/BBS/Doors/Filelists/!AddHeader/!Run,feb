@@ -1,0 +1,8 @@
+| Run file for AddHeader
+| © Werewolf Software / Gilbert the Hamster Software 1996
+| Written by Dane Koekoek and Quintin Parker
+|
+WimpSlot -min 12K -max 12K
+Set AddHeader$Dir <Obey$Dir>
+Iconsprites <AddHeader$Dir>.!Sprites
+Run <AddHeader$Dir>.!RunImage %*0
