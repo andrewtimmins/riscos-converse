@@ -136,7 +136,7 @@ typedef struct
     short areatype;
 } LINETASK_MESSAGEBASE_AREA_RECORD;
 
-/* Message record structure */
+/* Message record structure - must match Filer MESSAGE_RECORD exactly */
 typedef struct
 {
     int id;
@@ -156,6 +156,9 @@ typedef struct
     int timesread;
     long bodysize;
     char subject[MB_MAX_DESC];
+    char fromname[36];      /* FTN sender name */
+    char toname[36];        /* FTN recipient name */
+    int exported;           /* 0=not exported, 1=exported to outbound */
 } LINETASK_MESSAGE_RECORD;
 
 /* Message viewer state */
@@ -306,6 +309,37 @@ int messagebase_composer_show_preview(messagebase_session *session,
 int messagebase_composer_send(messagebase_session *session,
                                void (*output)(void *ctx, const char *text),
                                void *ctx);
+
+/* ******************************************************************************************************************************************************** */
+/* Direct Message Sending (Script Commands)                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/* Send a private message to a local user
+ * Returns message ID on success, 0 on failure */
+int messagebase_send_private(messagebase_session *session,
+                             const char *to_username,
+                             const char *subject,
+                             const char *body,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx);
+
+/* Send a netmail message to an FTN address
+ * Returns message ID on success, 0 on failure */
+int messagebase_send_netmail(messagebase_session *session,
+                             const char *to_address,
+                             const char *to_name,
+                             const char *subject,
+                             const char *body,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx);
+
+/* Find or create the default private mail area in a messagebase
+ * Returns area ID on success, 0 if not found */
+int messagebase_find_private_area(int base_id);
+
+/* Find or create the default netmail area in a messagebase
+ * Returns area ID on success, 0 if not found */
+int messagebase_find_netmail_area(int base_id);
 
 /* ******************************************************************************************************************************************************** */
 /* Access Control                                                                                                                                           */

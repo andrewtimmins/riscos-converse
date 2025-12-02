@@ -46,9 +46,11 @@ door.2: Door is not responding.
 
 # FTN Mailer Messages
 ftn.ibmt: Mailer
-ftn.ibm: >Info, >Mail, Quit
+ftn.ibm: >Info, >Mail, >Commands, Quit
 ftn.mailmt:Mail
-ftn.mailm:Poll,Toss
+ftn.mailm:Poll,Toss, Scan
+ftn.cmdmt:Commands
+ftn.cmdm:FREQ...
 ftn.idle: No connection...
 ftn.tossing: Tossing...
 ftn.polling: Polling...

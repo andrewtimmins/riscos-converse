@@ -881,6 +881,9 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
         int timesread;
         long bodysize;
         char subject[256];
+        char fromname[36];
+        char toname[36];
+        int exported;
     } MSG_REC;
     
     MSG_REC record;
@@ -919,8 +922,11 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
     record.timesread = 0;
     record.bodysize = 0;  /* Updated by upload */
     
-    /* Subject includes From/To for display */
+    /* Copy subject and FTN names */
     snprintf(record.subject, sizeof(record.subject), "%s", msg->subject);
+    strncpy(record.fromname, msg->from, sizeof(record.fromname) - 1);
+    strncpy(record.toname, msg->to, sizeof(record.toname) - 1);
+    record.exported = 1;  /* Imported messages are already "exported" (came from network) */
     
     /* Begin upload via Filer SWI */
     regs.r[0] = MSGBASE_CMD_BEGIN_UPLOAD;

@@ -433,20 +433,47 @@ static int parse_bso_hex_addr(const char *name, int zone, FTN_ADDR *addr)
 /*
  * Get flavour from RISC OS style extension (last 3 chars of filename)
  * e.g., "00fa0009out" -> NORMAL, "00fa0009cut" -> CRASH
+ * Also handles packet files: "00fa0009xxxxxxxxpkt" (net/node + timestamp + pkt)
  */
-static int get_flavour_from_name(const char *name, QUEUE_FLAVOUR *flavour, int *is_flo)
+static int get_flavour_from_name(const char *name, QUEUE_FLAVOUR *flavour, int *is_flo, int *is_pkt, int *is_req)
 {
     int len = strlen(name);
     const char *ext;
+    const char *suffix;
 
     *is_flo = 0;
+    *is_pkt = 0;
+    *is_req = 0;
 
-    if (len < 11)  /* 8 hex + 3 ext */
+    if (len < 11)  /* 8 hex + 3 ext minimum */
     {
         return 0;
     }
 
-    ext = name + 8;  /* Extension starts after 8 hex digits */
+    /* First check for packet files ending in "pkt" (format: NNNNNNNNxxxxxxxxpkt) */
+    /* These are 19 chars: 8 hex net/node + 8 hex timestamp + 3 char "pkt" */
+    if (len >= 19)
+    {
+        suffix = name + len - 3;  /* Last 3 chars */
+        if ((suffix[0] == 'p' || suffix[0] == 'P') && 
+            (suffix[1] == 'k' || suffix[1] == 'K') && 
+            (suffix[2] == 't' || suffix[2] == 'T'))
+        {
+            *flavour = QUEUE_FLAVOUR_NORMAL;
+            *is_pkt = 1;
+            return 1;
+        }
+    }
+
+    ext = name + 8;  /* Extension starts after 8 hex digits for BSO files */
+
+    /* Check for request files (.req) */
+    if ((ext[0] == 'r' || ext[0] == 'R') && (ext[1] == 'e' || ext[1] == 'E') && (ext[2] == 'q' || ext[2] == 'Q'))
+    {
+        *flavour = QUEUE_FLAVOUR_NORMAL;
+        *is_req = 1;
+        return 1;
+    }
 
     /* Check for packet files (.?ut) */
     if ((ext[0] == 'o' || ext[0] == 'O') && (ext[1] == 'u' || ext[1] == 'U') && (ext[2] == 't' || ext[2] == 'T'))
@@ -615,16 +642,21 @@ static int scan_zone_directory(const char *path, int zone)
             FTN_ADDR addr;
             QUEUE_FLAVOUR flavour;
             int is_flo;
+            int is_pkt;
+            int is_req;
 
             /* Skip directories (point directories would be objtype 2) */
             if (objtype == 1)  /* Regular file */
             {
                 /* Try to parse as BSO filename */
                 if (parse_bso_hex_addr(name, zone, &addr) &&
-                    get_flavour_from_name(name, &flavour, &is_flo))
+                    get_flavour_from_name(name, &flavour, &is_flo, &is_pkt, &is_req))
                 {
                     QUEUE_NODE *node;
                     char filepath[MAILER_PATH_SIZE];
+
+                    debug_printf("queue: Found BSO file %s -> %d:%d/%d (flo=%d pkt=%d req=%d)",
+                                 name, addr.zone, addr.net, addr.node, is_flo, is_pkt, is_req);
 
                     snprintf(filepath, sizeof(filepath), "%s.%s", path, name);
 
@@ -635,6 +667,8 @@ static int scan_zone_directory(const char *path, int zone)
                         node = queue_add_node(&addr);
                         if (node != NULL)
                         {
+                            debug_printf("queue: Created node for %d:%d/%d.%d",
+                                         addr.zone, addr.net, addr.node, addr.point);
                             /* Look up uplink for hostname/port */
                             if (!lookup_uplink_for_node(&addr, node->hostname,
                                     sizeof(node->hostname), &node->port))
@@ -642,6 +676,12 @@ static int scan_zone_directory(const char *path, int zone)
                                 /* No uplink found - can't poll this node */
                                 debug_printf("queue: No uplink for %d:%d/%d",
                                              addr.zone, addr.net, addr.node);
+                            }
+                            else
+                            {
+                                debug_printf("queue: Node %d:%d/%d -> %s:%d",
+                                             addr.zone, addr.net, addr.node,
+                                             node->hostname, node->port);
                             }
                         }
                     }
@@ -655,11 +695,27 @@ static int scan_zone_directory(const char *path, int zone)
                             debug_printf("queue: Parsed %s: %d files", name, files);
                             count += files;
                         }
+                        else if (is_req)
+                        {
+                            /* File request - add as REQ type, delete after sending */
+                            if (queue_add_file(node, filepath, QUEUE_FILE_REQ, flavour))
+                            {
+                                node->files[node->file_count - 1].delete_after = 1;
+                                debug_printf("queue: Added REQ file %s", name);
+                                count++;
+                            }
+                        }
                         else
                         {
-                            /* Direct packet file */
-                            if (queue_add_file(node, filepath, QUEUE_FILE_PKT, flavour))
+                            /* Direct packet file (BSO .?ut or .pkt) */
+                            QUEUE_FILE_TYPE ftype = QUEUE_FILE_PKT;
+                            if (queue_add_file(node, filepath, ftype, flavour))
                             {
+                                /* Mark .pkt files for deletion after sending */
+                                if (is_pkt)
+                                {
+                                    node->files[node->file_count - 1].delete_after = 1;
+                                }
                                 count++;
                             }
                         }

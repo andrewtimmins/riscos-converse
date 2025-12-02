@@ -118,12 +118,105 @@
     if choice == `6` goto riscbbs_doors
     if choice == `F` || choice == `f` goto filebase_menu
     if choice == `M` || choice == `m` goto messagebase_menu
+    if choice == `P` || choice == `p` goto send_private_mail
+    if choice == `N` || choice == `n` goto send_netmail
     if choice == `S` || choice == `s` goto chat_sysop
     if choice == `X` || choice == `x` goto end_session
     if choice == `R` || choice == `r` goto random_game
     if choice == `C` || choice == `c` goto sysop_chat
 
     print `\r\nUnknown selection '%{choice}', please try again.\r\n`
+    goto main_menu
+
+    /* Send Private Mail */
+    label send_private_mail
+    doing `Sending private mail`
+    if %{registered} != 1 goto need_login
+    
+    print `\r\n`
+    if ansi == `1` goto pm_ansi_header
+    print `=== Send Private Mail ===\r\n\r\n`
+    goto pm_get_recipient
+    
+    label pm_ansi_header
+    fgbg 3 0
+    print `=== Send Private Mail ===\r\n\r\n`
+    fgbg 7 0
+    
+    label pm_get_recipient
+    print `To (username): `
+    prompt pm_to line echo
+    strlen pm_to_len pm_to
+    if pm_to_len == 0 goto main_menu
+    
+    print `Subject: `
+    prompt pm_subject line echo
+    strlen pm_subj_len pm_subject
+    if pm_subj_len == 0 goto main_menu
+    
+    print `Message (single line): `
+    prompt pm_body line echo
+    strlen pm_body_len pm_body
+    if pm_body_len == 0 goto main_menu
+    
+    messagebase select 1
+    sendmail %{pm_to} `%{pm_subject}` `%{pm_body}`
+    anykey temp
+    goto main_menu
+
+    /* Send FTN Netmail */
+    label send_netmail
+    doing `Sending netmail`
+    if %{registered} != 1 goto need_login
+    
+    print `\r\n`
+    if ansi == `1` goto nm_ansi_header
+    print `=== Send FTN Netmail ===\r\n\r\n`
+    goto nm_get_address
+    
+    label nm_ansi_header
+    fgbg 5 0
+    print `=== Send FTN Netmail ===\r\n\r\n`
+    fgbg 7 0
+    
+    label nm_get_address
+    print `To (FTN address, e.g. 2:2500/622): `
+    prompt nm_addr line echo
+    strlen nm_addr_len nm_addr
+    if nm_addr_len == 0 goto main_menu
+    
+    print `Recipient name: `
+    prompt nm_name line echo
+    strlen nm_name_len nm_name
+    if nm_name_len == 0 goto main_menu
+    
+    print `Subject: `
+    prompt nm_subject line echo
+    strlen nm_subj_len nm_subject
+    if nm_subj_len == 0 goto main_menu
+    
+    print `Message (single line): `
+    prompt nm_body line echo
+    strlen nm_body_len nm_body
+    if nm_body_len == 0 goto main_menu
+    
+    messagebase select 2
+    sendnetmail %{nm_addr} `%{nm_name}` `%{nm_subject}` `%{nm_body}`
+    anykey temp
+    goto main_menu
+
+    /* Require login for mail features */
+    label need_login
+    print `\r\n`
+    if ansi == `1` goto need_login_ansi
+    print `[You must be logged in to send mail]\r\n`
+    goto need_login_done
+    label need_login_ansi
+    fgbg 1 0
+    print `[You must be logged in to send mail]\r\n`
+    fgbg 7 0
+    label need_login_done
+    anykey temp
     goto main_menu
 
     label arcbbs_doors

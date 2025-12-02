@@ -109,6 +109,8 @@ void binkp_send_eob(MAILER_SESSION *session);
 void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset);
 void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
 void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
+void binkp_send_get(MAILER_SESSION *session, const char *filename, long size, long mtime, long offset);
+void binkp_send_get_freq(MAILER_SESSION *session, const char *filename);
 
 /* File transfer */
 void binkp_start_send_file(MAILER_SESSION *session, const char *path);
@@ -117,6 +119,9 @@ void binkp_finish_send_file(MAILER_SESSION *session);
 void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset);
 void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data, int length);
 void binkp_finish_receive_file(MAILER_SESSION *session);
+
+/* File requests */
+void binkp_process_req_file(MAILER_SESSION *session, const char *path);
 
 /* Session flow */
 void binkp_process_session(MAILER_SESSION *session);

@@ -1920,9 +1920,14 @@ int messagebase_composer_send(messagebase_session *session,
                (session->composer.is_private ? 3 : 0);
     msg.deleted = 0;
     msg.accesslevel = 0;
+    msg.exported = 0;  /* Not yet exported */
     strncpy(msg.subject, session->composer.subject, sizeof(msg.subject) - 1);
     msg.sentby = session->user_id;
     msg.receivedby = session->composer.to_user_id;
+
+    /* Set from/to names for FTN messages */
+    strncpy(msg.fromname, session->user_realname, sizeof(msg.fromname) - 1);
+    strncpy(msg.toname, session->composer.to_name, sizeof(msg.toname) - 1);
 
     if (session->composer.to_ftn_address.zone > 0)
     {
@@ -2189,4 +2194,302 @@ int messagebase_get_first_message_id(messagebase_session *session)
     }
 
     return 0;
+}
+
+/* ============================================================
+ * Direct Message Sending (Script Commands)
+ * ============================================================ */
+
+int messagebase_find_private_area(int base_id)
+{
+    _kernel_swi_regs regs;
+    LINETASK_MESSAGEBASE_AREA_RECORD *area_ptr;
+    int index = 0;
+
+    while (1)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+        regs.r[1] = base_id;
+        regs.r[2] = index;
+
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || 
+            regs.r[0] == -1 || regs.r[0] == 0)
+        {
+            break;
+        }
+
+        area_ptr = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+        if (area_ptr->areatype == AREA_TYPE_OTHER)
+        {
+            return area_ptr->id;
+        }
+        index++;
+    }
+
+    return 0;
+}
+
+int messagebase_find_netmail_area(int base_id)
+{
+    _kernel_swi_regs regs;
+    LINETASK_MESSAGEBASE_AREA_RECORD *area_ptr;
+    int index = 0;
+
+    while (1)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+        regs.r[1] = base_id;
+        regs.r[2] = index;
+
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || 
+            regs.r[0] == -1 || regs.r[0] == 0)
+        {
+            break;
+        }
+
+        area_ptr = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+        if (area_ptr->areatype == AREA_TYPE_NETMAIL)
+        {
+            return area_ptr->id;
+        }
+        index++;
+    }
+
+    return 0;
+}
+
+int messagebase_send_private(messagebase_session *session,
+                             const char *to_username,
+                             const char *subject,
+                             const char *body,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx)
+{
+    _kernel_swi_regs regs;
+    LINETASK_MESSAGE_RECORD msg;
+    int message_id;
+    int to_user_id = 0;
+    int area_id;
+    int body_len;
+    time_t now;
+    char line[256];
+
+    if (session == NULL || to_username == NULL || subject == NULL || body == NULL)
+    {
+        if (output) output(ctx, "\r\n[Invalid parameters]\r\n");
+        return 0;
+    }
+
+    /* Find private mail area in current messagebase */
+    if (session->current_messagebase <= 0)
+    {
+        if (output) output(ctx, "\r\n[No messagebase selected]\r\n");
+        return 0;
+    }
+
+    area_id = messagebase_find_private_area(session->current_messagebase);
+    if (area_id <= 0)
+    {
+        if (output) output(ctx, "\r\n[No private mail area found in this messagebase]\r\n");
+        return 0;
+    }
+
+    /* Look up recipient user */
+    if (!messagebase_lookup_user_by_name(to_username, &to_user_id) || to_user_id <= 0)
+    {
+        if (output)
+        {
+            snprintf(line, sizeof(line), "\r\n[User '%s' not found]\r\n", to_username);
+            output(ctx, line);
+        }
+        return 0;
+    }
+
+    /* Build message */
+    time(&now);
+    body_len = strlen(body);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.messagebaseid = session->current_messagebase;
+    msg.messagebaseareaid = area_id;
+    msg.type = MSG_TYPE_PRIVATE;
+    msg.deleted = 0;
+    msg.accesslevel = 0;
+    strncpy(msg.subject, subject, sizeof(msg.subject) - 1);
+    msg.sentby = session->user_id;
+    msg.receivedby = to_user_id;
+    msg.sent = now;
+    msg.bodysize = body_len;
+
+    /* Begin upload */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = session->current_messagebase;
+    regs.r[2] = (int)&msg;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+    {
+        if (output) output(ctx, "\r\n[Error creating message]\r\n");
+        return 0;
+    }
+
+    message_id = regs.r[0];
+
+    /* Upload body */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK;
+    regs.r[1] = session->current_messagebase;
+    regs.r[2] = message_id;
+    regs.r[3] = (int)body;
+    regs.r[4] = body_len;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        if (output) output(ctx, "\r\n[Error writing message body]\r\n");
+        return 0;
+    }
+
+    if (output)
+    {
+        snprintf(line, sizeof(line), "\r\n\033[1;32mPrivate message sent to %s.\033[0m\r\n", to_username);
+        output(ctx, line);
+    }
+
+    return message_id;
+}
+
+int messagebase_send_netmail(messagebase_session *session,
+                             const char *to_address,
+                             const char *to_name,
+                             const char *subject,
+                             const char *body,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx)
+{
+    _kernel_swi_regs regs;
+    LINETASK_MESSAGE_RECORD msg;
+    LINETASK_FTN_ADDRESS dst_addr;
+    int message_id;
+    int area_id;
+    int body_len;
+    time_t now;
+    char line[256];
+
+    if (session == NULL || to_address == NULL || subject == NULL || body == NULL)
+    {
+        if (output) output(ctx, "\r\n[Invalid parameters]\r\n");
+        return 0;
+    }
+
+    /* Parse destination FTN address */
+    if (!messagebase_parse_ftn_address(to_address, &dst_addr))
+    {
+        if (output)
+        {
+            snprintf(line, sizeof(line), "\r\n[Invalid FTN address: %s]\r\n", to_address);
+            output(ctx, line);
+        }
+        return 0;
+    }
+
+    /* Find netmail area - search all messagebases if needed */
+    area_id = 0;
+    if (session->current_messagebase > 0)
+    {
+        area_id = messagebase_find_netmail_area(session->current_messagebase);
+    }
+
+    /* If not found in current, search all messagebases */
+    if (area_id <= 0)
+    {
+        int base_index = 0;
+        LINETASK_MESSAGEBASE_RECORD *base_ptr;
+
+        while (1)
+        {
+            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
+            regs.r[1] = base_index;
+
+            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL ||
+                regs.r[0] == -1 || regs.r[0] == 0)
+            {
+                break;
+            }
+
+            base_ptr = (LINETASK_MESSAGEBASE_RECORD *)regs.r[0];
+            area_id = messagebase_find_netmail_area(base_ptr->id);
+            if (area_id > 0)
+            {
+                session->current_messagebase = base_ptr->id;
+                break;
+            }
+            base_index++;
+        }
+    }
+
+    if (area_id <= 0)
+    {
+        if (output) output(ctx, "\r\n[No netmail area configured]\r\n");
+        return 0;
+    }
+
+    /* Build message */
+    time(&now);
+    body_len = strlen(body);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.messagebaseid = session->current_messagebase;
+    msg.messagebaseareaid = area_id;
+    msg.type = MSG_TYPE_NETMAIL;
+    msg.deleted = 0;
+    msg.accesslevel = 0;
+    msg.exported = 0;  /* Not yet exported */
+    strncpy(msg.subject, subject, sizeof(msg.subject) - 1);
+    msg.sentby = session->user_id;
+    msg.receivedby = 0;
+    memcpy(&msg.dstaddr, &dst_addr, sizeof(msg.dstaddr));
+    msg.sent = now;
+    msg.bodysize = body_len;
+
+    /* Set from/to names for FTN */
+    strncpy(msg.fromname, session->user_realname, sizeof(msg.fromname) - 1);
+    if (to_name != NULL && *to_name != '\0')
+    {
+        strncpy(msg.toname, to_name, sizeof(msg.toname) - 1);
+    }
+
+    /* Begin upload */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = session->current_messagebase;
+    regs.r[2] = (int)&msg;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+    {
+        if (output) output(ctx, "\r\n[Error creating netmail]\r\n");
+        return 0;
+    }
+
+    message_id = regs.r[0];
+
+    /* Upload body */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK;
+    regs.r[1] = session->current_messagebase;
+    regs.r[2] = message_id;
+    regs.r[3] = (int)body;
+    regs.r[4] = body_len;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        if (output) output(ctx, "\r\n[Error writing netmail body]\r\n");
+        return 0;
+    }
+
+    if (output)
+    {
+        char addr_str[64];
+        messagebase_format_ftn_address(&dst_addr, addr_str, sizeof(addr_str));
+        snprintf(line, sizeof(line), "\r\n\033[1;32mNetmail queued for %s (%s).\033[0m\r\n", 
+                 to_name != NULL ? to_name : "User", addr_str);
+        output(ctx, line);
+    }
+
+    return message_id;
 }

@@ -1,0 +1,128 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Packet Packer                                                                                                                               */
+/* Creates Type 2+ FTN packets for outbound mail                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef PACKER_H
+#define PACKER_H
+
+#include <stdio.h>
+#include <time.h>
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define PACKER_MAX_MSGID            80
+#define PACKER_MAX_SEENBY           2048
+#define PACKER_MAX_PATH             1024
+#define PACKER_MAX_BODY             65536
+#define PACKER_PRODUCT_CODE         0xFE    /* Unregistered product */
+#define PACKER_PRODUCT_REV_MAJOR    0
+#define PACKER_PRODUCT_REV_MINOR    1
+
+/* Message types for packing */
+#define PACKER_MSG_ECHOMAIL         1
+#define PACKER_MSG_NETMAIL          2
+
+/* ******************************************************************************************************************************************************** */
+/* Packet Context                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    FILE *file;                         /* Open packet file */
+    char path[256];                     /* Full path to packet file */
+    FTN_ADDR orig_addr;                 /* Our address for this packet */
+    FTN_ADDR dest_addr;                 /* Destination address (uplink) */
+    char password[8];                   /* Packet password (8 chars max) */
+    int message_count;                  /* Messages written to packet */
+    long packet_size;                   /* Current packet size */
+} PACKER_CONTEXT;
+
+/* ******************************************************************************************************************************************************** */
+/* Message to Pack                                                                                                                                          */
+/* Contains all data needed to write a message to a packet                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    /* Addressing */
+    FTN_ADDR orig_addr;                 /* Message origin */
+    FTN_ADDR dest_addr;                 /* Message destination */
+    
+    /* Header fields */
+    char from[36];                      /* Sender name */
+    char to[36];                        /* Recipient name */
+    char subject[72];                   /* Subject line */
+    time_t datetime;                    /* Message date/time */
+    unsigned short attribute;           /* Message attributes */
+    
+    /* Content */
+    char *body;                         /* Message body text */
+    size_t body_len;                    /* Body length */
+    
+    /* FTN specifics */
+    char area[64];                      /* AREA tag (echomail only) */
+    char msgid[80];                     /* MSGID kludge */
+    char reply[80];                     /* REPLY kludge (if replying) */
+    int is_echomail;                    /* 1 for echomail, 0 for netmail */
+    
+    /* Existing SEEN-BY/PATH (from imported messages) */
+    char *seen_by;                      /* Existing SEEN-BY lines */
+    char *path;                         /* Existing PATH lines */
+} PACKER_MESSAGE;
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int packets_created;                /* Packets opened */
+    int messages_packed;                /* Messages written */
+    int echomail_count;                 /* Echomail messages */
+    int netmail_count;                  /* Netmail messages */
+    long bytes_written;                 /* Total bytes in packets */
+} PACKER_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialisation */
+void packer_initialise(void);
+void packer_finalise(void);
+
+/* Packet lifecycle */
+PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *dest_addr, const char *password);
+int packer_write_message(PACKER_CONTEXT *ctx, const PACKER_MESSAGE *msg);
+int packer_close_packet(PACKER_CONTEXT *ctx);
+void packer_abort_packet(PACKER_CONTEXT *ctx);
+
+/* Message packing from messagebase */
+int packer_pack_message_from_filer(PACKER_CONTEXT *ctx, int base_id, int message_id, 
+                                    const char *area_tag, int is_echomail, int aka_index);
+
+/* MSGID generation */
+void packer_generate_msgid(const FTN_ADDR *addr, char *buffer, size_t size);
+
+/* SEEN-BY/PATH handling for echomail */
+int packer_add_seenby(char *existing_seenby, size_t size, int net, int node);
+int packer_add_path(char *existing_path, size_t size, int net, int node);
+
+/* Point-specific kludge helpers */
+void packer_format_fmpt(char *buffer, size_t size, int point);
+void packer_format_topt(char *buffer, size_t size, int point);
+void packer_format_intl(char *buffer, size_t size, const FTN_ADDR *dest, const FTN_ADDR *orig);
+
+/* Utility */
+void packer_format_datetime(time_t t, char *buffer, size_t size);
+unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash);
+
+/* Statistics */
+void packer_get_stats(PACKER_STATS *stats);
+void packer_reset_stats(void);
+
+#endif

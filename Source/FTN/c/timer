@@ -124,7 +124,7 @@ int timer_get_next_wakeup(void)
 {
     int i;
     int now = get_monotonic_time();
-    int next = now + 100;  /* Default: wake up in 1 second */
+    int next = now + 1;  /* Default: wake up in 0.01 second (10ms - fast polling for transfers) */
 
     for (i = 0; i < MAX_TIMERS; i++)
     {

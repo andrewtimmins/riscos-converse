@@ -1,0 +1,18 @@
+;
+; Fidonet Messagebase Configuration
+;
+
+messagebase 2
+    name            Fidonet
+    type            1
+    accesslevel     0
+    keys            
+
+    area 1
+        name        Netmail
+        tag         NETMAIL
+        areatype    2
+        daystokeep  0
+    endarea
+
+endmessagebase

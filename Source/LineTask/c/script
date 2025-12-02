@@ -1731,6 +1731,189 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    /* Send private mail: sendmail <username> <subject> <body> */
+    if (script_stringcasecmp(token, "sendmail") == 0)
+    {
+        char *rest = strtok(NULL, "");
+        char *username = NULL;
+        char *subject = NULL;
+        char *body = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_SENDMAIL;
+
+        if (rest != NULL)
+        {
+            rest = script_trim(rest);
+
+            /* Parse username (backtick or plain) */
+            if (!script_parse_backtick_string(rest, &consumed, &username))
+            {
+                char *space = strchr(rest, ' ');
+                if (space != NULL)
+                {
+                    *space = '\0';
+                    username = script_duplicate_string(rest);
+                    rest = space + 1;
+                }
+                else
+                {
+                    username = script_duplicate_string(rest);
+                    rest = NULL;
+                }
+            }
+            else
+            {
+                rest = script_trim(rest + consumed);
+            }
+
+            instruction->arg1 = username;
+
+            /* Parse subject */
+            if (rest != NULL && *rest != '\0')
+            {
+                rest = script_trim(rest);
+                if (!script_parse_backtick_string(rest, &consumed, &subject))
+                {
+                    char *space = strchr(rest, ' ');
+                    if (space != NULL)
+                    {
+                        *space = '\0';
+                        subject = script_duplicate_string(rest);
+                        rest = space + 1;
+                    }
+                    else
+                    {
+                        subject = script_duplicate_string(rest);
+                        rest = NULL;
+                    }
+                }
+                else
+                {
+                    rest = script_trim(rest + consumed);
+                }
+                instruction->arg2 = subject;
+
+                /* Parse body */
+                if (rest != NULL && *rest != '\0')
+                {
+                    rest = script_trim(rest);
+                    if (!script_parse_backtick_string(rest, &consumed, &body))
+                    {
+                        body = script_duplicate_string(rest);
+                    }
+                    instruction->arg3 = body;
+                }
+            }
+        }
+        return 1;
+    }
+
+    /* Send netmail: sendnetmail <address> <name> <subject> <body> */
+    if (script_stringcasecmp(token, "sendnetmail") == 0)
+    {
+        char *rest = strtok(NULL, "");
+        char *address = NULL;
+        char *name = NULL;
+        char *subject = NULL;
+        char *body = NULL;
+        size_t consumed = 0;
+
+        instruction->type = SCRIPT_CMD_SENDNETMAIL;
+
+        if (rest != NULL)
+        {
+            rest = script_trim(rest);
+
+            /* Parse FTN address */
+            if (!script_parse_backtick_string(rest, &consumed, &address))
+            {
+                char *space = strchr(rest, ' ');
+                if (space != NULL)
+                {
+                    *space = '\0';
+                    address = script_duplicate_string(rest);
+                    rest = space + 1;
+                }
+                else
+                {
+                    address = script_duplicate_string(rest);
+                    rest = NULL;
+                }
+            }
+            else
+            {
+                rest = script_trim(rest + consumed);
+            }
+
+            instruction->arg1 = address;
+
+            /* Parse recipient name */
+            if (rest != NULL && *rest != '\0')
+            {
+                rest = script_trim(rest);
+                if (!script_parse_backtick_string(rest, &consumed, &name))
+                {
+                    char *space = strchr(rest, ' ');
+                    if (space != NULL)
+                    {
+                        *space = '\0';
+                        name = script_duplicate_string(rest);
+                        rest = space + 1;
+                    }
+                    else
+                    {
+                        name = script_duplicate_string(rest);
+                        rest = NULL;
+                    }
+                }
+                else
+                {
+                    rest = script_trim(rest + consumed);
+                }
+                instruction->arg2 = name;
+
+                /* Parse subject */
+                if (rest != NULL && *rest != '\0')
+                {
+                    rest = script_trim(rest);
+                    if (!script_parse_backtick_string(rest, &consumed, &subject))
+                    {
+                        char *space = strchr(rest, ' ');
+                        if (space != NULL)
+                        {
+                            *space = '\0';
+                            subject = script_duplicate_string(rest);
+                            rest = space + 1;
+                        }
+                        else
+                        {
+                            subject = script_duplicate_string(rest);
+                            rest = NULL;
+                        }
+                    }
+                    else
+                    {
+                        rest = script_trim(rest + consumed);
+                    }
+                    instruction->arg3 = subject;
+
+                    /* Parse body */
+                    if (rest != NULL && *rest != '\0')
+                    {
+                        rest = script_trim(rest);
+                        if (!script_parse_backtick_string(rest, &consumed, &body))
+                        {
+                            body = script_duplicate_string(rest);
+                        }
+                        instruction->arg4 = body;
+                    }
+                }
+            }
+        }
+        return 1;
+    }
+
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -2636,6 +2819,116 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 snprintf(msg, sizeof(msg), "\r\n[Unknown messagebase command: %s]\r\n", subcmd);
                 script_write_output(state, msg);
             }
+        }
+        break;
+
+        case SCRIPT_CMD_SENDMAIL:
+        {
+            const char *username_raw = instruction->arg1;
+            const char *subject_raw = instruction->arg2;
+            const char *body_raw = instruction->arg3;
+            char username[64], subject[256], body[2048];
+            messagebase_session *session = NULL;
+
+            if (username_raw == NULL || subject_raw == NULL || body_raw == NULL)
+            {
+                script_write_output(state, "\r\n[Usage: sendmail <username> <subject> <body>]\r\n");
+                break;
+            }
+
+            /* Expand macros */
+            script_expand_macros(state, username_raw, username, sizeof(username));
+            script_expand_macros(state, subject_raw, subject, sizeof(subject));
+            script_expand_macros(state, body_raw, body, sizeof(body));
+            script_translate_escapes(body);
+
+            /* Get session */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            }
+
+            if (session == NULL)
+            {
+                script_write_output(state, "\r\n[Messagebase not available]\r\n");
+                break;
+            }
+
+            /* Update session access */
+            if (state->host.get_user_accesslevel != NULL)
+            {
+                int level = state->host.get_user_accesslevel(state->host.context);
+                const char *keys = NULL;
+                int user_id = 0;
+                if (state->host.get_user_keys != NULL)
+                {
+                    keys = state->host.get_user_keys(state->host.context);
+                }
+                if (state->host.get_user_id != NULL)
+                {
+                    user_id = state->host.get_user_id(state->host.context);
+                }
+                messagebase_session_set_access(session, user_id, level, keys, NULL);
+            }
+
+            messagebase_send_private(session, username, subject, body,
+                                     (void (*)(void*, const char*))script_write_output, state);
+        }
+        break;
+
+        case SCRIPT_CMD_SENDNETMAIL:
+        {
+            const char *address_raw = instruction->arg1;
+            const char *name_raw = instruction->arg2;
+            const char *subject_raw = instruction->arg3;
+            const char *body_raw = instruction->arg4;
+            char address[64], name[64], subject[256], body[2048];
+            messagebase_session *session = NULL;
+
+            if (address_raw == NULL || subject_raw == NULL || body_raw == NULL)
+            {
+                script_write_output(state, "\r\n[Usage: sendnetmail <address> <name> <subject> <body>]\r\n");
+                break;
+            }
+
+            /* Expand macros */
+            script_expand_macros(state, address_raw, address, sizeof(address));
+            script_expand_macros(state, name_raw != NULL ? name_raw : "User", name, sizeof(name));
+            script_expand_macros(state, subject_raw, subject, sizeof(subject));
+            script_expand_macros(state, body_raw, body, sizeof(body));
+            script_translate_escapes(body);
+
+            /* Get session */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            }
+
+            if (session == NULL)
+            {
+                script_write_output(state, "\r\n[Messagebase not available]\r\n");
+                break;
+            }
+
+            /* Update session access */
+            if (state->host.get_user_accesslevel != NULL)
+            {
+                int level = state->host.get_user_accesslevel(state->host.context);
+                const char *keys = NULL;
+                int user_id = 0;
+                if (state->host.get_user_keys != NULL)
+                {
+                    keys = state->host.get_user_keys(state->host.context);
+                }
+                if (state->host.get_user_id != NULL)
+                {
+                    user_id = state->host.get_user_id(state->host.context);
+                }
+                messagebase_session_set_access(session, user_id, level, keys, NULL);
+            }
+
+            messagebase_send_netmail(session, address, name, subject, body,
+                                     (void (*)(void*, const char*))script_write_output, state);
         }
         break;
 

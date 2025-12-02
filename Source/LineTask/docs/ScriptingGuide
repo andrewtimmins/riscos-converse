@@ -284,6 +284,34 @@ Messagebase Commands
         messagebase read 1
         messagebase post
 
+Direct Mail Commands
+~~~~~~~~~~~~~~~~~~~~
+`SENDMAIL <username> <subject> <body>`
+    Sends a private message to a local user. Requires a messagebase with
+    a Private (areatype 4) area to be configured. The sender's messagebase
+    selection is used; if not set, the command searches all messagebases.
+    
+    All arguments support macro expansion and backtick quoting.
+    Use `\r\n` in body for line breaks.
+    
+    Example:
+        sendmail sysop `Welcome!` `Hello,\r\n\r\nWelcome to the BBS!\r\n\r\n- System`
+        sendmail %{username} `Re: %{subject}` `Thanks for your message!`
+
+`SENDNETMAIL <address> <name> <subject> <body>`
+    Queues a netmail message to an FTN address for export. Requires a
+    messagebase with a Netmail (areatype 2) area. The message is stored
+    locally and exported when the mailer runs a Scan.
+    
+    - address: FTN address (e.g., 2:2500/622 or 2:2500/622.1 for points)
+    - name: Recipient's name (for display in message)
+    - subject: Subject line
+    - body: Message body (use \r\n for line breaks)
+    
+    Example:
+        sendnetmail 2:2500/622 `John Smith` `Hello!` `Greetings from Converse BBS!`
+        sendnetmail 1:234/567.1 `Sysop` `Test` `Testing point netmail.`
+
 File Transfer
 ~~~~~~~~~~~~~
 `SENDFILE <file_id> [protocol]`

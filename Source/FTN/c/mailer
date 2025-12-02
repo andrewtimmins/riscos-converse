@@ -47,6 +47,8 @@
 #include "binkp.h"
 #include "queue.h"
 #include "tosser.h"
+#include "scanner.h"
+#include "packer.h"
 #include "timer.h"
 #include "debug.h"
 #include "ftnlog.h"
@@ -60,13 +62,16 @@ MAILER_STATE mailer;
 Desk_window_handle proginfo_window;
 Desk_window_handle ftnstatus_window;
 Desk_window_handle ftnlog_window;
+Desk_window_handle ftnfreq_window;
 Desk_menu_ptr mail_menu;
+Desk_menu_ptr commands_menu;
 
 /* Iconbar menu entries */
 enum
 {
     ICONBAR_MENU_INFO = 0,
     ICONBAR_MENU_MAIL,
+    ICONBAR_MENU_COMMANDS,
     ICONBAR_MENU_QUIT
 };
 
@@ -74,7 +79,14 @@ enum
 enum
 {
     MAIL_MENU_POLL = 0,
-    MAIL_MENU_TOSS
+    MAIL_MENU_TOSS,
+    MAIL_MENU_SCAN
+};
+
+/* Commands submenu entries */
+enum
+{
+    COMMANDS_MENU_FREQ = 0
 };
 
 /* ******************************************************************************************************************************************************** */
@@ -256,6 +268,22 @@ static void ftnstatus_set_idle(void)
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
     
+    /* Reset progress bar to minimum width */
+    {
+        Desk_icon_block icon;
+        Desk_icon_createblock createblock;
+        Desk_icon_handle new_icon;
+        
+        Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
+        icon.workarearect.max.x = icon.workarearect.min.x + 20;
+        Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
+        Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+        
+        createblock.window = ftnstatus_window;
+        createblock.icondata = icon;
+        Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    }
+    
     /* Force a redraw so user sees update */
     {
         Desk_event_pollblock event;
@@ -263,6 +291,98 @@ static void ftnstatus_set_idle(void)
         mask.value = 0;
         Desk_Wimp_Poll3(mask, &event, NULL);
     }
+}
+
+/* Progress bar constants */
+#define FTNSTATUS_PROGRESS_MIN_WIDTH 20
+#define FTNSTATUS_PROGRESS_MAX_WIDTH 776
+
+/*
+ * Start a file transfer display.
+ * Sets operation to "Transferring..." and status to direction + filename.
+ */
+void ftnstatus_start_transfer(int is_sending, const char *filename)
+{
+    char status[128];
+    Desk_icon_block icon;
+    
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Transferring...");
+    
+    snprintf(status, sizeof(status), "%s: %s", 
+             is_sending ? "Sending" : "Receiving", filename);
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
+    
+    /* Reset progress bar to minimum */
+    {
+        Desk_icon_createblock createblock;
+        Desk_icon_handle new_icon;
+        
+        Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
+        icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
+        Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
+        Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+        
+        createblock.window = ftnstatus_window;
+        createblock.icondata = icon;
+        Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    }
+    
+    /* Force redraw */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+/*
+ * Update file transfer progress.
+ * percent should be 0-100.
+ */
+void ftnstatus_update_progress(int percent)
+{
+    Desk_icon_block icon;
+    Desk_icon_createblock createblock;
+    Desk_icon_handle new_icon;
+    int width;
+    
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    
+    /* Calculate new width based on percentage */
+    width = FTNSTATUS_PROGRESS_MIN_WIDTH + 
+            ((FTNSTATUS_PROGRESS_MAX_WIDTH - FTNSTATUS_PROGRESS_MIN_WIDTH) * percent) / 100;
+    
+    /* Update the icon width */
+    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
+    icon.workarearect.max.x = icon.workarearect.min.x + width;
+    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
+    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+    
+    createblock.window = ftnstatus_window;
+    createblock.icondata = icon;
+    Desk_Wimp_CreateIcon(&createblock, &new_icon);
+}
+
+/*
+ * End file transfer display, resetting progress bar.
+ */
+void ftnstatus_end_transfer(void)
+{
+    Desk_icon_block icon;
+    Desk_icon_createblock createblock;
+    Desk_icon_handle new_icon;
+    
+    /* Reset progress bar to minimum */
+    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
+    icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
+    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
+    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+    
+    createblock.window = ftnstatus_window;
+    createblock.icondata = icon;
+    Desk_Wimp_CreateIcon(&createblock, &new_icon);
 }
 
 /*
@@ -289,6 +409,159 @@ static void ftnstatus_open_idle(void)
     state.openblock.behind = -1;  /* Open at front */
     
     Desk_Wimp_OpenWindow(&state.openblock);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FREQ (File Request) Functions                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Create a .REQ file for file request.
+ * The file is created in the outbound directory for the target FTN address.
+ * Returns 1 on success, 0 on failure.
+ */
+static int ftnfreq_create_request(const char *filename, const char *address)
+{
+    int zone = 0, net = 0, node = 0, point = 0;
+    char outbound[256];
+    char req_path[320];
+    char hex_node[32];
+    FILE *fp;
+    _kernel_swi_regs regs;
+    
+    /* Parse the FTN address */
+    if (sscanf(address, "%d:%d/%d.%d", &zone, &net, &node, &point) < 3)
+    {
+        if (sscanf(address, "%d:%d/%d", &zone, &net, &node) < 3)
+        {
+            debug_printf("ftnfreq: Failed to parse address: %s", address);
+            return 0;
+        }
+        point = 0;
+    }
+    
+    debug_printf("ftnfreq: Parsed address: zone=%d net=%d node=%d point=%d",
+                 zone, net, node, point);
+    
+    /* Get outbound directory from FTN config */
+    regs.r[0] = 0;  /* FTN_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        debug_printf("ftnfreq: Failed to get FTN config");
+        return 0;
+    }
+    
+    /* FTN_GLOBAL_CONFIG outbound is at offset 64+64+64+64+4+64+256 = 580 */
+    strncpy(outbound, (char *)regs.r[0] + 580, sizeof(outbound) - 1);
+    outbound[sizeof(outbound) - 1] = '\0';
+    
+    debug_printf("ftnfreq: Outbound directory: %s", outbound);
+    
+    /* Build the REQ filename: BSO format is NNNNNNNN.req where NNNN is net in hex, NNNN is node in hex */
+    snprintf(hex_node, sizeof(hex_node), "%04x%04x", net, node);
+    snprintf(req_path, sizeof(req_path), "%s.%sreq", outbound, hex_node);
+    
+    debug_printf("ftnfreq: Creating REQ file: %s", req_path);
+    
+    /* Create/append to the REQ file */
+    fp = fopen(req_path, "a");
+    if (fp == NULL)
+    {
+        debug_printf("ftnfreq: Failed to create REQ file: %s", req_path);
+        return 0;
+    }
+    
+    /* Write the filename to request (one per line) */
+    fprintf(fp, "%s\n", filename);
+    fclose(fp);
+    
+    /* Set filetype to text (0xFFF) */
+    {
+        _kernel_swi_regs fr;
+        fr.r[0] = 18;  /* Set filetype */
+        fr.r[1] = (int)req_path;
+        fr.r[2] = 0xFFF;
+        _kernel_swi(OS_File, &fr, &fr);
+    }
+    
+    mailer_log("FREQ: Requested '%s' from %s", filename, address);
+    ftnlog_printf("FREQ: %s from %s", filename, address);
+    
+    return 1;
+}
+
+/*
+ * Handle click events in the FREQ window.
+ */
+static Desk_bool ftnfreq_handle_click(Desk_event_pollblock *event, void *ref)
+{
+    Desk_icon_handle icon;
+    
+    Desk_UNUSED(ref);
+    
+    if (event->data.mouse.window != ftnfreq_window)
+        return Desk_bool_FALSE;
+    
+    icon = event->data.mouse.icon;
+    
+    if (icon == FTNFREQ_REQUEST)
+    {
+        char filename[128];
+        char address[64];
+        char *ptr;
+        
+        /* Get text from writable icons using GetTextPtr for indirected icons */
+        ptr = Desk_Icon_GetTextPtr(ftnfreq_window, FTNFREQ_FILENAME);
+        if (ptr != NULL)
+        {
+            strncpy(filename, ptr, sizeof(filename) - 1);
+            filename[sizeof(filename) - 1] = '\0';
+        }
+        else
+        {
+            filename[0] = '\0';
+        }
+        
+        ptr = Desk_Icon_GetTextPtr(ftnfreq_window, FTNFREQ_FROMADDRESS);
+        if (ptr != NULL)
+        {
+            strncpy(address, ptr, sizeof(address) - 1);
+            address[sizeof(address) - 1] = '\0';
+        }
+        else
+        {
+            address[0] = '\0';
+        }
+        
+        debug_printf("ftnfreq: FILENAME icon %d = '%s'", FTNFREQ_FILENAME, filename);
+        debug_printf("ftnfreq: FROMADDRESS icon %d = '%s'", FTNFREQ_FROMADDRESS, address);
+        
+        if (filename[0] != '\0' && address[0] != '\0')
+        {
+            if (ftnfreq_create_request(filename, address))
+            {
+                /* Clear the filename field on success */
+                Desk_Icon_SetText(ftnfreq_window, FTNFREQ_FILENAME, "");
+                
+                /* Close window */
+                Desk_Window_Hide(ftnfreq_window);
+            }
+        }
+        else
+        {
+            debug_printf("ftnfreq: Empty filename or address");
+        }
+        
+        return Desk_bool_TRUE;
+    }
+    else if (icon == FTNFREQ_CANCEL)
+    {
+        /* Just close the window */
+        Desk_Window_Hide(ftnfreq_window);;
+        return Desk_bool_TRUE;
+    }
+    
+    return Desk_bool_FALSE;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -613,78 +886,160 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
 
 static void process_session_rx(MAILER_SESSION *session)
 {
+    fd_set readfds;
+    struct timeval tv;
+    int select_result;
     int bytes;
+    int loops = 0;
+    const int MAX_LOOPS = 10;  /* Prevent infinite loop */
 
-    /* Read available data */
-    bytes = recv(session->socket,
-                 &session->rx_buffer[session->rx_length],
-                 sizeof(session->rx_buffer) - session->rx_length, 0);
-
-    if (bytes > 0)
+    /* First check if data is available using select() */
+    FD_ZERO(&readfds);
+    FD_SET(session->socket, &readfds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    
+    select_result = select(session->socket + 1, &readfds, NULL, NULL, &tv);
+    
+    if (select_result < 0)
     {
-        session->rx_length += bytes;
-
-        /* Process complete frames */
-        while (session->rx_length > 0 && binkp_frame_complete(session->rx_buffer, session->rx_length))
+        /* select() error */
+        if (errno != EINTR)
         {
-            BINKP_FRAME frame;
-            int consumed = binkp_parse_frame(session->rx_buffer, session->rx_length, &frame);
+            debug_printf("mailer: select() error on rx: errno=%d (%s) state=%d", 
+                         errno, _inet_err(), session->state);
+        }
+        return;
+    }
+    
+    if (select_result == 0)
+    {
+        /* No data ready yet - this is normal for non-blocking */
+        return;
+    }
 
-            if (consumed > 0)
+    /* Read all available data until EWOULDBLOCK (per RISC OS documentation) */
+    while (loops < MAX_LOOPS)
+    {
+        loops++;
+        
+        /* Check if buffer has space */
+        if (session->rx_length >= (int)sizeof(session->rx_buffer))
+        {
+            debug_printf("mailer: RX buffer full!");
+            break;
+        }
+        
+        /* Read data */
+        bytes = socketread(session->socket,
+                           &session->rx_buffer[session->rx_length],
+                           sizeof(session->rx_buffer) - session->rx_length);
+
+        if (bytes > 0)
+        {
+            session->rx_length += bytes;
+            /* Continue reading - there may be more data */
+        }
+        else if (bytes == 0)
+        {
+            /* Connection closed by remote */
+            ftnlog_printf("Remote closed connection");
+            session->state = SESSION_STATE_CLOSING;
+            return;
+        }
+        else
+        {
+            /* bytes < 0 - error or would-block */
+            if (errno == EWOULDBLOCK || errno == EAGAIN)
             {
-                binkp_handle_frame(session, &frame);
-
-                /* Remove processed data from buffer */
-                if (consumed < session->rx_length)
-                {
-                    memmove(session->rx_buffer, &session->rx_buffer[consumed],
-                            session->rx_length - consumed);
-                }
-                session->rx_length -= consumed;
+                /* No more data available - this is normal, exit the read loop */
+                break;
             }
             else
             {
-                break;
+                /* Real error */
+                debug_printf("mailer: Socket read error errno=%d (%s) state=%d", 
+                             errno, _inet_err(), session->state);
+                session->state = SESSION_STATE_ERROR;
+                return;
             }
         }
     }
-    else if (bytes == 0)
+
+    /* Process complete frames */
+    while (session->rx_length > 0 && binkp_frame_complete(session->rx_buffer, session->rx_length))
     {
-        /* Connection closed */
-        session->state = SESSION_STATE_CLOSING;
-    }
-    else if (errno != EWOULDBLOCK && errno != EAGAIN)
-    {
-        /* Error */
-        session->state = SESSION_STATE_ERROR;
+        BINKP_FRAME frame;
+        int consumed = binkp_parse_frame(session->rx_buffer, session->rx_length, &frame);
+
+        if (consumed > 0)
+        {
+            binkp_handle_frame(session, &frame);
+
+            /* Remove processed data from buffer */
+            if (consumed < session->rx_length)
+            {
+                memmove(session->rx_buffer, &session->rx_buffer[consumed],
+                        session->rx_length - consumed);
+            }
+            session->rx_length -= consumed;
+        }
+        else
+        {
+            break;
+        }
     }
 }
 
 static void process_session_tx(MAILER_SESSION *session)
 {
+    fd_set writefds;
+    struct timeval tv;
+    int select_result;
     int bytes;
 
-    if (session->tx_length > session->tx_offset)
+    if (session->tx_length <= session->tx_offset)
     {
-        bytes = send(session->socket,
-                     &session->tx_buffer[session->tx_offset],
-                     session->tx_length - session->tx_offset, 0);
+        return;  /* Nothing to send */
+    }
 
-        if (bytes > 0)
+    /* First check if socket is ready for writing using select() */
+    FD_ZERO(&writefds);
+    FD_SET(session->socket, &writefds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    
+    select_result = select(session->socket + 1, NULL, &writefds, NULL, &tv);
+    if (select_result <= 0)
+    {
+        /* Not ready or error */
+        if (select_result < 0 && errno != EINTR)
         {
-            session->tx_offset += bytes;
+            debug_printf("mailer: select() error on tx: errno=%d (%s)", errno, _inet_err());
+        }
+        return;
+    }
 
-            /* Reset buffer if all sent */
-            if (session->tx_offset >= session->tx_length)
-            {
-                session->tx_offset = 0;
-                session->tx_length = 0;
-            }
-        }
-        else if (errno != EWOULDBLOCK && errno != EAGAIN)
+    /* Socket is ready - send data */
+    bytes = socketwrite(session->socket,
+                        &session->tx_buffer[session->tx_offset],
+                        session->tx_length - session->tx_offset);
+
+    if (bytes > 0)
+    {
+        session->tx_offset += bytes;
+
+        /* Reset buffer if all sent */
+        if (session->tx_offset >= session->tx_length)
         {
-            session->state = SESSION_STATE_ERROR;
+            session->tx_offset = 0;
+            session->tx_length = 0;
         }
+    }
+    else if (errno != EWOULDBLOCK && errno != EAGAIN)
+    {
+        debug_printf("mailer: Socket write error errno=%d (%s)", errno, _inet_err());
+        session->state = SESSION_STATE_ERROR;
     }
 }
 
@@ -705,59 +1060,84 @@ void mailer_process_sessions(void)
         switch (session->state)
         {
             case SESSION_STATE_CONNECTING:
-                /* Check if non-blocking connect has completed using getsockopt(SO_ERROR) */
+                /* Use select() to check if socket is ready for writing (connection complete) */
                 {
-                    int so_error = -1;  /* Init to invalid value */
-                    socklen_t so_len = sizeof(so_error);
-                    int gso_result;
+                    fd_set writefds, exceptfds;
+                    struct timeval tv;
+                    int select_result;
                     
-                    gso_result = getsockopt(session->socket, SOL_SOCKET, SO_ERROR, &so_error, &so_len);
+                    FD_ZERO(&writefds);
+                    FD_ZERO(&exceptfds);
+                    FD_SET(session->socket, &writefds);
+                    FD_SET(session->socket, &exceptfds);
                     
-                    debug_printf("mailer: getsockopt result=%d, so_error=%d, errno=%d", 
-                                 gso_result, so_error, errno);
+                    /* Zero timeout for non-blocking check */
+                    tv.tv_sec = 0;
+                    tv.tv_usec = 0;
                     
-                    if (gso_result == 0)
+                    select_result = select(session->socket + 1, NULL, &writefds, &exceptfds, &tv);
+                    
+                    if (select_result > 0)
                     {
-                        if (so_error == 0)
+                        if (FD_ISSET(session->socket, &exceptfds))
                         {
-                            /* Connected successfully - start handshake */
-                            session->state = SESSION_STATE_WAIT_NUL;
-                            session->last_activity = time(NULL);
-                            ftnlog_printf("Connected to %s", session->remote_hostname);
-                            mailer_log_ftn("Connected to %s", session->remote_hostname);
+                            /* Exception - connection failed */
+                            debug_printf("mailer: select() reports exception on socket");
+                            ftnlog_printf("Connection failed to %s", session->remote_hostname);
+                            session->state = SESSION_STATE_ERROR;
+                        }
+                        else if (FD_ISSET(session->socket, &writefds))
+                        {
+                            /* Socket is writable - check for connection error */
+                            int so_error = 0;
+                            socklen_t so_len = sizeof(so_error);
+                            
+                            if (getsockopt(session->socket, SOL_SOCKET, SO_ERROR, &so_error, &so_len) == 0 &&
+                                so_error == 0)
+                            {
+                                /* Connected successfully - start handshake */
+                                session->state = SESSION_STATE_WAIT_NUL;
+                                session->last_activity = time(NULL);
+                                ftnlog_printf("Connected to %s", session->remote_hostname);
+                                mailer_log_ftn("Connected to %s", session->remote_hostname);
 
-                            /* Start BinkP handshake */
-                            binkp_send_handshake(session);
-                        }
-                        else if (so_error == EINPROGRESS)
-                        {
-                            /* Still connecting, wait more */
-                        }
-                        else
-                        {
-                            /* Connect failed with error */
-                            ftnlog_printf("Connection failed to %s (err %d)", session->remote_hostname, so_error);
-                            session->state = SESSION_STATE_ERROR;
+                                /* Start BinkP handshake */
+                                binkp_send_handshake(session);
+                            }
+                            else
+                            {
+                                debug_printf("mailer: getsockopt SO_ERROR=%d", so_error);
+                                ftnlog_printf("Connection failed to %s (err %d)", session->remote_hostname, so_error);
+                                session->state = SESSION_STATE_ERROR;
+                            }
                         }
                     }
-                    else
+                    else if (select_result < 0)
                     {
-                        /* getsockopt failed - check errno */
-                        debug_printf("mailer: getsockopt failed, errno=%d", errno);
-                        if (errno != EINPROGRESS && errno != EWOULDBLOCK)
+                        /* select() error */
+                        debug_printf("mailer: select() error errno=%d (%s)", errno, _inet_err());
+                        if (errno != EINTR)
                         {
-                            ftnlog_printf("Connection check failed to %s", session->remote_hostname);
                             session->state = SESSION_STATE_ERROR;
                         }
-                        /* else still connecting */
                     }
+                    /* select_result == 0 means no change yet, keep waiting */
                 }
                 break;
 
             case SESSION_STATE_CLOSING:
             case SESSION_STATE_ERROR:
-                mailer_close_session(session, 
-                    session->state == SESSION_STATE_ERROR ? "Error" : "Complete");
+                {
+                    const char *reason;
+                    if (session->state == SESSION_STATE_ERROR) {
+                        reason = "Error";
+                    } else if (session->authenticated) {
+                        reason = "Complete";
+                    } else {
+                        reason = "Auth failed";
+                    }
+                    mailer_close_session(session, reason);
+                }
                 break;
 
             default:
@@ -1057,6 +1437,8 @@ void mailer_initialise(void)
     timer_initialise();
     queue_initialise();
     tosser_initialise();
+    scanner_initialise();
+    packer_initialise();
     mailer_load_config();
     mailer_create_directories();
 }
@@ -1075,6 +1457,8 @@ void mailer_finalise(void)
     }
 
     mailer_destroy_listener();
+    packer_finalise();
+    scanner_finalise();
     tosser_finalise();
     queue_finalise();
     timer_finalise();
@@ -1162,6 +1546,30 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
                 }
                 ftnstatus_set_idle();
                 break;
+
+            case MAIL_MENU_SCAN:
+                /* Scan messagebases for outbound mail */
+                ftnstatus_open("ftn.scanning");
+                ftnstatus_update("Scanning messagebases...");
+                ftnlog_printf("Scanning for outbound mail...");
+                {
+                    int count = scanner_scan_outbound();
+                    if (count > 0)
+                    {
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Packed %d messages", count);
+                        ftnstatus_update(msg);
+                        ftnlog_printf("%s", msg);
+                        mailer_log("Packed %d messages for export", count);
+                    }
+                    else
+                    {
+                        ftnstatus_update("No outbound mail");
+                        ftnlog_printf("No outbound mail found");
+                    }
+                }
+                ftnstatus_set_idle();
+                break;
         }
         return Desk_bool_TRUE;
     }
@@ -1177,9 +1585,49 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
             /* Submenu - no direct action */
             break;
 
+        case ICONBAR_MENU_COMMANDS:
+            /* Submenu - no direct action */
+            break;
+
         case ICONBAR_MENU_QUIT:
             wimp.quit = Desk_bool_TRUE;
             break;
+    }
+
+    /* Handle Commands submenu selections */
+    if (event->data.selection[0] == ICONBAR_MENU_COMMANDS &&
+        event->data.selection[1] != -1)
+    {
+        switch (event->data.selection[1])
+        {
+            case COMMANDS_MENU_FREQ:
+                /* Open FREQ window at bottom-right, above iconbar */
+                {
+                    Desk_window_state state;
+                    int screen_width, win_width, win_height;
+                    
+                    /* Get screen size */
+                    screen_width = Desk_screen_size.x;
+                    
+                    /* Get window size */
+                    Desk_Wimp_GetWindowState(ftnfreq_window, &state);
+                    win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+                    win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+                    
+                    /* Position at bottom-right, above iconbar */
+                    state.openblock.screenrect.max.x = screen_width - 16;
+                    state.openblock.screenrect.min.x = screen_width - 16 - win_width;
+                    state.openblock.screenrect.min.y = 134;  /* Just above iconbar */
+                    state.openblock.screenrect.max.y = 134 + win_height;
+                    state.openblock.behind = -1;  /* Open at front */
+                    
+                    Desk_Wimp_OpenWindow(&state.openblock);
+                    
+                    /* Set caret in the filename writable field */
+                    Desk_Icon_SetCaret(ftnfreq_window, FTNFREQ_FILENAME);
+                }
+                break;
+        }
     }
 
     return Desk_bool_TRUE;
@@ -1270,21 +1718,34 @@ static void create_iconbar_menu(void)
     char iconbar_menu_title[30];
     char mail_menu_items[100];
     char mail_menu_title[30];
+    char commands_menu_items[100];
+    char commands_menu_title[30];
 
     /* Create main iconbar menu */
     lookup_menu_string("ftn.ibmt", iconbar_menu_title, sizeof(iconbar_menu_title), "Mailer");
-    lookup_menu_string("ftn.ibm", iconbar_menu, sizeof(iconbar_menu), "Info,Mail,Quit");
+    lookup_menu_string("ftn.ibm", iconbar_menu, sizeof(iconbar_menu), "Info,Mail,Commands,Quit");
     wimp.iconbar_menu_handle = Desk_Menu_New(iconbar_menu_title, iconbar_menu);
 
     /* Create Mail submenu */
     lookup_menu_string("ftn.mailmt", mail_menu_title, sizeof(mail_menu_title), "Mail");
-    lookup_menu_string("ftn.mailm", mail_menu_items, sizeof(mail_menu_items), "Poll,Toss");
+    lookup_menu_string("ftn.mailm", mail_menu_items, sizeof(mail_menu_items), "Poll,Toss,Scan");
     mail_menu = Desk_Menu_New(mail_menu_title, mail_menu_items);
+
+    /* Create Commands submenu */
+    lookup_menu_string("ftn.cmdmt", commands_menu_title, sizeof(commands_menu_title), "Commands");
+    lookup_menu_string("ftn.cmdm", commands_menu_items, sizeof(commands_menu_items), "FREQ...");
+    commands_menu = Desk_Menu_New(commands_menu_title, commands_menu_items);
 
     /* Attach Mail submenu to Mail item if both menus were created */
     if (wimp.iconbar_menu_handle != NULL && mail_menu != NULL)
     {
         Desk_Menu_AddSubMenu(wimp.iconbar_menu_handle, ICONBAR_MENU_MAIL, mail_menu);
+    }
+
+    /* Attach Commands submenu */
+    if (wimp.iconbar_menu_handle != NULL && commands_menu != NULL)
+    {
+        Desk_Menu_AddSubMenu(wimp.iconbar_menu_handle, ICONBAR_MENU_COMMANDS, commands_menu);
     }
 }
 
@@ -1332,6 +1793,7 @@ int main(int argc, char *argv[])
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
     ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
     ftnlog_window = Desk_Window_Create("ftnlog", Desk_template_TITLEMIN);
+    ftnfreq_window = Desk_Window_Create("ftnfreq", Desk_template_TITLEMIN);
 
     /* Initialise ftnlog module */
     ftnlog_initialise(ftnlog_window);
@@ -1346,6 +1808,8 @@ int main(int argc, char *argv[])
     /* Register event handlers */
     Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, Desk_event_ANY,
                      wimp_handle_iconbar_click, NULL);
+    Desk_Event_Claim(Desk_event_CLICK, ftnfreq_window, Desk_event_ANY,
+                     ftnfreq_handle_click, NULL);
     Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_iconbar_menu_choice, NULL);
     Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY,

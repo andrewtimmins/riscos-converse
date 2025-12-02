@@ -678,6 +678,110 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       break;
     }
 
+    case FILER_MESSAGEBASE_CMD_FIND_UNEXPORTED:
+    {
+      /* R1 = base_id, R2 = area_id (0 for all), R3 = buffer for message IDs, R4 = max_count
+       * Returns count of unexported message IDs written to buffer in R0 */
+      int base_id = r->r[1];
+      int area_id = r->r[2];
+      int *id_buffer = (int *)r->r[3];
+      int max_count = r->r[4];
+      char path[300];
+      FILE *file;
+      int count = 0;
+      int scanned = 0;
+
+      debug_printf("find_unexported: base=%d area=%d max=%d", base_id, area_id, max_count);
+
+      if (base_id <= 0 || id_buffer == NULL || max_count <= 0)
+      {
+        debug_printf("find_unexported: invalid params");
+        r->r[0] = 0;
+        return;
+      }
+
+      messagebase_format_message_db_path(path, sizeof(path), base_id);
+      debug_printf("find_unexported: path=%s", path);
+      
+      file = fopen(path, "rb");
+      if (file == NULL)
+      {
+        debug_printf("find_unexported: file not found");
+        r->r[0] = 0;
+        return;
+      }
+
+      while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1 && count < max_count)
+      {
+        scanned++;
+        debug_printf("find_unexported: id=%d type=%d del=%d exp=%d area=%d",
+                     messagebase_message_cache.id,
+                     messagebase_message_cache.type,
+                     messagebase_message_cache.deleted,
+                     messagebase_message_cache.exported,
+                     messagebase_message_cache.messagebaseareaid);
+
+        /* Skip deleted and already exported messages */
+        if (messagebase_message_cache.deleted || messagebase_message_cache.exported)
+        {
+          continue;
+        }
+
+        /* Filter by area if specified */
+        if (area_id > 0 && messagebase_message_cache.messagebaseareaid != area_id)
+        {
+          continue;
+        }
+
+        /* Only export FTN messages (type 1=echomail or type 2=netmail) */
+        if (messagebase_message_cache.type != 1 && messagebase_message_cache.type != 2)
+        {
+          debug_printf("find_unexported: skipping non-FTN type %d", messagebase_message_cache.type);
+          continue;
+        }
+
+        debug_printf("find_unexported: MATCH id=%d", messagebase_message_cache.id);
+        id_buffer[count] = messagebase_message_cache.id;
+        count++;
+      }
+
+      fclose(file);
+      debug_printf("find_unexported: scanned=%d found=%d", scanned, count);
+      r->r[0] = count;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_MARK_EXPORTED:
+    {
+      /* R1 = base_id, R2 = message_id, returns 1 on success or 0 on failure */
+      int base_id = r->r[1];
+      int message_id = r->r[2];
+
+      if (base_id <= 0 || message_id <= 0)
+      {
+        r->r[0] = 0;
+        return;
+      }
+
+      if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
+      {
+        r->r[0] = 0;
+        return;
+      }
+
+      messagebase_message_cache.exported = 1;
+
+      if (!messagebase_update_message_record(base_id, &messagebase_message_cache))
+      {
+        r->r[0] = 0;
+        return;
+      }
+
+      messagebase_log("Messagebase %d message %d marked exported", base_id, message_id);
+      r->r[0] = 1;
+      break;
+    }
+
     default:
       r->r[0] = -1;
       break;

@@ -1,0 +1,842 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Outbound Scanner Implementation                                                                                                             */
+/* Scans messagebases for unexported messages and routes them to uplinks                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "scanner.h"
+#include "packer.h"
+#include "mailer.h"
+#include "debug.h"
+#include "ftnlog.h"
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Numbers                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_FILER_MESSAGEBASE       0x5AA42
+#define SWI_SUPPORT_MSGBASECONFIG   0x5AA84
+#define SWI_SUPPORT_FTN             0x5AA86
+
+/* Filer messagebase commands */
+#define MSGBASE_CMD_MESSAGE_INFO    11
+#define MSGBASE_CMD_FIND_UNEXPORTED 13
+#define MSGBASE_CMD_MARK_EXPORTED   14
+
+/* Support messagebase config reasons */
+#define MSGBASE_CONFIG_COUNT_BASES  6
+#define MSGBASE_CONFIG_COUNT_AREAS  7
+#define MSGBASE_CONFIG_GET_BASE     2
+#define MSGBASE_CONFIG_GET_AREA     4
+
+/* Support FTN config reasons */
+#define FTN_CONFIG_COUNT_UPLINKS    7
+#define FTN_CONFIG_GET_UPLINK       4
+
+/* ******************************************************************************************************************************************************** */
+/* Global State                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static SCANNER_STATS scanner_stats;
+
+/* Uplink batch storage */
+static SCANNER_UPLINK_BATCH uplink_batches[SCANNER_MAX_UPLINKS];
+static int uplink_batch_count = 0;
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void scanner_initialise(void)
+{
+    memset(&scanner_stats, 0, sizeof(scanner_stats));
+    memset(uplink_batches, 0, sizeof(uplink_batches));
+    uplink_batch_count = 0;
+}
+
+void scanner_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Area Information Lookup                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, int *akause)
+{
+    _kernel_swi_regs regs;
+
+    /* MSGBASE_AREA_CONFIG structure from Support module */
+    typedef struct
+    {
+        int id;
+        char name[64];
+        char tag[64];
+        int areatype;
+        int daystokeep;
+        int akause;
+        int accesslevel;
+        char keys[128];
+    } AREA_CFG;
+
+    AREA_CFG *area;
+
+    regs.r[0] = MSGBASE_CONFIG_GET_AREA;
+    regs.r[1] = base_id;
+    regs.r[2] = area_id;
+
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    area = (AREA_CFG *)regs.r[0];
+
+    if (tag != NULL)
+    {
+        strncpy(tag, area->tag, 63);
+        tag[63] = '\0';
+    }
+    if (areatype != NULL)
+    {
+        *areatype = area->areatype;
+    }
+    if (akause != NULL)
+    {
+        *akause = area->akause;
+    }
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Find Unexported Messages                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_find_unexported_messages(int base_id, int area_id, int *message_ids, int max_count)
+{
+    _kernel_swi_regs regs;
+
+    if (message_ids == NULL || max_count <= 0)
+    {
+        return 0;
+    }
+
+    regs.r[0] = MSGBASE_CMD_FIND_UNEXPORTED;
+    regs.r[1] = base_id;
+    regs.r[2] = area_id;
+    regs.r[3] = (int)message_ids;
+    regs.r[4] = max_count;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return regs.r[0];  /* Count of message IDs found */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Get Message Destination Address                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out)
+{
+    _kernel_swi_regs regs;
+
+    /* MESSAGE_RECORD structure - only need dstaddr field */
+    /* Offsets from Filer/h/structs MESSAGE_RECORD: */
+    /* id(4), msgbaseid(4), msgbaseareaid(4), type(4), deleted(4), accesslevel(4), */
+    /* keys(128), subject(256), sentby(4), receivedby(4), */
+    /* orgaddr: domain(100)+zone(4)+net(4)+node(4)+point(4) = 116 bytes */
+    /* dstaddr starts at offset: 4+4+4+4+4+4+128+256+4+4+116 = 532 */
+    typedef struct {
+        char domain[100];
+        int zone;
+        int net;
+        int node;
+        int point;
+    } MSG_FTN_ADDR;
+
+    if (dest_out == NULL)
+    {
+        return 0;
+    }
+
+    regs.r[0] = MSGBASE_CMD_MESSAGE_INFO;
+    regs.r[1] = base_id;
+    regs.r[2] = message_id;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+    {
+        debug_printf("scanner: Failed to get message %d info from base %d", message_id, base_id);
+        return 0;
+    }
+
+    /* Parse destination address from MESSAGE_RECORD */
+    {
+        unsigned char *record = (unsigned char *)regs.r[0];
+        MSG_FTN_ADDR *dstaddr = (MSG_FTN_ADDR *)(record + 532);
+
+        dest_out->zone = dstaddr->zone;
+        dest_out->net = dstaddr->net;
+        dest_out->node = dstaddr->node;
+        dest_out->point = dstaddr->point;
+
+        debug_printf("scanner: Message %d dest: %d:%d/%d.%d",
+                     message_id, dest_out->zone, dest_out->net, dest_out->node, dest_out->point);
+    }
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Uplink Lookup                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_find_uplink_by_address(const FTN_ADDR *addr, char *password_out, size_t pw_size)
+{
+    _kernel_swi_regs regs;
+    int i, uplink_count;
+
+    /* FTN_UPLINK_CONFIG structure from Support module */
+    typedef struct
+    {
+        int id;
+        char address[64];
+        char network[64];
+        char host[64];
+        int port;
+        char password[32];
+        char groups[64];
+    } UPLINK_CFG;
+
+    if (addr == NULL)
+    {
+        return 0;
+    }
+
+    /* Get uplink count */
+    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    uplink_count = regs.r[0];
+
+    /* Search uplinks */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        UPLINK_CFG *uplink;
+        FTN_ADDR uplink_addr;
+
+        regs.r[0] = FTN_CONFIG_GET_UPLINK;
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        uplink = (UPLINK_CFG *)regs.r[0];
+
+        /* Parse uplink address */
+        if (ftn_string_to_addr(uplink->address, &uplink_addr))
+        {
+            if (ftn_addr_match(addr, &uplink_addr))
+            {
+                if (password_out != NULL && pw_size > 0)
+                {
+                    strncpy(password_out, uplink->password, pw_size - 1);
+                    password_out[pw_size - 1] = '\0';
+                }
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+int scanner_find_uplink_for_zone(int zone, FTN_ADDR *uplink_out, char *password_out, size_t pw_size)
+{
+    _kernel_swi_regs regs;
+    int i, uplink_count;
+    int found_default = 0;
+    FTN_ADDR default_uplink;
+    char default_password[32] = "";
+
+    typedef struct
+    {
+        int id;
+        char address[64];
+        char network[64];
+        char host[64];
+        int port;
+        char password[32];
+        char groups[64];
+    } UPLINK_CFG;
+
+    /* Get uplink count */
+    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    uplink_count = regs.r[0];
+
+    /* Search for uplink in target zone, or save first as default */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        UPLINK_CFG *uplink;
+        FTN_ADDR uplink_addr;
+
+        regs.r[0] = FTN_CONFIG_GET_UPLINK;
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        uplink = (UPLINK_CFG *)regs.r[0];
+
+        if (ftn_string_to_addr(uplink->address, &uplink_addr))
+        {
+            /* Save first uplink as default */
+            if (!found_default)
+            {
+                default_uplink = uplink_addr;
+                strncpy(default_password, uplink->password, sizeof(default_password) - 1);
+                found_default = 1;
+            }
+
+            /* Check if this uplink is in target zone */
+            if (uplink_addr.zone == zone)
+            {
+                if (uplink_out != NULL)
+                {
+                    *uplink_out = uplink_addr;
+                }
+                if (password_out != NULL && pw_size > 0)
+                {
+                    strncpy(password_out, uplink->password, pw_size - 1);
+                    password_out[pw_size - 1] = '\0';
+                }
+                return 1;
+            }
+        }
+    }
+
+    /* Use default uplink if no zone match */
+    if (found_default)
+    {
+        if (uplink_out != NULL)
+        {
+            *uplink_out = default_uplink;
+        }
+        if (password_out != NULL && pw_size > 0)
+        {
+            strncpy(password_out, default_password, pw_size - 1);
+            password_out[pw_size - 1] = '\0';
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Point Routing                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_is_our_point(const FTN_ADDR *addr)
+{
+    int i;
+
+    if (addr == NULL || addr->point == 0)
+    {
+        return 0;
+    }
+
+    /* Check if this is a point off one of our nodes */
+    for (i = 0; i < mailer.our_addr_count; i++)
+    {
+        if (addr->zone == mailer.our_addrs[i].zone &&
+            addr->net == mailer.our_addrs[i].net &&
+            addr->node == mailer.our_addrs[i].node)
+        {
+            return 1;  /* This is our point */
+        }
+    }
+
+    return 0;
+}
+
+int scanner_route_to_point(const FTN_ADDR *dest, FTN_ADDR *boss_out)
+{
+    if (dest == NULL || boss_out == NULL)
+    {
+        return 0;
+    }
+
+    if (dest->point == 0)
+    {
+        return 0;  /* Not a point */
+    }
+
+    /* Route via boss node (same address with point=0) */
+    *boss_out = *dest;
+    boss_out->point = 0;
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Netmail Routing                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size)
+{
+    FTN_ADDR route_addr;
+
+    if (dest == NULL)
+    {
+        return 0;
+    }
+
+    /* Start with destination as route target */
+    route_addr = *dest;
+
+    /* If destination is a point, route to boss node */
+    if (dest->point != 0)
+    {
+        route_addr.point = 0;
+    }
+
+    /* Check if destination node is a direct uplink */
+    if (scanner_find_uplink_by_address(&route_addr, password_out, pw_size))
+    {
+        if (uplink_out != NULL)
+        {
+            *uplink_out = route_addr;
+        }
+        return 1;
+    }
+
+    /* Route via zone uplink */
+    return scanner_find_uplink_for_zone(dest->zone, uplink_out, password_out, pw_size);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Echomail Uplink Discovery                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max_uplinks)
+{
+    _kernel_swi_regs regs;
+    int i, uplink_count;
+    int found = 0;
+
+    typedef struct
+    {
+        int id;
+        char address[64];
+        char network[64];
+        char host[64];
+        int port;
+        char password[32];
+        char groups[64];
+    } UPLINK_CFG;
+
+    if (uplinks == NULL || max_uplinks <= 0)
+    {
+        return 0;
+    }
+
+    /* Get uplink count */
+    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    uplink_count = regs.r[0];
+
+    /* For now, send echomail to all configured uplinks */
+    /* TODO: Filter by area groups when implemented */
+    for (i = 1; i <= uplink_count && found < max_uplinks; i++)
+    {
+        UPLINK_CFG *uplink;
+        FTN_ADDR uplink_addr;
+
+        regs.r[0] = FTN_CONFIG_GET_UPLINK;
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        uplink = (UPLINK_CFG *)regs.r[0];
+
+        if (ftn_string_to_addr(uplink->address, &uplink_addr))
+        {
+            uplinks[found] = uplink_addr;
+            found++;
+        }
+    }
+
+    (void)echotag;  /* Suppress unused warning - will be used for filtering */
+
+    return found;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Uplink Batch Management                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+static SCANNER_UPLINK_BATCH *scanner_get_or_create_batch(const FTN_ADDR *uplink, const char *password)
+{
+    int i;
+    SCANNER_UPLINK_BATCH *batch;
+
+    /* Look for existing batch */
+    for (i = 0; i < uplink_batch_count; i++)
+    {
+        if (ftn_addr_match(&uplink_batches[i].uplink_addr, uplink))
+        {
+            return &uplink_batches[i];
+        }
+    }
+
+    /* Create new batch */
+    if (uplink_batch_count >= SCANNER_MAX_UPLINKS)
+    {
+        return NULL;
+    }
+
+    batch = &uplink_batches[uplink_batch_count];
+    memset(batch, 0, sizeof(SCANNER_UPLINK_BATCH));
+    batch->uplink_addr = *uplink;
+    if (password != NULL)
+    {
+        strncpy(batch->password, password, sizeof(batch->password) - 1);
+    }
+    uplink_batch_count++;
+
+    return batch;
+}
+
+static int scanner_add_message_to_batch(SCANNER_UPLINK_BATCH *batch, const SCANNER_MESSAGE *msg)
+{
+    if (batch == NULL || msg == NULL)
+    {
+        return 0;
+    }
+
+    if (batch->message_count >= SCANNER_MAX_MESSAGES)
+    {
+        return 0;
+    }
+
+    batch->messages[batch->message_count] = *msg;
+    batch->message_count++;
+
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Packet Creation for Uplink Batch                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
+{
+    PACKER_CONTEXT *ctx;
+    int i;
+    int packed = 0;
+
+    if (batch == NULL || batch->message_count == 0)
+    {
+        return 0;
+    }
+
+    /* Determine which of our addresses to use (use first, or match zone) */
+    if (mailer.our_addr_count == 0)
+    {
+        debug_printf("scanner: No local addresses configured");
+        return 0;
+    }
+
+    /* Create packet */
+    ctx = packer_create_packet(&mailer.our_addrs[0], &batch->uplink_addr, batch->password);
+    if (ctx == NULL)
+    {
+        debug_printf("scanner: Failed to create packet for uplink");
+        scanner_stats.errors++;
+        return 0;
+    }
+
+    /* Pack all messages for this uplink */
+    for (i = 0; i < batch->message_count; i++)
+    {
+        SCANNER_MESSAGE *msg = &batch->messages[i];
+        int is_echomail = (msg->areatype == SCANNER_AREATYPE_ECHO);
+
+        if (packer_pack_message_from_filer(ctx, msg->base_id, msg->message_id,
+                                            msg->echotag, is_echomail, msg->akause))
+        {
+            packed++;
+            scanner_stats.messages_packed++;
+        }
+        else
+        {
+            debug_printf("scanner: Failed to pack message %d from base %d",
+                         msg->message_id, msg->base_id);
+            scanner_stats.errors++;
+        }
+    }
+
+    /* Close packet */
+    if (packed > 0)
+    {
+        packer_close_packet(ctx);
+        scanner_stats.packets_created++;
+    }
+    else
+    {
+        packer_abort_packet(ctx);
+    }
+
+    return packed;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Mark Messages Exported                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_mark_messages_exported(SCANNER_UPLINK_BATCH *batch)
+{
+    _kernel_swi_regs regs;
+    int i;
+    int marked = 0;
+
+    if (batch == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < batch->message_count; i++)
+    {
+        SCANNER_MESSAGE *msg = &batch->messages[i];
+
+        regs.r[0] = MSGBASE_CMD_MARK_EXPORTED;
+        regs.r[1] = msg->base_id;
+        regs.r[2] = msg->message_id;
+
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] == 1)
+        {
+            marked++;
+        }
+    }
+
+    return marked;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Scan Function                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_scan_outbound(void)
+{
+    _kernel_swi_regs regs;
+    int base_count = 0;
+    int b, a;
+    int total_messages = 0;
+    int message_ids[SCANNER_MAX_MESSAGES];
+
+    debug_printf("scanner: Starting outbound scan");
+    ftnlog_printf("-- Scanning for outbound mail");
+
+    /* Reset batch storage */
+    memset(uplink_batches, 0, sizeof(uplink_batches));
+    uplink_batch_count = 0;
+
+    /* Get messagebase count from Support module */
+    regs.r[0] = MSGBASE_CONFIG_COUNT_BASES;
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+    {
+        debug_printf("scanner: Failed to get messagebase count");
+        return 0;
+    }
+    base_count = regs.r[0];
+
+    debug_printf("scanner: Found %d messagebases to scan", base_count);
+
+    /* Scan each messagebase */
+    for (b = 1; b <= base_count; b++)
+    {
+        int area_count = 0;
+
+        /* Get area count */
+        regs.r[0] = MSGBASE_CONFIG_COUNT_AREAS;
+        regs.r[1] = b;
+        if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+        {
+            continue;
+        }
+        area_count = regs.r[0];
+
+        /* Scan each area */
+        for (a = 1; a <= area_count; a++)
+        {
+            char echotag[64];
+            int areatype = 0;
+            int akause = 0;
+            int msg_count;
+            int m;
+
+            scanner_stats.areas_scanned++;
+
+            /* Get area info */
+            if (!scanner_get_area_info(b, a, echotag, &areatype, &akause))
+            {
+                continue;
+            }
+
+            /* Only scan ECHO and NETMAIL areas */
+            if (areatype != SCANNER_AREATYPE_ECHO && areatype != SCANNER_AREATYPE_NETMAIL)
+            {
+                continue;
+            }
+
+            /* Find unexported messages */
+            msg_count = scanner_find_unexported_messages(b, a, message_ids, SCANNER_MAX_MESSAGES);
+            if (msg_count <= 0)
+            {
+                continue;
+            }
+
+            debug_printf("scanner: Base %d area %d (%s): %d unexported messages",
+                         b, a, echotag, msg_count);
+
+            scanner_stats.messages_found += msg_count;
+            total_messages += msg_count;
+
+            /* Process each message */
+            for (m = 0; m < msg_count; m++)
+            {
+                SCANNER_MESSAGE scan_msg;
+                FTN_ADDR uplink_addr;
+                char password[32] = "";
+
+                memset(&scan_msg, 0, sizeof(scan_msg));
+                scan_msg.base_id = b;
+                scan_msg.area_id = a;
+                scan_msg.message_id = message_ids[m];
+                scan_msg.areatype = areatype;
+                scan_msg.akause = akause;
+                strncpy(scan_msg.echotag, echotag, sizeof(scan_msg.echotag) - 1);
+
+                if (areatype == SCANNER_AREATYPE_ECHO)
+                {
+                    /* Echomail: send to all uplinks */
+                    FTN_ADDR uplinks[SCANNER_MAX_UPLINKS];
+                    int uplink_count;
+                    int u;
+
+                    uplink_count = scanner_get_echomail_uplinks(echotag, uplinks, SCANNER_MAX_UPLINKS);
+
+                    for (u = 0; u < uplink_count; u++)
+                    {
+                        SCANNER_UPLINK_BATCH *batch;
+
+                        scanner_find_uplink_by_address(&uplinks[u], password, sizeof(password));
+                        batch = scanner_get_or_create_batch(&uplinks[u], password);
+
+                        if (batch != NULL)
+                        {
+                            scanner_add_message_to_batch(batch, &scan_msg);
+                        }
+                    }
+                }
+                else
+                {
+                    /* Netmail: route to appropriate uplink based on destination address */
+                    FTN_ADDR msg_dest;
+                    
+                    /* Get the actual destination address from the message record */
+                    if (scanner_get_message_dest(b, message_ids[m], &msg_dest))
+                    {
+                        scan_msg.dest_addr = msg_dest;
+                        
+                        if (scanner_route_netmail(&msg_dest, &uplink_addr, password, sizeof(password)))
+                        {
+                            SCANNER_UPLINK_BATCH *batch = scanner_get_or_create_batch(&uplink_addr, password);
+
+                            if (batch != NULL)
+                            {
+                                scanner_add_message_to_batch(batch, &scan_msg);
+                            }
+                        }
+                        else
+                        {
+                            debug_printf("scanner: No route for netmail to %d:%d/%d.%d",
+                                         msg_dest.zone, msg_dest.net, msg_dest.node, msg_dest.point);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    debug_printf("scanner: Found %d messages for %d uplinks", total_messages, uplink_batch_count);
+
+    /* Create packets for each uplink batch */
+    {
+        int i;
+        for (i = 0; i < uplink_batch_count; i++)
+        {
+            SCANNER_UPLINK_BATCH *batch = &uplink_batches[i];
+
+            debug_printf("scanner: Creating packet for %d:%d/%d.%d (%d messages)",
+                         batch->uplink_addr.zone, batch->uplink_addr.net,
+                         batch->uplink_addr.node, batch->uplink_addr.point,
+                         batch->message_count);
+
+            if (scanner_create_packets_for_uplink(batch) > 0)
+            {
+                scanner_mark_messages_exported(batch);
+            }
+        }
+    }
+
+    ftnlog_printf("-- Scan complete: %d messages, %d packets",
+                   scanner_stats.messages_packed, scanner_stats.packets_created);
+
+    debug_printf("scanner: Scan complete - %d messages packed, %d packets created",
+                 scanner_stats.messages_packed, scanner_stats.packets_created);
+
+    return scanner_stats.messages_packed;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+void scanner_get_stats(SCANNER_STATS *stats)
+{
+    if (stats != NULL)
+    {
+        *stats = scanner_stats;
+    }
+}
+
+void scanner_reset_stats(void)
+{
+    memset(&scanner_stats, 0, sizeof(scanner_stats));
+}

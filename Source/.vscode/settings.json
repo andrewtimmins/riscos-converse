@@ -35,6 +35,8 @@
         "msgs": "cpp",
         "menu": "cpp",
         "messagebase": "cpp",
-        "buffer": "cpp"
+        "buffer": "cpp",
+        "socklib": "cpp",
+        "types": "cpp"
     }
 }

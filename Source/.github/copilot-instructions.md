@@ -68,6 +68,7 @@ The workspace includes `SharedLibs` containing:
   - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
   - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
   - **Messagebase Support** (`LineTask/c/messagebase`): Provides `MESSAGEBASE` script command for reading and posting messages. Uses Filer SWIs at 0x5AA42. Commands: `list`, `select <id>`, `areas`, `area <id>`, `messages`, `read [id]`, `info <id>`, `post`, `reset`. Supports local message areas, private user mail, FTN echomail, and FTN netmail. ANSI message viewer with paged display and navigation prompts. Message composer with To, Subject, Body input phases. Access controlled by user level, keys, and message type (private messages only visible to sender/recipient).
+  - **Direct Mail Commands**: `SENDMAIL <username> <subject> <body>` sends a private message to a local user (requires Private area configured). `SENDNETMAIL <address> <name> <subject> <body>` queues a netmail to an FTN address for export (requires Netmail area configured). Both commands support macro expansion and backtick quoting. Use `\r\n` in body for line breaks. Netmail is exported when the FTN mailer runs Scan.
   - **File Transfer** (`LineTask/c/transfer`): Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM, YMODEM-G, and ZMODEM protocols for file downloads and uploads. Non-blocking state machine design integrates with Pipes module for I/O. The `SENDFILE <file_id> [protocol]` and `RECEIVEFILE <path> [protocol]` script commands initiate transfers. Protocol values: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM. YMODEM includes block 0 header with filename/size and batch mode support. ZMODEM features: 32-bit CRC, ZDLE escape encoding, hex (ZHEX) and binary (ZBIN32) frame headers, streaming data with subpacket framing (ZCRCG/ZCRCE/ZCRCQ/ZCRCW), auto-start detection via ZRQINIT, and crash recovery via ZRPOS repositioning. During active transfers, the `transfer_active` flag is set in Support module line state to prevent idle timeout disconnection.
   - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
@@ -324,7 +325,18 @@ void log_ftn(char *entry);
   - 3 (Search): R1=ID -> R0=RecordPtr
   - 4 (Authenticate): R1=Username, R2=Password -> R0=AuthResult, R1=RecordPtr
   - 5 (UpdateHistory): R1=ID, R2=USER_HISTORY* -> R0=Success(1)/Failure(0)
-- **Messagebase (0x5AA42) & Filebase (0x5AA43)**:
+- **Messagebase (0x5AA42)**:
+  - 0 (Create): R1=BaseRecord -> R0=ID
+  - 1 (Update): R1=ID, R2=BaseRecord
+  - 2 (Info): R1=ID -> R0=RecordPtr
+  - 3 (BeginUpload): R1=ID, R2=ItemRecord -> R0=ItemID
+  - 4 (UploadBlock): R1=ID, R2=ItemID, R3=Data, R4=Len
+  - 5 (DownloadBlock): R1=ID, R2=ItemID, R3=Buf, R4=Off, R5=Len
+  - 6 (StoreArea): R1=ID, R2=AreaRecord -> R0=AreaID
+  - 7 (AreaInfo): R1=ID, R2=AreaID -> R0=AreaRecordPtr
+  - 13 (FindUnexported): R1=BaseID, R2=AreaID, R3=Buffer, R4=MaxCount -> R0=Count
+  - 14 (MarkExported): R1=BaseID, R2=MsgID -> R0=Success(1)/Failure(0)
+- **Filebase (0x5AA43)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord
   - 2 (Info): R1=ID -> R0=RecordPtr

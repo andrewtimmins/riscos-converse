@@ -241,6 +241,11 @@ void mailer_update_stats(MAILER_SESSION *session);
 void mailer_update_status_window(void);
 void mailer_log(const char *format, ...);
 
+/* Transfer progress display */
+void ftnstatus_start_transfer(int is_sending, const char *filename);
+void ftnstatus_update_progress(int percent);
+void ftnstatus_end_transfer(void);
+
 /* ******************************************************************************************************************************************************** */
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */

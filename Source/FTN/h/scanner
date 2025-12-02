@@ -1,0 +1,96 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Outbound Scanner                                                                                                                            */
+/* Scans messagebases for unexported messages and routes them to uplinks                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef SCANNER_H
+#define SCANNER_H
+
+#include "mailer.h"
+#include "packer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define SCANNER_MAX_MESSAGES        256     /* Max unexported messages per area */
+#define SCANNER_MAX_AREAS           64      /* Max areas to scan */
+#define SCANNER_MAX_UPLINKS         16      /* Max uplinks to route to */
+
+/* Area types (matching MSGBASE_AREATYPE from Support module) */
+#define SCANNER_AREATYPE_LOCAL      0
+#define SCANNER_AREATYPE_ECHO       1
+#define SCANNER_AREATYPE_NETMAIL    2
+
+/* ******************************************************************************************************************************************************** */
+/* Scan Result Structures                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/* Single message to export */
+typedef struct
+{
+    int base_id;                        /* Messagebase ID */
+    int area_id;                        /* Area ID within base */
+    int message_id;                     /* Message ID */
+    char echotag[64];                   /* Area tag (for echomail) */
+    int areatype;                       /* ECHO=1, NETMAIL=2 */
+    int akause;                         /* Which AKA index to use */
+    FTN_ADDR dest_addr;                 /* For netmail: destination */
+} SCANNER_MESSAGE;
+
+/* Messages grouped by destination uplink */
+typedef struct
+{
+    FTN_ADDR uplink_addr;               /* Uplink address */
+    char password[32];                  /* Packet password for this uplink */
+    int message_count;                  /* Number of messages for this uplink */
+    SCANNER_MESSAGE messages[SCANNER_MAX_MESSAGES];
+} SCANNER_UPLINK_BATCH;
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int areas_scanned;                  /* Areas checked */
+    int messages_found;                 /* Total unexported messages */
+    int messages_packed;                /* Messages successfully packed */
+    int packets_created;                /* Packets created */
+    int errors;                         /* Errors encountered */
+} SCANNER_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialisation */
+void scanner_initialise(void);
+void scanner_finalise(void);
+
+/* Main scanning function */
+int scanner_scan_outbound(void);
+
+/* Individual steps (can be called separately for testing) */
+int scanner_find_unexported_messages(int base_id, int area_id, int *message_ids, int max_count);
+int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, int *akause);
+int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
+int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max_uplinks);
+
+/* Packet creation helpers */
+int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch);
+int scanner_mark_messages_exported(SCANNER_UPLINK_BATCH *batch);
+
+/* Point routing helpers */
+int scanner_route_to_point(const FTN_ADDR *dest, FTN_ADDR *boss_out);
+int scanner_is_our_point(const FTN_ADDR *addr);
+
+/* Uplink lookup */
+int scanner_find_uplink_for_zone(int zone, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
+int scanner_find_uplink_by_address(const FTN_ADDR *addr, char *password_out, size_t pw_size);
+
+/* Statistics */
+void scanner_get_stats(SCANNER_STATS *stats);
+void scanner_reset_stats(void);
+
+#endif

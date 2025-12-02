@@ -82,6 +82,32 @@ typedef struct
     char name[MAX_NAME];
 } FILEBASE_AREA_RECORD;
 
+/* Support module messagebase area config - must match Support/h/msgbaseconfig */
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    char tag[MAX_NAME];
+    int areatype;
+    int daystokeep;
+    int akause;
+    int accesslevel;
+    char keys[MAX_KEYS];
+} SUPPORT_MSGBASE_AREA_CONFIG;
+
+/* Support module messagebase config - must match Support/h/msgbaseconfig */
+#define SUPPORT_MAX_AREAS 64
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    int area_count;
+    SUPPORT_MSGBASE_AREA_CONFIG areas[SUPPORT_MAX_AREAS];
+} SUPPORT_MSGBASE_CONFIG;
+
 /* Config parser state */
 typedef enum
 {
@@ -116,6 +142,7 @@ static int filer_create_filebase(FILEBASE_RECORD *record);
 static int filer_update_filebase(int id, FILEBASE_RECORD *record);
 static int filer_store_filebase_area(int base_id, FILEBASE_AREA_RECORD *area);
 static void support_push_msgbase_global(void);
+static void support_push_msgbase(MSGBASE_RECORD *base, MSGBASE_AREA_RECORD *areas, int area_count);
 static void support_push_filebase_global(void);
 
 /* ******************************************************************************************************************************************************** */
@@ -361,6 +388,50 @@ static void support_push_msgbase_global(void)
     _kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs);
 }
 
+/* Push messagebase config to Support module for FTN scanner access */
+static void support_push_msgbase(MSGBASE_RECORD *base, MSGBASE_AREA_RECORD *areas, int area_count)
+{
+    _kernel_swi_regs regs;
+    static SUPPORT_MSGBASE_CONFIG config; /* static to persist across call */
+    int i;
+
+    if (base == NULL)
+    {
+        return;
+    }
+
+    /* Build the config structure from parsed data */
+    memset(&config, 0, sizeof(config));
+    config.id = base->id;
+    strncpy(config.name, base->name, sizeof(config.name) - 1);
+    config.type = base->type;
+    config.accesslevel = base->accesslevel;
+    strncpy(config.keys, base->keys, sizeof(config.keys) - 1);
+    
+    /* Copy area information */
+    config.area_count = (area_count <= SUPPORT_MAX_AREAS) ? area_count : SUPPORT_MAX_AREAS;
+    for (i = 0; i < config.area_count; i++)
+    {
+        config.areas[i].id = areas[i].id;
+        strncpy(config.areas[i].name, areas[i].name, sizeof(config.areas[i].name) - 1);
+        strncpy(config.areas[i].tag, areas[i].tag, sizeof(config.areas[i].tag) - 1);
+        config.areas[i].areatype = areas[i].areatype;
+        config.areas[i].daystokeep = areas[i].daystokeep;
+        config.areas[i].akause = areas[i].akause;
+        config.areas[i].accesslevel = -1; /* inherit from base */
+        config.areas[i].keys[0] = '\0';   /* no override */
+    }
+
+    /* Push to Support module */
+    regs.r[0] = SUPPORT_CMD_SET_BASE;
+    regs.r[1] = base->id;
+    regs.r[2] = (int)&config;
+    _kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs);
+    
+    debug_printf("config: Pushed messagebase %d to Support module (%d areas)", 
+                 base->id, config.area_count);
+}
+
 static void support_push_filebase_global(void)
 {
     _kernel_swi_regs regs;
@@ -498,6 +569,9 @@ static void parse_msgbase_file(FILE *file)
                                                  pending_areas[i].id, base_id);
                                 }
                             }
+                            
+                            /* Push messagebase config to Support module */
+                            support_push_msgbase(&current_base, pending_areas, pending_area_count);
                         }
                     }
                     pending_area_count = 0;

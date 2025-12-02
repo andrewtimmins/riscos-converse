@@ -76,7 +76,9 @@
         FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS,
         FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES,
         FILER_MESSAGEBASE_CMD_MESSAGE_INFO,
-        FILER_MESSAGEBASE_CMD_UPDATE_MESSAGE
+        FILER_MESSAGEBASE_CMD_UPDATE_MESSAGE,
+        FILER_MESSAGEBASE_CMD_FIND_UNEXPORTED,
+        FILER_MESSAGEBASE_CMD_MARK_EXPORTED
     } FILER_MESSAGEBASE_COMMAND;
 
     typedef enum
@@ -244,6 +246,8 @@
         short areatype;                 /* type of area (LOCAL=0, ECHO=1, NETMAIL=2, JUNK=3, OTHER=4, FILE=5, TICK=6) */
     } MESSAGEBASE_AREA;
 
+    #define MAX_FROMTO                  36
+
     typedef struct
     {
         int id;                         /* the id of the message */
@@ -263,6 +267,9 @@
         int timesread;                  /* number of times message has been read */
         long bodysize;                  /* size of the stored payload */
         char subject[MAX_DESC];         /* subject/title of the message */
+        char fromname[MAX_FROMTO];      /* FTN sender name */
+        char toname[MAX_FROMTO];        /* FTN recipient name */
+        int exported;                   /* 0=not exported, 1=exported to outbound */
     } MESSAGE_RECORD;
 
 #endif

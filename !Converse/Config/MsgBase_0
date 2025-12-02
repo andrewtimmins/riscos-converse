@@ -6,7 +6,7 @@ messagebase 1
     name            Local Messages
     type            0
     accesslevel     0
-    keys
+    keys            
 
     area 1
         name        General Chat
@@ -23,12 +23,19 @@ messagebase 1
     endarea
 
     area 3
+        name        Private Mail
+        tag         PRIVATE
+        areatype    4
+        daystokeep  0
+    endarea
+
+    area 4
         name        Sysop Area
         tag         SYSOP
         areatype    0
         daystokeep  0
-        accesslevel 999
-        keys        S
+        accesslevel 200
+        keys        SYSOP
     endarea
 
 endmessagebase

@@ -55,6 +55,7 @@ static void filer_messagebases_list_bases(void);
 static void filer_messagebases_list_messages(int base_id, int area_id);
 static void filer_messagebases_import(int base_id, int area_id, const char *source_path, const char *subject, int type);
 static void filer_messagebases_delete(int base_id, int message_id);
+static void filer_messagebases_unexport(int base_id, int message_id);
 static const char *filer_messagebase_type_name(int type);
 static void filer_fileareas_print_usage(void);
 static void filer_fileareas_list(int base_id);
@@ -879,6 +880,21 @@ static void filer_command_messagebases(const char *arg_string, int argc)
     return;
   }
 
+  if (filer_text_equals(args[0], "UNEXPORT"))
+  {
+    int base_id = 0;
+    int message_id = 0;
+
+    if (arg_count < 3 || !filer_parse_int_arg(args[1], &base_id) || !filer_parse_int_arg(args[2], &message_id))
+    {
+      puts("Usage: *Filer_MessageBases unexport <base id> <message id>");
+      return;
+    }
+
+    filer_messagebases_unexport(base_id, message_id);
+    return;
+  }
+
   filer_messagebases_print_usage();
 }
 
@@ -1338,6 +1354,7 @@ static void filer_messagebases_print_usage(void)
   puts("*Filer_MessageBases messages <base id> [area id]                    - List messages in a base/area");
   puts("*Filer_MessageBases import <base id> <area id> <host path> <type> <subject> - Import a message payload");
   puts("*Filer_MessageBases delete <base id> <message id>                   - Delete a message");
+  puts("*Filer_MessageBases unexport <base id> <message id>                 - Reset exported flag for rescan");
 }
 
 static const char *filer_messagebase_type_name(int type)
@@ -1482,6 +1499,33 @@ static void filer_messagebases_delete(int base_id, int message_id)
   {
     printf("Message %d removed from base %d.\n", message_id, base_id);
   }
+}
+
+static void filer_messagebases_unexport(int base_id, int message_id)
+{
+  MESSAGE_RECORD record;
+
+  if (!messagebase_get_message_record(base_id, message_id, &record))
+  {
+    puts("Message not found.");
+    return;
+  }
+
+  if (record.exported == 0)
+  {
+    puts("Message is not marked as exported.");
+    return;
+  }
+
+  record.exported = 0;
+
+  if (!messagebase_save_message_record(base_id, &record))
+  {
+    puts("Failed to update message record.");
+    return;
+  }
+
+  printf("Message %d in base %d marked as unexported.\n", message_id, base_id);
 }
 
 static void filer_fileareas_print_usage(void)

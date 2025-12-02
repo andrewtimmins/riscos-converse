@@ -23,6 +23,13 @@ messagebase 1
     endarea
 
     area 3
+        name        Private Mail
+        tag         PRIVATE
+        areatype    4
+        daystokeep  0
+    endarea
+
+    area 4
         name        Sysop Area
         tag         SYSOP
         areatype    0
