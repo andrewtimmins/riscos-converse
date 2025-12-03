@@ -27,6 +27,11 @@ o.timer:	C:oslib.h.os
 o.timer:	C:oslib.h.types
 o.timer:	C:oslib.h.oscore32
 o.timer:	C:oslib.h.osf32
+o.config:	c.config
+o.config:	C:h.kernel
+o.config:	C:h.swis
+o.config:	h.config
+o.config:	h.debug
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -104,8 +109,3 @@ o.main:	h.iconnames
 o.main:	h.ansi
 o.main:	h.debug
 o.main:	h.config
-o.config:	c.config
-o.config:	C:h.kernel
-o.config:	C:h.swis
-o.config:	h.config
-o.config:	h.debug

@@ -166,7 +166,7 @@ static int str_casecmp(const char *s1, const char *s2)
 }
 
 #define MAIN_WINDOW_ICON_BASE 13
-#define MAIN_WINDOW_ICONS_PER_LINE 7
+#define MAIN_WINDOW_ICONS_PER_LINE 8
 #define MAIN_WINDOW_ICON_HEIGHT 64
 #define MAIN_WINDOW_TOP_STATIC_ROWS 2
 #define MAIN_WINDOW_BOTTOM_STATIC_ROWS 0
@@ -177,11 +177,12 @@ static int str_casecmp(const char *s1, const char *s2)
 #define MAIN_WINDOW_COLUMN_GAP 8
 #define MAIN_WINDOW_LINE_COLUMN_WIDTH 88
 #define MAIN_WINDOW_USER_COLUMN_WIDTH 300
-#define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 390
-#define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 390
-#define MAIN_WINDOW_TIMER_COLUMN_WIDTH 200
-#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 80
-#define MAIN_WINDOW_VIEW_COLUMN_WIDTH 80
+#define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 430
+#define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 510
+#define MAIN_WINDOW_TIMER_COLUMN_WIDTH 169
+#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 56
+#define MAIN_WINDOW_VIEW_COLUMN_WIDTH 56
+#define MAIN_WINDOW_LOGON_COLUMN_WIDTH 56
 
 #define PIPES_SWI_BASE 0x5AA00
 #define PIPES_BUFFER_CAPACITY 4096
@@ -256,7 +257,8 @@ enum
 	MAIN_WINDOW_COLUMN_HOSTNAME,
 	MAIN_WINDOW_COLUMN_TIMER,
 	MAIN_WINDOW_COLUMN_ACTION,
-	MAIN_WINDOW_COLUMN_VIEW
+	MAIN_WINDOW_COLUMN_VIEW,
+	MAIN_WINDOW_COLUMN_LOGON
 };
 
 static void poll_idle(void)
@@ -694,7 +696,7 @@ Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 		
 		window_extent.window=main_window;
 		window_extent.rect.min.x=0;
-		window_extent.rect.max.x=1960;
+		window_extent.rect.max.x=1736;
 		window_extent.rect.max.y=0;
 
 		visible_lines = main_window_visible_lines();
@@ -1148,6 +1150,28 @@ int create_line_icons(void)
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_VIEW_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+											Desk_icon_VCENTRE |
+											Desk_icon_HCENTRE |
+											Desk_icon_INDIRECTED |
+											Desk_icon_BORDER |
+											Desk_icon_FILLED |
+											(Desk_icon_FORECOLOUR*7) |
+											(Desk_icon_BACKCOLOUR*1) |
+											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.validstring="R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=4;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		text_buffer=malloc(4);
+		strcpy(text_buffer, "L");
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_LOGON_COLUMN_WIDTH;
 		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
 											Desk_icon_VCENTRE |
 											Desk_icon_HCENTRE |
