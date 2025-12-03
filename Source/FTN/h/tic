@@ -1,0 +1,104 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - TIC File Processor                                                                                                                          */
+/* Handles .TIC file parsing and creation for file distribution                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef TIC_H
+#define TIC_H
+
+#include <time.h>
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define TIC_MAX_FILENAME            64
+#define TIC_MAX_AREA                64
+#define TIC_MAX_DESC                256
+#define TIC_MAX_PATH                256
+#define TIC_MAX_SEENBY              32      /* Max SEENBY addresses */
+#define TIC_MAX_PASSWORD            32
+#define TIC_MAX_CRC_STR             16
+
+/* ******************************************************************************************************************************************************** */
+/* TIC File Structure                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    /* File information */
+    char filename[TIC_MAX_FILENAME];        /* File being distributed */
+    char area[TIC_MAX_AREA];                /* File echo area tag */
+    char desc[TIC_MAX_DESC];                /* File description */
+    long size;                              /* File size in bytes */
+    unsigned long crc;                      /* CRC-32 of file */
+    time_t date;                            /* File date */
+    
+    /* Origin information */
+    FTN_ADDR origin;                        /* Original sender */
+    FTN_ADDR from;                          /* Immediate sender */
+    FTN_ADDR to;                            /* Destination (us) */
+    
+    /* Distribution tracking */
+    FTN_ADDR seenby[TIC_MAX_SEENBY];        /* SEENBY addresses */
+    int seenby_count;
+    FTN_ADDR path[TIC_MAX_SEENBY];          /* PATH addresses */
+    int path_count;
+    
+    /* Security */
+    char password[TIC_MAX_PASSWORD];        /* Areafix password */
+    
+    /* Processing state */
+    int valid;                              /* TIC file is valid */
+    int file_exists;                        /* Associated file exists */
+} TIC_FILE;
+
+/* ******************************************************************************************************************************************************** */
+/* TIC Statistics                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    int tics_processed;                     /* TIC files read */
+    int tics_good;                          /* Successfully processed */
+    int tics_bad;                           /* Failed to process */
+    int tics_created;                       /* TIC files created */
+    int files_received;                     /* Files received */
+    int files_forwarded;                    /* Files forwarded */
+} TIC_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialisation */
+void tic_initialise(void);
+void tic_finalise(void);
+void tic_set_inbound_path(const char *path);
+
+/* Parsing */
+int tic_parse_file(const char *tic_path, TIC_FILE *tic);
+void tic_free(TIC_FILE *tic);
+
+/* Processing */
+int tic_process_inbound(void);              /* Process all TIC files in inbound */
+int tic_process_single(const char *tic_path, const char *file_path);
+int tic_store_file(const TIC_FILE *tic, const char *file_path);
+
+/* Creation */
+int tic_create_for_file(int filebase_id, int file_id, const char *area_tag, 
+                        const FTN_ADDR *dest, const char *password);
+int tic_write_file(const TIC_FILE *tic, const char *tic_path);
+
+/* Area matching */
+int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
+
+/* CRC calculation */
+unsigned long tic_calculate_crc32(const char *file_path);
+
+/* Statistics */
+void tic_get_stats(TIC_STATS *stats);
+void tic_reset_stats(void);
+
+#endif

@@ -29,8 +29,17 @@ static void ftnconfig_set_defaults(void)
     snprintf(ftn_config.outbound, sizeof(ftn_config.outbound), "<Converse$Dir>.FTN.Outbound");
     snprintf(ftn_config.netmail, sizeof(ftn_config.netmail), "<Converse$Dir>.FTN.Netmail");
     snprintf(ftn_config.badmail, sizeof(ftn_config.badmail), "<Converse$Dir>.FTN.Bad");
+    snprintf(ftn_config.ticpath, sizeof(ftn_config.ticpath), "<Converse$Dir>.FTN.Tic");
 
     ftn_config.max_packet_size = 32768;
+    ftn_config.listen_port = 24554;
+    ftn_config.max_sessions = 4;
+    ftn_config.connect_timeout = 60;
+    ftn_config.session_timeout = 300;
+    ftn_config.scan_interval = 60;
+    ftn_config.toss_interval = 0;   /* Disabled by default */
+    ftn_config.poll_interval = 0;   /* Disabled by default */
+    ftn_config.retry_delay = 300;
     ftn_config.address_count = 0;
     ftn_config.uplink_count = 0;
 }
@@ -176,6 +185,45 @@ void ftnconfig_swi_handler(_kernel_swi_regs *r)
 
                 case FTN_GLOBAL_FIELD_MAX_PACKET:
                     ftn_config.max_packet_size = (value != NULL) ? atol(value) : 32768;
+                    break;
+
+                case FTN_GLOBAL_FIELD_TICPATH:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.ticpath, sizeof(ftn_config.ticpath), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_LISTENPORT:
+                    ftn_config.listen_port = (value != NULL) ? atoi(value) : 24554;
+                    break;
+
+                case FTN_GLOBAL_FIELD_MAXSESSIONS:
+                    ftn_config.max_sessions = (value != NULL) ? atoi(value) : 4;
+                    break;
+
+                case FTN_GLOBAL_FIELD_CONNECTTIMEOUT:
+                    ftn_config.connect_timeout = (value != NULL) ? atoi(value) : 60;
+                    break;
+
+                case FTN_GLOBAL_FIELD_SESSIONTIMEOUT:
+                    ftn_config.session_timeout = (value != NULL) ? atoi(value) : 300;
+                    break;
+
+                case FTN_GLOBAL_FIELD_SCANINTERVAL:
+                    ftn_config.scan_interval = (value != NULL) ? atoi(value) : 60;
+                    break;
+
+                case FTN_GLOBAL_FIELD_TOSSINTERVAL:
+                    ftn_config.toss_interval = (value != NULL) ? atoi(value) : 0;
+                    break;
+
+                case FTN_GLOBAL_FIELD_POLLINTERVAL:
+                    ftn_config.poll_interval = (value != NULL) ? atoi(value) : 0;
+                    break;
+
+                case FTN_GLOBAL_FIELD_RETRYDELAY:
+                    ftn_config.retry_delay = (value != NULL) ? atoi(value) : 300;
                     break;
 
                 default:

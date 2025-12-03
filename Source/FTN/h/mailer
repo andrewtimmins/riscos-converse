@@ -29,8 +29,6 @@
 
 /* Poll intervals (centiseconds) */
 #define MAILER_POLL_INTERVAL        100     /* 1 second Wimp poll */
-#define MAILER_CONNECT_TIMEOUT      6000    /* 60 seconds connection timeout */
-#define MAILER_SESSION_TIMEOUT      30000   /* 5 minutes session timeout */
 
 /* ******************************************************************************************************************************************************** */
 /* FTN Address Structure                                                                                                                                    */
@@ -92,6 +90,7 @@ typedef struct
     long offset;
     time_t mtime;
     FILE *file;
+    void *queue_node;               /* Pointer to QUEUE_NODE owning this file */
 } FILE_TRANSFER;
 
 /* ******************************************************************************************************************************************************** */
@@ -168,7 +167,9 @@ typedef struct
     int max_sessions;
     char inbound_path[MAILER_PATH_SIZE];
     char outbound_path[MAILER_PATH_SIZE];
-    char temp_inbound[MAILER_PATH_SIZE];
+    char netmail_path[MAILER_PATH_SIZE];
+    char badmail_path[MAILER_PATH_SIZE];
+    char tic_path[MAILER_PATH_SIZE];
 
     /* Our addresses */
     FTN_ADDR our_addrs[8];
@@ -188,6 +189,16 @@ typedef struct
     /* Sessions */
     MAILER_SESSION sessions[MAILER_MAX_SESSIONS];
     int active_sessions;
+    int connect_timeout;                 /* seconds */
+    int session_timeout;                 /* seconds */
+    int scan_interval;                   /* seconds - rescan outbound directories */
+    int toss_interval;                   /* seconds - auto-toss inbound (0=disabled) */
+    int poll_interval;                   /* seconds - auto-poll uplinks (0=disabled) */
+    int retry_delay;                     /* seconds */
+
+    /* Automatic scheduling timestamps */
+    time_t last_auto_toss;
+    time_t last_auto_poll;
 
     /* Statistics */
     int total_sessions;

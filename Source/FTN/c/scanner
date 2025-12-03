@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
 
 #include "kernel.h"
 #include "swis.h"
@@ -67,10 +68,110 @@ void scanner_finalise(void)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Group Matching                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/* Case-insensitive string compare */
+static int scanner_strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+/* Extract next token from comma-separated list. Updates *pos. Returns token start or NULL. */
+static char *get_next_group(char *buf, const char **pos)
+{
+    const char *p = *pos;
+    char *out = buf;
+
+    if (p == NULL || *p == '\0')
+    {
+        return NULL;
+    }
+
+    /* Skip leading spaces and commas */
+    while (*p == ' ' || *p == ',')
+    {
+        p++;
+    }
+
+    if (*p == '\0')
+    {
+        *pos = p;
+        return NULL;
+    }
+
+    /* Copy token until comma, space, or end */
+    while (*p != '\0' && *p != ',' && *p != ' ')
+    {
+        *out++ = *p++;
+    }
+    *out = '\0';
+
+    /* Skip trailing spaces */
+    while (*p == ' ')
+    {
+        p++;
+    }
+
+    *pos = p;
+    return buf;
+}
+
+/* Check if any group in area_groups matches any group in uplink_groups */
+/* Group lists are comma-separated, e.g. "A,B,C" */
+static int groups_match(const char *area_groups, const char *uplink_groups)
+{
+    const char *p1, *p2;
+    char g1[32], g2[32];
+
+    /* Empty list matches everything */
+    if (area_groups == NULL || area_groups[0] == '\0')
+    {
+        return 1;
+    }
+    if (uplink_groups == NULL || uplink_groups[0] == '\0')
+    {
+        return 1;
+    }
+
+    /* Check each group in area_groups against uplink_groups */
+    p1 = area_groups;
+    while (get_next_group(g1, &p1) != NULL)
+    {
+        p2 = uplink_groups;
+        while (get_next_group(g2, &p2) != NULL)
+        {
+            if (scanner_strcasecmp(g1, g2) == 0)
+            {
+                return 1;  /* Match found */
+            }
+        }
+    }
+
+    return 0;  /* No match */
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Area Information Lookup                                                                                                                                  */
 /* ******************************************************************************************************************************************************** */
 
 int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, int *akause)
+{
+    return scanner_get_area_info_full(base_id, area_id, tag, areatype, akause, NULL);
+}
+
+int scanner_get_area_info_full(int base_id, int area_id, char *tag, int *areatype, int *akause, char *groups)
 {
     _kernel_swi_regs regs;
 
@@ -85,6 +186,7 @@ int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, in
         int akause;
         int accesslevel;
         char keys[128];
+        char groups[64];
     } AREA_CFG;
 
     AREA_CFG *area;
@@ -112,6 +214,11 @@ int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, in
     if (akause != NULL)
     {
         *akause = area->akause;
+    }
+    if (groups != NULL)
+    {
+        strncpy(groups, area->groups, 63);
+        groups[63] = '\0';
     }
 
     return 1;
@@ -438,7 +545,7 @@ int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *pass
 /* Echomail Uplink Discovery                                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
-int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max_uplinks)
+int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks)
 {
     _kernel_swi_regs regs;
     int i, uplink_count;
@@ -468,8 +575,7 @@ int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max
     }
     uplink_count = regs.r[0];
 
-    /* For now, send echomail to all configured uplinks */
-    /* TODO: Filter by area groups when implemented */
+    /* Send echomail to uplinks whose groups overlap with the area's groups */
     for (i = 1; i <= uplink_count && found < max_uplinks; i++)
     {
         UPLINK_CFG *uplink;
@@ -484,14 +590,22 @@ int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max
 
         uplink = (UPLINK_CFG *)regs.r[0];
 
+        /* Check if area groups match uplink groups */
+        if (!groups_match(area_groups, uplink->groups))
+        {
+            debug_printf("scanner: Skipping uplink %s (groups '%s' don't match area '%s')",
+                         uplink->address, uplink->groups, 
+                         area_groups ? area_groups : "(empty)");
+            continue;
+        }
+
         if (ftn_string_to_addr(uplink->address, &uplink_addr))
         {
             uplinks[found] = uplink_addr;
             found++;
+            debug_printf("scanner: Including uplink %s (groups match)", uplink->address);
         }
     }
-
-    (void)echotag;  /* Suppress unused warning - will be used for filtering */
 
     return found;
 }
@@ -695,6 +809,7 @@ int scanner_scan_outbound(void)
         for (a = 1; a <= area_count; a++)
         {
             char echotag[64];
+            char area_groups[64];
             int areatype = 0;
             int akause = 0;
             int msg_count;
@@ -702,8 +817,8 @@ int scanner_scan_outbound(void)
 
             scanner_stats.areas_scanned++;
 
-            /* Get area info */
-            if (!scanner_get_area_info(b, a, echotag, &areatype, &akause))
+            /* Get area info including groups */
+            if (!scanner_get_area_info_full(b, a, echotag, &areatype, &akause, area_groups))
             {
                 continue;
             }
@@ -744,12 +859,12 @@ int scanner_scan_outbound(void)
 
                 if (areatype == SCANNER_AREATYPE_ECHO)
                 {
-                    /* Echomail: send to all uplinks */
+                    /* Echomail: send to uplinks with matching groups */
                     FTN_ADDR uplinks[SCANNER_MAX_UPLINKS];
                     int uplink_count;
                     int u;
 
-                    uplink_count = scanner_get_echomail_uplinks(echotag, uplinks, SCANNER_MAX_UPLINKS);
+                    uplink_count = scanner_get_echomail_uplinks(area_groups, uplinks, SCANNER_MAX_UPLINKS);
 
                     for (u = 0; u < uplink_count; u++)
                     {

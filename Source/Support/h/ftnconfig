@@ -10,6 +10,7 @@
 /* Maximum limits */
 #define FTN_CONFIG_MAX_ADDRESSES        8
 #define FTN_CONFIG_MAX_UPLINKS          16
+#define FTN_CONFIG_MAX_ALIASES          8
 #define FTN_CONFIG_NAME_LEN             64
 #define FTN_CONFIG_PATH_LEN             256
 #define FTN_CONFIG_PASSWORD_LEN         32
@@ -40,6 +41,8 @@ typedef struct
     int port;                                   /* port number (default 24554) */
     char password[FTN_CONFIG_PASSWORD_LEN];     /* session password */
     char groups[FTN_CONFIG_GROUPS_LEN];         /* groups we receive from this uplink */
+    int alias_count;                            /* number of aliases */
+    char aliases[FTN_CONFIG_MAX_ALIASES][FTN_CONFIG_NAME_LEN];  /* AKA addresses */
 } FTN_UPLINK_CONFIG;
 
 /* Global FTN settings */
@@ -58,9 +61,20 @@ typedef struct
     char outbound[FTN_CONFIG_PATH_LEN];         /* outbound directory */
     char netmail[FTN_CONFIG_PATH_LEN];          /* netmail directory */
     char badmail[FTN_CONFIG_PATH_LEN];          /* bad mail directory */
+    char ticpath[FTN_CONFIG_PATH_LEN];          /* TIC staging directory */
 
     /* Packet settings */
     long max_packet_size;                       /* maximum packet size */
+
+    /* Mailer runtime settings */
+    int listen_port;                            /* inbound BinkP port */
+    int max_sessions;                           /* concurrent sessions */
+    int connect_timeout;                        /* connect timeout (seconds) */
+    int session_timeout;                        /* idle session timeout (seconds) */
+    int scan_interval;                          /* outbound rescan interval (seconds) */
+    int toss_interval;                          /* auto-toss interval (seconds, 0=disabled) */
+    int poll_interval;                          /* auto-poll interval (seconds, 0=disabled) */
+    int retry_delay;                            /* retry delay after session (seconds) */
 
     /* Addresses */
     int address_count;                          /* number of addresses */
@@ -97,7 +111,16 @@ typedef enum
     FTN_GLOBAL_FIELD_OUTBOUND = 7,
     FTN_GLOBAL_FIELD_NETMAIL = 8,
     FTN_GLOBAL_FIELD_BADMAIL = 9,
-    FTN_GLOBAL_FIELD_MAX_PACKET = 10
+    FTN_GLOBAL_FIELD_MAX_PACKET = 10,
+    FTN_GLOBAL_FIELD_TICPATH = 11,
+    FTN_GLOBAL_FIELD_LISTENPORT = 12,
+    FTN_GLOBAL_FIELD_MAXSESSIONS = 13,
+    FTN_GLOBAL_FIELD_CONNECTTIMEOUT = 14,
+    FTN_GLOBAL_FIELD_SESSIONTIMEOUT = 15,
+    FTN_GLOBAL_FIELD_SCANINTERVAL = 16,
+    FTN_GLOBAL_FIELD_TOSSINTERVAL = 17,
+    FTN_GLOBAL_FIELD_POLLINTERVAL = 18,
+    FTN_GLOBAL_FIELD_RETRYDELAY = 19
 } FTN_GLOBAL_FIELD;
 
 /* Initialisation and finalisation */

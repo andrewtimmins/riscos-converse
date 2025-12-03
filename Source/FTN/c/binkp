@@ -152,6 +152,7 @@ void binkp_send_nul(MAILER_SESSION *session, const char *key, const char *value)
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_NUL %s %s", key, value);
+    ftnlog_printf(">> NUL: %s %s", key, value);
 }
 
 void binkp_send_adr(MAILER_SESSION *session)
@@ -196,12 +197,14 @@ void binkp_send_pwd(MAILER_SESSION *session)
         snprintf(pwd_arg, sizeof(pwd_arg), "CRAM-MD5-%s", cram_response);
         len = binkp_build_command(frame, BINKP_M_PWD, pwd_arg);
         debug_printf("binkp: >> M_PWD CRAM-MD5-****");
+        ftnlog_printf(">> PWD: CRAM-MD5 (encrypted)");
     }
     else
     {
         /* Plain text password */
         len = binkp_build_command(frame, BINKP_M_PWD, session->password);
         debug_printf("binkp: >> M_PWD ****");
+        ftnlog_printf(">> PWD: (password sent)");
     }
     
     binkp_queue_frame(session, frame, len);
@@ -216,6 +219,7 @@ void binkp_send_ok(MAILER_SESSION *session, int secure)
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_OK %s", secure ? "secure" : "non-secure");
+    ftnlog_printf(">> OK: %s", secure ? "secure" : "non-secure");
 }
 
 void binkp_send_err(MAILER_SESSION *session, const char *message)
@@ -227,6 +231,7 @@ void binkp_send_err(MAILER_SESSION *session, const char *message)
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_ERR %s", message);
+    ftnlog_printf(">> ERR: %s", message);
 }
 
 void binkp_send_bsy(MAILER_SESSION *session, const char *message)
@@ -238,6 +243,7 @@ void binkp_send_bsy(MAILER_SESSION *session, const char *message)
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_BSY %s", message);
+    ftnlog_printf(">> BSY: %s", message);
 }
 
 void binkp_send_eob(MAILER_SESSION *session)
@@ -250,6 +256,7 @@ void binkp_send_eob(MAILER_SESSION *session)
 
     session->local_eob = 1;
     debug_printf("binkp: >> M_EOB");
+    ftnlog_printf(">> EOB: End of batch");
 }
 
 void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, time_t mtime, long offset)
@@ -263,6 +270,7 @@ void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, t
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_FILE %s", arg);
+    ftnlog_printf(">> FILE: %s (%ld bytes)", filename, size);
 }
 
 void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
@@ -276,6 +284,7 @@ void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, ti
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_GOT %s", arg);
+    ftnlog_printf(">> GOT: %s", filename);
 }
 
 void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
@@ -289,6 +298,7 @@ void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, t
     binkp_queue_frame(session, frame, len);
 
     debug_printf("binkp: >> M_SKIP %s", arg);
+    ftnlog_printf(">> SKIP: %s", filename);
 }
 
 void binkp_send_get(MAILER_SESSION *session, const char *filename, long size, long mtime, long offset)
@@ -413,6 +423,7 @@ void binkp_handle_nul(MAILER_SESSION *session, const char *data)
     const char *p;
 
     debug_printf("binkp: << M_NUL %s", data);
+    ftnlog_printf("<< NUL: %s", data);
 
     /* Parse "KEY VALUE" format */
     p = strchr(data, ' ');
@@ -462,35 +473,156 @@ void binkp_handle_nul(MAILER_SESSION *session, const char *data)
     }
 }
 
+/*
+ * Check if an address matches any uplink (primary address or alias).
+ * Returns the uplink's primary address if found, NULL otherwise.
+ * This is used to find which uplink a remote node belongs to when
+ * they report multiple AKAs in M_ADR.
+ */
+static int binkp_find_uplink_for_address(const FTN_ADDR *addr, FTN_ADDR *uplink_primary_out)
+{
+    _kernel_swi_regs regs;
+    int i, j;
+    int uplink_count;
+
+    /* FTN_UPLINK_CONFIG structure - matches Support/h/ftnconfig */
+    typedef struct
+    {
+        int id;
+        char address[64];
+        char network[64];
+        char host[64];
+        int port;
+        char password[32];
+        char groups[64];
+        int alias_count;
+        char aliases[8][64];
+    } UPLINK_CFG;
+
+    /* Get uplink count from Support module */
+    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
+    if (_kernel_swi(0x5AA86, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    uplink_count = regs.r[0];
+
+    /* Check each uplink */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        UPLINK_CFG *uplink;
+        FTN_ADDR uplink_addr;
+
+        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
+        regs.r[1] = i;
+        if (_kernel_swi(0x5AA86, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        uplink = (UPLINK_CFG *)regs.r[0];
+
+        /* Check primary address */
+        if (ftn_string_to_addr(uplink->address, &uplink_addr) &&
+            ftn_addr_match(&uplink_addr, addr))
+        {
+            if (uplink_primary_out != NULL)
+            {
+                *uplink_primary_out = uplink_addr;
+            }
+            return 1;
+        }
+
+        /* Check aliases */
+        for (j = 0; j < uplink->alias_count; j++)
+        {
+            FTN_ADDR alias_addr;
+
+            if (ftn_string_to_addr(uplink->aliases[j], &alias_addr) &&
+                ftn_addr_match(&alias_addr, addr))
+            {
+                /* Return the primary address, not the alias */
+                if (uplink_primary_out != NULL && 
+                    ftn_string_to_addr(uplink->address, uplink_primary_out))
+                {
+                    /* Success */
+                }
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 void binkp_handle_adr(MAILER_SESSION *session, const char *data)
 {
     char addr_str[64];
     const char *p = data;
+    FTN_ADDR first_addr;
+    FTN_ADDR matched_uplink;
+    int found_uplink = 0;
+    int first_saved = 0;
 
     debug_printf("binkp: << M_ADR %s", data);
+    ftnlog_printf("<< ADR: %s", data);
 
     /* Parse space-separated address list */
-    /* Take first address as primary */
-    while (*p == ' ') p++;
-
+    /* Check each address against our uplinks (including aliases) */
+    while (*p != '\0')
     {
-        const char *end = strchr(p, ' ');
-        size_t len = end ? (size_t)(end - p) : strlen(p);
+        FTN_ADDR addr;
+        const char *end;
+        size_t len;
+
+        /* Skip spaces */
+        while (*p == ' ') p++;
+        if (*p == '\0') break;
+
+        /* Extract next address */
+        end = strchr(p, ' ');
+        len = end ? (size_t)(end - p) : strlen(p);
 
         if (len >= sizeof(addr_str)) len = sizeof(addr_str) - 1;
         strncpy(addr_str, p, len);
         addr_str[len] = '\0';
 
-        ftn_string_to_addr(addr_str, &session->remote_addr);
+        /* Parse the address */
+        if (ftn_string_to_addr(addr_str, &addr))
+        {
+            /* Save first address as fallback */
+            if (!first_saved)
+            {
+                first_addr = addr;
+                first_saved = 1;
+            }
+
+            /* Check if this matches any of our uplinks */
+            if (!found_uplink && binkp_find_uplink_for_address(&addr, &matched_uplink))
+            {
+                debug_printf("binkp: Address %s matches uplink %d:%d/%d.%d",
+                             addr_str, matched_uplink.zone, matched_uplink.net,
+                             matched_uplink.node, matched_uplink.point);
+                session->remote_addr = matched_uplink;  /* Use the uplink's primary address */
+                found_uplink = 1;
+            }
+        }
+
+        /* Move to next address */
+        p = end ? end : p + strlen(p);
     }
 
-    debug_printf("binkp: Remote address: %d:%d/%d.%d",
-                 session->remote_addr.zone, session->remote_addr.net,
-                 session->remote_addr.node, session->remote_addr.point);
+    /* If no uplink matched, use the first address */
+    if (!found_uplink && first_saved)
+    {
+        session->remote_addr = first_addr;
+        debug_printf("binkp: No uplink match, using first address");
+    }
 
-    ftnlog_printf("<< ADR %d:%d/%d.%d",
+    ftnlog_printf("   Using: %d:%d/%d.%d%s",
                    session->remote_addr.zone, session->remote_addr.net,
-                   session->remote_addr.node, session->remote_addr.point);
+                   session->remote_addr.node, session->remote_addr.point,
+                   found_uplink ? " (matched uplink)" : "");
 
     mailer_log("Remote address: %d:%d/%d.%d",
                session->remote_addr.zone, session->remote_addr.net,
@@ -503,6 +635,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
     int secure = 0;
 
     debug_printf("binkp: << M_PWD (hidden) state=%d", session->state);
+    ftnlog_printf("<< PWD: (password received)");
 
     /* Look up expected password for this node */
     expected = binkp_get_password_for_node(&session->remote_addr);
@@ -550,14 +683,10 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             session->state = SESSION_STATE_ERROR;
         }
     }
-
-    debug_printf("binkp: After M_PWD handling, state=%d", session->state);
 }
 
 void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 {
-    debug_printf("binkp: << M_OK %s (state=%d)", data, session->state);
-
     ftnlog_printf("<< OK: %s", strstr(data, "secure") ? "Secure session" : "Non-secure");
 
     mailer_log("Session established, remote reports \"%s\"", 
@@ -568,8 +697,6 @@ void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 
     /* Start file transfer phase */
     binkp_check_for_files(session);
-    
-    debug_printf("binkp: After M_OK handling, state=%d", session->state);
 }
 
 void binkp_handle_err(MAILER_SESSION *session, const char *data)
@@ -624,8 +751,6 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
     char filename[128];
     long size, mtime, offset;
 
-    debug_printf("binkp: << M_FILE %s (state=%d)", data, session->state);
-
     /* If we receive a file, we're implicitly authenticated */
     if (session->state != SESSION_STATE_AUTHENTICATED && 
         session->state != SESSION_STATE_TRANSFER)
@@ -660,6 +785,7 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
 void binkp_handle_got(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_GOT %s", data);
+    ftnlog_printf("<< GOT: %s", data);
 
     /* Remote has received our file successfully */
     if (session->send_file.state == TRANSFER_STATE_SENDING)
@@ -675,6 +801,7 @@ void binkp_handle_got(MAILER_SESSION *session, const char *data)
 void binkp_handle_skip(MAILER_SESSION *session, const char *data)
 {
     debug_printf("binkp: << M_SKIP %s", data);
+    ftnlog_printf("<< SKIP: %s", data);
 
     /* Remote doesn't want this file */
     if (session->send_file.state == TRANSFER_STATE_SENDING)
@@ -686,8 +813,9 @@ void binkp_handle_skip(MAILER_SESSION *session, const char *data)
 
 void binkp_handle_get(MAILER_SESSION *session, const char *data)
 {
-    (void)session;
     debug_printf("binkp: << M_GET %s", data);
+    ftnlog_printf("<< GET: %s", data);
+    (void)session;
     /* TODO: Resume file transfer from offset */
 }
 
@@ -737,7 +865,8 @@ void binkp_handle_frame(MAILER_SESSION *session, BINKP_FRAME *frame)
             case BINKP_M_SKIP: binkp_handle_skip(session, arg); break;
             case BINKP_M_GET:  binkp_handle_get(session, arg); break;
             default:
-                debug_printf("binkp: Unknown command %d", frame->command);
+                debug_printf("binkp: Unknown command %d: %s", frame->command, arg);
+                ftnlog_printf("<< CMD[%d]: %s", frame->command, arg);
                 break;
         }
     }
@@ -860,6 +989,8 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
 {
     char path[MAILER_PATH_SIZE];
     char riscos_filename[MAILER_PATH_SIZE];
+    char temp_dir[MAILER_PATH_SIZE];
+    int zone = (session->remote_addr.zone > 0) ? session->remote_addr.zone : 2;
 
     /* Treat -1 (or any negative) offset as 0 - start from beginning */
     if (offset < 0) offset = 0;
@@ -867,11 +998,12 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     /* Convert DOS filename to RISC OS format */
     filename_dos_to_riscos(filename, riscos_filename, sizeof(riscos_filename));
 
-    /* Ensure temp inbound directory exists */
-    ensure_directory_exists(mailer.temp_inbound);
+    /* Ensure zone-specific temp inbound directory exists */
+    ftn_format_zone_subpath(temp_dir, sizeof(temp_dir), mailer.inbound_path, zone, "Temp");
+    ensure_directory_exists(temp_dir);
 
     /* Build temp path using RISC OS filename */
-    snprintf(path, sizeof(path), "%s.%s", mailer.temp_inbound, riscos_filename);
+    snprintf(path, sizeof(path), "%s.%s", temp_dir, riscos_filename);
 
     session->recv_file.file = fopen(path, offset > 0 ? "ab" : "wb");
     if (session->recv_file.file == NULL)
@@ -920,6 +1052,8 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
     FILE_TRANSFER *ft = &session->recv_file;
     char final_path[MAILER_PATH_SIZE];
     char riscos_filename[MAILER_PATH_SIZE];
+    char zone_path[MAILER_PATH_SIZE];
+    int zone = (session->remote_addr.zone > 0) ? session->remote_addr.zone : 2;
 
     if (ft->file != NULL)
     {
@@ -927,14 +1061,15 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
         ft->file = NULL;
     }
 
-    /* Ensure inbound directory exists */
-    ensure_directory_exists(mailer.inbound_path);
+    /* Ensure zone-specific inbound directory exists */
+    ftn_format_zone_path(zone_path, sizeof(zone_path), mailer.inbound_path, zone);
+    ensure_directory_exists(zone_path);
 
     /* Convert DOS filename to RISC OS format for final path */
     filename_dos_to_riscos(ft->filename, riscos_filename, sizeof(riscos_filename));
 
     /* Move from temp to final inbound */
-    snprintf(final_path, sizeof(final_path), "%s.%s", mailer.inbound_path, riscos_filename);
+    snprintf(final_path, sizeof(final_path), "%s.%s", zone_path, riscos_filename);
 
     /* Rename temp file to final location */
     rename(ft->local_path, final_path);
@@ -1069,16 +1204,17 @@ void binkp_finish_send_file(MAILER_SESSION *session)
         ft->file = NULL;
     }
 
-    /* Mark file as sent in queue - use target_addr for outbound sessions */
-    if (session->direction == SESSION_DIR_OUTBOUND)
+    /* Use the queue node we stored when starting the transfer */
+    node = (QUEUE_NODE *)ft->queue_node;
+    if (node != NULL)
     {
-        node = queue_find_node(&session->target_addr);
+        queue_mark_file_sent(node, ft->local_path);
+        ft->queue_node = NULL;
     }
     else
     {
-        node = queue_find_node(&session->remote_addr);
+        debug_printf("binkp: WARNING - No queue node for sent file, cannot mark as sent");
     }
-    queue_mark_file_sent(node, ft->local_path);
 
     ft->state = TRANSFER_STATE_IDLE;
 
@@ -1086,6 +1222,7 @@ void binkp_finish_send_file(MAILER_SESSION *session)
 
     debug_printf("binkp: Sent %s successfully", ft->filename);
     mailer_log("Sent: %s (%ld bytes)", ft->filename, ft->size);
+    session->files_sent++;
     session->files_sent++;
 
     /* Check if session should complete now that transfer is done */
@@ -1105,26 +1242,35 @@ void binkp_check_for_files(MAILER_SESSION *session)
 {
     QUEUE_NODE *node;
     QUEUE_FILE *file;
+    int zone;
 
     if (session->send_file.state != TRANSFER_STATE_IDLE)
     {
         return;  /* Already sending */
     }
 
-    /* For outbound sessions, use target_addr (who we called) to find queued files.
-     * The remote may report a different address in M_ADR (e.g., hub vs our uplink config).
-     * For inbound sessions, use remote_addr. */
+    /* Determine which zone we're sending to.
+     * For outbound: use target_addr (the uplink we called)
+     * For inbound: use remote_addr (who connected to us) */
     if (session->direction == SESSION_DIR_OUTBOUND)
     {
-        node = queue_find_node(&session->target_addr);
+        zone = session->target_addr.zone;
     }
     else
     {
-        node = queue_find_node(&session->remote_addr);
+        zone = session->remote_addr.zone;
     }
-    
-    if (node == NULL)
+
+    debug_printf("binkp: Looking for files to send for zone %d", zone);
+    ftnlog_printf("Checking outbound for zone %d", zone);
+
+    /* Get the next file from ANY node in this zone */
+    file = queue_get_next_file_for_zone(zone, &node);
+
+    if (file == NULL)
     {
+        int pending = queue_count_files_for_zone(zone);
+        debug_printf("binkp: No files to send for zone %d (total pending: %d)", zone, pending);
         /* No files to send, send EOB */
         if (!session->local_eob)
         {
@@ -1133,29 +1279,26 @@ void binkp_check_for_files(MAILER_SESSION *session)
         return;
     }
 
-    file = queue_get_next_file(node);
-    if (file != NULL)
+    debug_printf("binkp: Found file for %d:%d/%d.%d: %s",
+                 node->addr.zone, node->addr.net, node->addr.node, node->addr.point,
+                 file->path);
+    ftnlog_printf("Sending: %s -> %d:%d/%d.%d", 
+                  file->name[0] ? file->name : file->path,
+                  node->addr.zone, node->addr.net, node->addr.node, node->addr.point);
+
+    if (file->type == QUEUE_FILE_REQ)
     {
-        if (file->type == QUEUE_FILE_REQ)
-        {
-            /* Process file request - parse REQ file and send M_GET commands */
-            binkp_process_req_file(session, file->path);
-            queue_mark_file_sent(node, file->path);
-            /* Check for more files */
-            binkp_check_for_files(session);
-        }
-        else
-        {
-            binkp_start_send_file(session, file->path);
-        }
+        /* Process file request - parse REQ file and send M_GET commands */
+        binkp_process_req_file(session, file->path);
+        queue_mark_file_sent(node, file->path);
+        /* Check for more files */
+        binkp_check_for_files(session);
     }
     else
     {
-        /* No more files */
-        if (!session->local_eob)
-        {
-            binkp_send_eob(session);
-        }
+        /* Remember which node this file belongs to for marking sent later */
+        session->send_file.queue_node = node;
+        binkp_start_send_file(session, file->path);
     }
 }
 

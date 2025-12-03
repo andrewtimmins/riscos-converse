@@ -1,0 +1,49 @@
+do mkdir -p o
+do mkdir -p od
+do mkdir -p oz
+do mkdir -p aof
+do mkdir -p linked
+Touch o._dirs
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.tic c.tic
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.tic", line 395: Warning: typedef 'BASE_CFG' declared but not used
+c.tic: 1 warning, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.md5 c.md5
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.packer c.packer
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.packer", line 43: Warning: implicit narrowing cast: '='
+"c.packer", line 44: Warning: implicit narrowing cast: '='
+"c.packer", line 45: Warning: implicit narrowing cast: '='
+"c.packer", line 46: Warning: implicit narrowing cast: '='
+"c.packer", line 752: Warning: implicit narrowing cast: <argument 1 to 'malloc'>
+"c.packer", line 760: Warning: implicit narrowing cast: '='
+c.packer: 6 warnings, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.scanner c.scanner
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.tosser c.tosser
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.tosser", line 242: Warning: 'c' may be used before being set
+"c.tosser", line 257: Warning: lower precision in wider context: '|'
+"c.tosser", line 1353: Warning: static 'tosser_file_exists' declared but not used
+c.tosser: 3 warnings, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.queue c.queue
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.binkp c.binkp
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.mailer c.mailer
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.mailer", line 24: Warning: extern 'proginfo_window' not declared in header
+"c.mailer", line 25: Warning: extern 'ftnstatus_window' not declared in header
+"c.mailer", line 26: Warning: extern 'ftnlog_window' not declared in header
+"c.mailer", line 27: Warning: extern 'ftnfreq_window' not declared in header
+"c.mailer", line 28: Warning: extern 'mail_menu' not declared in header
+"c.mailer", line 29: Warning: extern 'commands_menu' not declared in header
+"c.mailer", line 677: Warning: implicit narrowing cast: '='
+"c.mailer", line 1606: Warning: unused earlier static declaration of 'wimp_handle_iconbar_menu_choice'
+"c.mailer", line 1805: Error: wrong number of parameters to 'tosser_process_inbound'
+c.mailer: 8 warnings, 1 error, 0 serious errors
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+

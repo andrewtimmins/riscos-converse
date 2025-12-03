@@ -60,6 +60,7 @@ typedef struct
     time_t next_poll;           /* When to try connecting */
     int retry_count;
     int busy;                   /* Currently in session */
+    int is_uplink;              /* 1 if this is a configured uplink, 0 if just a destination */
     QUEUE_FILE files[QUEUE_MAX_FILES];
 } QUEUE_NODE;
 
@@ -90,9 +91,11 @@ void queue_scan_outbound(void);
 void queue_rescan_node(const FTN_ADDR *addr);
 int queue_parse_bso_directory(const char *path);
 int queue_parse_flo_file(QUEUE_NODE *node, const char *path, QUEUE_FLAVOUR flavour);
+void queue_set_scan_interval(int seconds);
 
 /* Node lookup */
 QUEUE_NODE *queue_find_node(const FTN_ADDR *addr);
+QUEUE_NODE *queue_find_node_by_any_address(const FTN_ADDR *addr);
 QUEUE_NODE *queue_add_node(const FTN_ADDR *addr);
 void queue_remove_node(const FTN_ADDR *addr);
 
@@ -101,6 +104,8 @@ int queue_add_file(QUEUE_NODE *node, const char *path, QUEUE_FILE_TYPE type, QUE
 void queue_remove_file(QUEUE_NODE *node, const char *path);
 void queue_mark_file_sent(QUEUE_NODE *node, const char *path);
 QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node);
+QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out);
+int queue_count_files_for_zone(int zone);
 
 /* Polling */
 QUEUE_NODE *queue_get_next_poll_node(void);
@@ -111,7 +116,17 @@ void queue_add_uplinks_for_poll(void);
 /* BSO path helpers */
 void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr);
 void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr, const char *ext);
+void queue_ensure_outbound_directories(const FTN_ADDR *addr);
 int queue_create_poll_file(const FTN_ADDR *addr, QUEUE_FLAVOUR flavour);
+
+/* Zone path helpers (shared by inbound/outbound) */
+typedef void (*FTN_ZONE_ENUM_CALLBACK)(const char *path, int zone, void *ctx);
+
+void ftn_format_zone_path(char *buffer, size_t size, const char *base_path, int zone);
+void ftn_format_zone_subpath(char *buffer, size_t size, const char *base_path, int zone, const char *suffix);
+int ftn_extract_zone_from_path(const char *base_path, const char *full_path,
+                               char *zone_path, size_t zone_path_size, int *zone_out);
+int ftn_enumerate_zone_directories(const char *base_path, FTN_ZONE_ENUM_CALLBACK callback, void *ctx);
 
 /* Status */
 int queue_get_pending_count(void);

@@ -36,6 +36,8 @@ typedef enum
     MSGBASE_TYPE_PRIVATE = 3
 } MSGBASE_TYPE;
 
+#define MSGBASE_CONFIG_GROUPS_LEN       64
+
 /* Messagebase area configuration */
 typedef struct
 {
@@ -47,6 +49,7 @@ typedef struct
     int akause;                                 /* which AKA to use for this area */
     int accesslevel;                            /* access level override (-1 = inherit) */
     char keys[MSGBASE_CONFIG_KEYS_LEN];         /* access keys override */
+    char groups[MSGBASE_CONFIG_GROUPS_LEN];     /* FTN groups (A,B,C) for uplink filtering */
 } MSGBASE_AREA_CONFIG;
 
 /* Messagebase configuration */

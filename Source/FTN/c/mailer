@@ -49,6 +49,7 @@
 #include "tosser.h"
 #include "scanner.h"
 #include "packer.h"
+#include "tic.h"
 #include "timer.h"
 #include "debug.h"
 #include "ftnlog.h"
@@ -422,45 +423,24 @@ static void ftnstatus_open_idle(void)
  */
 static int ftnfreq_create_request(const char *filename, const char *address)
 {
-    int zone = 0, net = 0, node = 0, point = 0;
-    char outbound[256];
-    char req_path[320];
-    char hex_node[32];
+    FTN_ADDR dest_addr;
+    char req_path[MAILER_PATH_SIZE];
     FILE *fp;
-    _kernel_swi_regs regs;
-    
+
     /* Parse the FTN address */
-    if (sscanf(address, "%d:%d/%d.%d", &zone, &net, &node, &point) < 3)
+    if (!ftn_string_to_addr(address, &dest_addr))
     {
-        if (sscanf(address, "%d:%d/%d", &zone, &net, &node) < 3)
-        {
-            debug_printf("ftnfreq: Failed to parse address: %s", address);
-            return 0;
-        }
-        point = 0;
-    }
-    
-    debug_printf("ftnfreq: Parsed address: zone=%d net=%d node=%d point=%d",
-                 zone, net, node, point);
-    
-    /* Get outbound directory from FTN config */
-    regs.r[0] = 0;  /* FTN_CONFIG_REASON_GET_GLOBAL */
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
-    {
-        debug_printf("ftnfreq: Failed to get FTN config");
+        debug_printf("ftnfreq: Failed to parse address: %s", address);
         return 0;
     }
-    
-    /* FTN_GLOBAL_CONFIG outbound is at offset 64+64+64+64+4+64+256 = 580 */
-    strncpy(outbound, (char *)regs.r[0] + 580, sizeof(outbound) - 1);
-    outbound[sizeof(outbound) - 1] = '\0';
-    
-    debug_printf("ftnfreq: Outbound directory: %s", outbound);
-    
-    /* Build the REQ filename: BSO format is NNNNNNNN.req where NNNN is net in hex, NNNN is node in hex */
-    snprintf(hex_node, sizeof(hex_node), "%04x%04x", net, node);
-    snprintf(req_path, sizeof(req_path), "%s.%sreq", outbound, hex_node);
-    
+
+    debug_printf("ftnfreq: Parsed address: zone=%d net=%d node=%d point=%d",
+                 dest_addr.zone, dest_addr.net, dest_addr.node, dest_addr.point);
+
+    /* Ensure zone-specific outbound directories exist and build the REQ filename */
+    queue_ensure_outbound_directories(&dest_addr);
+    queue_format_outbound_name(req_path, sizeof(req_path), &dest_addr, "req");
+
     debug_printf("ftnfreq: Creating REQ file: %s", req_path);
     
     /* Create/append to the REQ file */
@@ -592,7 +572,16 @@ void mailer_load_config(void)
             char outbound[256];
             char netmail[256];
             char badmail[256];
+            char ticpath[256];
             long max_packet_size;
+            int listen_port;
+            int max_sessions;
+            int connect_timeout;
+            int session_timeout;
+            int scan_interval;
+            int toss_interval;
+            int poll_interval;
+            int retry_delay;
             int address_count;
             /* Followed by addresses and uplinks */
         } FTN_GLOBAL_CONFIG;
@@ -606,10 +595,40 @@ void mailer_load_config(void)
         strncpy(mailer.flags, cfg->flags, sizeof(mailer.flags) - 1);
         strncpy(mailer.inbound_path, cfg->inbound, sizeof(mailer.inbound_path) - 1);
         strncpy(mailer.outbound_path, cfg->outbound, sizeof(mailer.outbound_path) - 1);
+        strncpy(mailer.netmail_path, cfg->netmail, sizeof(mailer.netmail_path) - 1);
+        strncpy(mailer.badmail_path, cfg->badmail, sizeof(mailer.badmail_path) - 1);
+        if (cfg->ticpath[0] != '\0')
+        {
+            strncpy(mailer.tic_path, cfg->ticpath, sizeof(mailer.tic_path) - 1);
+        }
+
+        mailer.listen_port = (cfg->listen_port > 0) ? cfg->listen_port : BINKP_DEFAULT_PORT;
+
+        if (cfg->max_sessions > 0 && cfg->max_sessions <= MAILER_MAX_SESSIONS)
+        {
+            mailer.max_sessions = cfg->max_sessions;
+        }
+        else
+        {
+            mailer.max_sessions = MAILER_MAX_SESSIONS;
+        }
+
+        mailer.connect_timeout = (cfg->connect_timeout > 0) ? cfg->connect_timeout : 60;
+        mailer.session_timeout = (cfg->session_timeout > 0) ? cfg->session_timeout : 300;
+        mailer.scan_interval = (cfg->scan_interval > 0) ? cfg->scan_interval : 60;
+        mailer.toss_interval = cfg->toss_interval;  /* 0 = disabled */
+        mailer.poll_interval = cfg->poll_interval;  /* 0 = disabled */
+        mailer.retry_delay = (cfg->retry_delay > 0) ? cfg->retry_delay : 300;
+        queue_set_scan_interval(mailer.scan_interval);
 
         debug_printf("mailer: System: %s, Sysop: %s", mailer.system_name, mailer.sysop);
         debug_printf("mailer: Inbound: %s", mailer.inbound_path);
         debug_printf("mailer: Outbound: %s", mailer.outbound_path);
+        debug_printf("mailer: Netmail: %s", mailer.netmail_path);
+        debug_printf("mailer: Badmail: %s", mailer.badmail_path);
+        debug_printf("mailer: TIC path: %s", mailer.tic_path);
+        debug_printf("mailer: Intervals: scan=%d, toss=%d, poll=%d",
+                     mailer.scan_interval, mailer.toss_interval, mailer.poll_interval);
 
         /* Get addresses */
         for (i = 0; i < 8; i++)
@@ -659,10 +678,18 @@ void mailer_load_config(void)
         mailer.speed = 115200;
         strcpy(mailer.inbound_path, "<Converse$Dir>.FTN.Inbound");
         strcpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound");
+        strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
+        strcpy(mailer.badmail_path, "<Converse$Dir>.FTN.Bad");
     }
 
-    /* Set temp inbound path - use Temp subdirectory (RISC OS doesn't support .tmp) */
-    snprintf(mailer.temp_inbound, sizeof(mailer.temp_inbound), "%s.Temp", mailer.inbound_path);
+    if (mailer.netmail_path[0] == '\0')
+    {
+        strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
+    }
+    if (mailer.badmail_path[0] == '\0')
+    {
+        strcpy(mailer.badmail_path, "<Converse$Dir>.FTN.Bad");
+    }
 
 }
 
@@ -795,6 +822,17 @@ MAILER_SESSION *mailer_allocate_session(void)
 {
     int i;
 
+    if (mailer.max_sessions <= 0)
+    {
+        mailer.max_sessions = 1;
+    }
+
+    if (mailer.active_sessions >= mailer.max_sessions)
+    {
+        debug_printf("mailer: Active session limit reached (%d)", mailer.max_sessions);
+        return NULL;
+    }
+
     for (i = 0; i < MAILER_MAX_SESSIONS; i++)
     {
         if (!mailer.sessions[i].active)
@@ -861,8 +899,9 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
         QUEUE_NODE *node = queue_find_node(&remote_addr);
         if (node != NULL)
         {
-            node->next_poll = time(NULL) + 300;
-            debug_printf("mailer: Next poll for %s in 5 minutes", addr_str);
+            int delay = (mailer.retry_delay > 0) ? mailer.retry_delay : 300;
+            node->next_poll = time(NULL) + delay;
+            debug_printf("mailer: Next poll for %s in %d seconds", addr_str, delay);
         }
     }
 
@@ -873,6 +912,13 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
         if (tossed > 0)
         {
             mailer_log_ftn("Auto-tossed %d messages", tossed);
+        }
+        
+        /* Process TIC files for file distribution */
+        tossed = tic_process_inbound();
+        if (tossed > 0)
+        {
+            mailer_log_ftn("Processed %d TIC files", tossed);
         }
     }
 
@@ -1166,10 +1212,25 @@ void mailer_check_timeouts(void)
             continue;
         }
 
-        /* Check for session timeout */
-        if (now - session->last_activity > MAILER_SESSION_TIMEOUT / 100)
+        /* Abort stalled outbound connects before they consume the session budget */
+        if (session->state == SESSION_STATE_CONNECTING)
         {
-            mailer_log_ftn("Session timeout");
+            if (mailer.connect_timeout > 0 && now - session->connect_time > mailer.connect_timeout)
+            {
+                const char *host = (session->remote_hostname[0] != '\0') ? session->remote_hostname : "unknown";
+                mailer_log_ftn("Connect timeout waiting for %s", host);
+                ftnlog_printf("Connect timeout: %s", host);
+                session->state = SESSION_STATE_ERROR;
+            }
+            continue;
+        }
+
+        /* Check for session timeout */
+        if (mailer.session_timeout > 0 && now - session->last_activity > mailer.session_timeout)
+        {
+            const char *host = (session->remote_hostname[0] != '\0') ? session->remote_hostname : "unknown";
+            mailer_log_ftn("Session timeout (%s)", host);
+            ftnlog_printf("Session timeout: %s", host);
             binkp_send_err(session, "Timeout");
             session->state = SESSION_STATE_ERROR;
         }
@@ -1277,8 +1338,16 @@ void mailer_poll_all_uplinks(void)
     {
         QUEUE_NODE *node = &outbound_queue.nodes[i];
         char addr_str[64];
+        int zone_files;
 
         ftn_addr_to_string(&node->addr, addr_str, sizeof(addr_str));
+
+        /* Only poll configured uplinks, not destination nodes */
+        if (!node->is_uplink)
+        {
+            debug_printf("mailer: Skipping %s (not an uplink, just a destination)", addr_str);
+            continue;
+        }
 
         /* Skip nodes without hostname */
         if (node->hostname[0] == '\0')
@@ -1287,7 +1356,11 @@ void mailer_poll_all_uplinks(void)
             continue;
         }
 
-        ftnlog_printf("Node %d: %s -> %s:%d", i, addr_str, node->hostname, node->port);
+        /* Count files for this node's zone */
+        zone_files = queue_count_files_for_zone(node->addr.zone);
+        ftnlog_printf("Uplink %s -> %s:%d (%d files in zone %d)", 
+                      addr_str, node->hostname, node->port,
+                      zone_files, node->addr.zone);
 
         /* Wait for any active session to complete */
         while (mailer.active_sessions > 0)
@@ -1393,36 +1466,97 @@ static int path_exists(const char *path)
     return regs.r[0];  /* 0=not found, 1=file, 2=directory */
 }
 
+static void mailer_add_zone(int *zones, int *count, int zone)
+{
+    int i;
+
+    if (zone <= 0)
+    {
+        zone = 2;
+    }
+
+    for (i = 0; i < *count; i++)
+    {
+        if (zones[i] == zone)
+        {
+            return;
+        }
+    }
+
+    if (*count < 16)
+    {
+        zones[*count] = zone;
+        (*count)++;
+    }
+}
+
 static void mailer_create_directories(void)
 {
-    char processed_path[MAILER_PATH_SIZE];
-    char bad_path[MAILER_PATH_SIZE];
+    int zones[16];
+    int zone_count = 0;
+    int i;
 
     debug_printf("mailer: Creating FTN directory structure...");
 
-    /* Create main FTN directories */
+    /* Create main FTN directories (zone-specific subdirs created in loop below) */
     ensure_directory_exists(mailer.inbound_path);
     ensure_directory_exists(mailer.outbound_path);
-    ensure_directory_exists(mailer.temp_inbound);
+    ensure_directory_exists(mailer.tic_path);
+    ensure_directory_exists(mailer.netmail_path);
+    ensure_directory_exists(mailer.badmail_path);
 
-    /* Create tosser subdirectories under Inbound */
-    snprintf(processed_path, sizeof(processed_path), "%s.Processed", mailer.inbound_path);
-    snprintf(bad_path, sizeof(bad_path), "%s.Bad", mailer.inbound_path);
+    /* Collect zones we should provision (always include zone 2) */
+    mailer_add_zone(zones, &zone_count, 2);
+    for (i = 0; i < mailer.our_addr_count; i++)
+    {
+        mailer_add_zone(zones, &zone_count, mailer.our_addrs[i].zone);
+    }
 
-    ensure_directory_exists(processed_path);
-    ensure_directory_exists(bad_path);
+    /* Ensure inbound and outbound subdirectories for each zone */
+    for (i = 0; i < zone_count; i++)
+    {
+        int zone = zones[i];
+        char inbound_zone[MAILER_PATH_SIZE];
+        char outbound_zone[MAILER_PATH_SIZE];
+        char temp_path[MAILER_PATH_SIZE];
+        char processed_path[MAILER_PATH_SIZE];
+        char bad_path[MAILER_PATH_SIZE];
 
-    /* Log what we created/verified */
-    debug_printf("mailer:   Inbound: %s %s", mailer.inbound_path,
-                 path_exists(mailer.inbound_path) == 2 ? "(OK)" : "(FAILED)");
-    debug_printf("mailer:   Outbound: %s %s", mailer.outbound_path,
-                 path_exists(mailer.outbound_path) == 2 ? "(OK)" : "(FAILED)");
-    debug_printf("mailer:   Temp: %s %s", mailer.temp_inbound,
-                 path_exists(mailer.temp_inbound) == 2 ? "(OK)" : "(FAILED)");
-    debug_printf("mailer:   Processed: %s %s", processed_path,
-                 path_exists(processed_path) == 2 ? "(OK)" : "(FAILED)");
-    debug_printf("mailer:   Bad: %s %s", bad_path,
-                 path_exists(bad_path) == 2 ? "(OK)" : "(FAILED)");
+        /* Inbound zone directory and subdirs */
+        ftn_format_zone_path(inbound_zone, sizeof(inbound_zone), mailer.inbound_path, zone);
+        ftn_format_zone_subpath(temp_path, sizeof(temp_path), mailer.inbound_path, zone, "Temp");
+        ftn_format_zone_subpath(processed_path, sizeof(processed_path), mailer.inbound_path, zone, "Processed");
+        ftn_format_zone_subpath(bad_path, sizeof(bad_path), mailer.inbound_path, zone, "Bad");
+
+        ensure_directory_exists(inbound_zone);
+        ensure_directory_exists(temp_path);
+        ensure_directory_exists(processed_path);
+        ensure_directory_exists(bad_path);
+
+        debug_printf("mailer:   Inbound zone %d: %s %s", zone, inbound_zone,
+                     path_exists(inbound_zone) == 2 ? "(OK)" : "(FAILED)");
+        debug_printf("mailer:     Temp: %s %s", temp_path,
+                     path_exists(temp_path) == 2 ? "(OK)" : "(FAILED)");
+        debug_printf("mailer:     Processed: %s %s", processed_path,
+                     path_exists(processed_path) == 2 ? "(OK)" : "(FAILED)");
+        debug_printf("mailer:     Bad: %s %s", bad_path,
+                     path_exists(bad_path) == 2 ? "(OK)" : "(FAILED)");
+
+        /* Outbound zone directory */
+        ftn_format_zone_path(outbound_zone, sizeof(outbound_zone), mailer.outbound_path, zone);
+        ensure_directory_exists(outbound_zone);
+
+        debug_printf("mailer:   Outbound zone %d: %s %s", zone, outbound_zone,
+                     path_exists(outbound_zone) == 2 ? "(OK)" : "(FAILED)");
+    }
+
+    /* Log other shared directories */
+    debug_printf("mailer:   TIC: %s %s", mailer.tic_path,
+                 path_exists(mailer.tic_path) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Netmail: %s %s", mailer.netmail_path,
+                 path_exists(mailer.netmail_path) == 2 ? "(OK)" : "(FAILED)");
+    debug_printf("mailer:   Badmail: %s %s", mailer.badmail_path,
+                 path_exists(mailer.badmail_path) == 2 ? "(OK)" : "(FAILED)");
 }
 
 void mailer_initialise(void)
@@ -1432,15 +1566,26 @@ void mailer_initialise(void)
     mailer.listen_socket = -1;
     mailer.listen_port = BINKP_DEFAULT_PORT;
     mailer.max_sessions = MAILER_MAX_SESSIONS;
+    mailer.connect_timeout = 60;
+    mailer.session_timeout = 300;
+    mailer.scan_interval = 60;
+    mailer.toss_interval = 0;   /* Disabled by default */
+    mailer.poll_interval = 0;   /* Disabled by default */
+    mailer.retry_delay = 300;
+    strcpy(mailer.tic_path, "<Converse$Dir>.FTN.Tic");
     mailer.start_time = time(NULL);
+    mailer.last_auto_toss = mailer.start_time;
+    mailer.last_auto_poll = mailer.start_time;
 
     timer_initialise();
     queue_initialise();
     tosser_initialise();
     scanner_initialise();
     packer_initialise();
+    tic_initialise();
     mailer_load_config();
     mailer_create_directories();
+    tic_set_inbound_path(mailer.tic_path);
 }
 
 void mailer_finalise(void)
@@ -1457,6 +1602,7 @@ void mailer_finalise(void)
     }
 
     mailer_destroy_listener();
+    tic_finalise();
     packer_finalise();
     scanner_finalise();
     tosser_finalise();
@@ -1529,6 +1675,8 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
                 tosser_set_status_callback(ftnstatus_update);
                 {
                     int count = tosser_process_inbound();
+                    int tic_count;
+                    
                     tosser_set_status_callback(NULL);
                     if (count > 0)
                     {
@@ -1542,6 +1690,17 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
                     {
                         ftnstatus_update("No packets found");
                         ftnlog_printf("No packets found");
+                    }
+                    
+                    /* Process TIC files */
+                    ftnstatus_update("Processing TIC files...");
+                    tic_count = tic_process_inbound();
+                    if (tic_count > 0)
+                    {
+                        char msg[64];
+                        snprintf(msg, sizeof(msg), "Received %d files", tic_count);
+                        ftnstatus_update(msg);
+                        ftnlog_printf("%s", msg);
                     }
                 }
                 ftnstatus_set_idle();
@@ -1649,6 +1808,8 @@ static Desk_bool wimp_handle_window_close(Desk_event_pollblock *event, void *ref
 
 static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
 {
+    time_t now = time(NULL);
+
     Desk_UNUSED(event);
     Desk_UNUSED(ref);
 
@@ -1664,7 +1825,39 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     /* Check for timeouts */
     mailer_check_timeouts();
 
-    /* Note: No automatic outbound polling - user must click Poll menu */
+    /* Periodically rescan outbound directories so new mail is noticed */
+    if (outbound_queue.scan_interval > 0)
+    {
+        if (now - outbound_queue.last_scan >= outbound_queue.scan_interval)
+        {
+            queue_scan_outbound();
+        }
+    }
+
+    /* Automatic toss: process inbound packets */
+    if (mailer.toss_interval > 0 && mailer.active_sessions == 0)
+    {
+        if (now - mailer.last_auto_toss >= mailer.toss_interval)
+        {
+            debug_printf("mailer: Auto-toss triggered");
+            ftnlog_printf("Auto-toss: processing inbound...");
+            tosser_process_inbound();
+            mailer.last_auto_toss = now;
+        }
+    }
+
+    /* Automatic poll: connect to uplinks and exchange mail */
+    if (mailer.poll_interval > 0 && mailer.active_sessions == 0)
+    {
+        if (now - mailer.last_auto_poll >= mailer.poll_interval)
+        {
+            debug_printf("mailer: Auto-poll triggered");
+            ftnlog_printf("Auto-poll: connecting to uplinks...");
+            queue_scan_outbound();
+            mailer_poll_all_uplinks();
+            mailer.last_auto_poll = now;
+        }
+    }
 
     return Desk_bool_TRUE;
 }

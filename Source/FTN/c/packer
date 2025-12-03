@@ -213,7 +213,8 @@ PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *d
     pkt_time = (unsigned long)time(NULL);
     snprintf(filename, sizeof(filename), "%08lxpkt", pkt_time & 0xFFFFFFFF);
 
-    /* Build full path using BSO helper */
+    /* Ensure outbound directories exist and build full path using BSO helper */
+    queue_ensure_outbound_directories(dest_addr);
     queue_format_outbound_name(ctx->path, sizeof(ctx->path), dest_addr, "out");
     
     /* Actually we want a .pkt file, replace the extension */

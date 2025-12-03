@@ -14,6 +14,7 @@
 #include "queue.h"
 #include "mailer.h"
 #include "debug.h"
+#include "ftnlog.h"
 
 /* SWI numbers */
 #define SWI_SUPPORT_FTN     0x5AA86
@@ -34,6 +35,15 @@ void queue_initialise(void)
     outbound_queue.scan_interval = 60;  /* Scan every 60 seconds */
 }
 
+void queue_set_scan_interval(int seconds)
+{
+    if (seconds <= 0)
+    {
+        seconds = 60;
+    }
+    outbound_queue.scan_interval = seconds;
+}
+
 void queue_finalise(void)
 {
     /* Nothing to clean up */
@@ -47,9 +57,15 @@ void queue_finalise(void)
  * BSO (Binkley-Style Outbound) directory structure for RISC OS:
  * Note: RISC OS doesn't use file extensions, so we append them directly to filenames.
  * 
- * <outbound>               - Zone 2 (default zone)
- * <outbound>001            - Zone 1 (sibling directory with zone as hex suffix)
- * <outbound>003            - Zone 3
+ * All zones use 3-digit hex subdirectories:
+ * <outbound>.001            - Zone 1
+ * <outbound>.002            - Zone 2
+ * <outbound>.003            - Zone 3
+ * 
+ * Similarly for inbound:
+ * <inbound>.001             - Zone 1
+ * <inbound>.002             - Zone 2
+ * <inbound>.003             - Zone 3
  * 
  * Within each zone directory (RISC OS style - no dots in filenames):
  * NNNNNNNNout              - Normal mail (net/node as 8 hex chars)
@@ -66,33 +82,19 @@ void queue_finalise(void)
 
 void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr)
 {
-    if (addr->zone == 2)
+    char zone_dir[MAILER_PATH_SIZE];
+
+    /* Get zone directory using shared helper */
+    ftn_format_zone_path(zone_dir, sizeof(zone_dir), mailer.outbound_path, addr->zone);
+
+    if (addr->point == 0)
     {
-        /* Zone 2 is default, no extension */
-        if (addr->point == 0)
-        {
-            snprintf(buffer, size, "%s.%04x%04x",
-                     mailer.outbound_path, addr->net, addr->node);
-        }
-        else
-        {
-            snprintf(buffer, size, "%s.%04x%04xpnt.%08x",
-                     mailer.outbound_path, addr->net, addr->node, addr->point);
-        }
+        snprintf(buffer, size, "%s.%04x%04x", zone_dir, addr->net, addr->node);
     }
     else
     {
-        /* Other zones have zone suffix on outbound directory */
-        if (addr->point == 0)
-        {
-            snprintf(buffer, size, "%s%03x.%04x%04x",
-                     mailer.outbound_path, addr->zone, addr->net, addr->node);
-        }
-        else
-        {
-            snprintf(buffer, size, "%s%03x.%04x%04xpnt.%08x",
-                     mailer.outbound_path, addr->zone, addr->net, addr->node, addr->point);
-        }
+        snprintf(buffer, size, "%s.%04x%04xpnt.%08x",
+                 zone_dir, addr->net, addr->node, addr->point);
     }
 }
 
@@ -100,15 +102,8 @@ void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr,
 {
     char zone_dir[MAILER_PATH_SIZE];
 
-    if (addr->zone == 2)
-    {
-        snprintf(zone_dir, sizeof(zone_dir), "%s", mailer.outbound_path);
-    }
-    else
-    {
-        /* Zone directory is outbound path with 3-digit hex zone appended */
-        snprintf(zone_dir, sizeof(zone_dir), "%s%03x", mailer.outbound_path, addr->zone);
-    }
+    /* Get zone directory using shared helper */
+    ftn_format_zone_path(zone_dir, sizeof(zone_dir), mailer.outbound_path, addr->zone);
 
     if (addr->point == 0)
     {
@@ -137,6 +132,85 @@ QUEUE_NODE *queue_find_node(const FTN_ADDR *addr)
         if (ftn_addr_match(&outbound_queue.nodes[i].addr, addr))
         {
             return &outbound_queue.nodes[i];
+        }
+    }
+
+    return NULL;
+}
+
+/*
+ * Find a queue node by checking both primary address and uplink aliases.
+ * This is used when an uplink reports a different AKA than our config.
+ * Returns the node if found, or NULL.
+ */
+QUEUE_NODE *queue_find_node_by_any_address(const FTN_ADDR *addr)
+{
+    _kernel_swi_regs regs;
+    QUEUE_NODE *node;
+    int i, j;
+    int uplink_count;
+
+    /* First try exact match */
+    node = queue_find_node(addr);
+    if (node != NULL)
+    {
+        return node;
+    }
+
+    /* Get uplink count from Support module */
+    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return NULL;
+    }
+    uplink_count = regs.r[0];
+
+    /* Check each uplink's aliases */
+    for (i = 1; i <= uplink_count; i++)
+    {
+        /* FTN_UPLINK_CONFIG structure - matches Support/h/ftnconfig */
+        typedef struct
+        {
+            int id;
+            char address[64];
+            char network[64];
+            char host[64];
+            int port;
+            char password[32];
+            char groups[64];
+            int alias_count;
+            char aliases[8][64];
+        } UPLINK_CFG;
+
+        UPLINK_CFG *uplink;
+        FTN_ADDR uplink_addr;
+
+        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        uplink = (UPLINK_CFG *)regs.r[0];
+
+        /* Check each alias */
+        for (j = 0; j < uplink->alias_count; j++)
+        {
+            FTN_ADDR alias_addr;
+
+            if (ftn_string_to_addr(uplink->aliases[j], &alias_addr) &&
+                ftn_addr_match(&alias_addr, addr))
+            {
+                /* Found a match! Look up the queue node by primary address */
+                if (ftn_string_to_addr(uplink->address, &uplink_addr))
+                {
+                    debug_printf("queue: Address %d:%d/%d.%d matched alias of uplink %s",
+                                 addr->zone, addr->net, addr->node, addr->point,
+                                 uplink->address);
+                    return queue_find_node(&uplink_addr);
+                }
+            }
         }
     }
 
@@ -179,6 +253,295 @@ void queue_remove_node(const FTN_ADDR *addr)
             outbound_queue.node_count--;
             return;
         }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Helpers                                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+static int queue_directory_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    if (path == NULL || *path == '\0')
+    {
+        return 0;
+    }
+
+    regs.r[0] = 17;  /* Read catalogue info */
+    regs.r[1] = (int)path;
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] == 2);
+}
+
+static void queue_ensure_directory(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    if (path == NULL || *path == '\0')
+    {
+        return;
+    }
+
+    if (queue_directory_exists(path))
+    {
+        return;
+    }
+
+    regs.r[0] = 8;   /* Create directory */
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;
+    _kernel_swi(OS_File, &regs, &regs);
+}
+
+static int queue_strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+static int queue_is_reserved_subdir(const char *name)
+{
+    static const char *reserved[] = { "temp", "processed", "bad" };
+    int i;
+
+    if (name == NULL || *name == '\0')
+    {
+        return 0;
+    }
+
+    for (i = 0; i < (int)(sizeof(reserved) / sizeof(reserved[0])); i++)
+    {
+        if (queue_strcasecmp(name, reserved[i]) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int queue_parse_zone_segment(const char *segment)
+{
+    char zone_str[4];
+    int i;
+
+    if (segment == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < 3; i++)
+    {
+        if (segment[i] == '\0' || !isxdigit((unsigned char)segment[i]))
+        {
+            return 0;
+        }
+        zone_str[i] = tolower((unsigned char)segment[i]);
+    }
+
+    zone_str[3] = '\0';
+
+    if (queue_is_reserved_subdir(zone_str))
+    {
+        return 0;
+    }
+
+    return (int)strtol(zone_str, NULL, 16);
+}
+
+void ftn_format_zone_path(char *buffer, size_t size, const char *base_path, int zone)
+{
+    int use_zone;
+
+    if (buffer == NULL || size == 0)
+    {
+        return;
+    }
+
+    if (base_path == NULL || *base_path == '\0')
+    {
+        buffer[0] = '\0';
+        return;
+    }
+
+    use_zone = (zone > 0) ? zone : 2;
+
+    /* All zones use .XXX format (3-digit hex) */
+    /* e.g., Outbound.001 for zone 1, Outbound.002 for zone 2, Inbound.003 for zone 3 */
+    snprintf(buffer, size, "%s.%03x", base_path, use_zone);
+}
+
+void ftn_format_zone_subpath(char *buffer, size_t size, const char *base_path, int zone, const char *suffix)
+{
+    char zone_path[MAILER_PATH_SIZE];
+
+    if (buffer == NULL || size == 0)
+    {
+        return;
+    }
+
+    if (suffix == NULL || *suffix == '\0')
+    {
+        ftn_format_zone_path(buffer, size, base_path, zone);
+        return;
+    }
+
+    ftn_format_zone_path(zone_path, sizeof(zone_path), base_path, zone);
+
+    if (zone_path[0] == '\0')
+    {
+        buffer[0] = '\0';
+        return;
+    }
+
+    snprintf(buffer, size, "%s.%s", zone_path, suffix);
+}
+
+int ftn_extract_zone_from_path(const char *base_path, const char *full_path,
+                               char *zone_path, size_t zone_path_size, int *zone_out)
+{
+    size_t base_len;
+    int zone = 2;
+
+    if (base_path == NULL || full_path == NULL)
+    {
+        return 0;
+    }
+
+    base_len = strlen(base_path);
+
+    /* Check if full_path starts with base_path */
+    if (strncmp(full_path, base_path, base_len) != 0)
+    {
+        return 0;
+    }
+
+    /* Check for zone suffix after base (e.g., Inbound.001) */
+    if (full_path[base_len] == '.')
+    {
+        /* There's a child element - check if it's a zone directory */
+        int candidate = queue_parse_zone_segment(full_path + base_len + 1);
+        if (candidate > 0)
+        {
+            char next = full_path[base_len + 4];  /* After ".XXX" */
+            if (next == '.' || next == '\0')
+            {
+                zone = candidate;
+            }
+        }
+    }
+
+    if (zone_out != NULL)
+    {
+        *zone_out = zone;
+    }
+
+    if (zone_path != NULL && zone_path_size > 0)
+    {
+        ftn_format_zone_path(zone_path, zone_path_size, base_path, zone);
+    }
+
+    return 1;
+}
+
+int ftn_enumerate_zone_directories(const char *base_path, FTN_ZONE_ENUM_CALLBACK callback, void *ctx)
+{
+    _kernel_swi_regs regs;
+    char entry[256];
+    int context = 0;
+    int count = 0;
+
+    if (base_path == NULL || callback == NULL)
+    {
+        return 0;
+    }
+
+    if (!queue_directory_exists(base_path))
+    {
+        return 0;
+    }
+
+    /* Enumerate all zone subdirectories (no special case for zone 2) */
+    do
+    {
+        regs.r[0] = 9;
+        regs.r[1] = (int)base_path;
+        regs.r[2] = (int)entry;
+        regs.r[3] = 1;
+        regs.r[4] = context;
+        regs.r[5] = sizeof(entry);
+        regs.r[6] = (int)"*";
+
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        context = regs.r[4];
+
+        if (regs.r[3] > 0)
+        {
+            int zone = queue_parse_zone_segment(entry);
+            if (zone > 0)
+            {
+                char path[MAILER_PATH_SIZE];
+
+                snprintf(path, sizeof(path), "%s.%s", base_path, entry);
+
+                if (queue_directory_exists(path))
+                {
+                    callback(path, zone, ctx);
+                    count++;
+                }
+            }
+        }
+    }
+    while (context != -1);
+
+    return count;
+}
+
+static void queue_get_zone_directory(char *buffer, size_t size, const FTN_ADDR *addr)
+{
+    int zone = (addr != NULL) ? addr->zone : 2;
+    ftn_format_zone_path(buffer, size, mailer.outbound_path, zone);
+}
+
+void queue_ensure_outbound_directories(const FTN_ADDR *addr)
+{
+    char dir[MAILER_PATH_SIZE];
+
+    if (addr == NULL)
+    {
+        return;
+    }
+
+    queue_get_zone_directory(dir, sizeof(dir), addr);
+    queue_ensure_directory(dir);
+
+    if (addr->point != 0)
+    {
+        queue_get_zone_directory(dir, sizeof(dir), addr);
+        snprintf(dir + strlen(dir), sizeof(dir) - strlen(dir), ".%04x%04xpnt",
+                 addr->net, addr->node);
+        queue_ensure_directory(dir);
     }
 }
 
@@ -329,6 +692,85 @@ QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node)
     return best;
 }
 
+/*
+ * Get the next file to send for a given zone.
+ * This searches ALL queue nodes in the specified zone and returns
+ * the highest priority file from any of them.
+ * Also returns the node containing the file via node_out.
+ */
+QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out)
+{
+    int i;
+    QUEUE_FILE *best_file = NULL;
+    QUEUE_NODE *best_node = NULL;
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        QUEUE_NODE *node = &outbound_queue.nodes[i];
+        QUEUE_FILE *file;
+
+        /* Skip nodes not in this zone */
+        if (node->addr.zone != zone)
+        {
+            continue;
+        }
+
+        /* Skip nodes with no files */
+        if (node->file_count == 0)
+        {
+            continue;
+        }
+
+        /* Get best file from this node */
+        file = queue_get_next_file(node);
+        if (file != NULL)
+        {
+            /* Compare with current best */
+            if (best_file == NULL || file->flavour > best_file->flavour)
+            {
+                best_file = file;
+                best_node = node;
+            }
+        }
+    }
+
+    if (node_out != NULL)
+    {
+        *node_out = best_node;
+    }
+
+    return best_file;
+}
+
+/*
+ * Count total files pending for a zone.
+ */
+int queue_count_files_for_zone(int zone)
+{
+    int i;
+    int count = 0;
+
+    debug_printf("queue: Counting files for zone %d (node_count=%d)", zone, outbound_queue.node_count);
+
+    for (i = 0; i < outbound_queue.node_count; i++)
+    {
+        debug_printf("queue:   Node %d: %d:%d/%d.%d has %d files",
+                     i, outbound_queue.nodes[i].addr.zone,
+                     outbound_queue.nodes[i].addr.net,
+                     outbound_queue.nodes[i].addr.node,
+                     outbound_queue.nodes[i].addr.point,
+                     outbound_queue.nodes[i].file_count);
+
+        if (outbound_queue.nodes[i].addr.zone == zone)
+        {
+            count += outbound_queue.nodes[i].file_count;
+        }
+    }
+
+    debug_printf("queue: Total files for zone %d: %d", zone, count);
+    return count;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* FLO File Parsing                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
@@ -406,8 +848,16 @@ int queue_parse_flo_file(QUEUE_NODE *node, const char *path, QUEUE_FLAVOUR flavo
  */
 static int parse_bso_hex_addr(const char *name, int zone, FTN_ADDR *addr)
 {
-    unsigned int net, node;
-    int len = strlen(name);
+    unsigned int net;
+    unsigned int node;
+    int len;
+
+    if (name == NULL || addr == NULL)
+    {
+        return 0;
+    }
+
+    len = strlen(name);
 
     /* Must be at least 8 hex chars for net/node */
     if (len < 8)
@@ -415,7 +865,6 @@ static int parse_bso_hex_addr(const char *name, int zone, FTN_ADDR *addr)
         return 0;
     }
 
-    /* Parse hex: first 4 chars = net, next 4 = node */
     if (sscanf(name, "%04x%04x", &net, &node) != 2)
     {
         return 0;
@@ -608,26 +1057,29 @@ static int lookup_uplink_for_node(const FTN_ADDR *addr, char *hostname, size_t h
 static int scan_zone_directory(const char *path, int zone)
 {
     _kernel_swi_regs regs;
-    char buffer[256];
+    char buffer[280];
     int count = 0;
     int context = 0;
     int read_count;
+    int entries_seen = 0;
 
-    debug_printf("queue: Scanning zone %d directory: %s", zone, path);
+    debug_printf("queue: ---- Scanning zone %d: %s ----", zone, path);
+    ftnlog_printf("  Zone %d: %s", zone, path);
 
-    /* Use OS_GBPB 9 to enumerate directory */
+    /* Use OS_GBPB 12 to enumerate directory with info */
     do
     {
-        regs.r[0] = 9;  /* Read directory entries */
+        regs.r[0] = 12;  /* Read directory entries with info */
         regs.r[1] = (int)path;
         regs.r[2] = (int)buffer;
         regs.r[3] = 1;  /* Read 1 entry at a time */
         regs.r[4] = context;
         regs.r[5] = sizeof(buffer);
-        regs.r[6] = 0;  /* Match all */
+        regs.r[6] = (int)"*";  /* Match all */
 
         if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
         {
+            debug_printf("queue: OS_GBPB failed on zone directory");
             break;
         }
 
@@ -636,27 +1088,45 @@ static int scan_zone_directory(const char *path, int zone)
 
         if (read_count > 0)
         {
-            /* buffer contains: load, exec, length, attr, type, name */
-            char *name = buffer + 20;  /* Name starts at offset 20 */
+            /* OS_GBPB 12 buffer format:
+             * Offset 0:  Load address (4 bytes)
+             * Offset 4:  Exec address (4 bytes)
+             * Offset 8:  Length (4 bytes)
+             * Offset 12: Attributes (4 bytes)
+             * Offset 16: Object type (4 bytes)
+             * Offset 20: File type (4 bytes)
+             * Offset 24: Name (null-terminated string)
+             */
+            const char *name = buffer + 24;  /* Name starts at offset 24 */
             int objtype = *((int *)(buffer + 16));
             FTN_ADDR addr;
             QUEUE_FLAVOUR flavour;
             int is_flo;
             int is_pkt;
             int is_req;
+            int len = strlen(name);
+
+            entries_seen++;
+            debug_printf("queue: [%d] '%s' len=%d type=%d", entries_seen, name, len, objtype);
+            ftnlog_printf("    File: %s (type=%d)", name, objtype);
 
             /* Skip directories (point directories would be objtype 2) */
             if (objtype == 1)  /* Regular file */
             {
+                int addr_ok = parse_bso_hex_addr(name, zone, &addr);
+                int flav_ok = get_flavour_from_name(name, &flavour, &is_flo, &is_pkt, &is_req);
+
+                debug_printf("queue:   -> addr_ok=%d flav_ok=%d", addr_ok, flav_ok);
+
                 /* Try to parse as BSO filename */
-                if (parse_bso_hex_addr(name, zone, &addr) &&
-                    get_flavour_from_name(name, &flavour, &is_flo, &is_pkt, &is_req))
+                if (addr_ok && flav_ok)
                 {
                     QUEUE_NODE *node;
                     char filepath[MAILER_PATH_SIZE];
 
-                    debug_printf("queue: Found BSO file %s -> %d:%d/%d (flo=%d pkt=%d req=%d)",
+                    debug_printf("queue: QUEUING: %s -> %d:%d/%d (flo=%d pkt=%d req=%d)",
                                  name, addr.zone, addr.net, addr.node, is_flo, is_pkt, is_req);
+                    ftnlog_printf("    -> Queued for %d:%d/%d", addr.zone, addr.net, addr.node);
 
                     snprintf(filepath, sizeof(filepath), "%s.%s", path, name);
 
@@ -721,105 +1191,111 @@ static int scan_zone_directory(const char *path, int zone)
                         }
                     }
                 }
+                else
+                {
+                    debug_printf("queue:   -> SKIPPED (addr_ok=%d flav_ok=%d)", addr_ok, flav_ok);
+                }
+            }
+            else
+            {
+                debug_printf("queue:   -> SKIPPED (not a file, type=%d)", objtype);
             }
         }
     } while (context != -1);
 
+    debug_printf("queue: ---- Zone %d scan complete: %d entries, %d files queued ----", zone, entries_seen, count);
+    ftnlog_printf("  Zone %d: %d files queued", zone, count);
+
     return count;
-}
-
-/*
- * Get zone number from zone extension.
- * e.g., "001" -> 1, "003" -> 3, "" -> 2 (default)
- */
-static int get_zone_from_extension(const char *ext)
-{
-    unsigned int zone;
-
-    if (ext == NULL || ext[0] == '\0')
-    {
-        return 2;  /* Default zone */
-    }
-
-    if (sscanf(ext, "%03x", &zone) == 1)
-    {
-        return (int)zone;
-    }
-
-    return 2;
 }
 
 void queue_scan_outbound(void)
 {
     _kernel_swi_regs regs;
-    char buffer[256];
+    char buffer[280];
     int context = 0;
     int read_count;
     int total_files = 0;
-    char parent_path[MAILER_PATH_SIZE];
-    char *last_dot;
-    char base_name[64];
+    int dirs_found = 0;
+    int dirs_valid = 0;
 
-    debug_printf("queue: Scanning outbound: %s", mailer.outbound_path);
+    debug_printf("queue: ========================================");
+    debug_printf("queue: SCANNING OUTBOUND: %s", mailer.outbound_path);
+    ftnlog_printf("Scanning outbound: %s", mailer.outbound_path);
+
+    /* Check if outbound path exists */
+    regs.r[0] = 17;  /* OS_File 17 = Read catalogue info */
+    regs.r[1] = (int)mailer.outbound_path;
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL || regs.r[0] != 2)
+    {
+        debug_printf("queue: ERROR - Outbound path does not exist or is not a directory!");
+        ftnlog_printf("ERROR: Outbound path not found!");
+        return;
+    }
+
+    debug_printf("queue: Outbound path exists, clearing queue...");
 
     /* Clear existing queue */
     outbound_queue.node_count = 0;
 
-    /* Scan the main outbound directory (zone 2 default) */
-    total_files += scan_zone_directory(mailer.outbound_path, 2);
-
-    /* Now scan for zone extension directories */
-    /* They are siblings of the outbound directory with zone extension */
-    /* e.g., if outbound is "<path>.Outbound", zone 1 is "<path>.Outbound001" */
-
-    /* Get parent directory and base name */
-    strncpy(parent_path, mailer.outbound_path, sizeof(parent_path) - 1);
-    last_dot = strrchr(parent_path, '.');
-    if (last_dot != NULL)
+    /* Scan all zone subdirectories within the outbound directory */
+    /* Zone directories are named with 3-digit hex: 001, 002, 003, etc. */
+    do
     {
-        strncpy(base_name, last_dot + 1, sizeof(base_name) - 1);
-        *last_dot = '\0';  /* Truncate to parent */
+        regs.r[0] = 12;  /* Read entries with info */
+        regs.r[1] = (int)mailer.outbound_path;
+        regs.r[2] = (int)buffer;
+        regs.r[3] = 1;
+        regs.r[4] = context;
+        regs.r[5] = sizeof(buffer);
+        regs.r[6] = (int)"*";
 
-        /* Enumerate parent directory looking for zone directories */
-        context = 0;
-        do
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
         {
-            regs.r[0] = 9;
-            regs.r[1] = (int)parent_path;
-            regs.r[2] = (int)buffer;
-            regs.r[3] = 1;
-            regs.r[4] = context;
-            regs.r[5] = sizeof(buffer);
-            regs.r[6] = 0;
+            debug_printf("queue: OS_GBPB failed on outbound directory");
+            break;
+        }
 
-            if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        context = regs.r[4];
+        read_count = regs.r[3];
+
+        if (read_count > 0)
+        {
+            /* OS_GBPB 12 buffer format:
+             * Offset 0:  Load (4), Offset 4: Exec (4), Offset 8: Length (4)
+             * Offset 12: Attrs (4), Offset 16: Object type (4), Offset 20: File type (4)
+             * Offset 24: Name (null-terminated string)
+             */
+            const char *name = buffer + 24;  /* Name starts at offset 24 */
+            int objtype = *((int *)(buffer + 16));
+
+            debug_printf("queue: Found entry '%s' type=%d", name, objtype);
+
+            /* Looking for zone subdirectories (3 hex digit names) */
+            if (objtype == 2)  /* Directory */
             {
-                break;
-            }
+                int zone;
+                dirs_found++;
 
-            context = regs.r[4];
-            read_count = regs.r[3];
+                zone = queue_parse_zone_segment(name);
+                debug_printf("queue: Dir '%s' parsed as zone=%d", name, zone);
 
-            if (read_count > 0)
-            {
-                char *name = buffer + 20;
-                int objtype = *((int *)(buffer + 16));
-                size_t base_len = strlen(base_name);
-
-                /* Looking for directories like "Outbound001" */
-                if (objtype == 2 &&  /* Directory */
-                    strncmp(name, base_name, base_len) == 0 &&
-                    strlen(name) == base_len + 3)  /* 3 hex digits */
+                if (zone > 0)
                 {
                     char zone_path[MAILER_PATH_SIZE];
-                    int zone = get_zone_from_extension(name + base_len);
+                    int files;
 
-                    snprintf(zone_path, sizeof(zone_path), "%s.%s", parent_path, name);
-                    total_files += scan_zone_directory(zone_path, zone);
+                    dirs_valid++;
+                    snprintf(zone_path, sizeof(zone_path), "%s.%s", mailer.outbound_path, name);
+                    files = scan_zone_directory(zone_path, zone);
+                    total_files += files;
+                    debug_printf("queue: Zone %d (%s): %d files", zone, zone_path, files);
                 }
             }
-        } while (context != -1);
-    }
+        }
+    } while (context != -1);
+
+    debug_printf("queue: Enumerated %d dirs, %d valid zone dirs", dirs_found, dirs_valid);
 
     outbound_queue.last_scan = time(NULL);
 
@@ -967,6 +1443,7 @@ void queue_add_uplinks_for_poll(void)
             strncpy(node->hostname, uplink->host, sizeof(node->hostname) - 1);
             node->hostname[sizeof(node->hostname) - 1] = '\0';
             node->port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
+            node->is_uplink = 1;  /* Mark this node as a configured uplink */
 
             debug_printf("queue: Added uplink %d:%d/%d.%d -> %s:%d",
                          uplink_addr.zone, uplink_addr.net, uplink_addr.node, uplink_addr.point,
@@ -1037,6 +1514,10 @@ void queue_dump_status(void)
                  queue_get_pending_count(),
                  queue_get_pending_size());
 
+    ftnlog_printf("Queue: %d nodes, %d files pending",
+                  outbound_queue.node_count,
+                  queue_get_pending_count());
+
     for (i = 0; i < outbound_queue.node_count; i++)
     {
         QUEUE_NODE *node = &outbound_queue.nodes[i];
@@ -1045,6 +1526,13 @@ void queue_dump_status(void)
                      node->addr.zone, node->addr.net, node->addr.node, node->addr.point,
                      node->file_count, node->total_size,
                      node->busy ? "BUSY" : "ready");
+
+        if (node->file_count > 0)
+        {
+            ftnlog_printf("  %d:%d/%d.%d: %d files",
+                          node->addr.zone, node->addr.net, node->addr.node, node->addr.point,
+                          node->file_count);
+        }
     }
 }
 
@@ -1067,6 +1555,7 @@ int queue_create_poll_file(const FTN_ADDR *addr, QUEUE_FLAVOUR flavour)
         default:                      ext = "flo"; break;
     }
 
+    queue_ensure_outbound_directories(addr);
     queue_format_outbound_name(path, sizeof(path), addr, ext);
 
     /* Create empty poll file */

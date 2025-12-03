@@ -14,6 +14,7 @@
 
 #include "tosser.h"
 #include "mailer.h"
+#include "queue.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
@@ -65,8 +66,6 @@ static int str_casecmp(const char *s1, const char *s2)
 
 static TOSSER_STATS tosser_stats;
 static char tosser_inbound[TOSSER_MAX_PATH];
-static char tosser_processed[TOSSER_MAX_PATH];
-static char tosser_bad[TOSSER_MAX_PATH];
 
 /* Simple dupe detection - hash of recent MSGIDs */
 static unsigned long dupe_hashes[TOSSER_DUPE_HASH_SIZE];
@@ -97,6 +96,41 @@ static void tosser_report_status(const char *format, ...)
     {
         status_callback(buffer);
     }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Address Checking                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if a destination address is one of our addresses.
+ * Returns 1 if address is ours, 0 if it's transit mail.
+ */
+static int tosser_is_for_us(const FTN_ADDR *addr)
+{
+    int i;
+
+    if (addr == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < mailer.our_addr_count; i++)
+    {
+        if (addr->zone == mailer.our_addrs[i].zone &&
+            addr->net == mailer.our_addrs[i].net &&
+            addr->node == mailer.our_addrs[i].node)
+        {
+            /* Point 0 matches any point, or exact point match */
+            if (mailer.our_addrs[i].point == 0 || 
+                addr->point == mailer.our_addrs[i].point)
+            {
+                return 1;  /* This is for us */
+            }
+        }
+    }
+
+    return 0;  /* Transit mail */
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -274,13 +308,7 @@ void tosser_initialise(void)
         tosser_copy_string(tosser_inbound, "<Converse$Dir>.FTN.Inbound", sizeof(tosser_inbound));
     }
     
-    /* Set up processed and bad directories */
-    snprintf(tosser_processed, sizeof(tosser_processed), "%s.Processed", tosser_inbound);
-    snprintf(tosser_bad, sizeof(tosser_bad), "%s.Bad", tosser_inbound);
-    
     tosser_ensure_directory(tosser_inbound);
-    tosser_ensure_directory(tosser_processed);
-    tosser_ensure_directory(tosser_bad);
     
     debug_printf("tosser: Initialised, inbound=%s", tosser_inbound);
 }
@@ -926,7 +954,19 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
     snprintf(record.subject, sizeof(record.subject), "%s", msg->subject);
     strncpy(record.fromname, msg->from, sizeof(record.fromname) - 1);
     strncpy(record.toname, msg->to, sizeof(record.toname) - 1);
-    record.exported = 1;  /* Imported messages are already "exported" (came from network) */
+    
+    /* Transit mail (not for us) needs to be re-exported */
+    if (msg->attribute & MSG_INTRANSIT)
+    {
+        record.exported = 0;  /* Scanner will pick this up for routing */
+        debug_printf("tosser: Storing transit mail to %d:%d/%d.%d",
+                     msg->dest_addr.zone, msg->dest_addr.net,
+                     msg->dest_addr.node, msg->dest_addr.point);
+    }
+    else
+    {
+        record.exported = 1;  /* Imported messages are already "exported" (came from network) */
+    }
     
     /* Begin upload via Filer SWI */
     regs.r[0] = MSGBASE_CMD_BEGIN_UPLOAD;
@@ -1091,10 +1131,20 @@ int tosser_process_packet(const char *path)
         }
         else
         {
-            /* Netmail - store in netmail area (base 1 area 0 typically) */
+            /* Netmail - check if it's for us or transit */
             tosser_stats.netmail_count++;
             
-            /* For now, store all netmail in base 1 */
+            /* Check if destination is one of our addresses */
+            if (!tosser_is_for_us(&msg.dest_addr))
+            {
+                /* Transit mail - set the in-transit flag so it gets re-exported */
+                msg.attribute |= MSG_INTRANSIT;
+                debug_printf("tosser: Transit netmail for %d:%d/%d.%d",
+                             msg.dest_addr.zone, msg.dest_addr.net,
+                             msg.dest_addr.node, msg.dest_addr.point);
+            }
+            
+            /* Store all netmail in base 1 (FTN messagebase) */
             base_id = 1;
             area_id = 0;
             
@@ -1135,69 +1185,83 @@ int tosser_process_packet(const char *path)
 /* Inbound Processing                                                                                                                                       */
 /* ******************************************************************************************************************************************************** */
 
+typedef struct
+{
+    int packets;
+    int messages;
+} TOSSER_INBOUND_CONTEXT;
+
+static void tosser_process_zone_directory(const char *zone_path, int zone, void *ctx)
+{
+    _kernel_swi_regs regs;
+    char buffer[256];
+    int context = 0;
+    TOSSER_INBOUND_CONTEXT *scan = (TOSSER_INBOUND_CONTEXT *)ctx;
+
+    debug_printf("tosser: Scanning inbound zone %d: %s", zone, zone_path);
+
+    do
+    {
+        regs.r[0] = 9;  /* Read directory entries */
+        regs.r[1] = (int)zone_path;
+        regs.r[2] = (int)buffer;
+        regs.r[3] = 1;
+        regs.r[4] = context;
+        regs.r[5] = sizeof(buffer);
+        regs.r[6] = (int)"*";
+
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        context = regs.r[4];
+
+        if (regs.r[3] > 0)
+        {
+            size_t len = strlen(buffer);
+
+            if (len >= 3 && str_casecmp(buffer + len - 3, "pkt") == 0)
+            {
+                char full_path[TOSSER_MAX_PATH];
+                int messages;
+
+                snprintf(full_path, sizeof(full_path), "%s.%s", zone_path, buffer);
+
+                tosser_report_status("Processing: %s", buffer);
+
+                messages = tosser_process_packet(full_path);
+                if (messages > 0)
+                {
+                    scan->messages += messages;
+                    scan->packets++;
+                }
+            }
+        }
+    }
+    while (context != -1);
+}
+
 /*
  * Scan inbound directory for .pkt files and process them.
  * RISC OS filenames: xxxxxxpkt (no extension separator)
  */
 int tosser_process_inbound(void)
 {
-    _kernel_swi_regs regs;
-    char buffer[256];
-    int context = 0;
-    int count = 0;
-    int total_messages = 0;
-    
+    TOSSER_INBOUND_CONTEXT scan;
+
+    memset(&scan, 0, sizeof(scan));
+
     debug_printf("tosser: Scanning inbound: %s", tosser_inbound);
-    
-    /* Use OS_GBPB 9 to enumerate directory */
-    do
+
+    ftn_enumerate_zone_directories(tosser_inbound, tosser_process_zone_directory, &scan);
+
+    if (scan.packets > 0)
     {
-        regs.r[0] = 9;  /* Read directory entries */
-        regs.r[1] = (int)tosser_inbound;
-        regs.r[2] = (int)buffer;
-        regs.r[3] = 1;  /* Number of objects to read */
-        regs.r[4] = context;
-        regs.r[5] = sizeof(buffer);
-        regs.r[6] = (int)"*";  /* Wildcard */
-        
-        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
-        {
-            break;
-        }
-        
-        context = regs.r[4];
-        
-        if (regs.r[3] > 0)
-        {
-            /* Check if filename ends with "pkt" */
-            size_t len = strlen(buffer);
-            
-            if (len >= 3 && str_casecmp(buffer + len - 3, "pkt") == 0)
-            {
-                char full_path[TOSSER_MAX_PATH];
-                int messages;
-                
-                snprintf(full_path, sizeof(full_path), "%s.%s", tosser_inbound, buffer);
-                
-                tosser_report_status("Processing: %s", buffer);
-                
-                messages = tosser_process_packet(full_path);
-                if (messages > 0)
-                {
-                    total_messages += messages;
-                    count++;
-                }
-            }
-        }
+        mailer_log("Processed %d packets, %d messages total", scan.packets, scan.messages);
     }
-    while (context != -1);
-    
-    if (count > 0)
-    {
-        mailer_log("Processed %d packets, %d messages total", count, total_messages);
-    }
-    
-    return total_messages;
+
+    return scan.messages;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1206,28 +1270,35 @@ int tosser_process_inbound(void)
 
 void tosser_move_to_processed(const char *path)
 {
+    char dest_dir[TOSSER_MAX_PATH];
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
-    
+    int zone = 2;
+
     if (path == NULL)
     {
         return;
     }
-    
+
+    /* Extract zone from path to keep folders separated */
+    ftn_extract_zone_from_path(tosser_inbound, path, NULL, 0, &zone);
+
     /* Extract leaf name */
     leaf = strrchr(path, '.');
     leaf = leaf ? leaf + 1 : path;
-    
-    snprintf(dest, sizeof(dest), "%s.%s", tosser_processed, leaf);
-    
+
+    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), tosser_inbound, zone, "Processed");
+    tosser_ensure_directory(dest_dir);
+    snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
+
     /* Use OS_FSControl 25 to rename/move */
     {
         _kernel_swi_regs regs;
-        
+
         regs.r[0] = 25;  /* Rename */
         regs.r[1] = (int)path;
         regs.r[2] = (int)dest;
-        
+
         if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
         {
             /* If rename fails, try to delete original */
@@ -1238,28 +1309,34 @@ void tosser_move_to_processed(const char *path)
 
 void tosser_move_to_bad(const char *path)
 {
+    char dest_dir[TOSSER_MAX_PATH];
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
-    
+    int zone = 2;
+
     if (path == NULL)
     {
         return;
     }
-    
+
+    ftn_extract_zone_from_path(tosser_inbound, path, NULL, 0, &zone);
+
     /* Extract leaf name */
     leaf = strrchr(path, '.');
     leaf = leaf ? leaf + 1 : path;
-    
-    snprintf(dest, sizeof(dest), "%s.%s", tosser_bad, leaf);
-    
+
+    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), tosser_inbound, zone, "Bad");
+    tosser_ensure_directory(dest_dir);
+    snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
+
     /* Use OS_FSControl 25 to rename/move */
     {
         _kernel_swi_regs regs;
-        
+
         regs.r[0] = 25;  /* Rename */
         regs.r[1] = (int)path;
         regs.r[2] = (int)dest;
-        
+
         if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
         {
             /* If rename fails, try to delete original */

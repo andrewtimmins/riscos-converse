@@ -50,7 +50,7 @@ typedef struct
     char messagebasedir[MAX_DIR];
 } MSGBASE_RECORD;
 
-/* Messagebase area - must match Filer/h/structs MESSAGEBASE_AREA */
+/* Messagebase area - config parsing struct (not stored in Filer) */
 typedef struct
 {
     int id;
@@ -59,6 +59,7 @@ typedef struct
     int daystokeep;
     int akause;
     short areatype;
+    char groups[MAX_NAME];  /* FTN groups for routing - only used by Support module */
 } MSGBASE_AREA_RECORD;
 
 /* Filebase record - must match Filer/h/structs FILEBASE_RECORD */
@@ -93,6 +94,7 @@ typedef struct
     int akause;
     int accesslevel;
     char keys[MAX_KEYS];
+    char groups[MAX_NAME];  /* FTN groups (A,B,C) for uplink filtering */
 } SUPPORT_MSGBASE_AREA_CONFIG;
 
 /* Support module messagebase config - must match Support/h/msgbaseconfig */
@@ -420,6 +422,7 @@ static void support_push_msgbase(MSGBASE_RECORD *base, MSGBASE_AREA_RECORD *area
         config.areas[i].akause = areas[i].akause;
         config.areas[i].accesslevel = -1; /* inherit from base */
         config.areas[i].keys[0] = '\0';   /* no override */
+        strncpy(config.areas[i].groups, areas[i].groups, sizeof(config.areas[i].groups) - 1);
     }
 
     /* Push to Support module */
@@ -635,6 +638,10 @@ static void parse_msgbase_file(FILE *file)
                 else if (strcmp(key, "akause") == 0 && value != NULL)
                 {
                     current_area.akause = atoi(value);
+                }
+                else if (strcmp(key, "groups") == 0 && value != NULL)
+                {
+                    strncpy(current_area.groups, value, sizeof(current_area.groups) - 1);
                 }
                 break;
 
@@ -889,6 +896,9 @@ typedef struct
     char areafix_password[32];
 } FTN_ADDR_RECORD;
 
+/* Maximum aliases per uplink */
+#define FTN_MAX_ALIASES 8
+
 /* FTN uplink structure for Support module - must match Support/h/ftnconfig FTN_UPLINK_CONFIG */
 typedef struct
 {
@@ -899,6 +909,8 @@ typedef struct
     int port;
     char password[32];
     char groups[64];
+    int alias_count;
+    char aliases[FTN_MAX_ALIASES][MAX_NAME];
 } FTN_UPLINK_RECORD;
 
 void load_ftn_config(void)
@@ -1016,6 +1028,69 @@ void load_ftn_config(void)
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
+                else if (strcmp(key, "ticpath") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 11; /* FTN_GLOBAL_FIELD_TICPATH */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "listenport") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 12; /* FTN_GLOBAL_FIELD_LISTENPORT */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "maxsessions") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 13; /* FTN_GLOBAL_FIELD_MAXSESSIONS */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "connecttimeout") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 14; /* FTN_GLOBAL_FIELD_CONNECTTIMEOUT */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "sessiontimeout") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 15; /* FTN_GLOBAL_FIELD_SESSIONTIMEOUT */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "scaninterval") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 16; /* FTN_GLOBAL_FIELD_SCANINTERVAL */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "tossinterval") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 17; /* FTN_GLOBAL_FIELD_TOSSINTERVAL */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "pollinterval") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 18; /* FTN_GLOBAL_FIELD_POLLINTERVAL */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "retrydelay") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 19; /* FTN_GLOBAL_FIELD_RETRYDELAY */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
                 else if (strcmp(key, "address") == 0 && value != NULL)
                 {
                     /* Start address block */
@@ -1118,6 +1193,16 @@ void load_ftn_config(void)
                 else if (strcmp(key, "groups") == 0 && value != NULL)
                 {
                     strncpy(current_uplink.groups, value, sizeof(current_uplink.groups) - 1);
+                }
+                else if (strcmp(key, "alias") == 0 && value != NULL)
+                {
+                    if (current_uplink.alias_count < FTN_MAX_ALIASES)
+                    {
+                        strncpy(current_uplink.aliases[current_uplink.alias_count], value,
+                                sizeof(current_uplink.aliases[0]) - 1);
+                        current_uplink.alias_count++;
+                        debug_printf("config: Uplink %d alias: %s", current_uplink.id, value);
+                    }
                 }
                 break;
 

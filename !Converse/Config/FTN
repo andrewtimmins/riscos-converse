@@ -1,6 +1,5 @@
 ;
-; FTN (FidoNet Technology Network) Configuration
-; Converted from binkd.conf
+; FTN Configuration
 ;
 
 ; System information for mailer
@@ -16,9 +15,24 @@ inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
 badmail             <Converse$Dir>.FTN.Bad
+ticpath             <Converse$Dir>.FTN.Tic
+
+; Interval settings (in seconds)
+scaninterval        60
+tossinterval        300
+pollinterval        900
 
 ; Packet settings
 max_packet_size     32768
+
+; Mailer settings
+listenport          24554
+maxsessions         10
+
+; Retry settings (in seconds)
+connecttimeout      60
+sessiontimeout      300
+retrydelay          300
 
 ; ----------------------------------------------------------------------------
 ; Network Addresses
@@ -26,7 +40,7 @@ max_packet_size     32768
 ; ----------------------------------------------------------------------------
 
 address 1
-    network         Fidonet
+    network         fidonet
     zone            2
     net             250
     node            9
@@ -37,7 +51,7 @@ address 1
 endaddress
 
 address 2
-    network         CNet
+    network         cnet
     zone            64
     net             500
     node            9
@@ -48,7 +62,7 @@ address 2
 endaddress
 
 address 3
-    network         PiNet
+    network         pinet
     zone            314
     net             314
     node            9
@@ -59,7 +73,7 @@ address 3
 endaddress
 
 address 4
-    network         RetroNet
+    network         retronet
     zone            80
     net             774
     node            9
@@ -70,7 +84,7 @@ address 4
 endaddress
 
 address 5
-    network         HobbyNet
+    network         hobbynet
     zone            954
     net             44
     node            9
@@ -81,7 +95,7 @@ address 5
 endaddress
 
 address 6
-    network         AmigaNet
+    network         amiganet
     zone            39
     net             136
     node            8
@@ -98,16 +112,19 @@ endaddress
 
 uplink 1
     address         2:250/0.0
-    network         Fidonet
+    network         fidonet
     host            applewoodbbs.linkpc.net
     port            24554
     password        sQwHveWd1Zt4n
     groups          A,B,C
+    alias           2:250/1.0
+    alias           2:25/0.0
+    alias           2:25/21.0
 enduplink
 
 uplink 2
     address         64:500/0.0
-    network         CNet
+    network         cnet
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
@@ -116,7 +133,7 @@ enduplink
 
 uplink 3
     address         314:314/0.0
-    network         PiNet
+    network         pinet
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
@@ -125,7 +142,7 @@ enduplink
 
 uplink 4
     address         80:774/0.0
-    network         RetroNet
+    network         retronet
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
@@ -134,7 +151,7 @@ enduplink
 
 uplink 5
     address         954:44/0.0
-    network         HobbyNet
+    network         hobbynet
     host            otherhub.abad1dea.to
     port            24554
     password        PKYEGB7A
@@ -143,7 +160,7 @@ enduplink
 
 uplink 6
     address         39:13/0.0
-    network         AmigaNet
+    network         amiganet
     host            bbs.zeusdev.co.uk
     port            24554
     password        IRM76TQL

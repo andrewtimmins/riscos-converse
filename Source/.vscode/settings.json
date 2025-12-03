@@ -37,6 +37,9 @@
         "messagebase": "cpp",
         "buffer": "cpp",
         "socklib": "cpp",
-        "types": "cpp"
+        "types": "cpp",
+        "ftnlog": "cpp",
+        "packer": "cpp",
+        "tic": "cpp"
     }
 }

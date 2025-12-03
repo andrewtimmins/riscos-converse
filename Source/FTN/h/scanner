@@ -74,8 +74,10 @@ int scanner_scan_outbound(void);
 /* Individual steps (can be called separately for testing) */
 int scanner_find_unexported_messages(int base_id, int area_id, int *message_ids, int max_count);
 int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, int *akause);
+int scanner_get_area_info_full(int base_id, int area_id, char *tag, int *areatype, int *akause, char *groups);
+int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out);
 int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
-int scanner_get_echomail_uplinks(const char *echotag, FTN_ADDR *uplinks, int max_uplinks);
+int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks);
 
 /* Packet creation helpers */
 int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch);

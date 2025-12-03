@@ -1073,3 +1073,110 @@ Create files in `<Converse$Dir>.Web`:
 </html>
 ```
 
+## FTN Mailer Module
+
+### Overview
+The FTN Mailer (`FTN/`) implements FidoNet Technology Network (FTN) mail exchange. It consists of:
+- **Mailer** (`FTN/c/mailer`): Wimp application, BinkP sessions, event handling
+- **BinkP** (`FTN/c/binkp`): BinkP protocol implementation for sessions
+- **Tosser** (`FTN/c/tosser`): Inbound packet processing, echomail/netmail tossing
+- **Scanner** (`FTN/c/scanner`): Outbound message scanning and routing
+- **Packer** (`FTN/c/packer`): Outbound packet creation
+- **Queue** (`FTN/c/queue`): Outbound file queue management
+- **TIC** (`FTN/c/tic`): TIC file processing for file distribution
+
+### Echomail Group Filtering
+Areas can be assigned to groups (e.g., "A", "B", "C") and uplinks specify which groups they carry. When scanning outbound echomail, messages are only routed to uplinks whose groups overlap with the area's groups.
+
+**Configuration:**
+```
+; In messagebase config
+area 2
+    name        BBS Discussion
+    tag         BBS_DISCUSSION
+    areatype    1
+    groups      A,B
+endarea
+
+; In FTN config
+uplink 1
+    address     2:250/0.0
+    groups      A,B,C
+enduplink
+```
+
+The scanner compares area groups to uplink groups. If any group matches, the uplink receives echomail from that area. Empty groups on either side means "match all".
+
+### Uplink Aliases (AKAs)
+FTN hubs often have multiple addresses (AKAs). When a hub connects or we connect to it, it may report a different address than what we have configured. Use aliases to tell the mailer that multiple addresses refer to the same uplink.
+
+**Configuration:**
+```
+uplink 1
+    address     2:250/0.0
+    host        hub.example.com
+    port        24554
+    password    secret
+    groups      A,B,C
+    alias       2:250/1.0
+    alias       2:250/2.0
+enduplink
+```
+
+When looking for files to send during a session, the mailer checks:
+1. The primary address (from `address` field)
+2. All configured aliases
+
+This ensures that if the hub reports as `2:250/1.0` instead of `2:250/0.0`, we still find and send our queued files for that uplink.
+
+### Transit Netmail
+Netmail addressed to nodes other than our configured addresses is marked as transit and stored with `exported=0`. The scanner picks up unexported netmail and routes it to the appropriate uplink based on the destination address.
+
+**Routing logic:**
+1. If destination is a direct uplink → route to that uplink
+2. Else → route via zone uplink (first uplink in same zone, or default uplink)
+
+Points are handled by routing to the boss node (point=0).
+
+### TIC File Processing
+TIC files accompany files in FTN file distribution networks. The TIC module:
+
+**Inbound processing:**
+1. Scans inbound directory for `*.tic` files
+2. Parses TIC metadata (filename, area, size, CRC, origin, etc.)
+3. Verifies file CRC-32 if specified
+4. Matches area tag to filebase area
+5. Stores file via Filer SWI
+
+**TIC file format:**
+```
+File myfile.lha
+Area RETROCOMPUTING
+Desc A cool retro computing file
+Size 12345
+CRC 12345678
+Origin 2:250/1.0
+From 2:250/0.0
+To 2:250/9.0
+Seenby 2:250/0.0
+Seenby 2:250/1.0
+Path 2:250/1.0
+```
+
+### Scanner Functions
+```c
+int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, int *akause);
+int scanner_get_area_info_full(int base_id, int area_id, char *tag, int *areatype, int *akause, char *groups);
+int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks);
+int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
+```
+
+### TIC Functions
+```c
+int tic_parse_file(const char *tic_path, TIC_FILE *tic);
+int tic_process_inbound(void);
+int tic_store_file(const TIC_FILE *tic, const char *file_path);
+int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
+unsigned long tic_calculate_crc32(const char *file_path);
+```
+
