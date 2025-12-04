@@ -337,6 +337,8 @@ static int script_host_get_user_id(void *context);
 static void script_host_start_chat_pager(void *context, const char *reason);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
+static void perform_session_disconnect(line_task_state *state);
+static void send_user_message(int line_id, const char *real_name);
 static void poll_idle(void);
 /* Sysop chat functions */
 static void chat_reset_state(line_task_state *state);
@@ -603,10 +605,6 @@ static void initialise_resources(void)
     if (main_window_handle != 0 && task_state.terminal != NULL)
     {
         task_state.terminal->window = main_window_handle;
-        Desk_Event_Claim(Desk_event_REDRAW, main_window_handle, Desk_event_ANY,
-                         handle_terminal_redraw, &task_state);
-        Desk_Event_Claim(Desk_event_KEY, main_window_handle, Desk_event_ANY,
-                         handle_terminal_key, &task_state);
     }
 
     update_main_window_title(&task_state);
@@ -694,6 +692,49 @@ static void show_main_window(void)
     }
 }
 
+static void perform_session_disconnect(line_task_state *state)
+{
+    if (state->session_active != 0)
+    {
+        if (state->local_mode)
+        {
+             pipes_output_write_string(state->line_id, "\r\n[Local session ended]\r\n");
+        }
+        else
+        {
+             pipes_output_write_string(state->line_id, "\r\n[LINETASK CLOSED]\r\n");
+        }
+    }
+    
+    state->session_active = 0;
+    state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
+    
+    if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
+    {
+        door_close_session(state, "\r\n[Door session ended]\r\n");
+    }
+    if (state->arcbbs_door_active != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE)
+    {
+        arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
+    }
+    
+    /* Reset filebase and messagebase session and user state on disconnect */
+    filebase_session_reset(&state->fb_session);
+    messagebase_session_reset(&state->mb_session);
+    
+    state->user_id = 0;
+    state->user_accesslevel = 0;
+    state->user_sysop = 0;
+    state->user_keys[0] = '\0';
+    state->user_realname[0] = '\0';
+    
+    /* Reset user display in Server status window */
+    send_user_message(state->line_id, NULL);
+    
+    log_line_event(state->line_id, "Session disconnected");
+    script_stop_session(state);
+}
+
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
 {
     Desk_UNUSED(ref);
@@ -714,8 +755,7 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
             {
                 _kernel_swi_regs regs;
                 
-                script_stop_session(&task_state);
-                task_state.session_active = 0;
+                perform_session_disconnect(&task_state);
                 task_state.local_mode = 0;
                 
                 /* Reset Support module state */
@@ -731,7 +771,18 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
                 regs.r[3] = 0;
                 _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
 
-                pipes_output_write_string(task_state.line_id, "\r\n[Local session ended]\r\n");
+                /* Reset Hostname */
+                regs.r[0] = LINE_REASON_SET;
+                regs.r[1] = task_state.line_id;
+                regs.r[2] = LINE_FIELD_HOSTNAME;
+                regs.r[3] = (int)"";
+                _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+
+                /* Reset Activity text */
+                regs.r[0] = 0; /* ACTIVITY_REASON_SET */
+                regs.r[1] = task_state.line_id;
+                regs.r[2] = (int)"";
+                _kernel_swi(SWI_CONVERSEBBS_ACTIVITY, &regs, &regs);
             }
         }
         Desk_Window_Hide(event->data.openblock.window);
@@ -1027,12 +1078,11 @@ static void process_server_stream(line_task_state *state)
 
 static void handle_plain_server_byte(line_task_state *state, unsigned char byte)
 {
-    /* Feed input to terminal for sysop snoop (echo user input) */
-    if (state->terminal && state->terminal->snoop_mode)
-    {
-        ansiterm_process_byte(state->terminal, byte);
-        ansiterm_update_dirty(state->terminal);
-    }
+    /* Note: We do NOT echo input to the terminal here (snoop).
+       The script engine or door will echo the input to the output stream if appropriate.
+       The output stream is snooped in pipes_output_write_string, so we will see the echo there.
+       Echoing here would cause double characters (one from input snoop, one from output snoop).
+    */
 
     if (state->session_active != 0 || 
         (state->terminal && state->terminal->input_mode && script_get_status(&state->script) != SCRIPT_STATUS_IDLE))
@@ -1101,32 +1151,7 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
 
         if (state->control_code == PIPE_CONTROL_DISCONNECT)
         {
-            if (state->session_active != 0)
-            {
-                pipes_output_write_string(state->line_id, "\r\n[LINETASK CLOSED]\r\n");
-            }
-            state->session_active = 0;
-            state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
-            if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
-            {
-                door_close_session(state, "\r\n[Door session ended]\r\n");
-            }
-            if (state->arcbbs_door_active != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE)
-            {
-                arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
-            }
-            /* Reset filebase and messagebase session and user state on disconnect */
-            filebase_session_reset(&state->fb_session);
-            messagebase_session_reset(&state->mb_session);
-            state->user_id = 0;
-            state->user_accesslevel = 0;
-            state->user_sysop = 0;
-            state->user_keys[0] = '\0';
-            state->user_realname[0] = '\0';
-            /* Reset user display in Server status window */
-            send_user_message(state->line_id, NULL);
-            log_line_event(state->line_id, "Session disconnected");
-            script_stop_session(state);
+            perform_session_disconnect(state);
             continue;
         }
 
@@ -4277,12 +4302,7 @@ static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
         char ch = (char)result;
         pipes_input_write_block(state->line_id, &ch, 1);
         
-        /* Local echo for sysop input */
-        if (state->terminal->snoop_mode)
-        {
-            ansiterm_process_byte(state->terminal, (unsigned char)ch);
-            ansiterm_update_dirty(state->terminal);
-        }
+        /* Local echo removed - rely on remote echo */
     }
     else if (result < 0)
     {
@@ -4299,12 +4319,7 @@ static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
         {
             pipes_input_write_block(state->line_id, seq, 3);
             
-            /* Local echo for sysop input (arrows) */
-            if (state->terminal->snoop_mode)
-            {
-                ansiterm_process_block(state->terminal, (const unsigned char *)seq, 3);
-                ansiterm_update_dirty(state->terminal);
-            }
+            /* Local echo removed - rely on remote echo */
         }
     }
     else

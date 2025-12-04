@@ -77,10 +77,21 @@ The workspace includes `SharedLibs` containing:
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
+  - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback).
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
   - **Selection Macros**: `%{filebaseid}`, `%{filebasename}`, `%{filebaseareaid}`, `%{filebaseareaname}`, `%{messagebaseid}`, `%{messagebasename}`, `%{messagebaseareaid}`, `%{messagebaseareaname}`. Returns current user's selected filebase/messagebase and area IDs and names. Returns empty string or 0 if nothing selected.
   - **User History Persistence**: When a user selects a filebase/messagebase/area via script commands, the selection is automatically saved to their `USER_HISTORY` record in the userdb. On next login, these selections are restored to the session state automatically.
   - **Conditional Operators**: IF command supports `==`, `!=` (string), `>`, `<`, `>=`, `<=` (numeric). Both operands are macro-expanded. Compound conditions supported with `&&` (AND) and `||` (OR): `if %{day} == 25 && %{month} == 12 goto christmas`.
+
+- **LineTask / Terminal (`ansiterm`)**:
+  - **Architecture**: The `ansiterm` module implements a custom ANSI terminal emulator. It maintains a grid of cells and handles rendering to a RISC OS window.
+  - **Cell Structure**: `ansiterm_cell` uses a 16-bit attribute field (`unsigned short attr`) to support standard colors (FG/BG) plus a **Flash** bit (bit 8).
+  - **Blinking Text**: The `ansiterm_blink()` function toggles the visibility of flashing characters. It uses an optimized row-scanning approach to only invalidate/redraw rows containing flashing characters, preventing full-window flicker. This is driven by a 0.5s timer in `main.c`.
+  - **Sysop Snoop**: The terminal window mirrors the user's session.
+    - **Output**: `pipes_output_write_string` feeds all data sent to the user (scripts, files, menus) into the local terminal emulator.
+    - **Input**: `handle_plain_server_byte` echoes user input to the local terminal.
+    - **Sysop Input**: `handle_terminal_key` injects local keystrokes into the input stream (local echo handled by `pipes_output_write_string` when the server echoes it back, or locally if needed).
+  - **Focus**: The terminal window automatically claims input focus (`Wimp_SetCaretPosition`) when opened via the "View" button in the Server.
 
 ## Wimp Messages (LineTask <-> Server)
 

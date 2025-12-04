@@ -30,6 +30,7 @@
 #include "C:Desk.Dialog.h"
 #include "C:Desk.Dialog2.h"
 #include "C:Desk.Sound.h"
+#include "C:Desk.Sprite.h"
 
 /* TCPIP Includes */
 #define COMPAT_INET4 1
@@ -82,34 +83,14 @@ extern long timer_monotonictime(void);
 extern long timer_set(unsigned int delay);
 extern int timer_action(long timer);
 
-static void telnet_advertise_capabilities(int socket);
-static void telnet_handle_option(int socket, unsigned char command, unsigned char option);
-static int telnet_filter_input(int socket, char *buffer, int length);
-static void launch_line_tasks(void);
-static void launch_ftn_task(void);
-static void launch_web_task(void);
 static void pipes_reset_line(int line_id);
-static int pipes_input_status(int line_id);
-static int pipes_input_write_block(int line_id, const char *buffer, int length);
-static int pipes_output_read_block(int line_id, char *buffer, int length);
+static void notify_line_tasks_shutdown(void);
+static void close_line_connection(int line_id);
 static void pipes_send_control_command(int line_id, char command);
+static void telnet_advertise_capabilities(int socket);
 static void pump_socket_to_pipe(int line_id, int socket);
 static void pump_pipe_to_socket(int line_id, int socket);
-static void close_line_connection(int line_id);
-static void notify_line_tasks_shutdown(void);
-static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column);
-static void send_line_task_view_request(int line_id);
-static void unload_modules(void);
-
-/* ConverseBBS support functions */
-static void support_push_config(void);
-static void support_push_line_config(int line_id);
-static void support_set_line_configured(int line_id, int configured);
-static void support_set_line_connected(int line_id, int connected);
-static void support_set_line_hostname(int line_id, const char *hostname);
-static void support_set_line_connect_time(int line_id, time_t connect_time);
-static void support_set_activity(int line_id, const char *activity);
-static int support_get_transfer_active(int line_id);
+static int telnet_filter_input(int socket, char *buffer, int length);
 
 /* String sanitization - strips leading/trailing whitespace and control chars */
 static void sanitize_string(char *str)
@@ -252,6 +233,7 @@ static int str_casecmp(const char *s1, const char *s2)
 #define SWI_OS_READMONOTONICTIME 0x00000042
 #define POLL_IDLE_DELAY 1  /* centiseconds between null polls (10ms) */
 
+static Desk_sprite_area status_sprites = NULL;
 
 enum
 {
@@ -858,7 +840,7 @@ Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref)
 			/* Check if it's a line row button */
 			if (main_window_icon_to_line(mouse->icon, &line_id, &column) != Desk_bool_FALSE)
 			{
-				if (column == MAIN_WINDOW_COLUMN_VIEW)
+				if (column == MAIN_WINDOW_COLUMN_VIEW || column == MAIN_WINDOW_COLUMN_LOGON)
 				{
 					send_line_task_view_request(line_id);
 				}
@@ -1253,12 +1235,13 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(4);
-		strcpy(text_buffer, "D");
+		text_buffer=malloc(1);
+		text_buffer[0] = '\0';
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTION_COLUMN_WIDTH;
 		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_SPRITE |
 												Desk_icon_VCENTRE |
 												Desk_icon_HCENTRE |
 												Desk_icon_INDIRECTED |
@@ -1268,19 +1251,20 @@ int create_line_icons(void)
 												(Desk_icon_BACKCOLOUR*1) |
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
 		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R5";
-		icon_create_block.icondata.data.indirecttext.bufflen=4;
+		icon_create_block.icondata.data.indirecttext.validstring="Sdisconnect;R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(4);
-		strcpy(text_buffer, "V");
+		text_buffer=malloc(1);
+		text_buffer[0] = '\0';
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_VIEW_COLUMN_WIDTH;
 		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+											Desk_icon_SPRITE |
 											Desk_icon_VCENTRE |
 											Desk_icon_HCENTRE |
 											Desk_icon_INDIRECTED |
@@ -1290,19 +1274,20 @@ int create_line_icons(void)
 											(Desk_icon_BACKCOLOUR*1) |
 											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
 		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R5";
-		icon_create_block.icondata.data.indirecttext.bufflen=4;
+		icon_create_block.icondata.data.indirecttext.validstring="Ssnoop;R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(4);
-		strcpy(text_buffer, "L");
+		text_buffer=malloc(1);
+		text_buffer[0] = '\0';
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_LOGON_COLUMN_WIDTH;
 		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+											Desk_icon_SPRITE |
 											Desk_icon_VCENTRE |
 											Desk_icon_HCENTRE |
 											Desk_icon_INDIRECTED |
@@ -1312,8 +1297,8 @@ int create_line_icons(void)
 											(Desk_icon_BACKCOLOUR*1) |
 											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
 		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
-		icon_create_block.icondata.data.indirecttext.validstring="R5";
-		icon_create_block.icondata.data.indirecttext.bufflen=4;
+		icon_create_block.icondata.data.indirecttext.validstring="Slocal;R5";
+		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
@@ -2393,6 +2378,24 @@ int main(void) {
 	Desk_Template_Initialise();
   	Desk_Template_UseOutlineFonts();
   	Desk_Template_LoadFile("Templates");
+
+	/* Load status window sprites */
+	{
+		int sprite_size = Desk_File_Size("<Converse$Dir>.Resources.Sprites");
+		if (sprite_size > 0)
+		{
+			status_sprites = (Desk_sprite_area)malloc(sprite_size + 4);
+			if (status_sprites)
+			{
+				status_sprites->areasize = sprite_size + 4;
+				status_sprites->numsprites = 0;
+				status_sprites->firstoffset = 16;
+				status_sprites->freeoffset = 16;
+				Desk_Sprite_Load(status_sprites, "<Converse$Dir>.Resources.Sprites");
+				Desk_Template_LinkSpriteArea("status", status_sprites);
+			}
+		}
+	}
 
   	proginfo_window=Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
 	systeminfo_window=Desk_Dialog2_CreateDialogBlock("sysinfo", -1, -1, NULL, NULL, NULL);

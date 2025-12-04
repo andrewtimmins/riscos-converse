@@ -1,0 +1,106 @@
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 16:23:54 | LineTask started
+| 04/12/2025 | 16:24:54 | LineTask shutting down
+| 04/12/2025 | 16:25:41 | LineTask started
+| 04/12/2025 | 16:26:24 | Starting prelogon script
+| 04/12/2025 | 16:26:24 | Logging on (ANSI)...
+| 04/12/2025 | 16:26:28 | Starting prelogon script
+| 04/12/2025 | 16:26:28 | Logging on (ANSI)...
+| 04/12/2025 | 16:26:32 | LineTask shutting down
+| 04/12/2025 | 16:42:08 | LineTask started
+| 04/12/2025 | 16:42:12 | Starting prelogon script
+| 04/12/2025 | 16:42:12 | Logging on (ANSI)...
+| 04/12/2025 | 16:42:14 | Session disconnected
+| 04/12/2025 | 16:42:15 | Starting prelogon script
+| 04/12/2025 | 16:42:15 | Logging on (ANSI)...
+| 04/12/2025 | 16:42:30 | Session disconnected
+| 04/12/2025 | 16:51:30 | LineTask started
+| 04/12/2025 | 16:51:33 | Starting prelogon script
+| 04/12/2025 | 16:51:33 | Logging on (ANSI)...
+| 04/12/2025 | 16:51:55 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 16:51:55 | Starting postlogon script
+| 04/12/2025 | 16:51:55 | Main Menu
+| 04/12/2025 | 16:52:01 | Connection status
+| 04/12/2025 | 16:52:02 | Main Menu
+| 04/12/2025 | 16:52:03 | Demo message
+| 04/12/2025 | 16:52:04 | Main Menu
+| 04/12/2025 | 16:52:06 | Session disconnected
+| 04/12/2025 | 16:52:09 | Starting prelogon script
+| 04/12/2025 | 16:52:09 | Logging on (ANSI)...
+| 04/12/2025 | 16:52:10 | Session disconnected
+| 04/12/2025 | 16:52:13 | LineTask shutting down
+| 04/12/2025 | 16:58:29 | LineTask started
+| 04/12/2025 | 16:58:32 | Starting prelogon script
+| 04/12/2025 | 16:58:32 | Logging on (ANSI)...
+| 04/12/2025 | 17:02:44 | LineTask shutting down
+| 04/12/2025 | 17:16:59 | LineTask started
+| 04/12/2025 | 17:17:03 | Starting prelogon script
+| 04/12/2025 | 17:17:03 | Logging on (ANSI)...
+| 04/12/2025 | 17:17:15 | Session disconnected
+| 04/12/2025 | 17:17:17 | Starting prelogon script
+| 04/12/2025 | 17:17:17 | Logging on (ANSI)...
+| 04/12/2025 | 17:17:18 | Session disconnected
+| 04/12/2025 | 17:17:20 | LineTask shutting down
+| 04/12/2025 | 17:18:52 | LineTask started
+| 04/12/2025 | 17:19:04 | Session connected
+| 04/12/2025 | 17:19:04 | Botstopper challenge started
+| 04/12/2025 | 17:19:06 | Botstopper passed
+| 04/12/2025 | 17:19:06 | Starting prelogon script
+| 04/12/2025 | 17:19:06 | Logging on (ANSI)...
+| 04/12/2025 | 17:19:11 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 17:19:11 | Starting postlogon script
+| 04/12/2025 | 17:19:11 | Main Menu
+| 04/12/2025 | 17:19:18 | Connection status
+| 04/12/2025 | 17:19:19 | Main Menu
+| 04/12/2025 | 17:19:29 | Filebase Menu
+| 04/12/2025 | 17:19:31 | Main Menu
+| 04/12/2025 | 17:19:34 | Viewing online users
+| 04/12/2025 | 17:19:36 | Main Menu
+| 04/12/2025 | 17:19:38 | Sending netmail
+| 04/12/2025 | 17:20:42 | Main Menu
+| 04/12/2025 | 17:20:44 | Session disconnected
+| 04/12/2025 | 17:27:16 | LineTask shutting down
+| 04/12/2025 | 17:27:31 | LineTask started
+| 04/12/2025 | 17:27:35 | Starting prelogon script
+| 04/12/2025 | 17:27:36 | Logging on (ANSI)...
+| 04/12/2025 | 17:27:41 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 17:27:41 | Starting postlogon script
+| 04/12/2025 | 17:27:41 | Main Menu
+| 04/12/2025 | 17:27:47 | Session disconnected
+| 04/12/2025 | 17:28:08 | Session connected
+| 04/12/2025 | 17:28:08 | Botstopper challenge started
+| 04/12/2025 | 17:28:11 | Botstopper passed
+| 04/12/2025 | 17:28:11 | Starting prelogon script
+| 04/12/2025 | 17:28:11 | Logging on (ANSI)...
+| 04/12/2025 | 17:28:31 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 17:28:31 | Starting postlogon script
+| 04/12/2025 | 17:28:31 | Main Menu
+| 04/12/2025 | 17:28:34 | Connection status
+| 04/12/2025 | 17:28:34 | Main Menu
+| 04/12/2025 | 17:28:45 | Sending netmail
+| 04/12/2025 | 17:28:54 | Main Menu
+| 04/12/2025 | 17:28:56 | Session disconnected
+| 04/12/2025 | 17:34:14 | LineTask shutting down
+| 04/12/2025 | 17:34:32 | LineTask started
+| 04/12/2025 | 17:34:35 | Starting prelogon script
+| 04/12/2025 | 17:34:35 | Logging on (ANSI)...
+| 04/12/2025 | 17:34:40 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 17:34:40 | Starting postlogon script
+| 04/12/2025 | 17:34:40 | Main Menu
+| 04/12/2025 | 17:34:43 | Session disconnected
+| 04/12/2025 | 17:34:53 | Session connected
+| 04/12/2025 | 17:34:53 | Botstopper challenge started
+| 04/12/2025 | 17:34:55 | Botstopper passed
+| 04/12/2025 | 17:34:55 | Starting prelogon script
+| 04/12/2025 | 17:34:55 | Logging on (ANSI)...
+| 04/12/2025 | 17:34:59 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 17:34:59 | Starting postlogon script
+| 04/12/2025 | 17:34:59 | Main Menu
+| 04/12/2025 | 17:35:05 | Sending netmail
+| 04/12/2025 | 17:35:12 | Main Menu
+| 04/12/2025 | 17:35:17 | Session disconnected
+| 04/12/2025 | 17:35:40 | LineTask shutting down

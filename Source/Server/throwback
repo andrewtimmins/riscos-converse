@@ -1,0 +1,33 @@
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.main c.main
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.main", line 245: Error: undeclared name, inventing 'extern int pipes_reset_line()'
+"c.main", line 723: Error: undeclared name, inventing 'extern int notify_line_tasks_shutdown()'
+"c.main", line 940: Error: undeclared name, inventing 'extern int close_line_connection()'
+"c.main", line 1393: Error: undeclared name, inventing 'extern int pipes_send_control_command()'
+"c.main", line 1409: Error: undeclared name, inventing 'extern int telnet_advertise_capabilities()'
+"c.main", line 1443: Error: undeclared name, inventing 'extern int pump_socket_to_pipe()'
+"c.main", line 1444: Error: undeclared name, inventing 'extern int pump_pipe_to_socket()'
+"c.main", line 1547: Error: type disagreement for 'pipes_reset_line'
+"c.main", line 1547: Error: linkage disagreement for 'pipes_reset_line' - treated as 'extern'
+"c.main", line 1559: Error: type disagreement for 'pipes_send_control_command'
+"c.main", line 1559: Error: linkage disagreement for 'pipes_send_control_command' - treated as 'extern'
+"c.main", line 1569: Error: type disagreement for 'pump_socket_to_pipe'
+"c.main", line 1569: Error: linkage disagreement for 'pump_socket_to_pipe' - treated as 'extern'
+"c.main", line 1601: Error: undeclared name, inventing 'extern int telnet_filter_input()'
+"c.main", line 1630: Error: type disagreement for 'pump_pipe_to_socket'
+"c.main", line 1630: Error: linkage disagreement for 'pump_pipe_to_socket' - treated as 'extern'
+"c.main", line 1666: Error: type disagreement for 'close_line_connection'
+"c.main", line 1666: Error: linkage disagreement for 'close_line_connection' - treated as 'extern'
+"c.main", line 1707: Error: type disagreement for 'notify_line_tasks_shutdown'
+"c.main", line 1707: Error: linkage disagreement for 'notify_line_tasks_shutdown' - treated as 'extern'
+"c.main", line 1726: Error: type disagreement for 'telnet_advertise_capabilities'
+"c.main", line 1726: Error: linkage disagreement for 'telnet_advertise_capabilities' - treated as 'extern'
+"c.main", line 1772: Error: linkage disagreement for 'telnet_filter_input' - treated as 'extern'
+"c.main", line 2394: Warning: static 'small_app_compiled' declared but not used
+"c.main", line 2394: Warning: static 'app_compiled' declared but not used
+"c.main", line 2394: Warning: static 'app_version' declared but not used
+c.main: 3 warnings, 23 errors, 0 serious errors
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+
