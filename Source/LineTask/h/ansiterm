@@ -36,7 +36,7 @@ typedef enum {
 /* Terminal cell - character and attributes */
 typedef struct {
     unsigned char ch;       /* Character code */
-    unsigned char attr;     /* Attribute: low nibble = fg, high nibble = bg */
+    unsigned short attr;    /* Attribute: low nibble = fg, high nibble = bg, bit 8 = flash */
 } ansiterm_cell;
 
 /* Terminal state structure */
@@ -57,6 +57,8 @@ typedef struct {
     int bg_color;           /* Background ANSI color (0-7) */
     int bold;               /* Bold/bright attribute */
     int inverse;            /* Inverse video */
+    int flash;              /* Flash/blink attribute */
+    int flash_visible;      /* Global flash visibility state */
     
     /* ANSI parser state */
     ansi_parser_state parser_state;
@@ -133,6 +135,8 @@ void ansiterm_scroll_up(ansiterm_state *term, int lines);
 /* Scroll the screen down by n lines */
 void ansiterm_scroll_down(ansiterm_state *term, int lines);
 
+/* Toggle flash state */
+void ansiterm_blink(ansiterm_state *term);
 
 /* ANSI color to Wimp color mapping */
 int ansiterm_ansi_to_wimp(int ansi_color);

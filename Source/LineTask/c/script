@@ -59,9 +59,10 @@ static void script_free_variable(script_variable *variable);
 static clock_t script_calculate_sleep_deadline(unsigned int milliseconds);
 static int script_stringcasecmp(const char *lhs, const char *rhs);
 static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg);
+static void script_set_flash(script_state *state, const char *arg);
 static void script_send_clear_screen(script_state *state);
 static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
-static void script_display_file(script_state *state, const char *source);
+static void script_display_file(script_state *state, const char *source, int trim_newlines);
 static void script_buffer_init(script_buffer *buffer);
 static void script_buffer_free(script_buffer *buffer);
 static void script_buffer_clear(script_buffer *buffer);
@@ -1432,6 +1433,19 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         }
         instruction->type = SCRIPT_CMD_BG;
         instruction->arg1 = script_duplicate_string(bg);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "flash") == 0)
+    {
+        char *val = strtok(NULL, " \t");
+        if (val == NULL)
+        {
+            script_set_error(state, "Missing value for flash on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_FLASH;
+        instruction->arg1 = script_duplicate_string(val);
         return 1;
     }
 
@@ -3022,13 +3036,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_TYPE:
         {
-            script_display_file(state, instruction->arg1);
+            script_display_file(state, instruction->arg1, 1);
         }
         break;
 
         case SCRIPT_CMD_ANYKEY:
         {
             const char *target = (instruction->arg1 != NULL && instruction->arg1[0] != '\0') ? instruction->arg1 : "_key";
+            
+            /* Display configured anykey file if available */
+            if (state->host.get_anykey_file != NULL)
+            {
+                const char *anykey_file = state->host.get_anykey_file(state->host.context);
+                if (anykey_file != NULL && anykey_file[0] != '\0')
+                {
+                    script_display_file(state, anykey_file, 1);
+                }
+            }
+
             strncpy(state->input_target, target, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
             state->input_mode = SCRIPT_INPUT_CHAR;
@@ -3052,6 +3077,12 @@ static void script_execute_instruction(script_state *state, script_instruction *
         case SCRIPT_CMD_FGBG:
         {
             script_apply_colour_change(state, instruction->arg1, instruction->arg2, 1, 1);
+        }
+        break;
+
+        case SCRIPT_CMD_FLASH:
+        {
+            script_set_flash(state, instruction->arg1);
         }
         break;
 
@@ -4460,6 +4491,24 @@ static void script_apply_colour_change(script_state *state, const char *fg_text,
     }
 }
 
+static void script_set_flash(script_state *state, const char *arg)
+{
+    int enable = (arg != NULL) ? atoi(arg) : 0;
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (enable)
+    {
+        script_write_output(state, "\x1B[5m");
+    }
+    else
+    {
+        script_write_output(state, "\x1B[25m");
+    }
+}
+
 static void script_send_clear_screen(script_state *state)
 {
     if (state == NULL)
@@ -4493,7 +4542,7 @@ static void script_move_cursor(script_state *state, const char *col_text, const 
     script_write_output(state, sequence);
 }
 
-static void script_display_file(script_state *state, const char *source)
+static void script_display_file(script_state *state, const char *source, int trim_newlines)
 {
     char path[256];
     FILE *fp;
@@ -4560,6 +4609,14 @@ static void script_display_file(script_state *state, const char *source)
         fclose(fp);
         script_write_output(state, "\r\n[Type: read error]\r\n");
         return;
+    }
+
+    if (trim_newlines)
+    {
+        while (length > 0 && (buffer[length - 1] == '\r' || buffer[length - 1] == '\n'))
+        {
+            length--;
+        }
     }
 
     buffer[length] = '\0';
@@ -5188,6 +5245,7 @@ static int script_process_embedded_content(script_state *state, const char *buff
     script_buffer literal;
     int result = 1;
     char ch;
+    int has_content_on_line = 0;
 
     if (text_handler == NULL || command_handler == NULL)
     {
@@ -5238,6 +5296,17 @@ static int script_process_embedded_content(script_state *state, const char *buff
                 {
                     result = 0;
                 }
+                else if (has_content_on_line == 0)
+                {
+                    /* If line had no content before this block, consume following newline */
+                    size_t peek = index;
+                    if (peek < length && buffer[peek] == '\r') peek++;
+                    if (peek < length && buffer[peek] == '\n')
+                    {
+                        index = peek + 1;
+                        line_number++;
+                    }
+                }
                 continue;
             }
         }
@@ -5245,6 +5314,11 @@ static int script_process_embedded_content(script_state *state, const char *buff
         if (ch == '\n')
         {
             line_number++;
+            has_content_on_line = 0;
+        }
+        else
+        {
+            has_content_on_line = 1;
         }
 
         if (!script_buffer_append_char(&literal, ch))

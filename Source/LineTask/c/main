@@ -279,6 +279,7 @@ static int botstopper_handle_byte(line_task_state *state, unsigned char byte);
 static int config_get_botstopper_enabled(void);
 static const char *config_get_prelogon_script(void);
 static const char *config_get_postlogon_script(void);
+static const char *config_get_anykey_file(void);
 static const char *config_get_newuser_script(void);
 static const char *config_get_sysop_name(void);
 static const char *lineconfig_get_hello(int line_id);
@@ -328,6 +329,7 @@ static int script_host_filebase_download(void *context, int base_id, int file_id
 static int script_host_authenticate_user(void *context, const char *username, const char *password, int *auth_result);
 static void script_host_start_postlogon(void *context);
 static void script_host_start_newuser(void *context);
+static const char *script_host_get_anykey_file(void *context);
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
 static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
 static int script_host_get_user_id(void *context);
@@ -524,6 +526,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.authenticate_user = script_host_authenticate_user;
         host.start_postlogon = script_host_start_postlogon;
         host.start_newuser = script_host_start_newuser;
+        host.get_anykey_file = script_host_get_anykey_file;
         host.start_transfer = script_host_start_transfer;
         host.start_receive_transfer = script_host_start_receive_transfer;
         host.get_user_id = script_host_get_user_id;
@@ -795,7 +798,18 @@ static void door_reset_state(line_task_state *state)
 static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
 {
     line_task_state *state = (line_task_state *)ref;
+    static clock_t last_blink_time = 0;
+    clock_t now;
     Desk_UNUSED(event);
+
+    /* Handle terminal blink */
+    now = clock();
+    if (now - last_blink_time >= 50) /* 50cs = 0.5s */
+    {
+        if (state->terminal)
+            ansiterm_blink(state->terminal);
+        last_blink_time = now;
+    }
 
     /* Poll file transfer if active - do this FIRST to consume raw bytes */
     if (transfer_is_active(&state->xfer_session))
@@ -1716,6 +1730,24 @@ static const char *config_get_postlogon_script(void)
 
     regs.r[0] = 0;  /* CONFIG_REASON_GET */
     regs.r[1] = (int)"postlogon";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
+ * Get the anykey file path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_anykey_file(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"anykey";
     if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return NULL;
@@ -2769,6 +2801,11 @@ static void script_host_start_newuser(void *context)
     }
     
     script_start_newuser(state);
+}
+
+static const char *script_host_get_anykey_file(void *context)
+{
+    return config_get_anykey_file();
 }
 
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol)

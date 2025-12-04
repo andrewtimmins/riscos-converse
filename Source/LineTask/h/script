@@ -38,6 +38,8 @@ typedef struct script_host
     int (*get_user_id)(void *context);
     /* Sysop chat callback - starts the pager with given reason */
     void (*start_chat_pager)(void *context, const char *reason);
+    /* Get the configured anykey file path */
+    const char *(*get_anykey_file)(void *context);
 } script_host;
 
 typedef enum
@@ -96,7 +98,8 @@ typedef enum
     SCRIPT_CMD_SYSOPCHAT,
     SCRIPT_CMD_MESSAGEBASE,
     SCRIPT_CMD_SENDMAIL,
-    SCRIPT_CMD_SENDNETMAIL
+    SCRIPT_CMD_SENDNETMAIL,
+    SCRIPT_CMD_FLASH
 } script_command_type;
 
 typedef enum

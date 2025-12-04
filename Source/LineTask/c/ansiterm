@@ -78,6 +78,8 @@ int ansiterm_init(ansiterm_state *term, int line_id)
     term->bg_color = 0;
     term->bold = 0;
     term->inverse = 0;
+    term->flash = 0;
+    term->flash_visible = 1;
     term->dirty_top = -1;
     term->dirty_bottom = -1;
     term->send_input = NULL;
@@ -240,10 +242,11 @@ static void mark_dirty(ansiterm_state *term, int row)
     }
 }
 
-static unsigned char get_current_attr(const ansiterm_state *term)
+static unsigned short get_current_attr(const ansiterm_state *term)
 {
     int fg = term->fg_color;
     int bg = term->bg_color;
+    unsigned short attr;
 
     if (term->bold && fg < 8)
         fg += 8;
@@ -254,7 +257,11 @@ static unsigned char get_current_attr(const ansiterm_state *term)
         bg = tmp;
     }
 
-    return (unsigned char)((bg << 4) | (fg & 0x0F));
+    attr = (unsigned short)((bg << 4) | (fg & 0x0F));
+    if (term->flash)
+        attr |= 0x100;
+        
+    return attr;
 }
 
 static void put_char(ansiterm_state *term, unsigned char ch)
@@ -424,6 +431,7 @@ static void execute_csi(ansiterm_state *term, unsigned char cmd)
             term->bg_color = 0;
             term->bold = 0;
             term->inverse = 0;
+            term->flash = 0;
         }
         else
         {
@@ -436,10 +444,15 @@ static void execute_csi(ansiterm_state *term, unsigned char cmd)
                     term->bg_color = 0;
                     term->bold = 0;
                     term->inverse = 0;
+                    term->flash = 0;
                 }
                 else if (n == 1)
                 {
                     term->bold = 1;
+                }
+                else if (n == 5)
+                {
+                    term->flash = 1;
                 }
                 else if (n == 7)
                 {
@@ -448,6 +461,10 @@ static void execute_csi(ansiterm_state *term, unsigned char cmd)
                 else if (n == 22)
                 {
                     term->bold = 0;
+                }
+                else if (n == 25)
+                {
+                    term->flash = 0;
                 }
                 else if (n == 27)
                 {
@@ -649,7 +666,7 @@ static void draw_pixel_block(int x0, int y0, int width, int height)
 }
 
 static void draw_cell_font(ansiterm_state *term, int x, int y,
-                           unsigned char ch, unsigned char attr)
+                           unsigned char ch, unsigned short attr)
 {
     int fg = ansiterm_ansi_to_wimp(attr & 0x0F);
     int bg = ansiterm_ansi_to_wimp((attr >> 4) & 0x0F);
@@ -657,6 +674,10 @@ static void draw_cell_font(ansiterm_state *term, int x, int y,
     int row, col;
 
     fill_cell(x, y, bg);
+
+    /* If flash is active and we are in the invisible phase, don't draw the character */
+    if ((attr & 0x100) && !term->flash_visible)
+        return;
 
     if (!term->font_loaded || !term->font_data || ch == 0 || ch == ' ')
         return;
@@ -683,13 +704,18 @@ static void draw_cell_font(ansiterm_state *term, int x, int y,
     }
 }
 
-static void draw_cell_sysfont(int x, int y, unsigned char ch, unsigned char attr)
+static void draw_cell_sysfont(ansiterm_state *term, int x, int y, unsigned char ch, unsigned short attr)
 {
     _kernel_swi_regs regs;
     int fg = ansiterm_ansi_to_wimp(attr & 0x0F);
     int bg = ansiterm_ansi_to_wimp((attr >> 4) & 0x0F);
 
     fill_cell(x, y, bg);
+
+    /* If flash is active and we are in the invisible phase, don't draw the character */
+    if ((attr & 0x100) && !term->flash_visible)
+        return;
+
     Desk_Wimp_SetColour(fg);
 
     regs.r[0] = PLOT_MOVE;
@@ -729,7 +755,7 @@ static void draw_row(ansiterm_state *term, int row, int origin_x, int origin_y,
         if (term->font_loaded && term->font_data)
             draw_cell_font(term, x, y, cell->ch, cell->attr);
         else
-            draw_cell_sysfont(x, y, cell->ch, cell->attr);
+            draw_cell_sysfont(term, x, y, cell->ch, cell->attr);
     }
 }
 
@@ -870,7 +896,7 @@ void ansiterm_clear(ansiterm_state *term)
 {
     int row;
     int col;
-    unsigned char attr;
+    unsigned short attr;
 
     if (!term)
         return;
@@ -908,7 +934,7 @@ void ansiterm_scroll_up(ansiterm_state *term, int lines)
     int row;
     int col;
     int src_row;
-    unsigned char attr;
+    unsigned short attr;
 
     if (!term || lines <= 0)
         return;
@@ -944,7 +970,7 @@ void ansiterm_scroll_down(ansiterm_state *term, int lines)
     int row;
     int col;
     int src_row;
-    unsigned char attr;
+    unsigned short attr;
 
     if (!term || lines <= 0)
         return;
@@ -973,4 +999,42 @@ void ansiterm_scroll_down(ansiterm_state *term, int lines)
 
     term->dirty_top = 0;
     term->dirty_bottom = ANSITERM_ROWS - 1;
+}
+
+void ansiterm_blink(ansiterm_state *term)
+{
+    int row, col;
+    int min_x, max_x;
+    _kernel_swi_regs regs;
+
+    if (!term || !term->window)
+        return;
+
+    term->flash_visible = !term->flash_visible;
+
+    for (row = 0; row < ANSITERM_ROWS; row++)
+    {
+        min_x = -1;
+        max_x = -1;
+
+        for (col = 0; col < ANSITERM_COLS; col++)
+        {
+            if (term->cells[row][col].attr & 0x100)
+            {
+                if (min_x == -1) min_x = col;
+                max_x = col;
+            }
+        }
+
+        if (min_x != -1)
+        {
+            /* Invalidate only the portion of the row containing flashing characters */
+            regs.r[0] = term->window;
+            regs.r[1] = min_x * ANSITERM_CHAR_WIDTH;
+            regs.r[2] = -((row + 1) * ANSITERM_CHAR_HEIGHT);
+            regs.r[3] = (max_x + 1) * ANSITERM_CHAR_WIDTH;
+            regs.r[4] = -(row * ANSITERM_CHAR_HEIGHT);
+            _kernel_swi(SWI_Wimp_ForceRedraw, &regs, &regs);
+        }
+    }
 }
