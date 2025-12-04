@@ -1547,6 +1547,12 @@ void destroy_listener(void)
 	{
 		socketclose(listening_socket);
 	}
+
+	system("RMKill ConverseBBS");
+	system("RMKill ConversePipes");
+	system("RMKill ConverseFiler");
+	system("RMKill ARCbbs_Doors");
+	system("Set Converse$Running 0");
 }
 
 void send_byte_to_socket(int socket_address, int first_byte, int second_byte)
@@ -1779,14 +1785,6 @@ static void notify_line_tasks_shutdown(void)
 	wimp_message.header.action = (Desk_message_action)MESSAGE_LINE_BROADCAST;
 	wimp_message.data.words[0] = 0; /* reason 0 => quit */
 	Desk_Wimp_SendMessage(Desk_event_SEND, &wimp_message, 0, NULL);
-}
-
-static void unload_modules(void)
-{
-	char command[128];
-
-	snprintf(command, sizeof(command), "<Converse$Dir>.Resources.!KillAll");
-	Desk_Wimp_StartTask(command);
 }
 
 static void telnet_advertise_capabilities(int socket)
@@ -2351,6 +2349,7 @@ int main(void) {
 	wimp.quit = Desk_bool_FALSE;
 
 	Desk_Resource_Initialise("ConverseRes");
+	system("Set Converse$Running 1");
 
 	Desk_Msgs_LoadFile("Messages");
 
@@ -2452,8 +2451,6 @@ int main(void) {
 	atexit(destroy_listener);
 
 	while(wimp.quit == Desk_bool_FALSE) poll_idle();
-
-	unload_modules();
 
  	Desk_Template_ClearAll();
 
