@@ -581,3 +581,208 @@
 | 04/12/2025 | 11:40:21 | find_base_record: read record id=1 name='Main Files'
 | 04/12/2025 | 11:40:21 | Filebase 1 area 3 stored
 | 04/12/2025 | 11:40:52 | Authenticated user: #1
+| 04/12/2025 | 11:44:43 | Messagebase 1 updated
+| 04/12/2025 | 11:44:43 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:44:43 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:44:44 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:44:44 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:44:44 | Messagebase 2 updated
+| 04/12/2025 | 11:44:44 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:44:44 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:44:44 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:44:44 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:44:44 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:44:44 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:44:44 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:44:44 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:44:44 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:44:44 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:44:45 | Filebase 1 updated
+| 04/12/2025 | 11:44:45 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:44:45 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:44:45 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:44:45 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:44:45 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:44:45 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:44:45 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:44:45 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:44:45 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:44:45 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:44:45 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:44:45 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:47:56 | Messagebase 1 updated
+| 04/12/2025 | 11:47:56 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:47:56 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:47:56 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:47:56 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:47:56 | Messagebase 2 updated
+| 04/12/2025 | 11:47:56 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:47:56 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:47:57 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:47:57 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:47:57 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:47:57 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:47:57 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:47:57 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:47:57 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:47:57 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:47:57 | Filebase 1 updated
+| 04/12/2025 | 11:47:57 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:47:57 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:47:57 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:47:57 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:47:57 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:47:57 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:47:57 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:47:57 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:47:57 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:47:57 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:47:57 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:47:57 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:52:11 | Messagebase 1 updated
+| 04/12/2025 | 11:52:11 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:52:11 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:52:11 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:52:11 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:52:11 | Messagebase 2 updated
+| 04/12/2025 | 11:52:11 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:52:12 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:52:12 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:52:12 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:52:12 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:52:12 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:52:12 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:52:12 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:52:12 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:52:12 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:52:12 | Filebase 1 updated
+| 04/12/2025 | 11:52:12 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:52:12 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:52:12 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:52:12 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:52:12 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:52:12 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:52:12 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:52:12 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:52:12 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:52:12 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:52:12 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:52:12 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:53:32 | Authenticated user: #1
+| 04/12/2025 | 11:56:34 | Messagebase 1 updated
+| 04/12/2025 | 11:56:34 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:56:35 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:56:35 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:56:35 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:56:35 | Messagebase 2 updated
+| 04/12/2025 | 11:56:35 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:56:35 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:56:35 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:56:35 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:56:35 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:56:35 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:56:35 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:56:35 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:56:35 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:56:35 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:56:36 | Filebase 1 updated
+| 04/12/2025 | 11:56:36 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:56:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:56:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:56:36 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:56:36 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:56:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:56:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:56:36 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:56:36 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:56:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:56:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:56:36 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:57:35 | Messagebase 1 updated
+| 04/12/2025 | 11:57:35 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:57:35 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:57:35 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:57:35 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:57:36 | Messagebase 2 updated
+| 04/12/2025 | 11:57:36 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:57:36 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:57:36 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:57:36 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:57:36 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:57:36 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:57:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:57:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:57:36 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:57:36 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:57:36 | Filebase 1 updated
+| 04/12/2025 | 11:57:36 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:57:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:57:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:57:36 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:57:36 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:57:36 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:57:36 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:57:37 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:57:37 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:57:37 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:57:37 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:57:37 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:58:25 | Messagebase 1 updated
+| 04/12/2025 | 11:58:25 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:58:25 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:58:25 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:58:25 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:58:25 | Messagebase 2 updated
+| 04/12/2025 | 11:58:26 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:58:26 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:58:26 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:58:26 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:58:26 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:58:26 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:58:26 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:26 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:26 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:58:26 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:58:26 | Filebase 1 updated
+| 04/12/2025 | 11:58:26 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:26 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:26 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:26 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:58:26 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:26 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:26 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:27 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:58:27 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:27 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:27 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:27 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:58:56 | Messagebase 1 updated
+| 04/12/2025 | 11:58:56 | Messagebase 1 area 1 stored
+| 04/12/2025 | 11:58:56 | Messagebase 1 area 2 stored
+| 04/12/2025 | 11:58:57 | Messagebase 1 area 3 stored
+| 04/12/2025 | 11:58:57 | Messagebase 1 area 4 stored
+| 04/12/2025 | 11:58:57 | Messagebase 2 updated
+| 04/12/2025 | 11:58:57 | Messagebase 2 area 1 stored
+| 04/12/2025 | 11:58:57 | Messagebase 2 area 2 stored
+| 04/12/2025 | 11:58:57 | Messagebase 2 area 3 stored
+| 04/12/2025 | 11:58:57 | Messagebase 2 area 4 stored
+| 04/12/2025 | 11:58:57 | filebase_swi_handler: command=2 R1=1
+| 04/12/2025 | 11:58:57 | CMD_INFO: base_id=1
+| 04/12/2025 | 11:58:57 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:57 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:57 | CMD_INFO: found record name='Main Files' id=1
+| 04/12/2025 | 11:58:57 | filebase_swi_handler: command=1 R1=1
+| 04/12/2025 | 11:58:58 | Filebase 1 updated
+| 04/12/2025 | 11:58:58 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:58 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:58 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:58 | Filebase 1 area 1 stored
+| 04/12/2025 | 11:58:58 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:58 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:58 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:58 | Filebase 1 area 2 stored
+| 04/12/2025 | 11:58:58 | filebase_swi_handler: command=6 R1=1
+| 04/12/2025 | 11:58:58 | find_base_record: looking for id=1 in <Converse$Dir>.Resources.Data.FileDB
+| 04/12/2025 | 11:58:58 | find_base_record: read record id=1 name='Main Files'
+| 04/12/2025 | 11:58:58 | Filebase 1 area 3 stored
+| 04/12/2025 | 11:59:12 | Authenticated user: #1

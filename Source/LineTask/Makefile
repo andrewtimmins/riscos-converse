@@ -11,6 +11,24 @@ clean::
 	${WIPE} ${INSTAPP} ${WFLAGS}
 
 # Dynamic dependencies:
+o.messagebase:	c.messagebase
+o.messagebase:	C:h.kernel
+o.messagebase:	C:h.swis
+o.messagebase:	h.messagebase
+o.messagebase:	h.debug
+o.script:	c.script
+o.script:	C:h.kernel
+o.script:	C:h.swis
+o.script:	h.debug
+o.script:	h.script
+o.script:	h.filebase
+o.script:	h.messagebase
+o.transfer:	c.transfer
+o.transfer:	C:h.kernel
+o.transfer:	C:h.swis
+o.transfer:	h.transfer
+o.transfer:	h.filebase
+o.transfer:	h.debug
 o.ansiterm:	c.ansiterm
 o.ansiterm:	C:h.kernel
 o.ansiterm:	C:h.swis
@@ -92,21 +110,3 @@ o.main:	h.ansi
 o.main:	h.ansiterm
 o.main:	C:Desk.h.Wimp
 o.main:	C:Desk.h.Window
-o.messagebase:	c.messagebase
-o.messagebase:	C:h.kernel
-o.messagebase:	C:h.swis
-o.messagebase:	h.messagebase
-o.messagebase:	h.debug
-o.script:	c.script
-o.script:	C:h.kernel
-o.script:	C:h.swis
-o.script:	h.debug
-o.script:	h.script
-o.script:	h.filebase
-o.script:	h.messagebase
-o.transfer:	c.transfer
-o.transfer:	C:h.kernel
-o.transfer:	C:h.swis
-o.transfer:	h.transfer
-o.transfer:	h.filebase
-o.transfer:	h.debug
