@@ -370,6 +370,7 @@ static Desk_bool chatpane_handle_scroll(Desk_event_pollblock *event, void *ref);
 static void terminal_init(line_task_state *state);
 static void terminal_finalise(line_task_state *state);
 static void terminal_feed_output(line_task_state *state, const char *data, int len);
+static void terminal_send_input(int line_id, const char *data, int len);
 static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref);
 
@@ -643,7 +644,30 @@ static void show_main_window(void)
                 /* Start local session if not already running */
                 if (script_get_status(&task_state.script) == SCRIPT_STATUS_IDLE)
                 {
+                    _kernel_swi_regs regs;
+                    
                     task_state.local_mode = 1;
+                    task_state.session_active = 1;
+                    
+                    /* Update Support module state */
+                    regs.r[0] = LINE_REASON_SET;
+                    regs.r[1] = task_state.line_id;
+                    regs.r[2] = LINE_FIELD_CONNECTED;
+                    regs.r[3] = 1;
+                    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+                    
+                    regs.r[0] = LINE_REASON_SET;
+                    regs.r[1] = task_state.line_id;
+                    regs.r[2] = LINE_FIELD_HOSTNAME;
+                    regs.r[3] = (int)"Local";
+                    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+                    
+                    regs.r[0] = LINE_REASON_SET;
+                    regs.r[1] = task_state.line_id;
+                    regs.r[2] = LINE_FIELD_CONNECT_TIME;
+                    regs.r[3] = (int)time(NULL);
+                    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+                    
                     pipes_send_welcome(&task_state);
                     script_start_prelogon(&task_state);
                 }
@@ -669,9 +693,27 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
             }
 
             /* If running a local sysop session, stop it */
-            if (!task_state.session_active && script_get_status(&task_state.script) != SCRIPT_STATUS_IDLE)
+            if (task_state.local_mode)
             {
+                _kernel_swi_regs regs;
+                
                 script_stop_session(&task_state);
+                task_state.session_active = 0;
+                task_state.local_mode = 0;
+                
+                /* Reset Support module state */
+                regs.r[0] = LINE_REASON_SET;
+                regs.r[1] = task_state.line_id;
+                regs.r[2] = LINE_FIELD_CONNECTED;
+                regs.r[3] = 0;
+                _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+                
+                regs.r[0] = LINE_REASON_SET;
+                regs.r[1] = task_state.line_id;
+                regs.r[2] = LINE_FIELD_USER_ID;
+                regs.r[3] = 0;
+                _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+
                 pipes_output_write_string(task_state.line_id, "\r\n[Local session ended]\r\n");
             }
         }
@@ -4074,6 +4116,11 @@ static void log_line_event(int line_id, const char *message)
  * ANSI Terminal Implementation
  * ======================================================================== */
 
+static void terminal_send_input(int line_id, const char *data, int len)
+{
+    pipes_input_write_block(line_id, data, len);
+}
+
 static void terminal_init(line_task_state *state)
 {
     if (state == NULL)
@@ -4090,6 +4137,7 @@ static void terminal_init(line_task_state *state)
     }
     
     ansiterm_init(state->terminal, state->line_id);
+    state->terminal->send_input = terminal_send_input;
     
     /* Load font if available */
     ansiterm_load_font(state->terminal, "<Converse$Dir>.Resources.Font");

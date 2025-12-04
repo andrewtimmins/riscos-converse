@@ -66,3 +66,23 @@
 | 04/12/2025 | 11:58:34 | LineTask shutting down
 | 04/12/2025 | 11:58:58 | LineTask started
 | 04/12/2025 | 11:59:37 | LineTask shutting down
+| 04/12/2025 | 13:33:11 | LineTask started
+| 04/12/2025 | 13:33:16 | Starting prelogon script
+| 04/12/2025 | 13:33:19 | Logging on (TTY)...
+| 04/12/2025 | 13:33:25 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 13:33:25 | Starting postlogon script
+| 04/12/2025 | 13:33:25 | Main Menu
+| 04/12/2025 | 13:33:27 | Viewing online users
+| 04/12/2025 | 13:33:29 | Main Menu
+| 04/12/2025 | 13:33:31 | ARCbbs Menu
+| 04/12/2025 | 13:33:35 | Script error: Unable to open <Converse$Dir>.BBS.Start
+| 04/12/2025 | 13:33:44 | Starting prelogon script
+| 04/12/2025 | 13:33:47 | Logging on (TTY)...
+| 04/12/2025 | 13:33:58 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 13:33:58 | Starting postlogon script
+| 04/12/2025 | 13:33:58 | Main Menu
+| 04/12/2025 | 13:33:59 | ANSI Artwork
+| 04/12/2025 | 13:34:01 | Main Menu
+| 04/12/2025 | 13:34:42 | LineTask shutting down
+| 04/12/2025 | 13:38:25 | LineTask started
+| 04/12/2025 | 13:39:36 | LineTask shutting down

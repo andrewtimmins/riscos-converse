@@ -1078,3 +1078,86 @@
 | 04/12/2025 | 11:59:05 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
 | 04/12/2025 | 11:59:05 | Session closed with 39:13/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
 | 04/12/2025 | 11:59:37 | Mailer shutdown
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 13:33:12 | Listening on port 24554
+| 04/12/2025 | 13:33:12 | Mailer ready (Converse 0.01)
+| 04/12/2025 | 13:33:12 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 04/12/2025 | 13:33:12 | Connected to applewoodbbs.linkpc.net
+| 04/12/2025 | 13:33:12 | Remote address: 2:250/0.0
+| 04/12/2025 | 13:33:12 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:12 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:12 | Session closed with 2:250/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:12 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:33:12 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:33:13 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:33:13 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:13 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:13 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:13 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:33:13 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:33:13 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:33:13 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:13 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:13 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:13 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:33:13 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:33:14 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:33:14 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:14 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:14 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:14 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 04/12/2025 | 13:33:14 | Connected to otherhub.abad1dea.to
+| 04/12/2025 | 13:33:14 | Remote address: 954:44/0.0
+| 04/12/2025 | 13:33:14 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:14 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:14 | Session closed with 954:44/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:14 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 04/12/2025 | 13:33:14 | Connected to bbs.zeusdev.co.uk
+| 04/12/2025 | 13:33:15 | Remote address: 39:13/0.0
+| 04/12/2025 | 13:33:17 | Session established, remote reports "secure"
+| 04/12/2025 | 13:33:17 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:33:17 | Session closed with 39:13/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:34:42 | Mailer shutdown
+| 04/12/2025 | 13:38:26 | Listening on port 24554
+| 04/12/2025 | 13:38:26 | Mailer ready (Converse 0.01)
+| 04/12/2025 | 13:38:26 | Connecting to 2:250/0 (applewoodbbs.linkpc.net:24554)
+| 04/12/2025 | 13:38:26 | Connected to applewoodbbs.linkpc.net
+| 04/12/2025 | 13:38:26 | Remote address: 2:250/0.0
+| 04/12/2025 | 13:38:26 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:26 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:26 | Session closed with 2:250/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:26 | Connecting to 64:500/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:38:26 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:38:27 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:38:27 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:27 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:27 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:27 | Connecting to 314:314/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:38:27 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:38:27 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:38:27 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:27 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:27 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:27 | Connecting to 80:774/0 (call.rofbbs.com:24556)
+| 04/12/2025 | 13:38:27 | Connected to call.rofbbs.com
+| 04/12/2025 | 13:38:28 | Remote address: 80:774/0.0
+| 04/12/2025 | 13:38:28 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:28 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:28 | Session closed with 80:774/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:28 | Connecting to 954:44/0 (otherhub.abad1dea.to:24554)
+| 04/12/2025 | 13:38:28 | Connected to otherhub.abad1dea.to
+| 04/12/2025 | 13:38:28 | Remote address: 954:44/0.0
+| 04/12/2025 | 13:38:28 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:28 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:28 | Session closed with 954:44/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:28 | Connecting to 39:13/0 (bbs.zeusdev.co.uk:24554)
+| 04/12/2025 | 13:38:28 | Connected to bbs.zeusdev.co.uk
+| 04/12/2025 | 13:38:29 | Remote address: 39:13/0.0
+| 04/12/2025 | 13:38:31 | Session established, remote reports "secure"
+| 04/12/2025 | 13:38:31 | Session complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:38:31 | Session closed with 39:13/0: Complete (sent 0 files/0 bytes, recv 0 files/0 bytes)
+| 04/12/2025 | 13:39:36 | Mailer shutdown

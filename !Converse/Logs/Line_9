@@ -67,3 +67,21 @@
 | 04/12/2025 | 11:59:26 | Main Menu
 | 04/12/2025 | 11:59:28 | Chatting with Sysop...
 | 04/12/2025 | 11:59:37 | LineTask shutting down
+| 04/12/2025 | 13:33:11 | LineTask started
+| 04/12/2025 | 13:34:42 | LineTask shutting down
+| 04/12/2025 | 13:38:25 | LineTask started
+| 04/12/2025 | 13:38:32 | Starting prelogon script
+| 04/12/2025 | 13:38:32 | Logging on (ANSI)...
+| 04/12/2025 | 13:38:38 | User 'andytimmins' logged in (id=1, level=10, sysop)
+| 04/12/2025 | 13:38:38 | Starting postlogon script
+| 04/12/2025 | 13:38:38 | Main Menu
+| 04/12/2025 | 13:38:43 | ANSI Artwork
+| 04/12/2025 | 13:38:44 | Main Menu
+| 04/12/2025 | 13:38:45 | ANSI Artwork
+| 04/12/2025 | 13:38:47 | Main Menu
+| 04/12/2025 | 13:38:50 | Chatting with Sysop...
+| 04/12/2025 | 13:39:13 | Starting prelogon script
+| 04/12/2025 | 13:39:16 | Logging on (TTY)...
+| 04/12/2025 | 13:39:20 | Starting prelogon script
+| 04/12/2025 | 13:39:23 | Logging on (TTY)...
+| 04/12/2025 | 13:39:36 | LineTask shutting down

@@ -81,6 +81,9 @@ typedef struct {
     /* Font data pointer (loaded from file) */
     unsigned char *font_data;
     int font_loaded;
+
+    /* Output callback for terminal responses (e.g. DSR) */
+    void (*send_input)(int line_id, const char *data, int len);
 } ansiterm_state;
 
 

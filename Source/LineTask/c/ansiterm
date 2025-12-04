@@ -80,6 +80,7 @@ int ansiterm_init(ansiterm_state *term, int line_id)
     term->inverse = 0;
     term->dirty_top = -1;
     term->dirty_bottom = -1;
+    term->send_input = NULL;
 
     reset_params(term);
     ansiterm_clear(term);
@@ -468,6 +469,20 @@ static void execute_csi(ansiterm_state *term, unsigned char cmd)
                 {
                     term->bg_color = (n - 100) + 8;
                 }
+            }
+        }
+        break;
+
+    case 'n':
+        if (param0 == 6)
+        {
+            /* Device Status Report (DSR) - Report Cursor Position */
+            if (term->send_input)
+            {
+                char response[32];
+                snprintf(response, sizeof(response), "\033[%d;%dR", 
+                         term->cursor_y + 1, term->cursor_x + 1);
+                term->send_input(term->line_id, response, strlen(response));
             }
         }
         break;
