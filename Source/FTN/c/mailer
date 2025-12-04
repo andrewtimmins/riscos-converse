@@ -1625,13 +1625,13 @@ static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *re
 
     if (event->data.mouse.button.data.select)
     {
-        /* Open log window */
-        ftnlog_open();
+        /* Open status window in idle state */
+        ftnstatus_open_idle();
     }
     else if (event->data.mouse.button.data.adjust)
     {
-        /* Open status window in idle state */
-        ftnstatus_open_idle();
+        /* Open log window */
+        ftnlog_open();
     }
     else if (event->data.mouse.button.data.menu)
     {

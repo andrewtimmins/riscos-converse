@@ -36,11 +36,6 @@ o.http:	TCPIPLibs:sys.h.cdefs
 o.http:	C:h.kernel
 o.http:	h.http
 o.http:	h.debug
-o.template:	c.template
-o.template:	C:h.kernel
-o.template:	C:h.swis
-o.template:	h.template
-o.template:	h.debug
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -112,3 +107,8 @@ o.main:	C:Desk.h.Wimp
 o.main:	h.http
 o.main:	h.template
 o.main:	h.debug
+o.template:	c.template
+o.template:	C:h.kernel
+o.template:	C:h.swis
+o.template:	h.template
+o.template:	h.debug

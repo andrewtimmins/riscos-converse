@@ -23,6 +23,7 @@ typedef struct {
     Desk_window_handle main_window;
     Desk_window_handle pane_window;
     Desk_window_handle proginfo_window;
+    Desk_window_handle notice_window;
     int current_user_id;
     USER_RECORD current_user;
     int user_loaded;

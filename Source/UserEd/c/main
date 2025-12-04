@@ -304,6 +304,17 @@ void load_user(int user_id)
 }
 
 /*
+ * Show notice window with message
+ */
+static void show_notice(const char *message)
+{
+    if (wimp_state.notice_window) {
+        set_icon_text(wimp_state.notice_window, NOTICE_ACTION, message);
+        Desk_Window_Show(wimp_state.notice_window, Desk_open_CENTERED);
+    }
+}
+
+/*
  * Save current user
  */
 void save_user(void)
@@ -334,6 +345,7 @@ void save_user(void)
     }
 
     debug_printf("UserEd: User saved successfully");
+    show_notice("User has been updated.");
 }
 
 /*
@@ -363,6 +375,7 @@ void delete_user(void)
     }
 
     debug_printf("UserEd: User deleted successfully");
+    show_notice("User has been deleted.");
 
     /* Load next user or clear */
     next_user();
@@ -578,6 +591,27 @@ static Desk_bool pane_click_handler(Desk_event_pollblock *event, void *reference
 }
 
 /*
+ * Click handler for notice window
+ */
+static Desk_bool notice_click_handler(Desk_event_pollblock *event, void *reference)
+{
+    Desk_mouse_block *mouse = &event->data.mouse;
+
+    (void)reference;
+
+    if (mouse->window != wimp_state.notice_window) {
+        return Desk_FALSE;
+    }
+
+    if (mouse->icon == NOTICE_OK) {
+        Desk_Window_Hide(wimp_state.notice_window);
+        return Desk_TRUE;
+    }
+
+    return Desk_FALSE;
+}
+
+/*
  * Click handler for main window
  */
 static Desk_bool click_handler(Desk_event_pollblock *event, void *reference)
@@ -771,8 +805,9 @@ static int initialise(void)
     wimp_state.proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
     wimp_state.main_window = Desk_Window_Create("usereditor", Desk_template_TITLEMIN);
     wimp_state.pane_window = Desk_Window_Create("userinfo", Desk_template_TITLEMIN);
+    wimp_state.notice_window = Desk_Window_Create("notice", Desk_template_TITLEMIN);
 
-    if (!wimp_state.main_window || !wimp_state.pane_window) {
+    if (!wimp_state.main_window || !wimp_state.pane_window || !wimp_state.notice_window) {
         Desk_Error_Report(1, "Failed to create windows from templates");
         return 0;
     }
@@ -785,6 +820,8 @@ static int initialise(void)
                      click_handler, NULL);
     Desk_Event_Claim(Desk_event_CLICK, wimp_state.pane_window, Desk_event_ANY,
                      pane_click_handler, NULL);
+    Desk_Event_Claim(Desk_event_CLICK, wimp_state.notice_window, Desk_event_ANY,
+                     notice_click_handler, NULL);
     Desk_Event_Claim(Desk_event_KEY, Desk_event_ANY, Desk_event_ANY,
                      key_handler, NULL);
     Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
@@ -839,6 +876,9 @@ static void shutdown(void)
     }
     if (wimp_state.proginfo_window) {
         Desk_Window_Delete(wimp_state.proginfo_window);
+    }
+    if (wimp_state.notice_window) {
+        Desk_Window_Delete(wimp_state.notice_window);
     }
 }
 

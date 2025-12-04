@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "kernel.h"
 #include "swis.h"
@@ -14,6 +15,7 @@
 
 /* Filer SWI numbers */
 #define SWI_FILER_FILEBASE      0x5AA43
+#define SWI_FILER_MESSAGEBASE   0x5AA42
 
 /* Filebase commands */
 #define FILER_FILEBASE_CMD_INFO             2
@@ -23,10 +25,20 @@
 #define FILER_FILEBASE_CMD_ENUMERATE_FILES  10
 #define FILER_FILEBASE_CMD_FILE_INFO        11
 
+/* Messagebase commands */
+#define FILER_MESSAGEBASE_CMD_INFO              2
+#define FILER_MESSAGEBASE_CMD_AREA_INFO         7
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_BASES   8
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS   9
+#define FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES 10
+#define FILER_MESSAGEBASE_CMD_MESSAGE_INFO      11
+
 /* Structure sizes from Filer/h/structs */
 #define MAX_KEYS    128
 #define MAX_NAME    64
 #define MAX_DESC    256
+#define MAX_DIR     256
+#define MAX_FROMTO  36
 
 /* ******************************************************************************************************************************************************** */
 /* Filebase Structures (matching Filer/h/structs)                                                                                                           */
@@ -66,6 +78,63 @@ typedef struct
     long filesize;
     int downloads;
 } FILE_RECORD;
+
+/* ******************************************************************************************************************************************************** */
+/* Messagebase Structures (matching Filer/h/structs)                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    char domain[100];
+    int zone;
+    int net;
+    int node;
+    int point;
+} FTN_ADDRESS;
+
+typedef struct
+{
+    int id;
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char name[MAX_NAME];
+    char messagebasedir[MAX_DIR];
+} MESSAGEBASE_RECORD;
+
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    char tag[MAX_NAME];
+    int daystokeep;
+    int akause;
+    short areatype;
+} MESSAGEBASE_AREA;
+
+typedef struct
+{
+    int id;
+    int messagebaseid;
+    int messagebaseareaid;
+    int type;
+    int deleted;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    int sentby;
+    int receivedby;
+    FTN_ADDRESS orgaddr;
+    FTN_ADDRESS dstaddr;
+    long imported;
+    long sent;
+    long read;
+    int timesread;
+    long bodysize;
+    char subject[MAX_DESC];
+    char fromname[MAX_FROMTO];
+    char toname[MAX_FROMTO];
+    int exported;
+} MESSAGE_RECORD;
 
 /* ******************************************************************************************************************************************************** */
 /* String Buffer Helper                                                                                                                                     */
@@ -520,6 +589,318 @@ char *template_generate_filebase_listing(long *out_len)
     return buf.data;
 }
 
+char *template_generate_messagebase_listing(long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int base_index;
+    int area_index;
+    int msg_index;
+    char row[1024];
+    char escaped_name[256];
+    char escaped_subject[512];
+    char escaped_from[64];
+    char escaped_to[64];
+    char date_str[32];
+    int base_count = 0;
+
+    if (!buffer_init(&buf, 4096))
+    {
+        return NULL;
+    }
+
+    /* Start HTML */
+    buffer_append(&buf,
+        "<div class=\"messagebase-listing\">\n", -1);
+
+    /* Enumerate messagebases */
+    for (base_index = 0; base_index < 100; base_index++)
+    {
+        MESSAGEBASE_RECORD *base_rec;
+        int base_id;
+        int has_content = 0;
+
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
+        regs.r[1] = base_index;
+        err = _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+        if (err != NULL || regs.r[0] == -1)
+        {
+            break;
+        }
+
+        base_rec = (MESSAGEBASE_RECORD *)(regs.r[0]);
+        if (base_rec == NULL)
+        {
+            continue;
+        }
+
+        base_id = base_rec->id;
+        base_count++;
+
+        /* Check for Private Messagebase */
+        if (base_rec->type == 3) /* Private */
+        {
+            continue;
+        }
+        
+        /* Check for Sysop/Restricted Messagebase */
+        if (base_rec->accesslevel > 0)
+        {
+            continue;
+        }
+
+        html_escape(base_rec->name, escaped_name, sizeof(escaped_name));
+        snprintf(row, sizeof(row),
+            "  <div class=\"messagebase\">\n"
+            "    <h3>%s</h3>\n",
+            escaped_name);
+        buffer_append(&buf, row, -1);
+
+        /* Enumerate areas */
+        for (area_index = 0; area_index < 100; area_index++)
+        {
+            MESSAGEBASE_AREA *area_rec;
+            int area_id;
+            int has_messages = 0;
+
+            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+            regs.r[1] = base_id;
+            regs.r[2] = area_index;
+            err = _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+            if (err != NULL || regs.r[0] == -1)
+            {
+                break;
+            }
+
+            area_rec = (MESSAGEBASE_AREA *)(regs.r[0]);
+            if (area_rec == NULL)
+            {
+                continue;
+            }
+
+            area_id = area_rec->id;
+
+            /* Check for Netmail Area */
+            if (area_rec->areatype == 2) /* NETMAIL */
+            {
+                continue;
+            }
+
+            has_content = 1;
+
+            html_escape(area_rec->name, escaped_name, sizeof(escaped_name));
+            snprintf(row, sizeof(row),
+                "    <div class=\"messagearea\">\n"
+                "      <h4>%s</h4>\n"
+                "      <table class=\"message-table\">\n"
+                "        <thead>\n"
+                "          <tr>\n"
+                "            <th>Subject</th>\n"
+                "            <th>From</th>\n"
+                "            <th>To</th>\n"
+                "            <th>Date</th>\n"
+                "          </tr>\n"
+                "        </thead>\n"
+                "        <tbody>\n",
+                escaped_name);
+            buffer_append(&buf, row, -1);
+
+            /* Enumerate messages */
+            for (msg_index = 0; msg_index < 1000; msg_index++)
+            {
+                MESSAGE_RECORD *msg_rec;
+                struct tm *tm_info;
+
+                regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+                regs.r[1] = base_id;
+                regs.r[2] = area_id;
+                regs.r[3] = msg_index;
+                err = _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+                if (err != NULL || regs.r[0] == -1)
+                {
+                    break;
+                }
+
+                msg_rec = (MESSAGE_RECORD *)(regs.r[0]);
+                if (msg_rec == NULL || msg_rec->deleted)
+                {
+                    continue;
+                }
+                
+                /* Check message belongs to this area */
+                if (msg_rec->messagebaseareaid != area_id)
+                {
+                    continue;
+                }
+
+                /* Check for Private Message */
+                if (msg_rec->type == 3) /* Private */
+                {
+                    continue;
+                }
+
+                /* Check for Restricted/Sysop Message */
+                if (msg_rec->accesslevel > 0)
+                {
+                    continue;
+                }
+
+                has_messages = 1;
+
+                html_escape(msg_rec->subject, escaped_subject, sizeof(escaped_subject));
+                html_escape(msg_rec->fromname, escaped_from, sizeof(escaped_from));
+                html_escape(msg_rec->toname, escaped_to, sizeof(escaped_to));
+                
+                tm_info = localtime((time_t *)&msg_rec->sent);
+                strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M", tm_info);
+
+                snprintf(row, sizeof(row),
+                    "          <tr>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "          </tr>\n",
+                    escaped_subject,
+                    escaped_from,
+                    escaped_to,
+                    date_str);
+                buffer_append(&buf, row, -1);
+            }
+
+            if (!has_messages)
+            {
+                buffer_append(&buf,
+                    "          <tr><td colspan=\"4\"><em>No messages in this area</em></td></tr>\n", -1);
+            }
+
+            buffer_append(&buf,
+                "        </tbody>\n"
+                "      </table>\n"
+                "    </div>\n", -1);
+        }
+        
+        /* Handle uncategorized messages (area_id = 0) */
+        {
+            int has_uncat_msgs = 0;
+            int first_uncat = 1;
+            
+            for (msg_index = 0; msg_index < 1000; msg_index++)
+            {
+                MESSAGE_RECORD *msg_rec;
+                struct tm *tm_info;
+
+                regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+                regs.r[1] = base_id;
+                regs.r[2] = 0; /* area_id = 0 */
+                regs.r[3] = msg_index;
+                err = _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+                if (err != NULL || regs.r[0] == -1)
+                {
+                    break;
+                }
+
+                msg_rec = (MESSAGE_RECORD *)(regs.r[0]);
+                if (msg_rec == NULL || msg_rec->deleted)
+                {
+                    continue;
+                }
+                
+                if (msg_rec->messagebaseareaid != 0)
+                {
+                    continue;
+                }
+
+                /* Check for Private Message */
+                if (msg_rec->type == 3) /* Private */
+                {
+                    continue;
+                }
+
+                /* Check for Restricted/Sysop Message */
+                if (msg_rec->accesslevel > 0)
+                {
+                    continue;
+                }
+
+                if (first_uncat)
+                {
+                    buffer_append(&buf,
+                        "    <div class=\"messagearea\">\n"
+                        "      <h4>Uncategorized</h4>\n"
+                        "      <table class=\"message-table\">\n"
+                        "        <thead>\n"
+                        "          <tr>\n"
+                        "            <th>Subject</th>\n"
+                        "            <th>From</th>\n"
+                        "            <th>To</th>\n"
+                        "            <th>Date</th>\n"
+                        "          </tr>\n"
+                        "        </thead>\n"
+                        "        <tbody>\n", -1);
+                    first_uncat = 0;
+                    has_content = 1;
+                }
+                
+                has_uncat_msgs = 1;
+
+                html_escape(msg_rec->subject, escaped_subject, sizeof(escaped_subject));
+                html_escape(msg_rec->fromname, escaped_from, sizeof(escaped_from));
+                html_escape(msg_rec->toname, escaped_to, sizeof(escaped_to));
+                
+                tm_info = localtime((time_t *)&msg_rec->sent);
+                strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M", tm_info);
+
+                snprintf(row, sizeof(row),
+                    "          <tr>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "            <td>%s</td>\n"
+                    "          </tr>\n",
+                    escaped_subject,
+                    escaped_from,
+                    escaped_to,
+                    date_str);
+                buffer_append(&buf, row, -1);
+            }
+            
+            if (!first_uncat)
+            {
+                buffer_append(&buf,
+                    "        </tbody>\n"
+                    "      </table>\n"
+                    "    </div>\n", -1);
+            }
+        }
+
+        if (!has_content)
+        {
+            buffer_append(&buf, "    <p><em>No areas or messages</em></p>\n", -1);
+        }
+
+        buffer_append(&buf, "  </div>\n", -1);
+    }
+
+    if (base_count == 0)
+    {
+        buffer_append(&buf, "  <p><em>No messagebases available</em></p>\n", -1);
+    }
+
+    buffer_append(&buf, "</div>\n", -1);
+
+    if (out_len != NULL)
+    {
+        *out_len = buf.length;
+    }
+
+    debug_printf("Template: Generated messagebase listing (%ld bytes, %d bases)\n",
+                 buf.length, base_count);
+
+    return buf.data;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Template Processing                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
@@ -615,6 +996,24 @@ char *template_process(const char *content, long content_len, long *out_len)
             else
             {
                 buffer_append(&buf, "<!-- Error generating filebase listing -->", -1);
+            }
+        }
+        else if ((size_t)(tag_end + 2 - tag_start) == strlen(TEMPLATE_TAG_MESSAGEBASE) &&
+                 strncmp(tag_start, TEMPLATE_TAG_MESSAGEBASE, strlen(TEMPLATE_TAG_MESSAGEBASE)) == 0)
+        {
+            /* Replace with messagebase listing */
+            char *listing;
+            long listing_len;
+
+            listing = template_generate_messagebase_listing(&listing_len);
+            if (listing != NULL)
+            {
+                buffer_append(&buf, listing, listing_len);
+                free(listing);
+            }
+            else
+            {
+                buffer_append(&buf, "<!-- Error generating messagebase listing -->", -1);
             }
         }
         else

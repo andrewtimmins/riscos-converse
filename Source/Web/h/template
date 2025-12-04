@@ -9,6 +9,7 @@
 
 /* Template tags */
 #define TEMPLATE_TAG_FILEBASE   "{{filebase}}"
+#define TEMPLATE_TAG_MESSAGEBASE "{{messagebase}}"
 
 /* Process template content, expanding template tags
  * content: input content buffer
@@ -29,5 +30,11 @@ int template_has_tags(const char *content, long content_len);
  * Caller must free() the returned buffer
  */
 char *template_generate_filebase_listing(long *out_len);
+
+/* Generate HTML listing of all messagebases
+ * Returns: newly allocated buffer with HTML, or NULL on error
+ * Caller must free() the returned buffer
+ */
+char *template_generate_messagebase_listing(long *out_len);
 
 #endif /* TEMPLATE_H */

@@ -88,3 +88,9 @@
 #define FTNFREQ_FROM 3
 #define FTNFREQ_CANCEL 4
 #define FTNFREQ_REQUEST 5
+#define QUERY_ACTION 0
+#define QUERY_NO 1
+#define QUERY_QUERY 2
+#define QUERY_YES 3
+#define NOTICE_ACTION 0
+#define NOTICE_OK 1
