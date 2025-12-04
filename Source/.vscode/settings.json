@@ -41,6 +41,8 @@
         "ftnlog": "cpp",
         "packer": "cpp",
         "tic": "cpp",
-        "icon": "cpp"
+        "icon": "cpp",
+        "ansiterm": "cpp",
+        "colourtran": "cpp"
     }
 }

@@ -1,0 +1,137 @@
+/* ansiterm.h - ANSI Terminal emulator for LineTask snoop/login window */
+
+#ifndef ANSITERM_H
+#define ANSITERM_H
+
+#include "C:Desk.Wimp.h"
+#include "C:Desk.Window.h"
+
+/* Terminal dimensions - fixed 80x24 */
+#define ANSITERM_COLS       80
+#define ANSITERM_ROWS       24
+
+/* Character cell size in OS units */
+#define ANSITERM_CHAR_WIDTH  16
+#define ANSITERM_CHAR_HEIGHT 32
+
+/* Terminal window size in OS units */
+#define ANSITERM_WIDTH      (ANSITERM_COLS * ANSITERM_CHAR_WIDTH)
+#define ANSITERM_HEIGHT     (ANSITERM_ROWS * ANSITERM_CHAR_HEIGHT)
+
+/* Font dimensions - 8x8 bitmap font */
+#define ANSITERM_FONT_WIDTH  8
+#define ANSITERM_FONT_HEIGHT 8
+
+/* ANSI parser states */
+typedef enum {
+    ANSI_STATE_NORMAL,      /* Normal character processing */
+    ANSI_STATE_ESC,         /* Received ESC (0x1B) */
+    ANSI_STATE_CSI,         /* Received ESC [ (CSI) */
+    ANSI_STATE_PARAM        /* Reading numeric parameters */
+} ansi_parser_state;
+
+/* Maximum ANSI parameters */
+#define ANSI_MAX_PARAMS     8
+
+/* Terminal cell - character and attributes */
+typedef struct {
+    unsigned char ch;       /* Character code */
+    unsigned char attr;     /* Attribute: low nibble = fg, high nibble = bg */
+} ansiterm_cell;
+
+/* Terminal state structure */
+typedef struct {
+    /* Screen buffer */
+    ansiterm_cell cells[ANSITERM_ROWS][ANSITERM_COLS];
+    
+    /* Cursor position (0-based) */
+    int cursor_x;
+    int cursor_y;
+    
+    /* Saved cursor position */
+    int saved_x;
+    int saved_y;
+    
+    /* Current attributes */
+    int fg_color;           /* Foreground ANSI color (0-7) */
+    int bg_color;           /* Background ANSI color (0-7) */
+    int bold;               /* Bold/bright attribute */
+    int inverse;            /* Inverse video */
+    
+    /* ANSI parser state */
+    ansi_parser_state parser_state;
+    int params[ANSI_MAX_PARAMS];    /* Numeric parameters */
+    int param_count;                /* Number of parameters */
+    int current_param;              /* Current parameter being built */
+    
+    /* Window handle */
+    Desk_window_handle window;
+    
+    /* Line number this terminal is associated with */
+    int line_id;
+    
+    /* Mode flags */
+    int snoop_mode;         /* 1 = sysop is observing */
+    int input_mode;         /* 1 = sysop can type input */
+    
+    /* Redraw tracking */
+    int dirty_top;          /* Top row needing redraw (-1 if clean) */
+    int dirty_bottom;       /* Bottom row needing redraw */
+    
+    /* Font data pointer (loaded from file) */
+    unsigned char *font_data;
+    int font_loaded;
+} ansiterm_state;
+
+
+/* Initialise terminal state */
+int ansiterm_init(ansiterm_state *term, int line_id);
+
+/* Finalise terminal state (free resources) */
+void ansiterm_finalise(ansiterm_state *term);
+
+/* Load the font file */
+int ansiterm_load_font(ansiterm_state *term, const char *path);
+
+/* Open terminal window */
+int ansiterm_open_window(ansiterm_state *term, const char *title);
+
+/* Close terminal window */
+void ansiterm_close_window(ansiterm_state *term);
+
+/* Process a single byte of output (from pipe) */
+void ansiterm_process_byte(ansiterm_state *term, unsigned char byte);
+
+/* Process a block of bytes */
+void ansiterm_process_block(ansiterm_state *term, const unsigned char *data, int len);
+
+/* Handle window redraw event - block is pointer to Desk_event_data */
+void ansiterm_redraw(ansiterm_state *term, Desk_event_data *block);
+
+/* Handle key press - returns key to send to pipe, or 0 if handled internally */
+int ansiterm_keypress(ansiterm_state *term, int key_code);
+
+/* Force full screen redraw */
+void ansiterm_invalidate(ansiterm_state *term);
+
+/* Force redraw of dirty region */
+void ansiterm_update_dirty(ansiterm_state *term);
+
+/* Clear the screen */
+void ansiterm_clear(ansiterm_state *term);
+
+/* Set snoop/input modes */
+void ansiterm_set_snoop(ansiterm_state *term, int enabled);
+void ansiterm_set_input(ansiterm_state *term, int enabled);
+
+/* Scroll the screen up by n lines */
+void ansiterm_scroll_up(ansiterm_state *term, int lines);
+
+/* Scroll the screen down by n lines */
+void ansiterm_scroll_down(ansiterm_state *term, int lines);
+
+
+/* ANSI color to Wimp color mapping */
+int ansiterm_ansi_to_wimp(int ansi_color);
+
+#endif /* ANSITERM_H */

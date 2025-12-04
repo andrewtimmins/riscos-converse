@@ -1,0 +1,42 @@
++------------+----------+------------------------------------------------------
+| LOG FILE STARTED      |
++------------+----------+------------------------------------------------------
+| Date       | Time     | Log Entry
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 10:37:13 | LineTask started
+| 04/12/2025 | 10:43:09 | LineTask started
+| 04/12/2025 | 10:43:50 | LineTask shutting down
+| 04/12/2025 | 10:44:48 | LineTask started
+| 04/12/2025 | 10:45:16 | LineTask shutting down
+| 04/12/2025 | 10:46:12 | LineTask started
+| 04/12/2025 | 10:46:20 | LineTask shutting down
+| 04/12/2025 | 10:46:37 | LineTask started
+| 04/12/2025 | 10:46:48 | LineTask shutting down
+| 04/12/2025 | 10:49:45 | LineTask started
+| 04/12/2025 | 10:51:02 | LineTask shutting down
+| 04/12/2025 | 10:56:44 | LineTask started
+| 04/12/2025 | 10:57:04 | LineTask shutting down
+| 04/12/2025 | 10:59:36 | LineTask started
+| 04/12/2025 | 10:59:42 | LineTask shutting down
+| 04/12/2025 | 11:02:55 | LineTask started
+| 04/12/2025 | 11:03:07 | LineTask shutting down
+| 04/12/2025 | 11:03:20 | LineTask started
+| 04/12/2025 | 11:04:03 | LineTask shutting down
+| 04/12/2025 | 11:04:09 | LineTask started
+| 04/12/2025 | 11:04:18 | LineTask shutting down
+| 04/12/2025 | 11:04:51 | LineTask started
+| 04/12/2025 | 11:05:26 | LineTask shutting down
+| 04/12/2025 | 11:07:18 | LineTask started
+| 04/12/2025 | 11:08:18 | LineTask shutting down
+| 04/12/2025 | 11:28:23 | LineTask started
+| 04/12/2025 | 11:29:38 | LineTask shutting down
+| 04/12/2025 | 11:31:33 | LineTask started
+| 04/12/2025 | 11:32:21 | LineTask shutting down
+| 04/12/2025 | 11:32:26 | LineTask started
+| 04/12/2025 | 11:32:52 | LineTask shutting down
+| 04/12/2025 | 11:33:12 | LineTask started
+| 04/12/2025 | 11:34:22 | LineTask shutting down
+| 04/12/2025 | 11:35:01 | LineTask started
+| 04/12/2025 | 11:35:07 | LineTask shutting down
+| 04/12/2025 | 11:40:21 | LineTask started
+| 04/12/2025 | 11:41:23 | LineTask shutting down

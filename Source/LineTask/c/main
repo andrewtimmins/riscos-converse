@@ -28,11 +28,14 @@
 #include "debug.h"
 #include "iconnames.h"
 #include "main.h"
+#include "ansi.h"
+#include "ansiterm.h"
 
 #define PIPES_SWI_BASE 0x5AA00
 
 #define SWI_CONVERSE_PIPES_INPUT_READ   (PIPES_SWI_BASE + 3)
 #define SWI_CONVERSE_PIPES_OUTPUT_WRITE (PIPES_SWI_BASE + 5)
+#define SWI_CONVERSE_PIPES_INPUT_WRITE  (PIPES_SWI_BASE + 8)
 #define SWI_OS_BYTE                     0x00000006
 
 #define PIPE_TRANSFER_CHUNK 256
@@ -233,6 +236,8 @@ typedef struct
     int chat_timer_last_seconds;        /* Last HH:MM:SS value pushed to icon */
     chat_pane_view chat_user_pane;
     chat_pane_view chat_sysop_pane;
+    /* ANSI terminal emulator for snoop/login (dynamically allocated) */
+    ansiterm_state *terminal;
 } line_task_state;
 
 static line_task_state task_state;
@@ -246,6 +251,7 @@ static char app_compiled[]=__DATE__" at "__TIME__;
 
 static int pipes_input_read_byte(int line_id);
 static int pipes_input_read_block(int line_id, char *buffer, int length);
+static int pipes_input_write_block(int line_id, const char *buffer, int length);
 static int pipes_output_write_block(int line_id, const char *buffer, int length);
 static void pipes_output_write_string(int line_id, const char *string);
 static void pipes_send_welcome(line_task_state *state);
@@ -353,6 +359,12 @@ static void chatpane_update_extent(chat_pane_view *pane);
 static void chatpane_scroll_to_bottom(chat_pane_view *pane);
 static Desk_bool chatpane_handle_redraw(Desk_event_pollblock *event, void *ref);
 static Desk_bool chatpane_handle_scroll(Desk_event_pollblock *event, void *ref);
+/* ANSI terminal functions */
+static void terminal_init(line_task_state *state);
+static void terminal_finalise(line_task_state *state);
+static void terminal_feed_output(line_task_state *state, const char *data, int len);
+static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref);
 
 static void poll_idle(void)
 {
@@ -512,6 +524,10 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     /* Initialise chat state */
     chat_reset_state(state);
     
+    /* Initialise ANSI terminal (pointer starts as NULL) */
+    state->terminal = NULL;
+    terminal_init(state);
+    
     state->user_id = 0;
     state->user_accesslevel = 0;
     state->user_sysop = 0;
@@ -532,6 +548,15 @@ static void initialise_resources(void)
     userchat_window_handle = Desk_Window_Create("userchat", NULL);
     sysopchat_window_handle = Desk_Window_Create("sysopchat", NULL);
 
+    if (main_window_handle != 0)
+    {
+        Desk_Window_SetExtent(main_window_handle,
+                              0,
+                              -ANSITERM_HEIGHT,
+                              ANSITERM_WIDTH,
+                              0);
+    }
+
     chatpane_set_window(&task_state.chat_user_pane, userchat_window_handle);
     chatpane_set_window(&task_state.chat_sysop_pane, sysopchat_window_handle);
 
@@ -551,11 +576,22 @@ static void initialise_resources(void)
                          chatpane_handle_scroll, &task_state.chat_sysop_pane);
     }
 
+    /* Main window IS the terminal - register terminal handlers for it */
+    if (main_window_handle != 0 && task_state.terminal != NULL)
+    {
+        task_state.terminal->window = main_window_handle;
+        Desk_Event_Claim(Desk_event_REDRAW, main_window_handle, Desk_event_ANY,
+                         handle_terminal_redraw, &task_state);
+        Desk_Event_Claim(Desk_event_KEY, main_window_handle, Desk_event_ANY,
+                         handle_terminal_key, &task_state);
+    }
+
     update_main_window_title(&task_state);
 }
 
 static void shutdown_resources(void)
 {
+    terminal_finalise(&task_state);
     Desk_Template_ClearAll();
     main_window_handle = 0;
     chatpager_window_handle = 0;
@@ -569,6 +605,25 @@ static void show_main_window(void)
     if (main_window_handle != 0)
     {
         Desk_Window_Show(main_window_handle, Desk_open_CENTERED);
+        /* Enable terminal snoop and input modes when window is shown */
+        if (task_state.terminal != NULL)
+        {
+            ansiterm_set_snoop(task_state.terminal, 1);
+            ansiterm_set_input(task_state.terminal, 1);
+            
+            /* Display status message in terminal */
+            if (task_state.session_active)
+            {
+                ansiterm_process_block(task_state.terminal, 
+                    (const unsigned char *)"\033[1;32m[Snoop Mode Active]\033[0m\r\n", 32);
+            }
+            else
+            {
+                ansiterm_process_block(task_state.terminal,
+                    (const unsigned char *)"\033[1;33m[No User Connected - Sysop Login Mode]\033[0m\r\n", 50);
+            }
+            ansiterm_invalidate(task_state.terminal);
+        }
     }
 }
 
@@ -578,6 +633,15 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
 
     if (event != NULL)
     {
+        if (event->data.openblock.window == main_window_handle)
+        {
+            /* Disable terminal modes when main window is closed */
+            if (task_state.terminal != NULL)
+            {
+                ansiterm_set_snoop(task_state.terminal, 0);
+                ansiterm_set_input(task_state.terminal, 0);
+            }
+        }
         Desk_Window_Hide(event->data.openblock.window);
     }
 
@@ -1017,6 +1081,33 @@ static int pipes_output_write_block(int line_id, const char *buffer, int length)
         if (regs.r[0] != 0)
         {
             break;
+        }
+
+        copied++;
+    }
+
+    return copied;
+}
+
+/* Write to the input pipe (host->slave direction) - used for sysop terminal input */
+static int pipes_input_write_block(int line_id, const char *buffer, int length)
+{
+    int copied = 0;
+
+    while (copied < length)
+    {
+        _kernel_swi_regs regs;
+
+        regs.r[0] = line_id;
+        regs.r[1] = (unsigned int)(unsigned char)buffer[copied];
+        if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_WRITE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] != 0)
+        {
+            break;  /* Pipe full */
         }
 
         copied++;
@@ -1904,6 +1995,9 @@ static void script_host_write(void *context, const char *text)
     }
 
     pipes_output_write_string(state->line_id, text);
+    
+    /* Feed output to terminal for sysop snoop */
+    terminal_feed_output(state, text, strlen(text));
 }
 
 static void script_host_launch_door(void *context, const char *command_line)
@@ -3882,4 +3976,121 @@ static void log_line_event(int line_id, const char *message)
     regs.r[1] = line_id;
     regs.r[2] = (int)message;
     _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &regs, &regs);
+}
+
+/* ========================================================================
+ * ANSI Terminal Implementation
+ * ======================================================================== */
+
+static void terminal_init(line_task_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    /* Allocate terminal state */
+    state->terminal = (ansiterm_state *)malloc(sizeof(ansiterm_state));
+    if (state->terminal == NULL)
+    {
+        debug_printf("terminal_init: Failed to allocate terminal state");
+        return;
+    }
+    
+    ansiterm_init(state->terminal, state->line_id);
+    
+    /* Load font if available */
+    ansiterm_load_font(state->terminal, "<Converse$Dir>.Resources.Font");
+}
+
+static void terminal_finalise(line_task_state *state)
+{
+    if (state == NULL || state->terminal == NULL)
+    {
+        return;
+    }
+    
+    ansiterm_finalise(state->terminal);
+    free(state->terminal);
+    state->terminal = NULL;
+}
+
+static void terminal_feed_output(line_task_state *state, const char *data, int len)
+{
+    if (state == NULL || state->terminal == NULL || data == NULL || len <= 0)
+    {
+        return;
+    }
+    
+    /* Only feed to terminal if snoop mode is active */
+    if (state->terminal->snoop_mode)
+    {
+        ansiterm_process_block(state->terminal, (const unsigned char *)data, len);
+        ansiterm_update_dirty(state->terminal);
+    }
+}
+
+static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    
+    if (event == NULL || state == NULL || state->terminal == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    ansiterm_redraw(state->terminal, &event->data);
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    int key_code;
+    int result;
+    
+    if (event == NULL || state == NULL || state->terminal == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    /* If not in input mode, pass key through */
+    if (!state->terminal->input_mode)
+    {
+        Desk_Wimp_ProcessKey(event->data.key.code);
+        return Desk_bool_TRUE;
+    }
+    
+    key_code = event->data.key.code;
+    result = ansiterm_keypress(state->terminal, key_code);
+    
+    if (result > 0)
+    {
+        /* Send the character to the input pipe (so script receives it) */
+        char ch = (char)result;
+        pipes_input_write_block(state->line_id, &ch, 1);
+    }
+    else if (result < 0)
+    {
+        /* Arrow keys - send ANSI escape sequences */
+        const char *seq = NULL;
+        switch (result)
+        {
+        case -1: seq = "\033[A"; break;  /* Up */
+        case -2: seq = "\033[B"; break;  /* Down */
+        case -3: seq = "\033[C"; break;  /* Right */
+        case -4: seq = "\033[D"; break;  /* Left */
+        }
+        if (seq)
+        {
+            pipes_input_write_block(state->line_id, seq, 3);
+        }
+    }
+    else
+    {
+        /* Key not handled - pass to Wimp */
+        Desk_Wimp_ProcessKey(key_code);
+    }
+    
+    return Desk_bool_TRUE;
 }
