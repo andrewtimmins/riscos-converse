@@ -54,8 +54,11 @@ The workspace includes `SharedLibs` containing:
 - **Filer**: Manages databases (UserDB, FileDB, MsgDB). See detailed architecture below.
 - **Support**: Shared state module (`ConverseBBS`) for configuration and line state. Server pushes config values on startup; LineTask queries them. See Support Module section below.
 - **Server**:
-  - `Server/c/main` drives the listener, sockets, and DeskLib UI (`status` and `doors` windows). Icons for the main status window are created dynamically in rows of seven (line number, user, activity, hostname, timer, action, view) starting at icon index **13**; call `main_window_icon_index(line, column)` instead of hard-coding numbers so layout helpers stay in sync.
+  - `Server/c/main` drives the listener, sockets, and DeskLib UI (`status` and `doors` windows). Icons for the main status window are created dynamically in rows of eight (line number, user, activity, hostname, timer, disconnect, view, logon) starting at icon index **13**; call `main_window_icon_index(line, column)` instead of hard-coding numbers so layout helpers stay in sync.
   - Each main-window row consumes 64 pixels of height, and the window reserves two 64-pixel header rows plus a 10-pixel padding margin. Update `MAIN_WINDOW_TOP_STATIC_ROWS`, `MAIN_WINDOW_PADDING`, or related helpers when adjusting layout.
+  - **Status Header Icons**: Icon 1 = Connections Enabled (radio), Icon 2 = Chat Pager (radio), Icon 4 = Total Uptime (HH:MM:SS text), Icon 6 = Total Calls (5-digit counter). Use `Desk_Icon_Select()`/`Desk_Icon_Deselect()` for radio buttons, NOT raw `Desk_Wimp_SetIconState`.
+  - **Status Updates**: 1-second timer updates uptime and call totals. Call totals read from Filer Statistics SWI 0x5AA44 reason 0. Uptime calculated from `server_start_time` (Unix timestamp).
+  - **Connection Control**: `connections_enabled` flag checked in `check_listener()` to reject new connections when disabled.
   - Door window rows follow the same 64-pixel stepping with helper functions for calculating visible rows and extents. Always adjust both extent calculations and icon creation if the geometry changes.
   - Timers use `timer_set`/`timer_action` handles stored as `long`. When refreshing UI state (e.g., connection timelines or resolver text), respect the column assignments noted above so user text and hostname text do not overwrite each other.
   - The server listens for several Wimp messages from LineTask (see Wimp Messages section below).
@@ -1179,4 +1182,246 @@ int tic_store_file(const TIC_FILE *tic, const char *file_path);
 int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
 unsigned long tic_calculate_crc32(const char *file_path);
 ```
+
+### Automatic Toss and Poll Intervals
+The FTN config supports automatic tossing and polling on configurable intervals:
+
+**Configuration (`Demo/Config/FTN`):**
+```
+tossinterval    300     ; Seconds between automatic toss runs (0 = disabled)
+pollinterval    3600    ; Seconds between automatic uplink polls (0 = disabled)
+```
+
+**Implementation:**
+- `FTN_GLOBAL_CONFIG` struct contains `toss_interval` and `poll_interval` fields
+- Support module SWI 0x5AA86 (FTNConfig) fields 8 and 9 for get/set
+- Server parses `tossinterval` and `pollinterval` from FTN config file
+- FTN Mailer uses timers in null poll handler to trigger automatic operations
+- Intervals are in seconds; timer comparison uses `time(NULL)`
+
+**Support Module Fields (SWI 0x5AA86, SetGlobal reason 1):**
+| Field | Value | Type | Description |
+|-------|-------|------|-------------|
+| toss_interval | 8 | int | Seconds between auto-toss (0=disabled) |
+| poll_interval | 9 | int | Seconds between auto-poll (0=disabled) |
+
+## Server Status Window
+
+### Overview
+The Server application (`Server/`) displays a status window with connection information and system statistics. The window is divided into a static header area and dynamic per-line rows.
+
+### Window Layout
+- **Window Width**: 1736 OS units (fixed)
+- **Row Height**: 64 OS units per line
+- **Header Rows**: 2 static rows (128 OS units) + 10-pixel padding
+- **Static Icons**: Icons 0-12 are header elements created in template
+- **Dynamic Icons**: Icons 13+ are created at runtime for each configured line
+
+### Status Header Icons (`Server/h/iconnames`)
+```c
+#define STATUS_CONNECTIONSENABLED 1  /* Radio button: connections enabled */
+#define STATUS_CHATPAGER          2  /* Radio button: chat pager enabled */
+#define STATUS_TOTALTIME          4  /* Text: uptime HH:MM:SS */
+#define STATUS_TOTALCALLS         6  /* Text: call counter 00000 */
+```
+
+### Per-Line Icon Columns
+Each line row contains 8 icons (increased from 7 to add Logon button):
+
+| Column | Index | Width (OS) | Purpose |
+|--------|-------|------------|---------||
+| 0 | 0 | 56 | Line number |
+| 1 | 1 | 200 | Username/waiting |
+| 2 | 2 | 430 | Activity text |
+| 3 | 3 | 510 | Hostname |
+| 4 | 4 | 169 | Connect timer |
+| 5 | 5 | 56 | D (Disconnect) button |
+| 6 | 6 | 56 | V (View) button |
+| 7 | 7 | 56 | L (Logon) button |
+
+**Icon Index Calculation:**
+```c
+#define ICONS_PER_LINE 8
+#define FIRST_DYNAMIC_ICON 13
+
+int main_window_icon_index(int line, int column)
+{
+    return FIRST_DYNAMIC_ICON + (line * ICONS_PER_LINE) + column;
+}
+```
+
+### Status Update Functions (`Server/c/main`)
+
+**Initialization:**
+```c
+static void status_initialise(void)
+{
+    server_start_time = time(NULL);
+    connections_enabled = 1;
+    status_set_icon_selected(STATUS_CONNECTIONSENABLED, 1);
+    
+    /* Set chat pager from config */
+    if (str_casecmp(system_configuration[0].pager, "yes") == 0)
+    {
+        chat_pager_enabled = 1;
+        status_set_icon_selected(STATUS_CHATPAGER, 1);
+    }
+    
+    status_update_uptime();
+    status_update_call_totals();
+    status_update_timer = timer_set(100);  /* 1 second = 100cs */
+}
+```
+
+**Periodic Update (in null poll handler):**
+```c
+static void status_poll_update(void)
+{
+    if (timer_action(status_update_timer))
+    {
+        status_update_uptime();
+        status_update_call_totals();
+        status_update_timer = timer_set(100);
+    }
+}
+```
+
+**Icon Selection (uses DeskLib properly):**
+```c
+static void status_set_icon_selected(Desk_icon_handle icon, int selected)
+{
+    if (selected)
+    {
+        Desk_Icon_Select(main_window, icon);
+    }
+    else
+    {
+        Desk_Icon_Deselect(main_window, icon);
+    }
+}
+```
+
+**Important:** Do NOT use raw `Desk_Wimp_SetIconState` for radio button selection. Use `Desk_Icon_Select()` and `Desk_Icon_Deselect()` from `Desk.Icon.h`.
+
+**Uptime Display:**
+```c
+static void status_update_uptime(void)
+{
+    time_t now = time(NULL);
+    int elapsed = (int)(now - server_start_time);
+    int hours = elapsed / 3600;
+    int minutes = (elapsed % 3600) / 60;
+    int seconds = elapsed % 60;
+    
+    snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hours, minutes, seconds);
+    Desk_Icon_SetText(main_window, STATUS_TOTALTIME, time_str);
+}
+```
+
+**Call Totals (queries Filer Statistics SWI):**
+```c
+static int filer_get_call_totals(void)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = STATS_REASON_READ_CALL_TOTALS;  /* 0 */
+    if (_kernel_swi(SWI_CONVERSEFILER_STATISTICS, &regs, &regs) != NULL)
+        return 0;
+    return regs.r[0];
+}
+
+static void status_update_call_totals(void)
+{
+    int total_calls = filer_get_call_totals();
+    snprintf(calls_str, sizeof(calls_str), "%05d", total_calls);
+    Desk_Icon_SetText(main_window, STATUS_TOTALCALLS, calls_str);
+}
+```
+
+### Connection Enable/Disable
+The `connections_enabled` flag controls whether the listener accepts new connections:
+
+```c
+/* In check_listener() */
+if (!connections_enabled)
+{
+    /* Reject connection immediately */
+    Desk_Socket_Close(client_socket);
+    return;
+}
+```
+
+Toggle via STATUS_CONNECTIONSENABLED icon click:
+```c
+static void status_handle_checkbox_click(Desk_icon_handle icon)
+{
+    if (icon == STATUS_CONNECTIONSENABLED)
+    {
+        connections_enabled = !connections_enabled;
+        status_set_icon_selected(STATUS_CONNECTIONSENABLED, connections_enabled);
+    }
+}
+```
+
+### Global Variables (`Server/h/main`)
+```c
+extern int connections_enabled;      /* 1 = accepting connections */
+extern int chat_pager_enabled;       /* 1 = chat pager active */
+extern time_t server_start_time;     /* Unix timestamp of server start */
+extern long status_update_timer;     /* Timer handle for 1-second updates */
+```
+
+## Call Logging and Statistics
+
+### Call Counter Integration
+The call counter increments on each successful user login via the Filer Logging SWI.
+
+**LineTask Call Logging (`LineTask/c/main`):**
+```c
+/* Constants for call logging */
+#define FILER_LOG_REASON_CALL        2
+#define CALL_STATUS_ANSWERED         0
+#define CALL_STATUS_HUNGUP           1
+#define CALL_STATUS_ABORTED          2
+#define CALL_STATUS_REJECTED         3
+
+/* After successful authentication in script_host_authenticate_user(): */
+{
+    _kernel_swi_regs call_regs;
+    call_regs.r[0] = FILER_LOG_REASON_CALL;
+    call_regs.r[1] = state->line_id;
+    call_regs.r[2] = user_id;
+    call_regs.r[3] = CALL_STATUS_ANSWERED;
+    _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &call_regs, &call_regs);
+}
+```
+
+**Filer Module Handler (`Filer/c/filer`):**
+```c
+case FILER_LOG_CMD_CALL:
+    log_call((int)r->r[1], (int)r->r[2], (int)r->r[3]);
+    r->r[0] = 0;
+    break;
+```
+
+**Statistics Increment (`Filer/c/logging`):**
+```c
+void log_call(int line_id, int user_id, int status_id)
+{
+    /* ... write to call log file ... */
+    (void)stats_increment_call_totals();
+}
+```
+
+**Statistics Storage (`Filer/c/stats`):**
+- File: `<Converse$Dir>.Resources.Data.CallCount`
+- Format: Plain text integer
+- Auto-created with value `0` if missing
+- Persisted on each increment and module finalisation
+
+### Call Log File Format
+Path: `<Converse$Dir>.Logs.Calls`
+```
+DD/MM/YYYY,HH:MM:SS,line_id,user_id,status
+```
+Status values: `Answered`, `Hungup`, `Aborted`, `Rejected`
 
