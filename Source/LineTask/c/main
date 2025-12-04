@@ -783,6 +783,9 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
                 regs.r[1] = task_state.line_id;
                 regs.r[2] = (int)"";
                 _kernel_swi(SWI_CONVERSEBBS_ACTIVITY, &regs, &regs);
+
+                /* Also send Wimp message to Server to update UI immediately */
+                script_host_report_activity(&task_state, "");
             }
         }
         Desk_Window_Hide(event->data.openblock.window);
