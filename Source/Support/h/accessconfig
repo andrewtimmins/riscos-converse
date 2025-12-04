@@ -1,0 +1,32 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Access Configuration                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef ACCESSCONFIG_H
+#define ACCESSCONFIG_H
+
+#include "kernel.h"
+
+#define MAX_BANS 100
+
+typedef struct
+{
+    unsigned int ip;      /* IP address (host byte order) */
+    unsigned int mask;    /* Subnet mask (host byte order) */
+} ACCESS_BAN_RECORD;
+
+/* SWI Reason Codes */
+typedef enum
+{
+    ACCESS_CONFIG_ADD_BAN = 0,
+    ACCESS_CONFIG_CLEAR_BANS = 1,
+    ACCESS_CONFIG_CHECK_IP = 2,
+    ACCESS_CONFIG_GET_COUNT = 3,
+    ACCESS_CONFIG_GET_BAN = 4
+} ACCESS_CONFIG_REASON;
+
+void accessconfig_initialise(void);
+void accessconfig_finalise(void);
+void accessconfig_swi_handler(_kernel_swi_regs *r);
+
+#endif

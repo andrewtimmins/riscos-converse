@@ -1,0 +1,94 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Access Configuration                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+#include "kernel.h"
+#include "accessconfig.h"
+
+static ACCESS_BAN_RECORD bans[MAX_BANS];
+static int ban_count = 0;
+
+void accessconfig_initialise(void)
+{
+    ban_count = 0;
+    memset(bans, 0, sizeof(bans));
+}
+
+void accessconfig_finalise(void)
+{
+    /* Nothing to clean up */
+}
+
+void accessconfig_swi_handler(_kernel_swi_regs *r)
+{
+    ACCESS_CONFIG_REASON reason;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (ACCESS_CONFIG_REASON)r->r[0];
+
+    switch (reason)
+    {
+        case ACCESS_CONFIG_ADD_BAN:
+            if (ban_count < MAX_BANS)
+            {
+                bans[ban_count].ip = (unsigned int)r->r[1];
+                bans[ban_count].mask = (unsigned int)r->r[2];
+                ban_count++;
+                r->r[0] = 0; /* Success */
+            }
+            else
+            {
+                r->r[0] = -1; /* Full */
+            }
+            break;
+
+        case ACCESS_CONFIG_CLEAR_BANS:
+            ban_count = 0;
+            r->r[0] = 0;
+            break;
+
+        case ACCESS_CONFIG_CHECK_IP:
+        {
+            unsigned int check_ip = (unsigned int)r->r[1];
+            int i;
+            int banned = 0;
+
+            for (i = 0; i < ban_count; i++)
+            {
+                if ((check_ip & bans[i].mask) == (bans[i].ip & bans[i].mask))
+                {
+                    banned = 1;
+                    break;
+                }
+            }
+            r->r[0] = banned;
+            break;
+        }
+
+        case ACCESS_CONFIG_GET_COUNT:
+            r->r[0] = ban_count;
+            break;
+
+        case ACCESS_CONFIG_GET_BAN:
+        {
+            int index = r->r[1];
+            if (index >= 0 && index < ban_count)
+            {
+                r->r[0] = bans[index].ip;
+                r->r[1] = bans[index].mask;
+            }
+            else
+            {
+                r->r[0] = 0;
+                r->r[1] = 0;
+            }
+            break;
+        }
+    }
+}

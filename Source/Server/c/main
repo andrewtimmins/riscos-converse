@@ -1426,6 +1426,29 @@ void check_listener(void)
 				return;
 			}
 
+			/* Check for banned IP */
+			{
+				_kernel_swi_regs regs;
+				regs.r[0] = ACCESS_CMD_CHECK;
+				regs.r[1] = (int)saddr.sin_addr.s_addr;
+				
+				/* Only check if the SWI call succeeds. If the Support module is old/missing, allow access. */
+				if (_kernel_swi(SWI_SUPPORT_ACCESS, &regs, &regs) == NULL)
+				{
+					if (regs.r[0])
+					{
+						char *ip_str = inet_ntoa(saddr.sin_addr);
+						debug_printf("server: Rejected banned connection from %s", ip_str);
+						socketwrite(line_configuration[socket_poll].socket, "Access Denied\r\n", 15);
+						shutdown(line_configuration[socket_poll].socket, 0);
+						socketclose(line_configuration[socket_poll].socket);
+						line_configuration[socket_poll].socket = 0;
+						active_sockets--;
+						return;
+					}
+				}
+			}
+
 			// Make the client socket non-blocking so we don't hang waiting for data
 			socketioctl(line_configuration[socket_poll].socket, FIONBIO, &nonblock);
 		}
@@ -2410,6 +2433,7 @@ int main(void) {
 	load_msgbase_config();
 	load_filebase_config();
 	load_ftn_config();
+	load_access_config();
 	{
 		int i;
 		for (i = 0; i < line_configurations; i++)

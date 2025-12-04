@@ -1,7 +1,7 @@
 # Makefile for Support
 
 COMPONENT   = Support
-OBJS        = config debug filebaseconfig ftnconfig lineconfig linestate msgbaseconfig support
+OBJS        = config debug filebaseconfig ftnconfig lineconfig linestate msgbaseconfig accessconfig support
 LIBS        = OSLib:o.OSLib32
 CMHGDEPENDS = support
 CFLAGS      = -c -depend !Depend -I,C: -apcs 3/32bit -Wcdp -throwback -fan
@@ -28,6 +28,9 @@ o.debug:	h.debug
 o.filebaseconfig:	c.filebaseconfig
 o.filebaseconfig:	h.filebaseconfig
 o.filebaseconfig:	C:h.kernel
+o.ftnconfig:	c.ftnconfig
+o.ftnconfig:	h.ftnconfig
+o.ftnconfig:	C:h.kernel
 o.lineconfig:	c.lineconfig
 o.lineconfig:	C:h.kernel
 o.lineconfig:	C:h.swis
@@ -40,11 +43,10 @@ o.linestate:	C:h.kernel
 o.msgbaseconfig:	c.msgbaseconfig
 o.msgbaseconfig:	h.msgbaseconfig
 o.msgbaseconfig:	C:h.kernel
-h.SupportHdr:	cmhg.SupportHdr
-o.SupportHdr:	cmhg.SupportHdr
-o.ftnconfig:	c.ftnconfig
-o.ftnconfig:	h.ftnconfig
-o.ftnconfig:	C:h.kernel
+o.accessconfig:	c.accessconfig
+o.accessconfig:	C:h.kernel
+o.accessconfig:	h.accessconfig
+o.accessconfig:	C:h.kernel
 o.support:	c.support
 o.support:	C:h.kernel
 o.support:	h.supporthdr
@@ -62,3 +64,7 @@ o.support:	h.filebaseconfig
 o.support:	C:h.kernel
 o.support:	h.ftnconfig
 o.support:	C:h.kernel
+o.support:	h.accessconfig
+o.support:	C:h.kernel
+h.SupportHdr:	cmhg.SupportHdr
+o.SupportHdr:	cmhg.SupportHdr

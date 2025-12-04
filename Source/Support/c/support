@@ -15,6 +15,7 @@
 #include "msgbaseconfig.h"
 #include "filebaseconfig.h"
 #include "ftnconfig.h"
+#include "accessconfig.h"
 
 /* SWI numbers (offset from chunk base) */
 typedef enum
@@ -25,7 +26,8 @@ typedef enum
     SWI_LINECONFIG = 3,
     SWI_MSGBASECONFIG = 4,
     SWI_FILEBASECONFIG = 5,
-    SWI_FTNCONFIG = 6
+    SWI_FTNCONFIG = 6,
+    SWI_ACCESSCONFIG = 7
 } SUPPORT_SWI;
 
 /* Command numbers */
@@ -36,7 +38,8 @@ typedef enum
     CMD_LINES = 2,
     CMD_MSGBASES = 3,
     CMD_FILEBASES = 4,
-    CMD_FTN = 5
+    CMD_FTN = 5,
+    CMD_ACCESS = 6
 } SUPPORT_COMMAND;
 
 /* ******************************************************************************************************************************************************** */
@@ -55,6 +58,7 @@ _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *
     msgbaseconfig_initialise();
     filebaseconfig_initialise();
     ftnconfig_initialise();
+    accessconfig_initialise();
 
     return NULL;
 }
@@ -65,6 +69,7 @@ _kernel_oserror *module_finalise(int fatal, int podule, void *pw)
     UNUSED(podule);
     UNUSED(pw);
 
+    accessconfig_finalise();
     ftnconfig_finalise();
     filebaseconfig_finalise();
     msgbaseconfig_finalise();
@@ -119,6 +124,10 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
 
         case SWI_FTNCONFIG:
             ftnconfig_swi_handler(r);
+            break;
+
+        case SWI_ACCESSCONFIG:
+            accessconfig_swi_handler(r);
             break;
 
         default:
@@ -417,6 +426,49 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
             else
             {
                 puts("  Configuration not loaded.");
+            }
+
+            puts("");
+            break;
+        }
+
+        case CMD_ACCESS:
+        {
+            _kernel_swi_regs regs;
+            int count, i;
+            unsigned int ip, mask;
+
+            puts("ConverseBBS Access Control List:\n");
+
+            /* Get count */
+            regs.r[0] = ACCESS_CONFIG_GET_COUNT;
+            accessconfig_swi_handler(&regs);
+            count = regs.r[0];
+
+            if (count > 0)
+            {
+                printf("Active Bans: %d\n\n", count);
+                puts("Index | IP Address      | Subnet Mask");
+                puts("------+-----------------+-----------------");
+
+                for (i = 0; i < count; i++)
+                {
+                    regs.r[0] = ACCESS_CONFIG_GET_BAN;
+                    regs.r[1] = i;
+                    accessconfig_swi_handler(&regs);
+                    
+                    ip = (unsigned int)regs.r[0];
+                    mask = (unsigned int)regs.r[1];
+
+                    printf("%5d | %3d.%3d.%3d.%3d | %3d.%3d.%3d.%3d\n",
+                           i,
+                           (ip >> 0) & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF,
+                           (mask >> 0) & 0xFF, (mask >> 8) & 0xFF, (mask >> 16) & 0xFF, (mask >> 24) & 0xFF);
+                }
+            }
+            else
+            {
+                puts("  No active bans.");
             }
 
             puts("");

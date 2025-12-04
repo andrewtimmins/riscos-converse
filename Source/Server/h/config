@@ -5,6 +5,15 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* SWI numbers */
+#define SWI_SUPPORT_ACCESS      0x5AA87
+
+/* Access command codes */
+#define ACCESS_CMD_ADD          0
+#define ACCESS_CMD_CLEAR        1
+#define ACCESS_CMD_CHECK        2
+#define ACCESS_CMD_LIST         3
+
 /* Load messagebase configuration from Config.MsgBases */
 void load_msgbase_config(void);
 
@@ -13,5 +22,8 @@ void load_filebase_config(void);
 
 /* Load FTN configuration from Config.FTN */
 void load_ftn_config(void);
+
+/* Load access configuration from Config.Access */
+void load_access_config(void);
 
 #endif

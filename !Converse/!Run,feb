@@ -7,6 +7,8 @@ Set Converse$Path <Converse$Dir>.
 IconSprites <Converse$Dir>.!Sprites
 Set File$Type_120 ANSI
 
+If "<Converse$Running>" = "1" Then Error Converse is already running.
+
 RMEnsure UtilityModule 3.70 Error RISC OS 3.70 or higher is required.
 If "<System$Path>" = "" Then Error 0 !System resources cannot be found.
 
@@ -16,10 +18,17 @@ RMEnsure SharedCLibrary 6.23 Error 0 Shared C Library 6.23 or higher is requred.
 Set ARCbbs$text <Converse$Dir>.Temp
 Set ARCbbsA$text <Converse$Dir>.Temp
 
-RMEnsure ConverseBBS 0.01 RMLoad <Converse$Dir>.Resources.Support
-RMEnsure ConverseFiler 0.01 RMLoad <Converse$Dir>.Resources.Filer
-RMEnsure ConversePipes 0.01 RMLoad <Converse$Dir>.Resources.Pipes
-RMEnsure ARCbbs_Doors 0.01 RMLoad <Converse$Dir>.Resources.ARCbbs
+Set Converse$Loaded 1
+RMEnsure ConverseBBS 0.00 Set Converse$Loaded 0
+If "<Converse$Loaded>" = "1" Then RMKill ConverseBBS
+If "<Converse$Loaded>" = "1" Then RMKill ConversePipes
+If "<Converse$Loaded>" = "1" Then RMKill ConverseFiler
+If "<Converse$Loaded>" = "1" Then RMKill ARCbbs_Doors
+
+RMLoad <Converse$Dir>.Resources.Support
+RMLoad <Converse$Dir>.Resources.Filer
+RMLoad <Converse$Dir>.Resources.Pipes
+RMLoad <Converse$Dir>.Resources.ARCbbs
 
 
 WimpSlot -Min 64k -Max 64k

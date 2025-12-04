@@ -10,6 +10,16 @@
 #include "kernel.h"
 #include "swis.h"
 
+#define COMPAT_INET4 1
+#include "sys/types.h" 
+#include "sys/socket.h"
+#include "socklib.h"
+#include "inetlib.h"
+#include "netinet/in.h"
+#include "sys/ioctl.h"
+#include "sys/errno.h"
+#include "netdb.h"
+
 #include "config.h"
 #include "debug.h"
 
@@ -1214,3 +1224,81 @@ void load_ftn_config(void)
     fclose(file);
     debug_printf("config: FTN config loaded");
 }
+
+/* Load access configuration from Config.Access */
+void load_access_config(void)
+{
+    FILE *file;
+    char line[MAX_LINE];
+    char *key, *value;
+    _kernel_swi_regs regs;
+
+    debug_printf("config: Loading access config...");
+
+    /* Clear existing bans */
+    regs.r[0] = ACCESS_CMD_CLEAR;
+    _kernel_swi(SWI_SUPPORT_ACCESS, &regs, &regs);
+
+    file = fopen("<Converse$Dir>.Config.Access", "r");
+    if (file == NULL)
+    {
+        debug_printf("config: No access config found");
+        return;
+    }
+
+    while (fgets(line, sizeof(line), file))
+    {
+        parse_key_value(line, &key, &value);
+
+        if (key == NULL)
+            continue;
+
+        if (strcmp(key, "ban") == 0 && value != NULL)
+        {
+            char *slash = strchr(value, '/');
+            unsigned int ip = 0;
+            unsigned int mask = 0xFFFFFFFF;
+
+            if (slash)
+            {
+                *slash = '\0';
+                ip = inet_addr(value);
+                
+                /* Check if mask is CIDR or dotted quad */
+                if (strchr(slash + 1, '.'))
+                {
+                    mask = inet_addr(slash + 1);
+                }
+                else
+                {
+                    int bits = atoi(slash + 1);
+                    if (bits >= 0 && bits <= 32)
+                    {
+                        if (bits == 0)
+                            mask = 0;
+                        else
+                            mask = htonl(0xFFFFFFFF << (32 - bits));
+                    }
+                }
+            }
+            else
+            {
+                ip = inet_addr(value);
+                mask = 0xFFFFFFFF; /* /32 */
+            }
+
+            if (ip != (unsigned int)-1)
+            {
+                regs.r[0] = ACCESS_CMD_ADD;
+                regs.r[1] = (int)ip;
+                regs.r[2] = (int)mask;
+                _kernel_swi(SWI_SUPPORT_ACCESS, &regs, &regs);
+                debug_printf("config: Banned %s (mask %08X)", value, mask);
+            }
+        }
+    }
+
+    fclose(file);
+    debug_printf("config: Access config loaded");
+}
+

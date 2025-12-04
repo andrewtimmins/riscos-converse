@@ -10,7 +10,7 @@ service-call-handler:   module_service 17
 
 swi-chunk-base-number:  0x5AA80
 swi-handler-code:       module_swi_handler
-swi-decoding-table:     ConverseBBS, Config, Line, Activity, LineConfig, MsgBaseConfig, FileBaseConfig, FTNConfig
+swi-decoding-table:     ConverseBBS, Config, Line, Activity, LineConfig, MsgBaseConfig, FileBaseConfig, FTNConfig, AccessConfig
 
 command-keyword-table:  module_command_handler
   BBS_Status(invalid-syntax: "Syntax: *BBS_Status\n",
@@ -30,4 +30,7 @@ command-keyword-table:  module_command_handler
     min-args:0, max-args:0),
   BBS_FTN(invalid-syntax: "Syntax: *BBS_FTN\n",
     help-text: "*BBS_FTN displays the FTN network configuration.\n",
+    min-args:0, max-args:0),
+  BBS_Access(invalid-syntax: "Syntax: *BBS_Access\n",
+    help-text: "*BBS_Access displays the access control list.\n",
     min-args:0, max-args:0)
