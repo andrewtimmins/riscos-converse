@@ -37,6 +37,7 @@
 #define SWI_CONVERSE_PIPES_OUTPUT_WRITE (PIPES_SWI_BASE + 5)
 #define SWI_CONVERSE_PIPES_INPUT_WRITE  (PIPES_SWI_BASE + 8)
 #define SWI_OS_BYTE                     0x00000006
+#define SWI_Wimp_SetCaretPosition       0x400D2
 
 #define PIPE_TRANSFER_CHUNK 256
 #define PIPE_CONTROL_TOKEN      ((unsigned char)0x00)
@@ -627,6 +628,19 @@ static void show_main_window(void)
     if (main_window_handle != 0)
     {
         Desk_Window_Show(main_window_handle, Desk_open_CENTERED);
+
+        /* Set input focus to the window */
+        {
+            _kernel_swi_regs regs;
+            regs.r[0] = main_window_handle;
+            regs.r[1] = -1; /* Icon handle (-1 for window) */
+            regs.r[2] = 0;  /* X offset */
+            regs.r[3] = 0;  /* Y offset */
+            regs.r[4] = -1; /* Height (-1 for default) */
+            regs.r[5] = 0;  /* Index */
+            _kernel_swi(SWI_Wimp_SetCaretPosition, &regs, &regs);
+        }
+
         /* Enable terminal snoop and input modes when window is shown */
         if (task_state.terminal != NULL)
         {
@@ -1013,6 +1027,13 @@ static void process_server_stream(line_task_state *state)
 
 static void handle_plain_server_byte(line_task_state *state, unsigned char byte)
 {
+    /* Feed input to terminal for sysop snoop (echo user input) */
+    if (state->terminal && state->terminal->snoop_mode)
+    {
+        ansiterm_process_byte(state->terminal, byte);
+        ansiterm_update_dirty(state->terminal);
+    }
+
     if (state->session_active != 0 || 
         (state->terminal && state->terminal->input_mode && script_get_status(&state->script) != SCRIPT_STATUS_IDLE))
     {
@@ -1261,6 +1282,13 @@ static void pipes_output_write_string(int line_id, const char *string)
              ansiterm_invalidate(task_state.terminal);
         }
         return;
+    }
+
+    /* Feed output to terminal for sysop snoop */
+    if (task_state.terminal && task_state.terminal->snoop_mode)
+    {
+        ansiterm_process_block(task_state.terminal, (const unsigned char *)string, strlen(string));
+        ansiterm_update_dirty(task_state.terminal);
     }
 
     while (*string != '\0')
@@ -2161,9 +2189,11 @@ static void script_host_write(void *context, const char *text)
     {
         pipes_output_write_string(state->line_id, text);
     }
-    
-    /* Feed output to terminal for sysop snoop */
-    terminal_feed_output(state, text, strlen(text));
+    else
+    {
+        /* In local mode, pipes_output_write_string handles terminal feed internally */
+        pipes_output_write_string(state->line_id, text);
+    }
 }
 
 static void script_host_launch_door(void *context, const char *command_line)
@@ -4246,6 +4276,13 @@ static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
         /* Send the character to the input pipe (so script receives it) */
         char ch = (char)result;
         pipes_input_write_block(state->line_id, &ch, 1);
+        
+        /* Local echo for sysop input */
+        if (state->terminal->snoop_mode)
+        {
+            ansiterm_process_byte(state->terminal, (unsigned char)ch);
+            ansiterm_update_dirty(state->terminal);
+        }
     }
     else if (result < 0)
     {
@@ -4261,6 +4298,13 @@ static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
         if (seq)
         {
             pipes_input_write_block(state->line_id, seq, 3);
+            
+            /* Local echo for sysop input (arrows) */
+            if (state->terminal->snoop_mode)
+            {
+                ansiterm_process_block(state->terminal, (const unsigned char *)seq, 3);
+                ansiterm_update_dirty(state->terminal);
+            }
         }
     }
     else
