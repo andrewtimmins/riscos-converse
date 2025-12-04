@@ -40,6 +40,7 @@
         "types": "cpp",
         "ftnlog": "cpp",
         "packer": "cpp",
-        "tic": "cpp"
+        "tic": "cpp",
+        "icon": "cpp"
     }
 }

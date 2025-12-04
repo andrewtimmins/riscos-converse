@@ -60,10 +60,17 @@
 #define FILER_SWI_LOGGING            0
 #define FILER_SWI_USERDB             1
 #define FILER_LOG_REASON_LINE        1
+#define FILER_LOG_REASON_CALL        2
 #define FILER_USERDB_CMD_SEARCH      3
 #define FILER_USERDB_CMD_AUTHENTICATE 4
 #define SWI_CONVERSE_FILER_LOGGING   (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
 #define SWI_CONVERSE_FILER_USERDB    (CONVERSE_FILER_BASE + FILER_SWI_USERDB)
+
+/* Call status values for FILER_LOG_REASON_CALL */
+#define CALL_STATUS_ANSWERED         0
+#define CALL_STATUS_HUNGUP           1
+#define CALL_STATUS_ABORTED          2
+#define CALL_STATUS_REJECTED         3
 
 /* ConverseBBS Support module SWIs */
 #define SWI_CONVERSEBBS_CONFIG       0x5AA80
@@ -2495,6 +2502,16 @@ static int script_host_authenticate_user(void *context, const char *username, co
         
         snprintf(log_msg, sizeof(log_msg), "User '%s' logged in (id=%d, level=%d%s)", username, user_id, access_level, is_sysop ? ", sysop" : "");
         log_line_event(state->line_id, log_msg);
+        
+        /* Log the call (increments call counter) */
+        {
+            _kernel_swi_regs call_regs;
+            call_regs.r[0] = FILER_LOG_REASON_CALL;
+            call_regs.r[1] = state->line_id;
+            call_regs.r[2] = user_id;
+            call_regs.r[3] = CALL_STATUS_ANSWERED;
+            _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &call_regs, &call_regs);
+        }
         
         debug_printf("script_host_authenticate_user: success user_id=%d access=%d", user_id, access_level);
     }

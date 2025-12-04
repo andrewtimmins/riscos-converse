@@ -204,6 +204,10 @@ static int str_casecmp(const char *s1, const char *s2)
 #define SWI_CONVERSEBBS_ACTIVITY   0x5AA82
 #define SWI_CONVERSEBBS_LINECONFIG 0x5AA83
 
+/* ConverseFiler Statistics SWI */
+#define SWI_CONVERSEFILER_STATISTICS 0x5AA44
+#define STATS_REASON_READ_CALL_TOTALS 0
+
 /* Config reason codes */
 #define CONFIG_REASON_GET 0
 #define CONFIG_REASON_SET 1
@@ -649,6 +653,119 @@ static int support_get_transfer_active(int line_id)
 
 /* *********************************************************************************************************************************************************************************** */
 /* *********************************************************************************************************************************************************************************** */
+/* Status Window Functions                                                                                                                                                             */
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
+
+static int filer_get_call_totals(void)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = STATS_REASON_READ_CALL_TOTALS;
+	if (_kernel_swi(SWI_CONVERSEFILER_STATISTICS, &regs, &regs) != NULL)
+	{
+		return 0;
+	}
+	return regs.r[0];
+}
+
+static void status_set_icon_selected(Desk_icon_handle icon, int selected)
+{
+	if (selected)
+	{
+		Desk_Icon_Select(main_window, icon);
+	}
+	else
+	{
+		Desk_Icon_Deselect(main_window, icon);
+	}
+}
+
+static void status_update_uptime(void)
+{
+	time_t now;
+	int elapsed;
+	int hours, minutes, seconds;
+	char time_str[16];
+
+	now = time(NULL);
+	elapsed = (int)(now - server_start_time);
+	hours = elapsed / 3600;
+	minutes = (elapsed % 3600) / 60;
+	seconds = elapsed % 60;
+
+	snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hours, minutes, seconds);
+	Desk_Icon_SetText(main_window, STATUS_TOTALTIME, time_str);
+}
+
+static void status_update_call_totals(void)
+{
+	int total_calls;
+	char calls_str[16];
+
+	total_calls = filer_get_call_totals();
+	snprintf(calls_str, sizeof(calls_str), "%05d", total_calls);
+	Desk_Icon_SetText(main_window, STATUS_TOTALCALLS, calls_str);
+}
+
+static void status_initialise(void)
+{
+	/* Record server start time */
+	server_start_time = time(NULL);
+
+	/* Set connections enabled by default */
+	connections_enabled = 1;
+	status_set_icon_selected(STATUS_CONNECTIONSENABLED, 1);
+
+	/* Set chat pager based on config */
+	if (str_casecmp(system_configuration[0].pager, "yes") == 0)
+	{
+		chat_pager_enabled = 1;
+		status_set_icon_selected(STATUS_CHATPAGER, 1);
+	}
+	else
+	{
+		chat_pager_enabled = 0;
+		status_set_icon_selected(STATUS_CHATPAGER, 0);
+	}
+
+	/* Initial status update */
+	status_update_uptime();
+	status_update_call_totals();
+
+	/* Set up timer for periodic updates (every second = 100 centiseconds) */
+	status_update_timer = timer_set(100);
+}
+
+static void status_poll_update(void)
+{
+	/* Check if timer has fired */
+	if (timer_action(status_update_timer))
+	{
+		status_update_uptime();
+		status_update_call_totals();
+		status_update_timer = timer_set(100);
+	}
+}
+
+static void status_handle_checkbox_click(Desk_icon_handle icon)
+{
+	if (icon == STATUS_CONNECTIONSENABLED)
+	{
+		/* Toggle connections enabled state */
+		connections_enabled = !connections_enabled;
+		status_set_icon_selected(STATUS_CONNECTIONSENABLED, connections_enabled);
+	}
+	else if (icon == STATUS_CHATPAGER)
+	{
+		/* Toggle chat pager state */
+		chat_pager_enabled = !chat_pager_enabled;
+		status_set_icon_selected(STATUS_CHATPAGER, chat_pager_enabled);
+	}
+}
+
+/* *********************************************************************************************************************************************************************************** */
+/* *********************************************************************************************************************************************************************************** */
 /* Wimp Functions                                                                                                                                                                      */
 /* *********************************************************************************************************************************************************************************** */
 /* *********************************************************************************************************************************************************************************** */
@@ -729,6 +846,16 @@ Desk_bool wimp_handle_button_click(Desk_event_pollblock *event, void *ref)
 		{
 			int line_id;
 			int column;
+
+			/* Check if it's a status checkbox click */
+			if (mouse->icon == STATUS_CONNECTIONSENABLED || 
+			    mouse->icon == STATUS_CHATPAGER)
+			{
+				status_handle_checkbox_click(mouse->icon);
+				return Desk_bool_TRUE;
+			}
+
+			/* Check if it's a line row button */
 			if (main_window_icon_to_line(mouse->icon, &line_id, &column) != Desk_bool_FALSE)
 			{
 				if (column == MAIN_WINDOW_COLUMN_VIEW)
@@ -792,6 +919,9 @@ Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
 
 		socket_poll++;
 	}
+
+	/* Update status window periodically */
+	status_poll_update();
 	
 	return Desk_bool_TRUE;
 }
@@ -1260,6 +1390,22 @@ void check_listener(void)
    if (FD_ISSET(listening_socket, &is_socket_ready))
    {
       // There is a connection pending.
+
+      // Check if connections are disabled by sysop
+      if (!connections_enabled)
+      {
+         int orphaned_socket;
+
+         orphaned_socket = accept(listening_socket, (struct sockaddr *)0, (int *)0);
+         if (orphaned_socket != -1)
+         {
+            socketwrite(orphaned_socket, error_connections_disabled, strlen(error_connections_disabled));
+            shutdown(orphaned_socket, 0);
+            socketclose(orphaned_socket);
+         }
+         return;
+      }
+
 		if (active_sockets >= line_configurations)
       	{
          int orphaned_socket;
@@ -2275,6 +2421,7 @@ int main(void) {
 
 	create_line_icons();
 	create_listener();
+	status_initialise();
 	atexit(destroy_listener);
 
 	while(wimp.quit == Desk_bool_FALSE) poll_idle();

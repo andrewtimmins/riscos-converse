@@ -138,4 +138,11 @@
     static fd_set is_socket_ready;
     static struct timeval socket_timeout;
     static char socket_buffer[256] = "";
+
+    /* Status window state */
+    static int connections_enabled = 1;      /* 1 = accepting connections */
+    static int chat_pager_enabled = 0;       /* 1 = chat pager on */
+    static time_t server_start_time = 0;     /* When server started */
+    static long status_update_timer = 0;     /* Timer for status updates */
+    static char error_connections_disabled[128] = "Sorry, connections to this BBS have been disabled by the Sysop.\r\n";
 #endif
