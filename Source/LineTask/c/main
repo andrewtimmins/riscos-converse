@@ -225,6 +225,10 @@ typedef struct
     int user_sysop;
     char user_keys[128];
     char user_realname[64];
+    /* User stats (from USER_STATS in USER_RECORD) */
+    script_user_stats user_stats;
+    /* User flags (from USER_FLAGS in USER_RECORD) */
+    script_user_flags user_flags;
     /* Sysop chat state */
     Desk_bool chat_paging;              /* Pager window is open */
     Desk_bool chat_active;              /* Chat session is active */
@@ -334,6 +338,8 @@ static const char *script_host_get_anykey_file(void *context);
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
 static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
 static int script_host_get_user_id(void *context);
+static const script_user_stats *script_host_get_user_stats(void *context);
+static const script_user_flags *script_host_get_user_flags(void *context);
 static void script_host_start_chat_pager(void *context, const char *reason);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
@@ -533,6 +539,8 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.start_transfer = script_host_start_transfer;
         host.start_receive_transfer = script_host_start_receive_transfer;
         host.get_user_id = script_host_get_user_id;
+        host.get_user_stats = script_host_get_user_stats;
+        host.get_user_flags = script_host_get_user_flags;
         host.start_chat_pager = script_host_start_chat_pager;
         script_initialise(&state->script, &host);
     }
@@ -558,6 +566,8 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
     state->user_sysop = 0;
     state->user_keys[0] = '\0';
     state->user_realname[0] = '\0';
+    memset(&state->user_stats, 0, sizeof(state->user_stats));
+    memset(&state->user_flags, 0, sizeof(state->user_flags));
 }
 
 static void initialise_resources(void)
@@ -727,6 +737,8 @@ static void perform_session_disconnect(line_task_state *state)
     state->user_sysop = 0;
     state->user_keys[0] = '\0';
     state->user_realname[0] = '\0';
+    memset(&state->user_stats, 0, sizeof(state->user_stats));
+    memset(&state->user_flags, 0, sizeof(state->user_flags));
     
     /* Reset user display in Server status window */
     send_user_message(state->line_id, NULL);
@@ -2788,6 +2800,15 @@ static int script_host_authenticate_user(void *context, const char *username, co
             #define USER_RECORD_OFFSET_HISTORY_MESSAGEBASEAREA 660
             #define USER_RECORD_OFFSET_HISTORY_FILEBASE        664
             #define USER_RECORD_OFFSET_HISTORY_FILEBASEAREA    668
+            /* USER_STATS offsets: starts at 672 (after USER_HISTORY) */
+            #define USER_RECORD_OFFSET_STATS_LASTLOGON         672
+            #define USER_RECORD_OFFSET_STATS_LASTSCAN          676
+            #define USER_RECORD_OFFSET_STATS_CALLS             680
+            #define USER_RECORD_OFFSET_STATS_TODAYTIME         684
+            #define USER_RECORD_OFFSET_STATS_UPLOADSKB         688
+            #define USER_RECORD_OFFSET_STATS_DOWNLOADSKB       692
+            #define USER_RECORD_OFFSET_STATS_UPLOADS           696
+            #define USER_RECORD_OFFSET_STATS_DOWNLOADS         700
             
             int last_messagebase = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_MESSAGEBASE));
             int last_messagebasearea = *((int *)(record_bytes + USER_RECORD_OFFSET_HISTORY_MESSAGEBASEAREA));
@@ -2811,8 +2832,45 @@ static int script_host_authenticate_user(void *context, const char *username, co
             strncpy(state->mb_session.user_realname, state->user_realname, sizeof(state->mb_session.user_realname) - 1);
             state->mb_session.user_realname[sizeof(state->mb_session.user_realname) - 1] = '\0';
             
+            /* Load user stats from USER_STATS */
+            state->user_stats.lastlogon = *((time_t *)(record_bytes + USER_RECORD_OFFSET_STATS_LASTLOGON));
+            state->user_stats.lastscan = *((time_t *)(record_bytes + USER_RECORD_OFFSET_STATS_LASTSCAN));
+            state->user_stats.calls = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_CALLS));
+            state->user_stats.todaytime = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_TODAYTIME));
+            state->user_stats.uploadskb = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_UPLOADSKB));
+            state->user_stats.downloadskb = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_DOWNLOADSKB));
+            state->user_stats.uploads = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_UPLOADS));
+            state->user_stats.downloads = *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_DOWNLOADS));
+            
+            /* Load user flags from USER_FLAGS */
+            #define USER_RECORD_OFFSET_FLAGS_ANSI           584
+            #define USER_RECORD_OFFSET_FLAGS_MORE           588
+            #define USER_RECORD_OFFSET_FLAGS_LINES          592
+            #define USER_RECORD_OFFSET_FLAGS_CLS            596
+            #define USER_RECORD_OFFSET_FLAGS_EXPERT         612
+            #define USER_RECORD_OFFSET_FLAGS_NOLIMIT        620
+            #define USER_RECORD_OFFSET_FLAGS_INVISIBLE      624
+            #define USER_RECORD_OFFSET_FLAGS_CHATACCESS     632
+            #define USER_RECORD_OFFSET_FLAGS_RATIOS         644
+            #define USER_RECORD_OFFSET_FLAGS_MAXTIME        648
+            #define USER_RECORD_OFFSET_FLAGS_DEFAULTPROTOCOL 652
+            
+            state->user_flags.ansi = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_ANSI));
+            state->user_flags.more = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_MORE));
+            state->user_flags.lines = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_LINES));
+            state->user_flags.cls = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_CLS));
+            state->user_flags.expert = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_EXPERT));
+            state->user_flags.nolimit = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_NOLIMIT));
+            state->user_flags.invisible = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_INVISIBLE));
+            state->user_flags.chataccess = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_CHATACCESS));
+            state->user_flags.ratios = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_RATIOS));
+            state->user_flags.maxtime = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_MAXTIME));
+            state->user_flags.defaultprotocol = *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_DEFAULTPROTOCOL));
+            
             debug_printf("Loaded user history: fb=%d/%d mb=%d/%d", 
                 last_filebase, last_filebasearea, last_messagebase, last_messagebasearea);
+            debug_printf("Loaded user stats: calls=%d uploads=%d downloads=%d", 
+                state->user_stats.calls, state->user_stats.uploads, state->user_stats.downloads);
         }
         
         /* Send user name to Server to update status window */
@@ -3076,6 +3134,30 @@ static int script_host_get_user_id(void *context)
     }
 
     return state->user_id;
+}
+
+static const script_user_stats *script_host_get_user_stats(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return NULL;
+    }
+
+    return &state->user_stats;
+}
+
+static const script_user_flags *script_host_get_user_flags(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return NULL;
+    }
+
+    return &state->user_flags;
 }
 
 /* ******************************************************************************************************************************************************** */

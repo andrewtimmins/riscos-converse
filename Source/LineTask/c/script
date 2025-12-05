@@ -12,6 +12,7 @@
 #include "script.h"
 #include "filebase.h"
 #include "messagebase.h"
+#include "main.h"
 
 #define SCRIPT_DEFAULT_INSTRUCTION_CAPACITY 32
 #define SCRIPT_DEFAULT_LABEL_CAPACITY 16
@@ -96,6 +97,8 @@ static int script_handle_embedded_text_as_instruction(script_state *state, const
 static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context);
 static const char *script_invert_operator(const char *op);
 static void script_reset_if_state(void);
+static int script_push_call_stack(script_state *state);
+static int script_pop_call_stack(script_state *state);
 static int script_handle_embedded_text_as_output(script_state *state, const char *text, size_t length, int line_number, void *context);
 static int script_handle_embedded_command_as_output(script_state *state, const char *command_text, int line_number, void *context);
 static void script_save_user_history(script_state *state);
@@ -135,9 +138,37 @@ void script_initialise(script_state *state, const script_host *host)
 
 void script_dispose(script_state *state)
 {
+    size_t i;
+    
     if (state == NULL)
     {
         return;
+    }
+
+    /* Free any call stack entries first */
+    while (state->call_depth > 0)
+    {
+        script_call_frame *frame = &state->call_stack[state->call_depth - 1];
+        
+        if (frame->instructions != NULL)
+        {
+            for (i = 0; i < frame->instruction_count; ++i)
+            {
+                script_free_instruction(&frame->instructions[i]);
+            }
+            free(frame->instructions);
+        }
+        
+        if (frame->labels != NULL)
+        {
+            for (i = 0; i < frame->label_count; ++i)
+            {
+                script_free_label(&frame->labels[i]);
+            }
+            free(frame->labels);
+        }
+        
+        state->call_depth--;
     }
 
     script_clear_program(state);
@@ -148,12 +179,9 @@ void script_dispose(script_state *state)
     state->instruction_count = 0;
     state->instruction_capacity = 0;
 
+    for (i = 0; i < state->label_count; ++i)
     {
-        size_t i;
-        for (i = 0; i < state->label_count; ++i)
-        {
-            script_free_label(&state->labels[i]);
-        }
+        script_free_label(&state->labels[i]);
     }
     free(state->labels);
     state->labels = NULL;
@@ -271,7 +299,17 @@ void script_process(script_state *state)
 
     if (state->status == SCRIPT_STATUS_RUNNING && state->program_counter >= state->instruction_count)
     {
-        state->status = SCRIPT_STATUS_COMPLETED;
+        /* Script finished - check if we need to return to a calling script */
+        if (script_pop_call_stack(state))
+        {
+            /* Restored calling script - continue running */
+            state->status = SCRIPT_STATUS_RUNNING;
+        }
+        else
+        {
+            /* No calling script - we're done */
+            state->status = SCRIPT_STATUS_COMPLETED;
+        }
     }
 }
 
@@ -946,6 +984,89 @@ static void script_reset_if_state(void)
 {
     script_if_depth = 0;
     script_if_counter = 0;
+}
+
+/* Push current script state onto call stack before loading subscript */
+static int script_push_call_stack(script_state *state)
+{
+    script_call_frame *frame;
+    
+    if (state->call_depth >= SCRIPT_MAX_CALL_DEPTH)
+    {
+        script_set_error(state, "Script call stack overflow (max depth %d)", SCRIPT_MAX_CALL_DEPTH);
+        return 0;
+    }
+    
+    frame = &state->call_stack[state->call_depth];
+    
+    /* Save current program state */
+    frame->instructions = state->instructions;
+    frame->instruction_count = state->instruction_count;
+    frame->instruction_capacity = state->instruction_capacity;
+    frame->labels = state->labels;
+    frame->label_count = state->label_count;
+    frame->label_capacity = state->label_capacity;
+    frame->return_pc = state->program_counter + 1;  /* Return to instruction after 'script' command */
+    
+    state->call_depth++;
+    
+    /* Clear state for new script (don't free - we saved the pointers) */
+    state->instructions = NULL;
+    state->instruction_count = 0;
+    state->instruction_capacity = 0;
+    state->labels = NULL;
+    state->label_count = 0;
+    state->label_capacity = 0;
+    
+    return 1;
+}
+
+/* Pop call stack and restore previous script state */
+static int script_pop_call_stack(script_state *state)
+{
+    script_call_frame *frame;
+    size_t i;
+    
+    if (state->call_depth <= 0)
+    {
+        return 0;  /* Nothing to pop - script is finished */
+    }
+    
+    /* Free current (subscript) program */
+    if (state->instructions != NULL)
+    {
+        for (i = 0; i < state->instruction_count; ++i)
+        {
+            script_free_instruction(&state->instructions[i]);
+        }
+        free(state->instructions);
+    }
+    
+    if (state->labels != NULL)
+    {
+        for (i = 0; i < state->label_count; ++i)
+        {
+            script_free_label(&state->labels[i]);
+        }
+        free(state->labels);
+    }
+    
+    state->call_depth--;
+    frame = &state->call_stack[state->call_depth];
+    
+    /* Restore previous script state */
+    state->instructions = frame->instructions;
+    state->instruction_count = frame->instruction_count;
+    state->instruction_capacity = frame->instruction_capacity;
+    state->labels = frame->labels;
+    state->label_count = frame->label_count;
+    state->label_capacity = frame->label_capacity;
+    state->program_counter = frame->return_pc;
+    
+    /* Clear the frame */
+    memset(frame, 0, sizeof(*frame));
+    
+    return 1;
 }
 
 static const char *script_invert_operator(const char *op)
@@ -3273,8 +3394,20 @@ static void script_execute_instruction(script_state *state, script_instruction *
         break;
 
         case SCRIPT_CMD_RETURN:
-            state->status = SCRIPT_STATUS_COMPLETED;
-            break;
+        {
+            /* Return from subscript to calling script, or complete if top-level */
+            if (script_pop_call_stack(state))
+            {
+                /* Restored calling script - continue running */
+                state->status = SCRIPT_STATUS_RUNNING;
+            }
+            else
+            {
+                /* No calling script - we're done */
+                state->status = SCRIPT_STATUS_COMPLETED;
+            }
+        }
+        break;
 
         case SCRIPT_CMD_PAUSE:
         {
@@ -3381,8 +3514,31 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 break;
             }
 
+            /* Push current script onto call stack before loading subscript */
+            if (!script_push_call_stack(state))
+            {
+                state->status = SCRIPT_STATUS_ERROR;
+                break;
+            }
+            
+            /* Allocate new instruction/label arrays for subscript */
+            state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+            state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+            state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
+            state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+            
+            if (state->instructions == NULL || state->labels == NULL)
+            {
+                script_set_error(state, "Out of memory loading subscript");
+                script_pop_call_stack(state);  /* Restore previous state */
+                state->status = SCRIPT_STATUS_ERROR;
+                break;
+            }
+
             if (!script_start(state, path))
             {
+                /* script_start failed - pop call stack to restore previous script */
+                script_pop_call_stack(state);
                 state->status = SCRIPT_STATUS_ERROR;
             }
             return;
@@ -4011,12 +4167,13 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
             struct tm *local_tm = localtime(&now);
             if (local_tm != NULL)
             {
-                strftime(temp, sizeof(temp), "%H:%M:%S", local_tm);
+                snprintf(temp, sizeof(temp), "%02d:%02d:%02d", 
+                    local_tm->tm_hour, local_tm->tm_min, local_tm->tm_sec);
                 replacement = temp;
             }
             else
             {
-                replacement = "";
+                replacement = "00:00:00";
             }
         }
         else if (script_stringcasecmp(macro_name, "date") == 0)
@@ -4025,13 +4182,18 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
             struct tm *local_tm = localtime(&now);
             if (local_tm != NULL)
             {
-                strftime(temp, sizeof(temp), "%Y-%m-%d", local_tm);
+                snprintf(temp, sizeof(temp), "%02d/%02d/%04d", 
+                    local_tm->tm_mday, local_tm->tm_mon + 1, 1900 + local_tm->tm_year);
                 replacement = temp;
             }
             else
             {
-                replacement = "";
+                replacement = "01/01/1970";
             }
+        }
+        else if (script_stringcasecmp(macro_name, "version") == 0)
+        {
+            replacement = APP_VERSION;
         }
         else if (script_stringcasecmp(macro_name, "hour") == 0)
         {
@@ -4143,6 +4305,165 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         {
             const char *keys = state->host.get_user_keys != NULL ? state->host.get_user_keys(state->host.context) : "";
             replacement = (keys != NULL) ? keys : "";
+        }
+        /* User stats macros */
+        else if (state != NULL && script_stringcasecmp(macro_name, "lastlogon") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            if (stats != NULL && stats->lastlogon > 0)
+            {
+                struct tm *tm_info = localtime(&stats->lastlogon);
+                if (tm_info != NULL)
+                {
+                    strftime(temp, sizeof(temp), "%d/%m/%Y %H:%M", tm_info);
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "Never";
+                }
+            }
+            else
+            {
+                replacement = "Never";
+            }
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "lastscan") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            if (stats != NULL && stats->lastscan > 0)
+            {
+                struct tm *tm_info = localtime(&stats->lastscan);
+                if (tm_info != NULL)
+                {
+                    strftime(temp, sizeof(temp), "%d/%m/%Y %H:%M", tm_info);
+                    replacement = temp;
+                }
+                else
+                {
+                    replacement = "Never";
+                }
+            }
+            else
+            {
+                replacement = "Never";
+            }
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "usercalls") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->calls : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "todaytime") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->todaytime : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "uploadskb") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->uploadskb : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "downloadskb") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->downloadskb : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "useruploads") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->uploads : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userdownloads") == 0)
+        {
+            const script_user_stats *stats = state->host.get_user_stats != NULL ? 
+                state->host.get_user_stats(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", stats != NULL ? stats->downloads : 0);
+            replacement = temp;
+        }
+        /* User flags macros */
+        else if (state != NULL && script_stringcasecmp(macro_name, "useransi") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->ansi) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "usermore") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->more) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userlines") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", flags != NULL ? flags->lines : 24);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "usercls") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->cls) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userexpert") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->expert) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "usernolimit") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->nolimit) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userinvisible") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            replacement = (flags != NULL && flags->invisible) ? "1" : "0";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userchataccess") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", flags != NULL ? flags->chataccess : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userratios") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", flags != NULL ? flags->ratios : 0);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "usermaxtime") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", flags != NULL ? flags->maxtime : 60);
+            replacement = temp;
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "userprotocol") == 0)
+        {
+            const script_user_flags *flags = state->host.get_user_flags != NULL ? 
+                state->host.get_user_flags(state->host.context) : NULL;
+            snprintf(temp, sizeof(temp), "%d", flags != NULL ? flags->defaultprotocol : 5);
+            replacement = temp;
         }
         /* Filebase selection macros */
         else if (state != NULL && script_stringcasecmp(macro_name, "filebaseid") == 0)
@@ -5606,10 +5927,19 @@ static int script_process_embedded_content(script_state *state, const char *buff
 
         if (ch == '{')
         {
+            /* Check if this is %{...} macro syntax - if so, treat as literal */
+            int is_macro = (literal.length > 0 && literal.data[literal.length - 1] == '%');
+            
             if (index + 1 < length && buffer[index + 1] == '{')
             {
+                /* Escaped {{ becomes literal { */
                 index++;
                 ch = '{';
+            }
+            else if (is_macro)
+            {
+                /* This is %{ - treat the { as literal, will be expanded later */
+                /* Fall through to append_char below */
             }
             else
             {

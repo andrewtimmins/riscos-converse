@@ -2,11 +2,12 @@
     cls
 
     doing `Welcome...`
-    type `<Converse$Dir>.BBS.Welcome`
-    
+    script `<Converse$Dir>.BBS.Welcome`
+    anykey
+
     if %{registered} == 1 then
         doing `Registration reminder...`
-        type  `<Converse$Dir>.BBS.Register`
+        script  `<Converse$Dir>.BBS.Register`
     end if
 
     doing `Today in history...`
@@ -18,6 +19,5 @@
     doing `Login scan...`
     /* loginscan */
     anykey
-
 
 }

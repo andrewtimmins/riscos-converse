@@ -2,23 +2,45 @@
 Welcome to the {fg 3}Yellow Toaster BBS,{fg 2} using{fg 2} Converse BBS software,
 a Bulletin Board System server designed for RISC OS.
 
-Converse is programmed in C, supports modern features and is Open Source!
+Converse is programmed in C, supports modern features and is {flash 1}Open Source!{flash 0}
 It is designed to be {fg 1}user-friendly{fg 3}, {fg 3}versatile{fg 2} and {fg 7}expandable{fg 3}.
 
 You can find out more at https://www.github.com/andrewtimmins/riscos-converse
 
 {fg 2,flash 1}Please mail the sysop if you're interested in running an Converse system!{flash 0}
 
-{fg 3}The time is X and the date is X.
-{fg 2}You have X time left for this call.
-{fg 3}You have logged on X times, and are caller number X.
-{fg 2}You last called on X
-{fg 3}Your user-level is X, and your usernumber is X
+{fg 3}The time is %{time} and the date is %{date}.
+{fg 2}You have used %{todaytime} minutes so far today.
+{fg 3}You have logged on %{usercalls} times.
+{fg 2}You last called on %{lastlogon}.
+{fg 3}Your user-level is %{accesslevel}, and your usernumber is #%{userid}
 
-{fg 6}You are using Converse  version X.
+{fg 6}You are using Converse version %{version}.
 
 {fg 3,}Please read the latest news from the Main Menu...
 
-Your current default download protocol is X.
+{
+    if %{userprotocol} == 0 then
+        print `Your default protocol is XMODEM\r\n`
+    else
+        if %{userprotocol} == 1 then
+            print `Your default protocol is XMODEM-CRC\r\n`
+        else
+            if %{userprotocol} == 2 then
+                print `Your default protocol is XMODEM-1K\r\n`
+            else
+                if %{userprotocol} == 3 then
+                    print `Your default protocol is YMODEM\r\n`
+                else
+                    if %{userprotocol} == 4 then
+                        print `Your default protocol is YMODEM-G\r\n`
+                    else
+                        print `Your default protocol is ZMODEM\r\n`
+                    end if
+                end if
+            end if
+        end if
+    end if
+}
 
 {anykey}

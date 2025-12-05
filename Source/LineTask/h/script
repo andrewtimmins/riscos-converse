@@ -4,6 +4,35 @@
 #include <stddef.h>
 #include <time.h>
 
+/* User flags for macro expansion */
+typedef struct script_user_flags
+{
+    int ansi;
+    int more;
+    int lines;
+    int cls;
+    int expert;
+    int nolimit;
+    int invisible;
+    int chataccess;
+    int ratios;
+    int maxtime;
+    int defaultprotocol;
+} script_user_flags;
+
+/* User statistics for macro expansion */
+typedef struct script_user_stats
+{
+    time_t lastlogon;
+    time_t lastscan;
+    int calls;
+    int todaytime;
+    int uploadskb;
+    int downloadskb;
+    int uploads;
+    int downloads;
+} script_user_stats;
+
 typedef struct script_host
 {
     void *context;
@@ -40,6 +69,10 @@ typedef struct script_host
     void (*start_chat_pager)(void *context, const char *reason);
     /* Get the configured anykey file path */
     const char *(*get_anykey_file)(void *context);
+    /* Get user statistics */
+    const script_user_stats *(*get_user_stats)(void *context);
+    /* Get user flags */
+    const script_user_flags *(*get_user_flags)(void *context);
 } script_host;
 
 typedef enum
@@ -132,6 +165,20 @@ typedef struct script_variable
     char *value;
 } script_variable;
 
+/* Call stack frame for subscript calls */
+#define SCRIPT_MAX_CALL_DEPTH 8
+
+typedef struct script_call_frame
+{
+    script_instruction *instructions;
+    size_t instruction_count;
+    size_t instruction_capacity;
+    script_label *labels;
+    size_t label_count;
+    size_t label_capacity;
+    size_t return_pc;  /* Program counter to return to */
+} script_call_frame;
+
 typedef struct script_state
 {
     script_host host;
@@ -163,6 +210,9 @@ typedef struct script_state
     int ansi_parse_state;  /* 0=idle, 1=got ESC, 2=got [, 3=reading digits, 4=got ; */
     char ansi_response[32];
     int ansi_response_len;
+    /* Call stack for subscripts */
+    script_call_frame call_stack[SCRIPT_MAX_CALL_DEPTH];
+    int call_depth;
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);
