@@ -1,6 +1,0 @@
-| !Run file for !CCDoor
-| © 1994 Chris Jackson
-| Show the right call cost in ArcBBS!
-Set CCDoor$Dir <Obey$Dir>
-WimpSlot 16k 16k
-Run <CCDoor$Dir>.!RunImage

@@ -1,0 +1,25 @@
+# ReadNodes messages/configuration
+
+# Messages
+
+# The messages are not in alphabetical order! (You noticed?) They are in the
+# order I implemented them. So there. I hope you can figure them out. If you
+# translate them into a different language, please send the translated file
+# to me; I will distribute it (adding country support on the way) and consult
+# when I add new messages.
+
+TASK:NextCaller messages
+PLEASETYPE:Type your message now. `/?` on a blank line for help
+
+# HazEd-R messages
+
+HAZED_SAVE:Save %0 to disk?
+HAZED_ABORT:Abort %0?
+HAZED_MSGOBJ:message
+
+# Configuration
+
+DESTINATION:<RiscBBS$Dir>.BBS.NextCaller.Message
+
+# Yours etc.,
+# Steven Haslam (2:250/116.3)

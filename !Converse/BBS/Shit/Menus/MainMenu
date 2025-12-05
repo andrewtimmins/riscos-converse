@@ -1,0 +1,16 @@
+{fgbg 6 0}
+
+{fgbg 7 0}
+ [{fg 3 }1{fg 7}] Show ANSI Artwork Demo       [{fg 3 }2{fg 7}] Connection Status
+ [{fg 3 }3{fg 7}] Display Demo Message         [{fg 2 }4{fg 7}] Who's Online?
+
+ [{fg 3 }5{fg 7}] ARCbbs Doors                 [{fg 3 }6{fg 7}] RiscBBS Doors
+
+ [{fg 3 }F{fg 7}] Filebase                     [{fg 3 }M{fg 7}] Messagebase
+ [{fg 3 }P{fg 7}] Send Private Mail            [{fg 3 }N{fg 7}] Send Netmail
+
+ [{fg 5 }S{fg 7}] Chat with the Sysop
+
+ [{fg 1 }X{fg 7 }] Disconnect
+
+{fgbg 3 0}

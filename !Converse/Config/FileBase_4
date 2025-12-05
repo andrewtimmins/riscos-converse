@@ -1,0 +1,193 @@
+;
+; Filebase Configuration
+;
+
+filebase 4
+    name            Sinclair ZX/QL
+    type            0
+    accesslevel     0
+    keys            
+
+    ; === GENERAL & INFORMATION ===
+    area 95
+        name        New User Files
+        accesslevel 0
+        keys        
+    endarea
+
+    area 96
+        name        General Files
+        accesslevel 10
+        keys        
+    endarea
+
+    area 97
+        name        Text Files & Documents
+        accesslevel 10
+        keys        
+    endarea
+
+    area 98
+        name        Technical Specs & Manuals
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === APPLICATIONS ===
+    area 99
+        name        Applications
+        accesslevel 10
+        keys        
+    endarea
+
+    area 100
+        name        Utilities
+        accesslevel 10
+        keys        
+    endarea
+
+    area 101
+        name        Educational Software
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === GAMES & ENTERTAINMENT ===
+    area 102
+        name        Games
+        accesslevel 10
+        keys        
+    endarea
+
+    area 103
+        name        Game Cheats & Trainers
+        accesslevel 10
+        keys        
+    endarea
+
+    area 104
+        name        Demos
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === GRAPHICS & MULTIMEDIA ===
+    area 105
+        name        Graphics & Images
+        accesslevel 10
+        keys        
+    endarea
+
+    area 106
+        name        Fonts
+        accesslevel 10
+        keys        
+    endarea
+
+    area 107
+        name        Sprites & Icons
+        accesslevel 10
+        keys        
+    endarea
+
+    area 108
+        name        Sound & Music Files
+        accesslevel 10
+        keys        
+    endarea
+
+    area 109
+        name        Fractals & Mathematical Art
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === COMMUNICATIONS & NETWORKING ===
+    area 110
+        name        Communications Software
+        accesslevel 10
+        keys        
+    endarea
+
+    area 111
+        name        BBS Software & Doors
+        accesslevel 10
+        keys        
+    endarea
+
+    area 112
+        name        FTN & Networking Utils
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === PROGRAMMING & DEVELOPMENT ===
+    area 113
+        name        Programming Tools
+        accesslevel 10
+        keys        
+    endarea
+
+    area 114
+        name        Source Code - C
+        accesslevel 10
+        keys        
+    endarea
+
+    area 115
+        name        Source Code - BASIC
+        accesslevel 10
+        keys        
+    endarea
+
+    area 116
+        name        Source Code - Other
+        accesslevel 10
+        keys        
+    endarea
+
+    area 117
+        name        Libraries & Modules
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === SYSTEM & ADMINISTRATION ===
+    area 118
+        name        System Utilities
+        accesslevel 10
+        keys        
+    endarea
+
+    area 119
+        name        Archive & Compression
+        accesslevel 10
+        keys        
+    endarea
+
+    area 120
+        name        Security & Encryption
+        accesslevel 10
+        keys        
+    endarea
+
+    area 121
+        name        PGP & Public Keys
+        accesslevel 10
+        keys        
+    endarea
+
+    ; === FUN & MISCELLANEOUS ===
+    area 122
+        name        Humour & Jokes
+        accesslevel 10
+        keys        
+    endarea
+
+    area 123
+        name        Miscellaneous
+        accesslevel 10
+        keys        
+    endarea
+
+endfilebase

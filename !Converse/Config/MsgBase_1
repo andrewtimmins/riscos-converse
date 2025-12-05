@@ -1,46 +1,221 @@
 ;
-; Fidonet Messagebase Configuration
+; Local Messagebase Configuration
 ;
 
-messagebase 2
-    name            FTN Networks
-    type            1
+messagebase 1
+    name            Local Messages
+    type            0
     accesslevel     0
     keys            
 
-    ; Netmail area - no groups means it routes everywhere
+    ; === GENERAL DISCUSSION ===
     area 1
-        name        Netmail
-        tag         NETMAIL
-        areatype    2
-        daystokeep  0
+        name        General Chat
+        tag         GENERAL
+        areatype    0
+        daystokeep  365
     endarea
 
-    ; Example FTN echo areas with group filtering
-    ; Only uplinks whose groups match will receive these echoes
-    
     area 2
-        name        BBS Discussion
-        tag         BBS_DISCUSSION
-        areatype    1
-        daystokeep  90
-        groups      A
+        name        Introductions
+        tag         INTROS
+        areatype    0
+        daystokeep  180
     endarea
 
     area 3
-        name        Retro Computing
-        tag         RETRO_COMPUTING
-        areatype    1
+        name        News & Announcements
+        tag         NEWS
+        areatype    0
         daystokeep  90
-        groups      B,C
     endarea
 
     area 4
-        name        RISC OS
-        tag         RISCOS
-        areatype    1
+        name        Questions & Answers
+        tag         QUESTIONS
+        areatype    0
+        daystokeep  365
+    endarea
+
+    ; === COMPUTING & TECHNOLOGY ===
+    area 5
+        name        Hardware & Upgrades
+        tag         HARDWARE
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 6
+        name        Software Reviews
+        tag         REVIEWS
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 7
+        name        Internet & Networking
+        tag         INTERNET
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 8
+        name        Other Computers
+        tag         OTHERCOMP
+        areatype    0
+        daystokeep  180
+    endarea
+
+    ; === PROGRAMMING & DEVELOPMENT ===
+    area 9
+        name        Programming Discussion
+        tag         PROGRAMMING
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 10
+        name        BASIC Programming
+        tag         BASIC
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 11
+        name        C/C++ Programming
+        tag         C_PROG
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 12
+        name        ARM Assembly
+        tag         ASM
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 13
+        name        Web Development
+        tag         WEBDEV
+        areatype    0
+        daystokeep  180
+    endarea
+
+    ; === BBS & COMMUNICATIONS ===
+    area 14
+        name        BBS Discussion
+        tag         BBS
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 15
+        name        BBS Software Help
+        tag         BBSHELP
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 16
+        name        FTN & Echomail
+        tag         FTN
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 17
+        name        Door Games
+        tag         DOORS
+        areatype    0
         daystokeep  90
-        groups      C
+    endarea
+
+    ; === HOBBIES & INTERESTS ===
+    area 18
+        name        Gaming
+        tag         GAMING
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 19
+        name        Music & Audio
+        tag         MUSIC
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 20
+        name        Graphics & Art
+        tag         GRAPHICS
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 21
+        name        Retro Computing
+        tag         RETRO
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 22
+        name        Books & Literature
+        tag         BOOKS
+        areatype    0
+        daystokeep  90
+    endarea
+
+    ; === MARKETPLACE ===
+    area 23
+        name        For Sale
+        tag         FORSALE
+        areatype    0
+        daystokeep  60
+    endarea
+
+    area 24
+        name        Wanted
+        tag         WANTED
+        areatype    0
+        daystokeep  60
+    endarea
+
+    area 25
+        name        Trades & Swaps
+        tag         TRADES
+        areatype    0
+        daystokeep  60
+    endarea
+
+    ; === OFF-TOPIC & FUN ===
+    area 26
+        name        Off-Topic
+        tag         OFFTOPIC
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 27
+        name        Humour & Jokes
+        tag         HUMOUR
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 28
+        name        Current Events
+        tag         EVENTS
+        areatype    0
+        daystokeep  60
+    endarea
+
+    area 29
+        name        Sports & Hobbies
+        tag         SPORTS
+        areatype    0
+        daystokeep  60
     endarea
 
 endmessagebase

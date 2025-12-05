@@ -1,3 +1,0 @@
-WimpSlot -Min 32k -Max 32k
-Set HuntSysop$Dir <Obey$dir>
-Run <Obey$Dir>.Resources.!Doorimage %*0

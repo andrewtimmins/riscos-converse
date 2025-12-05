@@ -1,0 +1,21 @@
+{
+    /* Detect ANSI terminal capability */
+    detectansi ansi 3000
+
+    /* Store terminal type for later use */
+    if ansi == `1` goto show_ansi_logon
+    goto show_plain_logon
+
+    label show_ansi_logon
+    doing `Logging on...`
+    type `<Converse$Dir>.BBS.ANSI.Logon`
+    goto do_logon
+
+    label show_plain_logon
+    doing `Logging on...`
+    type `<Converse$Dir>.BBS.Text.Logon`
+    goto do_logon
+
+    label do_logon
+    logon
+}

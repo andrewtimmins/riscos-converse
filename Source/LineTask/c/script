@@ -20,6 +20,19 @@
 #define SCRIPT_LITERAL_BUFFER_CHUNK 256
 #define SCRIPT_MAX_INSTRUCTIONS_PER_POLL 1000  /* Prevent infinite loops from locking up */
 #define SCRIPT_ANSI_DETECT_TIMEOUT_CS 300  /* 3 second timeout in centiseconds */
+#define SCRIPT_MAX_IF_DEPTH 16  /* Maximum nesting depth for IF/THEN blocks */
+
+/* IF block tracking for compile-time transformation */
+typedef struct script_if_block
+{
+    char else_label[32];
+    char endif_label[32];
+    int has_else;
+} script_if_block;
+
+static script_if_block script_if_stack[SCRIPT_MAX_IF_DEPTH];
+static int script_if_depth = 0;
+static int script_if_counter = 0;
 
 typedef struct script_buffer
 {
@@ -58,9 +71,11 @@ static void script_free_label(script_label *label);
 static void script_free_variable(script_variable *variable);
 static clock_t script_calculate_sleep_deadline(unsigned int milliseconds);
 static int script_stringcasecmp(const char *lhs, const char *rhs);
+static char *script_strcasestr(const char *haystack, const char *needle);
 static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg);
 static void script_set_flash(script_state *state, const char *arg);
 static void script_send_clear_screen(script_state *state);
+static void script_send_clear_to_eol(script_state *state);
 static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
 static void script_display_file(script_state *state, const char *source, int trim_newlines);
 static void script_buffer_init(script_buffer *buffer);
@@ -79,6 +94,8 @@ static int script_process_embedded_block(script_state *state, const char *buffer
 static int script_process_embedded_content(script_state *state, const char *buffer, size_t length, const char *source_name, script_text_handler text_handler, script_command_handler command_handler, void *context);
 static int script_handle_embedded_text_as_instruction(script_state *state, const char *text, size_t length, int line_number, void *context);
 static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context);
+static const char *script_invert_operator(const char *op);
+static void script_reset_if_state(void);
 static int script_handle_embedded_text_as_output(script_state *state, const char *text, size_t length, int line_number, void *context);
 static int script_handle_embedded_command_as_output(script_state *state, const char *command_text, int line_number, void *context);
 static void script_save_user_history(script_state *state);
@@ -920,6 +937,28 @@ static void script_clear_program(script_state *state)
         }
     }
     state->label_count = 0;
+    
+    /* Reset IF block parsing state */
+    script_reset_if_state();
+}
+
+static void script_reset_if_state(void)
+{
+    script_if_depth = 0;
+    script_if_counter = 0;
+}
+
+static const char *script_invert_operator(const char *op)
+{
+    if (strcmp(op, "==") == 0) return "!=";
+    if (strcmp(op, "!=") == 0) return "==";
+    if (strcmp(op, ">") == 0) return "<=";
+    if (strcmp(op, "<") == 0) return ">=";
+    if (strcmp(op, ">=") == 0) return "<";
+    if (strcmp(op, "<=") == 0) return ">";
+    if (strcmp(op, "contains") == 0) return "!contains";
+    if (strcmp(op, "!contains") == 0) return "contains";
+    return op;
 }
 
 static void script_clear_variables(script_state *state)
@@ -1045,6 +1084,73 @@ static int script_parse_line(script_state *state, const char *line, int line_num
     trimmed = script_trim(line_copy);
     if (*trimmed == '\0' || script_is_empty_or_comment(trimmed))
     {
+        free(line_copy);
+        return 1;
+    }
+
+    /* Handle "else" keyword */
+    if (script_stringcasecmp(trimmed, "else") == 0)
+    {
+        script_instruction goto_instr;
+        
+        if (script_if_depth <= 0)
+        {
+            script_set_error(state, "else without matching if on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        if (script_if_stack[script_if_depth - 1].has_else)
+        {
+            script_set_error(state, "Duplicate else on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        /* Emit goto endif_label (to skip else block when condition was true) */
+        memset(&goto_instr, 0, sizeof(goto_instr));
+        goto_instr.type = SCRIPT_CMD_GOTO;
+        goto_instr.arg1 = script_duplicate_string(script_if_stack[script_if_depth - 1].endif_label);
+        if (!script_append_instruction(state, &goto_instr))
+        {
+            script_free_instruction(&goto_instr);
+            script_set_error(state, "Too many instructions (line %d)", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        /* Register the else label */
+        if (!script_register_label(state, script_if_stack[script_if_depth - 1].else_label))
+        {
+            script_set_error(state, "Unable to register else label on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        script_if_stack[script_if_depth - 1].has_else = 1;
+        free(line_copy);
+        return 1;
+    }
+    
+    /* Handle "end if" or "endif" keyword */
+    if (script_stringcasecmp(trimmed, "end if") == 0 || script_stringcasecmp(trimmed, "endif") == 0)
+    {
+        if (script_if_depth <= 0)
+        {
+            script_set_error(state, "end if without matching if on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        /* Register the endif label */
+        if (!script_register_label(state, script_if_stack[script_if_depth - 1].endif_label))
+        {
+            script_set_error(state, "Unable to register endif label on line %d", line_number);
+            free(line_copy);
+            return 0;
+        }
+        
+        script_if_depth--;
         free(line_copy);
         return 1;
     }
@@ -1196,20 +1302,20 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     if (script_stringcasecmp(token, "if") == 0)
     {
-        /* IF supports compound conditions with && (AND) and || (OR)
-         * Syntax: if <expr1> [&& <expr2>]... [|| <expr3>]... goto <label>
-         * Where each expr is: <var> <op> <value>
-         * Operators: ==, !=, >, <, >=, <=
+        /* IF supports two syntaxes:
+         * 1. if <condition> goto <label>     (original inline syntax)
+         * 2. if <condition> then             (block syntax with else/end if)
          * 
-         * Store entire condition in arg1, label in arg2
-         * 
-         * Use line_after_cmd which points to the rest of the line after "if"
+         * Conditions support: ==, !=, >, <, >=, <=, contains
+         * Compound conditions with && and || are supported
          */
         char *rest = line_after_cmd;
-        char *goto_keyword;
+        char *goto_keyword = NULL;
+        char *then_keyword = NULL;
         char *label_name;
         char *condition_text;
         char *search_pos;
+        int is_block_if = 0;
 
         if (*rest == '\0')
         {
@@ -1218,7 +1324,6 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         }
 
         /* Find the LAST occurrence of " goto " to handle compound conditions */
-        goto_keyword = NULL;
         search_pos = rest;
         while ((search_pos = strstr(search_pos, " goto ")) != NULL)
         {
@@ -1226,38 +1331,85 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
             search_pos += 6;
         }
         
-        /* Also try just "goto " if condition starts right at goto (shouldn't happen) */
-        if (goto_keyword == NULL && strncmp(rest, "goto ", 5) == 0)
+        /* Also check for " then" at end of line (block IF) */
         {
-            goto_keyword = rest;
+            size_t rest_len = strlen(rest);
+            if (rest_len >= 5)
+            {
+                char *end_check = rest + rest_len - 4;
+                if (script_stringcasecmp(end_check, "then") == 0 &&
+                    (end_check == rest || isspace((unsigned char)*(end_check - 1))))
+                {
+                    then_keyword = end_check;
+                    is_block_if = 1;
+                }
+            }
         }
         
-        if (goto_keyword == NULL)
+        if (goto_keyword == NULL && then_keyword == NULL)
         {
-            script_set_error(state, "If without goto on line %d", line_number);
+            script_set_error(state, "If without goto or then on line %d", line_number);
             return 0;
         }
-
-        /* Split at goto */
-        if (goto_keyword == rest)
+        
+        if (is_block_if)
         {
-            /* goto at start - no condition (shouldn't happen but handle it) */
-            condition_text = "";
-            label_name = script_trim(rest + 5);
+            /* Block IF: if <condition> then */
+            char inverted_condition[1024];
+            char *cond_start;
+            char *cond_end;
+            
+            if (script_if_depth >= SCRIPT_MAX_IF_DEPTH)
+            {
+                script_set_error(state, "Too many nested if blocks on line %d", line_number);
+                return 0;
+            }
+            
+            /* Extract condition (everything before "then") */
+            *then_keyword = '\0';
+            condition_text = script_trim(rest);
+            
+            /* Generate labels for this IF block */
+            script_if_counter++;
+            snprintf(script_if_stack[script_if_depth].else_label, 32, "_else_%d", script_if_counter);
+            snprintf(script_if_stack[script_if_depth].endif_label, 32, "_endif_%d", script_if_counter);
+            script_if_stack[script_if_depth].has_else = 0;
+            
+            /* For block IF, we need to invert the condition and jump to else/endif if false
+             * For now, we'll pass the original condition and let execution handle it
+             * with a special flag (arg3 = "block") to indicate inverted logic */
+            instruction->type = SCRIPT_CMD_IF;
+            instruction->arg1 = script_duplicate_string(condition_text);
+            /* Jump to else label if exists, otherwise endif label */
+            instruction->arg2 = script_duplicate_string(script_if_stack[script_if_depth].else_label);
+            instruction->arg3 = script_duplicate_string("block"); /* Flag: invert condition */
+            instruction->arg4 = script_duplicate_string(script_if_stack[script_if_depth].endif_label);
+            
+            script_if_depth++;
+            return 1;
         }
         else
         {
-            *goto_keyword = '\0';
-            condition_text = script_trim(rest);
-            label_name = script_trim(goto_keyword + 6); /* skip " goto " */
-        }
+            /* Original syntax: if <condition> goto <label> */
+            if (goto_keyword == rest)
+            {
+                condition_text = "";
+                label_name = script_trim(rest + 5);
+            }
+            else
+            {
+                *goto_keyword = '\0';
+                condition_text = script_trim(rest);
+                label_name = script_trim(goto_keyword + 6);
+            }
 
-        instruction->type = SCRIPT_CMD_IF;
-        instruction->arg1 = script_duplicate_string(condition_text);
-        instruction->arg2 = script_duplicate_string(label_name);
-        instruction->arg3 = NULL;
-        instruction->arg4 = NULL;
-        return 1;
+            instruction->type = SCRIPT_CMD_IF;
+            instruction->arg1 = script_duplicate_string(condition_text);
+            instruction->arg2 = script_duplicate_string(label_name);
+            instruction->arg3 = NULL;
+            instruction->arg4 = NULL;
+            return 1;
+        }
     }
 
     if (script_stringcasecmp(token, "set") == 0)
@@ -1449,9 +1601,35 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "oscli") == 0)
+    {
+        char *rest = strtok(NULL, "");
+        instruction->type = SCRIPT_CMD_OSCLI;
+        if (rest != NULL)
+        {
+            size_t consumed = 0;
+            char *value = NULL;
+            if (script_parse_backtick_string(rest, &consumed, &value))
+            {
+                instruction->arg1 = value;
+            }
+            else
+            {
+                instruction->arg1 = script_duplicate_string(script_trim(rest));
+            }
+        }
+        return 1;
+    }
+
     if (script_stringcasecmp(token, "cls") == 0)
     {
         instruction->type = SCRIPT_CMD_CLS;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "cll") == 0)
+    {
+        instruction->type = SCRIPT_CMD_CLL;
         return 1;
     }
 
@@ -2121,10 +2299,14 @@ static void script_execute_instruction(script_state *state, script_instruction *
         case SCRIPT_CMD_IF:
         {
             /* Compound condition support: var op value [&& var op value]... [|| var op value]...
-             * arg1 = full condition expression, arg2 = label
+             * arg1 = full condition expression, arg2 = label (or else_label for block IF)
+             * arg3 = "block" if this is a block IF (invert result)
+             * arg4 = endif_label for block IF (fallback if no else)
              */
             const char *condition_expr = instruction->arg1;
             const char *label = instruction->arg2;
+            const char *endif_label = instruction->arg4;
+            int is_block_if = (instruction->arg3 != NULL && strcmp(instruction->arg3, "block") == 0);
             int final_result = 0;
 
             if (condition_expr != NULL)
@@ -2151,7 +2333,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     int is_and = 0;
                     char *clause_end;
                     char clause[256];
-                    char var[128], op[8], val[256];
+                    char var[128], op[16], val[256];
                     char var_expanded[512], val_expanded[512];
                     const char *var_value;
                     int clause_result = 0;
@@ -2190,100 +2372,133 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     {
                         char *cp = clause;
                         char *var_start;
-                        char *op_start;
-                        char *val_start;
+                        char *contains_pos;
 
                         /* Skip leading whitespace */
                         while (*cp && isspace((unsigned char)*cp)) cp++;
                         var_start = cp;
 
-                        /* Find variable name end */
-                        while (*cp && !isspace((unsigned char)*cp) && 
-                               strncmp(cp, "==", 2) != 0 && strncmp(cp, "!=", 2) != 0 &&
-                               strncmp(cp, ">=", 2) != 0 && strncmp(cp, "<=", 2) != 0 &&
-                               *cp != '>' && *cp != '<') cp++;
-                        
+                        /* Check for "contains" operator first (word-based) */
+                        contains_pos = strstr(cp, " contains ");
+                        if (contains_pos != NULL)
                         {
-                            size_t vlen = (size_t)(cp - var_start);
+                            size_t vlen = (size_t)(contains_pos - var_start);
                             if (vlen >= sizeof(var)) vlen = sizeof(var) - 1;
                             strncpy(var, var_start, vlen);
                             var[vlen] = '\0';
-                            /* Trim trailing whitespace from var */
                             while (vlen > 0 && isspace((unsigned char)var[vlen-1])) var[--vlen] = '\0';
-                        }
-
-                        /* Skip whitespace before operator */
-                        while (*cp && isspace((unsigned char)*cp)) cp++;
-                        op_start = cp;
-
-                        /* Find operator */
-                        if (strncmp(cp, "==", 2) == 0 || strncmp(cp, "!=", 2) == 0 ||
-                            strncmp(cp, ">=", 2) == 0 || strncmp(cp, "<=", 2) == 0)
-                        {
-                            op[0] = *cp++;
-                            op[1] = *cp++;
-                            op[2] = '\0';
-                        }
-                        else if (*cp == '>' || *cp == '<')
-                        {
-                            op[0] = *cp++;
-                            op[1] = '\0';
-                        }
-                        else
-                        {
-                            op[0] = '\0';
-                        }
-
-                        /* Skip whitespace before value */
-                        while (*cp && isspace((unsigned char)*cp)) cp++;
-                        val_start = cp;
-
-                        /* Check for backtick-quoted value */
-                        if (*cp == '`')
-                        {
-                            char *end_tick = strchr(cp + 1, '`');
-                            if (end_tick != NULL)
+                            
+                            strcpy(op, "contains");
+                            cp = contains_pos + 10; /* skip " contains " */
+                            while (*cp && isspace((unsigned char)*cp)) cp++;
+                            
+                            /* Check for backtick-quoted value */
+                            if (*cp == '`')
                             {
-                                size_t vlen = (size_t)(end_tick - cp - 1);
-                                if (vlen >= sizeof(val)) vlen = sizeof(val) - 1;
-                                strncpy(val, cp + 1, vlen);
-                                val[vlen] = '\0';
+                                char *end_tick = strchr(cp + 1, '`');
+                                if (end_tick != NULL)
+                                {
+                                    size_t vlen2 = (size_t)(end_tick - cp - 1);
+                                    if (vlen2 >= sizeof(val)) vlen2 = sizeof(val) - 1;
+                                    strncpy(val, cp + 1, vlen2);
+                                    val[vlen2] = '\0';
+                                }
+                                else
+                                {
+                                    strncpy(val, cp + 1, sizeof(val) - 1);
+                                    val[sizeof(val) - 1] = '\0';
+                                }
                             }
                             else
                             {
-                                strncpy(val, cp + 1, sizeof(val) - 1);
+                                strncpy(val, cp, sizeof(val) - 1);
                                 val[sizeof(val) - 1] = '\0';
+                                {
+                                    size_t vlen2 = strlen(val);
+                                    while (vlen2 > 0 && isspace((unsigned char)val[vlen2-1])) val[--vlen2] = '\0';
+                                }
                             }
                         }
                         else
                         {
-                            /* Copy rest as value, trim trailing whitespace */
-                            strncpy(val, val_start, sizeof(val) - 1);
-                            val[sizeof(val) - 1] = '\0';
+                            /* Find variable name end (original logic) */
+                            while (*cp && !isspace((unsigned char)*cp) && 
+                                   strncmp(cp, "==", 2) != 0 && strncmp(cp, "!=", 2) != 0 &&
+                                   strncmp(cp, ">=", 2) != 0 && strncmp(cp, "<=", 2) != 0 &&
+                                   *cp != '>' && *cp != '<') cp++;
+                            
                             {
-                                size_t vlen = strlen(val);
-                                while (vlen > 0 && isspace((unsigned char)val[vlen-1])) val[--vlen] = '\0';
+                                size_t vlen = (size_t)(cp - var_start);
+                                if (vlen >= sizeof(var)) vlen = sizeof(var) - 1;
+                                strncpy(var, var_start, vlen);
+                                var[vlen] = '\0';
+                                while (vlen > 0 && isspace((unsigned char)var[vlen-1])) var[--vlen] = '\0';
+                            }
+
+                            /* Skip whitespace before operator */
+                            while (*cp && isspace((unsigned char)*cp)) cp++;
+
+                            /* Find operator */
+                            if (strncmp(cp, "==", 2) == 0 || strncmp(cp, "!=", 2) == 0 ||
+                                strncmp(cp, ">=", 2) == 0 || strncmp(cp, "<=", 2) == 0)
+                            {
+                                op[0] = *cp++;
+                                op[1] = *cp++;
+                                op[2] = '\0';
+                            }
+                            else if (*cp == '>' || *cp == '<')
+                            {
+                                op[0] = *cp++;
+                                op[1] = '\0';
+                            }
+                            else
+                            {
+                                op[0] = '\0';
+                            }
+
+                            /* Skip whitespace before value */
+                            while (*cp && isspace((unsigned char)*cp)) cp++;
+
+                            /* Check for backtick-quoted value */
+                            if (*cp == '`')
+                            {
+                                char *end_tick = strchr(cp + 1, '`');
+                                if (end_tick != NULL)
+                                {
+                                    size_t vlen = (size_t)(end_tick - cp - 1);
+                                    if (vlen >= sizeof(val)) vlen = sizeof(val) - 1;
+                                    strncpy(val, cp + 1, vlen);
+                                    val[vlen] = '\0';
+                                }
+                                else
+                                {
+                                    strncpy(val, cp + 1, sizeof(val) - 1);
+                                    val[sizeof(val) - 1] = '\0';
+                                }
+                            }
+                            else
+                            {
+                                strncpy(val, cp, sizeof(val) - 1);
+                                val[sizeof(val) - 1] = '\0';
+                                {
+                                    size_t vlen = strlen(val);
+                                    while (vlen > 0 && isspace((unsigned char)val[vlen-1])) val[--vlen] = '\0';
+                                }
                             }
                         }
                     }
 
                     /* Get variable value and expand macros */
-                    /* First expand macros in var itself (for %{hour} etc) */
                     script_expand_macros(state, var, var_expanded, sizeof(var_expanded));
                     
-                    /* If var_expanded is different from var, use it directly
-                     * Otherwise look up as a variable name */
                     if (strcmp(var, var_expanded) == 0)
                     {
-                        /* No macro expansion happened, try as variable name */
                         var_value = script_get_variable_value(state, var);
                         if (var_value != NULL)
                         {
                             script_expand_macros(state, var_value, var_expanded, sizeof(var_expanded));
                         }
-                        /* else var_expanded already contains the original var string */
                     }
-                    /* Expand macros in the value */
                     script_expand_macros(state, val, val_expanded, sizeof(val_expanded));
 
                     /* Evaluate the comparison */
@@ -2310,6 +2525,11 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     else if (strcmp(op, "<=") == 0)
                     {
                         clause_result = (atoi(var_expanded) <= atoi(val_expanded));
+                    }
+                    else if (strcmp(op, "contains") == 0)
+                    {
+                        /* Case-insensitive substring search */
+                        clause_result = (script_strcasestr(var_expanded, val_expanded) != NULL);
                     }
 
                     /* Combine with previous results */
@@ -2352,19 +2572,49 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 final_result = current_result;
             }
 
-            if (final_result)
+            /* For block IF, we want to jump if condition is FALSE (skip the block)
+             * For goto IF, we want to jump if condition is TRUE */
+            if (is_block_if)
             {
-                size_t pc;
-                int found = 0;
-                pc = script_find_label(state, label, &found);
-                if (!found)
+                if (!final_result)
                 {
-                    script_set_error(state, "Unknown label '%s'", label != NULL ? label : "");
-                    state->status = SCRIPT_STATUS_ERROR;
+                    /* Condition is false, jump to else or endif */
+                    size_t pc;
+                    int found = 0;
+                    
+                    /* Try else label first */
+                    pc = script_find_label(state, label, &found);
+                    if (!found && endif_label != NULL)
+                    {
+                        /* No else, try endif label */
+                        pc = script_find_label(state, endif_label, &found);
+                    }
+                    
+                    if (found)
+                    {
+                        state->program_counter = pc;
+                    }
+                    /* If neither found, just continue (will hit error at else/endif) */
                 }
-                else
+                /* If condition is true, just continue into the block */
+            }
+            else
+            {
+                /* Original goto behavior: jump if true */
+                if (final_result)
                 {
-                    state->program_counter = pc;
+                    size_t pc;
+                    int found = 0;
+                    pc = script_find_label(state, label, &found);
+                    if (!found)
+                    {
+                        script_set_error(state, "Unknown label '%s'", label != NULL ? label : "");
+                        state->status = SCRIPT_STATUS_ERROR;
+                    }
+                    else
+                    {
+                        state->program_counter = pc;
+                    }
                 }
             }
         }
@@ -3086,9 +3336,29 @@ static void script_execute_instruction(script_state *state, script_instruction *
         }
         break;
 
+        case SCRIPT_CMD_OSCLI:
+        {
+            char expanded[512];
+            if (instruction->arg1 != NULL)
+            {
+                script_expand_macros(state, instruction->arg1, expanded, sizeof(expanded));
+                if (expanded[0] != '\0')
+                {
+                    system(expanded);
+                }
+            }
+        }
+        break;
+
         case SCRIPT_CMD_CLS:
         {
             script_send_clear_screen(state);
+        }
+        break;
+
+        case SCRIPT_CMD_CLL:
+        {
+            script_send_clear_to_eol(state);
         }
         break;
 
@@ -4443,6 +4713,52 @@ static int script_stringcasecmp(const char *lhs, const char *rhs)
     return (int)cl - (int)cr;
 }
 
+static char *script_strcasestr(const char *haystack, const char *needle)
+{
+    size_t needle_len;
+    
+    if (haystack == NULL || needle == NULL)
+    {
+        return NULL;
+    }
+    
+    needle_len = strlen(needle);
+    if (needle_len == 0)
+    {
+        return (char *)haystack;
+    }
+    
+    while (*haystack != '\0')
+    {
+        if (tolower((unsigned char)*haystack) == tolower((unsigned char)*needle))
+        {
+            /* Potential match - check full needle */
+            size_t i;
+            int match = 1;
+            for (i = 0; i < needle_len; i++)
+            {
+                if (haystack[i] == '\0')
+                {
+                    match = 0;
+                    break;
+                }
+                if (tolower((unsigned char)haystack[i]) != tolower((unsigned char)needle[i]))
+                {
+                    match = 0;
+                    break;
+                }
+            }
+            if (match)
+            {
+                return (char *)haystack;
+            }
+        }
+        haystack++;
+    }
+    
+    return NULL;
+}
+
 static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg)
 {
     char sequence[32];
@@ -4516,6 +4832,16 @@ static void script_send_clear_screen(script_state *state)
         return;
     }
     script_write_output(state, "\x1B[2J\x1B[H");
+}
+
+static void script_send_clear_to_eol(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+    /* ANSI escape sequence: ESC[K = Erase from cursor to end of line */
+    script_write_output(state, "\x1B[K");
 }
 
 static void script_move_cursor(script_state *state, const char *col_text, const char *row_text)
@@ -5258,10 +5584,15 @@ static int script_process_embedded_content(script_state *state, const char *buff
     {
         ch = buffer[index];
 
+        /* Skip \r only if followed by \n (normalize CRLF to LF) */
+        /* Keep standalone \r for cursor positioning in ANSI files */
         if (ch == '\r')
         {
-            index++;
-            continue;
+            if (index + 1 < length && buffer[index + 1] == '\n')
+            {
+                index++;
+                continue;
+            }
         }
 
         if (ch == '/' && index + 1 < length && buffer[index + 1] == '*')

@@ -1,3 +1,0 @@
-| !Boot file for !BBSStats
-Set BBSStats$Dir <Obey$Dir>
-Iconsprites <obey$dir>.!Sprites

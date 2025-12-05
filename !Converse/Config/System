@@ -4,10 +4,10 @@
 
 start
 
-name        Converse BBS
+name        The Yellow Toaster BBS
 sysop       Andrew Timmins
 contact     andrew.timmins@gmail.com
-hostname    bbs.converse.co.uk
+hostname    bbs.theyellowtoaser.co.uk
 port        23
 timeout     120
 
@@ -22,15 +22,16 @@ webserver  yes
 anykey      <Converse$Dir>.Resources.System.AnyKey
 protocol    <Converse$Dir>.Resources.System.Protocol
 search      <Converse$Dir>.Resources.System.Search
+timeup      <Converse$Dir>.Resources.System.TimeUp
+inactive    <Converse$Dir>.Resources.System.Inactive
 
 prelogon    <Converse$Dir>.BBS.Prelogon
 postlogon   <Converse$Dir>.BBS.Postlogon
 logoff      <Converse$Dir>.BBS.Logoff
 newuser     <Converse$Dir>.BBS.NewUser
 
-timeup      <Converse$Dir>.Resources.System.TimeUp
-lockedout   <Converse$Dir>.Resources.System.Lockedout
-closedsys   <Converse$Dir>.Resources.System.ClosedSys
-aftermail   <Converse$Dir>.Resources.System.AfterMail
+lockedout   <Converse$Dir>.BBS.Lockedout
+closedsys   <Converse$Dir>.BBS.ClosedSys
+aftermail   <Converse$Dir>.BBS.AfterMail
 
 end

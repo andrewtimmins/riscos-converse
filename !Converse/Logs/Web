@@ -1,0 +1,237 @@
+| 04/12/2025 | 19:24:19 | Listening on port 80
+| 04/12/2025 | 19:24:19 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 19:27:17 | Listening on port 80
+| 04/12/2025 | 19:27:17 | Server started
+| 04/12/2025 | 19:27:23 | Server started
+| 04/12/2025 | 19:27:25 | Server stopped
+| 04/12/2025 | 19:27:48 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 19:29:54 | Listening on port 80
+| 04/12/2025 | 19:29:54 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 19:41:22 | Listening on port 80
+| 04/12/2025 | 19:41:22 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 19:56:53 | Listening on port 80
+| 04/12/2025 | 19:56:53 | Server started
+| 04/12/2025 | 19:56:59 | Connection from 10.10.10.2
+| 04/12/2025 | 19:57:00 | 10.10.10.2 GET / - 200 OK (6633 bytes)
+| 04/12/2025 | 19:57:00 | Connection from 10.10.10.2
+| 04/12/2025 | 19:57:00 | 10.10.10.2 GET /favicon.ico - 404 Not Found
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 04/12/2025 | 20:17:44 | Listening on port 80
+| 04/12/2025 | 20:17:44 | Server started
+| 04/12/2025 | 20:17:53 | Connection from 10.10.10.2
+| 04/12/2025 | 20:17:53 | Connection from 10.10.10.2
+| 04/12/2025 | 20:17:58 | 10.10.10.2 GET / - 200 OK (87304 bytes)
+| 04/12/2025 | 20:18:02 | 10.10.10.2 GET / - 200 OK (87304 bytes)
+| 04/12/2025 | 20:18:02 | Connection from 10.10.10.2
+| 04/12/2025 | 20:18:32 | Timeout: 10.10.10.2
+| 05/12/2025 | 01:53:08 | Listening on port 80
+| 05/12/2025 | 01:53:08 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 01:57:08 | Listening on port 80
+| 05/12/2025 | 01:57:08 | Server started
+| 05/12/2025 | 01:57:29 | Connection from 87.121.84.52
+| 05/12/2025 | 01:57:38 | 87.121.84.52 GET / - 200 OK (87304 bytes)
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 02:04:39 | Listening on port 80
+| 05/12/2025 | 02:04:39 | Server started
+| 05/12/2025 | 02:09:25 | Connection from 64.227.101.27
+| 05/12/2025 | 02:09:25 | 64.227.101.27 GET /.env - 404 Not Found
+| 05/12/2025 | 02:09:25 | Connection from 64.227.101.27
+| 05/12/2025 | 02:09:25 | 64.227.101.27 GET /.git/config - 404 Not Found
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 02:10:40 | Listening on port 80
+| 05/12/2025 | 02:10:40 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 02:15:04 | Listening on port 80
+| 05/12/2025 | 02:15:04 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 02:16:40 | Listening on port 80
+| 05/12/2025 | 02:16:40 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 02:23:15 | Listening on port 80
+| 05/12/2025 | 02:23:15 | Server started
+| 05/12/2025 | 02:45:08 | Connection from 93.174.93.12
+| 05/12/2025 | 02:45:38 | Timeout: 93.174.93.12
+| 05/12/2025 | 02:49:44 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:44 | 75.119.130.134 POST /cgi-bin/.3.863624e-153/.5.466498e+198/.2.397312e-81/.7.118304e-77/.1.506884e-153/.3.311080e-33/.3.057480e-57/.5.873472e+169/.3.160047e-86/.2.941170e+179/bin/sh - 400 Method not supported
+| 05/12/2025 | 02:49:45 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:45 | 75.119.130.134 POST /cgi-bin/%32                                                                %                               %65/%32                                                                %                               %65/%32                                                                %                               %65/%32                                                                %                               %65/%32                                                                %                               %65/%32                                                                %                               %65/%32                                                                %                               %65/bin/sh - 400 Method not supported
+| 05/12/2025 | 02:49:45 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:45 | 75.119.130.134 POST /hello.world?0X1.9E6C000008023P-507Dd+allow_url_include17649029851+0X1.0207C2F323130P-172Dd+auto_prepend_file892481586php://input - 400 Method not supported
+| 05/12/2025 | 02:49:46 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:46 | 75.119.130.134 POST /?0X1.9E6C000008023P-507Dd+allow_url_include17649029861+0X1.0207C2F323130P-172Dd+auto_prepend_file892481586php://input - 400 Method not supported
+| 05/12/2025 | 02:49:46 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:46 | 75.119.130.134 GET /vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:47 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:47 | 75.119.130.134 GET /vendor/phpunit/phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:47 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:48 | 75.119.130.134 GET /vendor/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:48 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:48 | 75.119.130.134 GET /vendor/phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:49 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:49 | 75.119.130.134 GET /vendor/phpunit/phpunit/LICENSE/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:49 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:50 | 75.119.130.134 GET /vendor/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:50 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:51 | 75.119.130.134 GET /phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:51 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:52 | 75.119.130.134 GET /phpunit/phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:52 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:52 | 75.119.130.134 GET /phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:52 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:53 | 75.119.130.134 GET /phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:53 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:53 | 75.119.130.134 GET /lib/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:54 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:54 | 75.119.130.134 GET /lib/phpunit/phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:55 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:55 | 75.119.130.134 GET /lib/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:55 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:56 | 75.119.130.134 GET /lib/phpunit/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:56 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:57 | 75.119.130.134 GET /lib/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:57 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:57 | 75.119.130.134 GET /laravel/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:58 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:58 | 75.119.130.134 GET /www/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:58 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:59 | 75.119.130.134 GET /ws/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:49:59 | Connection from 75.119.130.134
+| 05/12/2025 | 02:49:59 | 75.119.130.134 GET /yii/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:00 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:00 | 75.119.130.134 GET /zend/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:00 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:01 | 75.119.130.134 GET /ws/ec/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:01 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:02 | 75.119.130.134 GET /V2/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:02 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:02 | 75.119.130.134 GET /tests/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:02 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:03 | 75.119.130.134 GET /test/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:03 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:03 | 75.119.130.134 GET /testing/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:04 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:04 | 75.119.130.134 GET /api/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:05 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:05 | 75.119.130.134 GET /demo/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:05 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:06 | 75.119.130.134 GET /cms/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:06 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:06 | 75.119.130.134 GET /crm/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:07 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:07 | 75.119.130.134 GET /admin/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:08 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:08 | 75.119.130.134 GET /backup/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:09 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:09 | 75.119.130.134 GET /blog/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:10 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:10 | 75.119.130.134 GET /workspace/drupal/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:10 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:11 | 75.119.130.134 GET /panel/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:11 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:11 | 75.119.130.134 GET /public/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:12 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:12 | 75.119.130.134 GET /apps/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:12 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:13 | 75.119.130.134 GET /app/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php - 404 Not Found
+| 05/12/2025 | 02:50:13 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:14 | 75.119.130.134 GET /index.php?s=/index/\think\app/invokefunction&function=call_user_func_array&vars[0]=md5&vars[1][]=Hello - 403 Forbidden
+| 05/12/2025 | 02:50:14 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:14 | 75.119.130.134 GET /public/index.php?s=/index/\think\app/invokefunction&function=call_user_func_array&vars[0]=md5&vars[1][]=Hello - 403 Forbidden
+| 05/12/2025 | 02:50:14 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:15 | 75.119.130.134 GET /index.php?lang=../../../../../../../../usr/local/lib/php/pearcmd&+config-create+/&/<?echo(md5("hi"));?>+/tmp/index1.php - 403 Forbidden
+| 05/12/2025 | 02:50:15 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:15 | 75.119.130.134 GET /index.php?lang=../../../../../../../../tmp/index1 - 403 Forbidden
+| 05/12/2025 | 02:50:16 | Connection from 75.119.130.134
+| 05/12/2025 | 02:50:16 | 75.119.130.134 GET /containers/json - 404 Not Found
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 09:45:22 | Listening on port 80
+| 05/12/2025 | 09:45:22 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:35:36 | Listening on port 80
+| 05/12/2025 | 10:35:36 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:45:01 | Listening on port 80
+| 05/12/2025 | 10:45:01 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:50:05 | Listening on port 80
+| 05/12/2025 | 10:50:05 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:52:27 | Listening on port 80
+| 05/12/2025 | 10:52:27 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:53:35 | Listening on port 80
+| 05/12/2025 | 10:53:35 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 10:55:28 | Listening on port 80
+| 05/12/2025 | 10:55:28 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 11:00:55 | Listening on port 80
+| 05/12/2025 | 11:00:55 | Server started
+| 05/12/2025 | 11:06:40 | Connection from 206.168.34.118
+| 05/12/2025 | 11:06:57 | Connection from 206.168.34.118
+| 05/12/2025 | 11:07:08 | 206.168.34.118 GET / - 200 OK (98488 bytes)
+| 05/12/2025 | 11:07:14 | Connection from 206.168.34.118
+| 05/12/2025 | 11:07:18 | 206.168.34.118 PRI * - 400 Method not supported
+| 05/12/2025 | 11:07:34 | Connection from 206.168.34.118
+| 05/12/2025 | 11:07:35 | 206.168.34.118 GET /favicon.ico - 404 Not Found
+| 05/12/2025 | 11:08:38 | Connection from 206.168.34.118
+| 05/12/2025 | 11:08:53 | Connection from 206.168.34.118
+| 05/12/2025 | 11:08:54 | 206.168.34.118 GET /security.txt - 404 Not Found
+| 05/12/2025 | 11:09:08 | Timeout: 206.168.34.118
+| 05/12/2025 | 11:21:25 | Connection from 93.174.93.12
+| 05/12/2025 | 11:21:35 | 93.174.93.12 GET / - 200 OK (98488 bytes)
+| 05/12/2025 | 11:23:44 | Connection from 121.91.235.186
+| 05/12/2025 | 11:23:44 | 121.91.235.186 GET http://httpbin.org/ip - 403 Forbidden
+| 05/12/2025 | 11:26:14 | Connection from 91.232.238.106
+| 05/12/2025 | 11:26:16 | 91.232.238.106 GET /robots.txt - 404 Not Found
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------
+| 05/12/2025 | 12:01:29 | Listening on port 80
+| 05/12/2025 | 12:01:29 | Server started
++------------+----------+------------------------------------------------------
+| LOG FILE STOPPED      |
++------------+----------+------------------------------------------------------

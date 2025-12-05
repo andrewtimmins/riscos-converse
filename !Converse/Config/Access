@@ -1,7 +1,6 @@
 ;
 ; Access Control Configuration
 ;
-; This file defines access control rules for the Converse BBS Server.
 ; Currently supported directives:
 ;
 ; ban <ip>              - Block a specific IP address

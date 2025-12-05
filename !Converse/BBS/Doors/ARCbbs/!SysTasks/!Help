@@ -1,0 +1,54 @@
+=====================
+!SysTasks 1.02
+(c) Matthew Page 1996
+=====================
+
+ * What it does:
+   
+   !SysTasks is a door designed to give the user a detailed view of the loaded tasks
+   and memory allocations on the BBS host computer.
+   Basically and ANSI 'Programme Manager' (!) 
+
+ * Instalation:
+
+ This door will work on any ArcBBS compatible server, just set your desired
+ door number in the `configure` file, within this directory, and call as you
+ would any other door.
+
+ eg.
+
+ ArmBBS:
+
+  defitem S
+  display `Read System Tasks`
+  [
+    doing `Reading System Tasks`
+    log `>SysTasks`
+    door `1 63 <ArmBBS$Dir>.Doors.Utils.!SysTasks`
+  ]
+  enditem
+ 
+ ArcBBS:
+ 
+ OSCLI "WimpTask <ArcBBS$Dir>.Doors.!SysTasks"
+ DOOR 63
+ 
+ Any other server:
+ 
+  erm...work it out yourself! ;-)
+ 
+ * Contaction the author:
+
+   Matthew Page
+
+   Online ARM Pit BBS as user #1
+
+   7:44/106.0   @ Riscnet
+   50:12/1.0    @ X-Net
+   2:256/701.11 @ Fidonet
+
+   mpage@mossoft.demon.co.uk
+
+ * Disclaimer:
+
+   Don't blame me if things go wrong! Not that they will ;)

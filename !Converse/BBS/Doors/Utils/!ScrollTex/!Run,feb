@@ -1,3 +1,0 @@
-Set AJscrolly$Dir <Obey$Dir>
-WimpSlot 64k 64k
-Run <AJscrolly$Dir>.!RunImage %*0

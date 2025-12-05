@@ -1,0 +1,49 @@
+               !NextCall - RiscBBS door
+
+!NextCall allows logging off users to write messages that appear to logger
+onners...
+
+How to use:
+
+Copy the NextCaller directory to your >.BBS directory
+
+In your System.EventTexts.PostLogon, have, somewhere:
+
+{show <RiscBBS$Dir>.BBS.NextCaller.Read}
+
+In your logoff file (either EventTexts.Logoff or another BBS.Log_off), have
+something like this:
+
+Leave a message for the next caller? {
+ fg 2
+ yesno V0 0
+ if V0=0
+   runtask `<RiscBBS$Dir>.SubTasks.!NextCall.Write`
+   wait
+ endif
+}
+
+The message writer incorporates its own line editor, HazEd-R, which you are
+welcome to use separately in your own door programs AS LONG AS I'M CREDITED FOR
+IT and it says that it is HazEd-R version x.yy-R (date). I will then be able
+to tell you if I update it.
+
+Enjoy!
+
+---FOOTER-------------------------------------------------------Cut-out-n-keep--
+
+Contact me as `Steven Haslam` at one of these addresses:
+
+        2:250/116.3           The NAIX!
+        2:252/102.0           The World of Cryton
+        2:254/27.0            ARCade
+        2:254/405.0           Star-Net
+
+        The NAIX
+         112 Keighley Road
+          Colne
+           Lancashire
+            BB8 0PH
+             UNITED KINGDOM
+
+--------------------------------------------------------------------------------

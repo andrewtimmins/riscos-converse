@@ -1,0 +1,3 @@
+Set SysTasks$Dir <Obey$Dir>
+WimpSlot 32k 32k
+Run <SysTasks$Dir>.!RunImage %*0

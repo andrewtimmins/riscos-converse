@@ -1,0 +1,150 @@
+  Virtual Confusion 8 way chat door    ||
+           By Andy Jones               ||
+  SysOp of SATURN BBS, Manchester      ||
+  - 0161 707 9306 - 24hours            ||
+=========================================
+V1.09 - Much better in all respects...
+
+In the BBS script :
+Run !Confusion
+Then issue the door 199 command
+eg: My script for ArmBBS,
+-------------------------------------------------
+  defitem *
+  display `Multi user chat...`
+  fail `You need a user level of at least 20! Enter the Questionnaire first!`
+  access 20
+  [
+    doing `Virtual Confusion multi chat.`
+    type <ArmBBS$Dir>.Menus.ANSIscrns.VConfusion
+    pause 1
+    oscli `Run <ArmBBS$Dir>.Doors.!Confusion`
+    door `1 199`
+    type <ArmBBS$Dir>.Menus.ANSIscrns.VConfQuit
+    anykey
+  ]
+  enditem
+----------------------------------------------
+The type <blah blah>.Vconfusion and <xxxx>.Vconfquit
+are only to display the title and quit screens...
+Put these files where you want and change the type
+lines accordingly, or don't use them atall if you
+don't want to :-)
+
+The door will only load up if there ISN'T a copy
+already running *:-o
+And also quits when the last user leaves the chat.
+
+ THIS VERSION MAY BE DISTRIBUTED!
+  *** UNALTERED AND COMPLETE ***
+
+        BUT
+ I take NO responsibility if it crashes
+your BBS causing loss of 500Mb of files...
+Anyway, that would be your fault for not
+keeping backups wouldn't it!
+
+I also take no responsibility for anything else!
+eg.. People getting Virtually Confused while
+using the chat  ;-) If anyone does use it that
+is!
+
+In other words :
+ YOU USE THIS SOFTWARE ENTIRELY AT YOUR OWN RISK
+
+
+I would like someone to put my work to
+good use so, feedback please!
+
+My number's Saturn BBS - 0161 707 9306
+I'm    Andy Jones (#1)
+
+---------------------------------------------
+Registration Info :
+===================
+The software will be registerable at a
+reasonably small cost of £10 for all
+my work. This will be introduced for the
+later version's with pager systems
+working and bugs fixed.
+
+---------------------------------------------
+Previous versions :                         |
+Records wern't kept of work before 0.07     |
+So this is my first entry :                 |
+                                            |
+V0.07 - o Paging menu now works...          |
+        o Slight alteration to highlighting |
+          colours used by request of Cob.   |
+                                            |
+V0.08   o Everything seems to work great!   |
+          BUT (sulk) it's far too slow when |
+          you get a number of REAL users..  |
+          It was tested on Digital Databank |
+          and was worse than using a        |
+          300baud modem ;-) So....          |
+                                            |
+V1.00   o Scrapped the old BASIC version..  |
+          Went for a TOTAL rewrite in       |
+          Arm Code Assembler (Oh no!)       |
+          So absoutly nothing works again!  |
+                                            |
+      [time warp of about 2.5 weeks]        |
+                                            |
+V1.08   o Oops, I've not been filling       |
+          this in have I                    |
+                                            |
+Forcast :                                   |
+                                            |
+V1.09 - o Thats wishful thinking the way I  |
+          feel at the moment! (Knackered)   |
+---------------------------------------------
+
+**************************************************
+* Thanks to Ben Ingram for his handy information *
+* about getting userdata from the module         *
+* (for the online user bit in the pager system)  *
+*    This big enough Ben?                        *
+**************************************************
+
+If the door for some reason dies, leaving a poor
+BBS user stranded, running ReleaseAll will free him
+(Also anyone else using any door so be aware of this!)
+
+I will add a config file to set the doornum
+or some way at least...
+I can make a !RunImage with whatever doornum
+you need, so there's no problem really.
+
+
+ So, someone that actually reads to the end of
+helpfiles! There's nothing interestiong down here
+so go and set up the door or sit and stare at this
+dot below if you really are that bored..
+ It's my best effort at one of those stereograms...
+
+
+
+
+
+
+
+
+
+
+ Dot->                         .
+
+
+
+
+
+
+
+
+
+:-) Cheers, Andy Jones.
+SysOp of SaturnBBS Manchester
+0161 707 9306 - 24hours.
+"One hell of a cool BBS"
+   [says the sysop ;-]
+ 

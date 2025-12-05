@@ -262,6 +262,16 @@ static void poll_idle(void)
 	Desk_Event_Process(&event);
 }
 
+static void waiting_update(const char *status)
+{
+	Desk_event_pollblock event;
+	Desk_event_pollmask mask;
+	mask.value = 0;
+	Desk_Icon_SetText(waiting_window, WAITING_ACTION, (char *)status);
+	/* Force a Wimp poll to show the update */
+	Desk_Wimp_Poll(mask, &event);
+}
+
 static int main_window_icon_index(int line_id, int column)
 {
 	return MAIN_WINDOW_ICON_BASE + (line_id * MAIN_WINDOW_ICONS_PER_LINE) + column;
@@ -1548,6 +1558,8 @@ void destroy_listener(void)
 		socketclose(listening_socket);
 	}
 
+ 	Desk_Template_ClearAll();
+	
 	system("RMKill ConverseBBS");
 	system("RMKill ConversePipes");
 	system("RMKill ConverseFiler");
@@ -2401,6 +2413,11 @@ int main(void) {
   	Desk_Template_UseOutlineFonts();
   	Desk_Template_LoadFile("Templates");
 
+	/* Open waiting window centred on screen immediately */
+	waiting_window = Desk_Window_Create("waiting", NULL);
+	Desk_Window_Show(waiting_window, Desk_open_CENTERED);
+	waiting_update("Starting Converse BBS...");
+
 	/* Load status window sprites */
 	{
 		int sprite_size = Desk_File_Size("<Converse$Dir>.Resources.Sprites");
@@ -2426,12 +2443,18 @@ int main(void) {
   	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_proginfo, Desk_bool_TRUE, wimp_open_proginfo_window, (void *)proginfo_window);
 	Desk_Menu_Warn(wimp.iconbar_menu_handle, iconbar_menu_systeminfo, Desk_bool_TRUE, wimp_open_systeminfo_window, (void *)systeminfo_window);
 
+	waiting_update("Loading system configuration...");
 	load_system_config();
+	waiting_update("Loading line configuration...");
 	load_line_config();
 	support_push_config();
+	waiting_update("Checking messagebases...");
 	load_msgbase_config();
+	waiting_update("Checking filebases...");
 	load_filebase_config();
+	waiting_update("Loading FTN configuration...");
 	load_ftn_config();
+	waiting_update("Loading access control...");
 	load_access_config();
 	{
 		int i;
@@ -2441,18 +2464,24 @@ int main(void) {
 			support_push_line_config(i);
 		}
 	}
+	waiting_update("Starting line tasks...");
 	launch_line_tasks();
+	waiting_update("Starting FTN mailer...");
 	launch_ftn_task();
+	waiting_update("Starting web server...");
 	launch_web_task();
 
+	waiting_update("Starting network listener...");
 	create_line_icons();
 	create_listener();
 	status_initialise();
+
+	/* Close waiting window - startup complete */
+	Desk_Window_Hide(waiting_window);
+
 	atexit(destroy_listener);
 
 	while(wimp.quit == Desk_bool_FALSE) poll_idle();
-
- 	Desk_Template_ClearAll();
 
 	return(0);
 }

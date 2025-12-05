@@ -1,0 +1,24 @@
+{cls, fgbg 2 0}
+Welcome to the {fg 3}Yellow Toaster BBS,{fg 2} using{fg 2} Converse BBS software,
+a Bulletin Board System server designed for RISC OS.
+
+Converse is programmed in C, supports modern features and is Open Source!
+It is designed to be {fg 1}user-friendly{fg 3}, {fg 3}versatile{fg 2} and {fg 7}expandable{fg 3}.
+
+You can find out more at https://www.github.com/andrewtimmins/riscos-converse
+
+{fg 2,flash 1}Please mail the sysop if you're interested in running an Converse system!{flash 0}
+
+{fg 3}The time is X and the date is X.
+{fg 2}You have X time left for this call.
+{fg 3}You have logged on X times, and are caller number X.
+{fg 2}You last called on X
+{fg 3}Your user-level is X, and your usernumber is X
+
+{fg 6}You are using Converse  version X.
+
+{fg 3,}Please read the latest news from the Main Menu...
+
+Your current default download protocol is X.
+
+{anykey}

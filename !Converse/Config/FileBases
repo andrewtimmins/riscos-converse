@@ -9,7 +9,11 @@ default_accesslevel 0
 storage_root        <Converse$Dir>.FileBases
 
 ; Maximum file size for uploads (bytes, 0 = unlimited)
-max_upload_size     10485760
+max_upload_size     0
 
 ; Include individual filebase definitions
-include <Converse$Dir>.Config.FileBase_0
+include <Converse$Dir>.Config.FileBase_1
+include <Converse$Dir>.Config.FileBase_2
+include <Converse$Dir>.Config.FileBase_3
+include <Converse$Dir>.Config.FileBase_4
+include <Converse$Dir>.Config.FileBase_5

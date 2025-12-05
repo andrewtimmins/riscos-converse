@@ -94,3 +94,5 @@
 #define QUERY_YES 3
 #define NOTICE_ACTION 0
 #define NOTICE_OK 1
+#define WAITING_ACTION 0
+#define WAITING_ICON 1
