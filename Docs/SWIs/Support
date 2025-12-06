@@ -1,0 +1,471 @@
+
+--------------------------------------------------------------------------------
+
+Converse Support (ConverseBBS) Technical Summary
+
+--------------------------------------------------------------------------------
+
+* SWI chunk base: 0x5AA80 (registered as ConverseBBS_). The module provides
+  shared state storage for BBS configuration and line status. The Server pushes
+  configuration values on startup; LineTask queries them at runtime.
+* Eight SWI groups: Config, Line, Activity, LineConfig, MsgBaseConfig,
+  FileBaseConfig, FTNConfig, and AccessConfig.
+* All configuration data is held in RMA and persists until module finalisation.
+  The Server parses configuration files and pushes values via the Set SWIs.
+
+SWI Decoding Table
+------------------
+  ConverseBBS_Config           0x5AA80
+  ConverseBBS_Line             0x5AA81
+  ConverseBBS_Activity         0x5AA82
+  ConverseBBS_LineConfig       0x5AA83
+  ConverseBBS_MsgBaseConfig    0x5AA84
+  ConverseBBS_FileBaseConfig   0x5AA85
+  ConverseBBS_FTNConfig        0x5AA86
+  ConverseBBS_AccessConfig     0x5AA87
+
+--------------------------------------------------------------------------------
+
+SWI USAGE GUIDELINES
+
+* Every SWI validates its register block and returns 0 on success or -1 on error;
+  the V flag is not used.
+* R0 always carries the reason code. Remaining registers hold arguments as
+  described per SWI.
+* NULL pointers are rejected; the module reports -1.
+* Returned string pointers are to internal buffers and are invalidated by the
+  next SWI call. Callers should copy needed data immediately.
+
+--------------------------------------------------------------------------------
+
+0x5AA80 - ConverseBBS_Config
+
+On Entry:
+            R0: Reason code (0-1).
+            R1..R2: Dependent on reason code.
+
+Reason codes:
+            0 (Get)
+              R1: Pointer to key string (C string).
+              Returns: Pointer to value string in R0, or 0 if key not found.
+
+            1 (Set)
+              R1: Pointer to key string (C string).
+              R2: Pointer to value string (C string).
+              Returns: 0 on success in R0.
+
+On Exit:
+            R0: Command-specific result, -1 if validation fails.
+
+Configuration Keys:
+            bbs_name        BBS name (max 64 chars)
+            sysop_name      Sysop name (max 64 chars)
+            contact         Contact info (max 128 chars)
+            hostname        Hostname (max 128 chars)
+            max_lines       Maximum lines (integer, 1-32)
+            listen_port     Telnet listen port (integer)
+            idle_timeout    Idle timeout seconds (integer)
+            botstopper      Bot stopper enabled ("yes"/"no")
+            needlogin       Require login ("yes"/"no")
+            closed          System closed ("yes"/"no")
+            pager           Chat pager enabled ("yes"/"no")
+            ftnmail         FTN mail enabled ("yes"/"no")
+            webserver       Web server enabled ("yes"/"no")
+            anykey          Path to anykey ANSI file
+            chatstart       Path to chat start script
+            chatend         Path to chat end script
+            prelogon        Path to prelogon script
+            postlogon       Path to postlogon script
+            logoff          Path to logoff script
+            welcome         Path to welcome/start script
+            newuser         Path to new user registration script
+            timeup          Path to time expired script
+            lockedout       Path to locked out script
+            closedsys       Path to closed system script
+            aftermail       Path to after-mail script
+
+Notes:
+            * Get returns a pointer to an internal buffer; copy immediately.
+            * Integer values are returned as ASCII strings.
+
+--------------------------------------------------------------------------------
+
+0x5AA81 - ConverseBBS_Line
+
+On Entry:
+            R0: Reason code (0-1).
+            R1: Line number (0-31).
+            R2: Field number.
+            R3: Value (for Set only).
+
+Reason codes:
+            0 (Set)
+              R1: Line number.
+              R2: Field number.
+              R3: Value (int or pointer depending on field).
+              Returns: 0 on success in R0.
+
+            1 (Get)
+              R1: Line number.
+              R2: Field number.
+              Returns: Field value in R0.
+
+Field numbers:
+            0 (configured)    int: Is line configured? (0=no, 1=yes)
+            1 (connected)     int: Active connection? (0=no, 1=yes)
+            2 (user_id)       int: Logged-in user ID (0=none)
+            3 (connect_time)  time_t: Connection start timestamp
+            4 (hostname)      char*: Remote hostname/IP (set: R3=string ptr)
+            5 (transfer_active) int: File transfer in progress? (0=no, 1=yes)
+
+On Exit:
+            R0: Field value or -1 on error.
+
+Notes:
+            * Setting connected=0 automatically clears user_id, transfer_active,
+              connect_time, activity, and hostname for that line.
+            * Hostname field returns pointer to internal buffer (max 64 chars).
+
+--------------------------------------------------------------------------------
+
+0x5AA82 - ConverseBBS_Activity
+
+On Entry:
+            R0: Reason code (0-1).
+            R1: Line number (0-31).
+            R2: Text pointer (for Set only).
+
+Reason codes:
+            0 (Set)
+              R1: Line number.
+              R2: Pointer to activity text (C string, max 96 chars).
+              Returns: 0 on success in R0.
+
+            1 (Get)
+              R1: Line number.
+              Returns: Pointer to activity text in R0.
+
+On Exit:
+            R0: Pointer to text or -1 on error.
+
+Notes:
+            * Activity text is displayed in the Server status window.
+            * Set with NULL or empty string to clear activity.
+
+--------------------------------------------------------------------------------
+
+0x5AA83 - ConverseBBS_LineConfig
+
+On Entry:
+            R0: Reason code (0-1).
+            R1: Line number (0-31).
+            R2: Field number.
+            R3: Value (for Set only).
+
+Reason codes:
+            0 (Set)
+              R1: Line number.
+              R2: Field number.
+              R3: Value.
+              Returns: 0 on success in R0.
+
+            1 (Get)
+              R1: Line number.
+              R2: Field number.
+              Returns: Field value in R0.
+
+Field numbers:
+            0 (enabled)       int: Is line enabled? (0=no, 1=yes)
+            1 (botstopper)    char*: Bot stopper challenge text (max 128 chars)
+            2 (hello)         char*: Per-line welcome message (max 256 chars)
+
+On Exit:
+            R0: Field value or -1 on error.
+
+--------------------------------------------------------------------------------
+
+0x5AA84 - ConverseBBS_MsgBaseConfig
+
+On Entry:
+            R0: Reason code (0-7).
+            R1..R3: Dependent on reason code.
+
+Reason codes:
+            0 (GetGlobal)
+              Returns: Pointer to MSGBASE_GLOBAL_CONFIG in R0.
+
+            1 (SetGlobal)
+              R1: Field number.
+              R2: Value.
+              Returns: 0 on success in R0.
+
+            2 (GetBase)
+              R1: Base ID.
+              Returns: Pointer to MSGBASE_CONFIG in R0.
+
+            3 (SetBase)
+              R1: Base ID.
+              R2: Pointer to MSGBASE_CONFIG.
+              Returns: 0 on success in R0.
+
+            4 (GetArea)
+              R1: Base ID.
+              R2: Area ID.
+              Returns: Pointer to MSGBASE_AREA_CONFIG in R0.
+
+            5 (SetArea)
+              R1: Base ID.
+              R2: Area ID.
+              R3: Pointer to MSGBASE_AREA_CONFIG.
+              Returns: 0 on success in R0.
+
+            6 (CountBases)
+              Returns: Number of messagebases in R0.
+
+            7 (CountAreas)
+              R1: Base ID.
+              Returns: Number of areas in R0.
+
+SetGlobal Field numbers:
+            0 (retention)       int: Default message retention days
+            1 (accesslevel)     int: Default access level
+            2 (storage_root)    char*: Root path for message storage
+
+On Exit:
+            R0: Command-specific result or -1 on error.
+
+MSGBASE_AREA_CONFIG structure:
+            id              int: Area ID
+            name            char[64]: Area name
+            tag             char[64]: FTN echotag
+            areatype        int: 0=LOCAL, 1=ECHO, 2=NETMAIL, 3=JUNK, 4=OTHER
+            daystokeep      int: Retention days (0=forever)
+            akause          int: Which AKA to use for this area
+            accesslevel     int: Access level override (-1=inherit)
+            keys            char[128]: Access keys
+            groups          char[64]: FTN groups (e.g., "A,B,C")
+
+--------------------------------------------------------------------------------
+
+0x5AA85 - ConverseBBS_FileBaseConfig
+
+On Entry:
+            R0: Reason code (0-7).
+            R1..R3: Dependent on reason code.
+
+Reason codes:
+            0 (GetGlobal)
+              Returns: Pointer to FILEBASE_GLOBAL_CONFIG in R0.
+
+            1 (SetGlobal)
+              R1: Field number.
+              R2: Value.
+              Returns: 0 on success in R0.
+
+            2 (GetBase)
+              R1: Base ID.
+              Returns: Pointer to FILEBASE_CONFIG in R0.
+
+            3 (SetBase)
+              R1: Base ID.
+              R2: Pointer to FILEBASE_CONFIG.
+              Returns: 0 on success in R0.
+
+            4 (GetArea)
+              R1: Base ID.
+              R2: Area ID.
+              Returns: Pointer to FILEBASE_AREA_CONFIG in R0.
+
+            5 (SetArea)
+              R1: Base ID.
+              R2: Area ID.
+              R3: Pointer to FILEBASE_AREA_CONFIG.
+              Returns: 0 on success in R0.
+
+            6 (CountBases)
+              Returns: Number of filebases in R0.
+
+            7 (CountAreas)
+              R1: Base ID.
+              Returns: Number of areas in R0.
+
+SetGlobal Field numbers:
+            0 (accesslevel)     int: Default access level
+            1 (storage_root)    char*: Root path for file storage
+            2 (max_upload)      long: Maximum upload size in bytes (0=unlimited)
+
+On Exit:
+            R0: Command-specific result or -1 on error.
+
+FILEBASE_AREA_CONFIG structure:
+            id              int: Area ID
+            name            char[64]: Area name
+            accesslevel     int: Access level override (-1=inherit)
+            keys            char[128]: Access keys
+            path            char[256]: Custom path (for CD-ROM areas)
+
+--------------------------------------------------------------------------------
+
+0x5AA86 - ConverseBBS_FTNConfig
+
+On Entry:
+            R0: Reason code (0-7).
+            R1..R2: Dependent on reason code.
+
+Reason codes:
+            0 (GetGlobal)
+              Returns: Pointer to FTN_GLOBAL_CONFIG in R0.
+
+            1 (SetGlobal)
+              R1: Field number.
+              R2: Value.
+              Returns: 0 on success in R0.
+
+            2 (GetAddress)
+              R1: Address ID (1-based).
+              Returns: Pointer to FTN_ADDRESS_CONFIG in R0.
+
+            3 (SetAddress)
+              R1: Address ID (1-based).
+              R2: Pointer to FTN_ADDRESS_CONFIG.
+              Returns: 0 on success in R0.
+
+            4 (GetUplink)
+              R1: Uplink ID (1-based).
+              Returns: Pointer to FTN_UPLINK_CONFIG in R0.
+
+            5 (SetUplink)
+              R1: Uplink ID (1-based).
+              R2: Pointer to FTN_UPLINK_CONFIG.
+              Returns: 0 on success in R0.
+
+            6 (CountAddresses)
+              Returns: Number of addresses in R0.
+
+            7 (CountUplinks)
+              Returns: Number of uplinks in R0.
+
+SetGlobal Field numbers:
+            0  (sysop)           char*: Sysop name
+            1  (system)          char*: System name
+            2  (location)        char*: Location
+            3  (phone)           char*: Phone number
+            4  (speed)           int: Connection speed
+            5  (flags)           char*: Mailer flags
+            6  (inbound)         char*: Inbound directory path
+            7  (outbound)        char*: Outbound directory path
+            8  (netmail)         char*: Netmail directory path
+            9  (badmail)         char*: Bad mail directory path
+            10 (max_packet)      long: Maximum packet size
+            11 (ticpath)         char*: TIC staging directory path
+            12 (listenport)      int: Inbound BinkP port
+            13 (maxsessions)     int: Maximum concurrent sessions
+            14 (connecttimeout)  int: Connect timeout (seconds)
+            15 (sessiontimeout)  int: Session timeout (seconds)
+            16 (scaninterval)    int: Outbound rescan interval (seconds)
+            17 (tossinterval)    int: Auto-toss interval (seconds, 0=disabled)
+            18 (pollinterval)    int: Auto-poll interval (seconds, 0=disabled)
+            19 (retrydelay)      int: Retry delay after session (seconds)
+
+On Exit:
+            R0: Command-specific result or -1 on error.
+
+FTN_ADDRESS_CONFIG structure:
+            id              int: Address ID (1-based)
+            network         char[64]: Network name (e.g., "Fidonet")
+            zone            int: Zone number
+            net             int: Net number
+            node            int: Node number
+            point           int: Point number
+            type            char[8]: Address type ("4d" or "5d")
+            packet_password char[32]: Packet password
+            areafix_password char[32]: Areafix password
+
+FTN_UPLINK_CONFIG structure:
+            id              int: Uplink ID (1-based)
+            address         char[64]: Uplink address (e.g., "2:250/0")
+            network         char[64]: Network name
+            host            char[64]: Hostname or IP
+            port            int: Port number (default 24554)
+            password        char[32]: Session password
+            groups          char[64]: Groups we receive (e.g., "A,B,C")
+            alias_count     int: Number of aliases
+            aliases         char[8][64]: AKA addresses
+
+--------------------------------------------------------------------------------
+
+0x5AA87 - ConverseBBS_AccessConfig
+
+On Entry:
+            R0: Reason code (0-4).
+            R1..R2: Dependent on reason code.
+
+Reason codes:
+            0 (AddBan)
+              R1: IP address (host byte order).
+              R2: Subnet mask (host byte order, e.g., 0xFFFFFF00 for /24).
+              Returns: 0 on success in R0.
+
+            1 (ClearBans)
+              Returns: 0 on success in R0.
+
+            2 (CheckIP)
+              R1: IP address to check (host byte order).
+              Returns: 1 if banned, 0 if allowed in R0.
+
+            3 (GetCount)
+              Returns: Number of ban entries in R0.
+
+            4 (GetBan)
+              R1: Index (0-based).
+              Returns: Pointer to ACCESS_BAN_RECORD in R0.
+
+On Exit:
+            R0: Command-specific result or -1 on error.
+
+ACCESS_BAN_RECORD structure:
+            ip              unsigned int: IP address (host byte order)
+            mask            unsigned int: Subnet mask (host byte order)
+
+Notes:
+            * Maximum 100 ban entries supported.
+            * Server parses Access config file and populates bans on startup.
+
+--------------------------------------------------------------------------------
+
+CLI COMMANDS
+
+  *BBS_Status     : Displays the current state of all configured lines,
+                    including connection status, user ID, hostname, and activity.
+  *BBS_Config     : Displays the current BBS configuration (all Config keys).
+  *BBS_Lines      : Displays per-line configuration (enabled, botstopper, hello).
+  *BBS_MsgBases   : Displays messagebase configuration (bases and areas).
+  *BBS_FileBases  : Displays filebase configuration (bases and areas).
+  *BBS_FTN        : Displays FTN network configuration (addresses, uplinks).
+  *BBS_Access     : Displays the access control list (IP bans).
+
+--------------------------------------------------------------------------------
+
+TYPICAL USAGE PATTERN
+
+The Server application:
+1. Parses <Converse$Dir>.Resources.Config.System
+2. Calls ConverseBBS_Config Set for each configuration key
+3. Parses <Converse$Dir>.Resources.Config.Lines
+4. Calls ConverseBBS_LineConfig Set for each line
+5. Parses <Converse$Dir>.Resources.Config.MsgBases
+6. Calls ConverseBBS_MsgBaseConfig SetBase/SetArea for each base/area
+7. Parses <Converse$Dir>.Resources.Config.FileBases
+8. Calls ConverseBBS_FileBaseConfig SetBase/SetArea for each base/area
+9. Parses <Converse$Dir>.Resources.Config.FTN
+10. Calls ConverseBBS_FTNConfig SetGlobal/SetAddress/SetUplink
+11. Parses <Converse$Dir>.Resources.Config.Access
+12. Calls ConverseBBS_AccessConfig AddBan for each IP ban
+
+LineTask applications:
+1. Query ConverseBBS_Config Get for system paths and settings
+2. Update ConverseBBS_Line Set to track connection state
+3. Update ConverseBBS_Activity Set to show current activity
+4. Query ConverseBBS_MsgBaseConfig/FileBaseConfig for base/area info
+
+--------------------------------------------------------------------------------

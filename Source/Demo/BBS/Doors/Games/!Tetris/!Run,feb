@@ -1,4 +1,0 @@
-WimpSlot -Min 32k -Max 32k
-Set Tetris$Dir <Obey$Dir>
-IconSprites <Obey$Dir>.!Sprites
-Run <Tetris$Dir>.!RunImage %*0

@@ -1,4 +1,0 @@
-Set BoxedDoor$Dir <Obey$Dir>
-Iconsprites <BoxedDoor$Dir>.!Sprites
-WimpSlot -Min 64k -Max 64k
-Run <BoxedDoor$Dir>.!RunImage

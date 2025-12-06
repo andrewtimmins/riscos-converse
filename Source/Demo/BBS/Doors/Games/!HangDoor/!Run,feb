@@ -1,4 +1,0 @@
-Set HangDoor$Dir <Obey$Dir>
-Iconsprites <HangDoor$Dir>.!Sprites
-WimpSlot -Min 32k -Max 32k
-Run <HangDoor$Dir>.!RunImage

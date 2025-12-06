@@ -1,9 +1,0 @@
-| !Run File
-| © Mirage Enterprises
-|
-IconSprites <Obey$Dir>.!Sprites
-
-Set Sharks$Dir <Obey$Dir>
-
-WimpSlot -Min 32k -Max 32k
-/<Obey$Dir>.!RunImage

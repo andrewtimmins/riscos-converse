@@ -1,0 +1,1558 @@
+Converse BBS - New Sysop Guide
+===============================
+
+Welcome to Converse BBS! This comprehensive guide will walk you through
+setting up and operating your bulletin board system on RISC OS.
+
+Table of Contents
+-----------------
+
+  1. Introduction
+  2. System Requirements
+  3. Installation
+  4. Directory Structure
+  5. System Configuration
+  6. Line Configuration
+  7. User Management
+  8. Messagebases
+  9. Filebases
+ 10. Access Control
+ 11. FTN Networking
+ 12. Doors
+ 13. Web Server
+ 14. Scripting
+ 15. Monitoring and Logs
+ 16. Troubleshooting
+
+
+============================================================================
+1. INTRODUCTION
+============================================================================
+
+Converse BBS is a multi-line bulletin board system for RISC OS. It supports:
+
+  - Up to 32 simultaneous connections
+  - User accounts with access levels and keys
+  - Messagebases (local and FTN echomail/netmail)
+  - Filebases with upload/download support
+  - XMODEM, YMODEM, and ZMODEM file transfers
+  - FTN (FidoNet Technology Network) mail exchange via BinkP
+  - Native and legacy door support
+  - Web-based file downloads
+  - ANSI terminal emulation
+
+The system consists of several modules that work together:
+
+  - Server: The main Wimp application handling connections
+  - LineTask: Per-connection handler (one per active user)
+  - Filer: Database management for users, files, and messages
+  - Support: Shared configuration and state storage
+  - Pipes: Inter-process communication
+  - FTN Mailer: FidoNet mail exchange (optional)
+  - Web: HTTP file server (optional)
+
+
+============================================================================
+2. SYSTEM REQUIREMENTS
+============================================================================
+
+Hardware:
+  - RISC OS 5 or later
+  - Network connection
+  - Sufficient RAM for all modules (recommended 64MB+)
+  - Storage for user data, files, and messages
+
+Software:
+  - Internet module (part of RISC OS)
+  - TCPIPLibs (included with RISC OS)
+  - Reporter module (optional, for debugging)
+
+
+============================================================================
+3. INSTALLATION
+============================================================================
+
+1. Copy the Converse directory to your preferred location.
+
+2. The directory structure should include:
+   - !Converse     (application directory)
+   - Resources     (configuration and data)
+   - FileBases     (file storage)
+   - MsgBases      (message storage)
+   - BBS           (scripts and menus)
+   - Logs          (log files)
+
+3. Set the system variable:
+   *Set Converse$Dir <path to your installation>
+
+4. Double-click !Converse to start the server.
+
+5. The first time you run, create an admin user using UserEd or by
+   editing the user database directly.
+
+
+============================================================================
+4. DIRECTORY STRUCTURE
+============================================================================
+
+<Converse$Dir>
+    |
+    +-- !Converse           Application (Server)
+    |
+    +-- Resources
+    |       +-- Config
+    |       |       +-- System      Main configuration
+    |       |       +-- Lines       Per-line settings
+    |       |       +-- Access      IP ban lists
+    |       |       +-- MsgBases    Messagebase index
+    |       |       +-- FileBases   Filebase index
+    |       |       +-- FTN         FidoNet configuration
+    |       |       +-- MsgBase_N   Individual messagebase configs
+    |       |       +-- FileBase_N  Individual filebase configs
+    |       |
+    |       +-- Data
+    |               +-- UserDB      User database
+    |               +-- UserIDX     User index
+    |               +-- FileDB      File database
+    |               +-- MsgDB       Message database
+    |               +-- CallCount   Total call counter
+    |
+    +-- FileBases           File storage (numbered directories)
+    |       +-- 0001
+    |       |       +-- Files
+    |       |               +-- A1      Area 1
+    |       |               +-- A2      Area 2
+    |       |
+    |       +-- 0002
+    |               ...
+    |
+    +-- MsgBases            Message storage (numbered directories)
+    |       +-- 0001
+    |       |       +-- Messages
+    |       |               +-- A1      Area 1
+    |       |               +-- A2      Area 2
+    |       |
+    |       +-- 0002
+    |               ...
+    |
+    +-- BBS                 Scripts and content
+    |       +-- Prelogon    Pre-login script
+    |       +-- Postlogon   Post-login script
+    |       +-- NewUser     New user registration
+    |       +-- Messagebase Message reading/posting
+    |       +-- Filebase    File browsing/downloading
+    |       +-- Menus       ANSI menu files
+    |       +-- ANSI        ANSI art files
+    |       +-- Doors       Door programs
+    |
+    +-- Logs                Log files
+            +-- System      System events
+            +-- Calls       Call log
+            +-- Line_N      Per-line activity
+            +-- FTN         FTN mailer log
+            +-- Web         Web server log
+
+
+============================================================================
+5. SYSTEM CONFIGURATION
+============================================================================
+
+The main configuration file is <Converse$Dir>.Resources.Config.System
+
+Key settings:
+
+  name <string>
+      Your BBS name, displayed to users.
+      Example: name My Awesome BBS
+
+  sysop <string>
+      Your name as sysop.
+      Example: sysop John Smith
+
+  contact <string>
+      Contact information (email, etc.)
+      Example: contact sysop@example.com
+
+  hostname <string>
+      The hostname/IP users connect to.
+      Example: hostname bbs.example.com
+
+  listen <port>
+      TCP port to listen on.
+      Example: listen 23
+
+  max_lines <number>
+      Maximum simultaneous connections (1-32).
+      Example: max_lines 10
+
+  idle_timeout <seconds>
+      Disconnect idle users after this many seconds.
+      Example: idle_timeout 300
+
+  botstopper <string>
+      Challenge prompt to deter automated scanners.
+      Example: botstopper Press * twice to enter...
+
+  needlogin <yes|no>
+      Require login (yes) or allow guest access (no).
+      Example: needlogin yes
+
+  closed <yes|no>
+      Close the system to new connections.
+      Example: closed no
+
+  pager <yes|no>
+      Enable the sysop chat pager.
+      Example: pager yes
+
+
+Script paths (relative to <Converse$Dir>.BBS):
+
+  prelogon <script>
+      Script run before user logs in.
+      Example: prelogon Prelogon
+
+  postlogon <script>
+      Script run after successful login.
+      Example: postlogon Postlogon
+
+  logoff <script>
+      Script run when user logs off.
+      Example: logoff Logoff
+
+  newuser <script>
+      Script for new user registration.
+      Example: newuser NewUser
+
+
+Special scripts:
+
+  welcome <file>
+      Welcome message shown on connect.
+
+  closedsys <file>
+      Message shown when system is closed.
+
+  timeup <file>
+      Message shown when user's time expires.
+
+  lockedout <file>
+      Message shown when account is locked.
+
+  anykey <file>
+      Default "press any key" prompt file.
+
+
+Optional modules:
+
+  ftnmail <yes|no>
+      Enable FTN mail exchange.
+      Example: ftnmail yes
+
+  webserver <yes|no>
+      Enable web server for file downloads.
+      Example: webserver yes
+
+
+Example System Configuration:
+-----------------------------
+
+; System Configuration
+name            Demo BBS
+sysop           Demo Sysop
+contact         sysop@example.com
+hostname        bbs.example.com
+listen          23
+max_lines       10
+idle_timeout    300
+botstopper      Press * (SHIFT+8) twice to enter...
+needlogin       yes
+closed          no
+pager           yes
+
+; Scripts
+prelogon        Prelogon
+postlogon       Postlogon
+logoff          Logoff
+newuser         NewUser
+welcome         Menus.Welcome
+closedsys       System.ClosedSys
+timeup          System.TimeUp
+anykey          System.Anykey
+
+; Optional
+ftnmail         yes
+webserver       yes
+
+
+============================================================================
+6. LINE CONFIGURATION
+============================================================================
+
+The Lines configuration file defines per-line settings:
+<Converse$Dir>.Resources.Config.Lines
+
+Each line block defines settings that override global defaults:
+
+  start
+  line        <number>      Line number (0-31)
+  enabled     <yes|no>      Enable this line
+  botstopper  <string>      Line-specific botstopper
+  hello       <string>      Initial greeting message
+  end
+
+Example:
+
+  ; Lines configuration file
+
+  start
+  line        0
+  enabled     yes
+  botstopper  Please press * twice to enter...
+  hello       Welcome to the BBS!
+  end
+
+  start
+  line        1
+  enabled     yes
+  botstopper  Please press # twice to enter...
+  hello       Welcome, Line 2 user!
+  end
+
+
+============================================================================
+7. USER MANAGEMENT
+============================================================================
+
+User Accounts
+-------------
+
+Each user has a USER_RECORD containing:
+
+  - id: Unique user ID (assigned automatically)
+  - username: Login name (case-insensitive)
+  - password: Account password (encrypted at rest)
+  - realname: User's real name
+  - email: Email address
+  - accesslevel: Numeric access level (0-255)
+  - keys: Access key string (e.g., "SYSOP,DEV,FILES")
+  - sysop: Sysop flag (0 or 1)
+
+User data is stored in encrypted form in the UserDB file.
+
+
+Access Levels
+-------------
+
+Access levels control what users can do:
+
+  0-49      Guest/New User
+  50-99     Regular User
+  100-149   Validated User
+  150-199   Power User
+  200-254   Co-Sysop
+  255       Sysop
+
+You can customise these ranges for your system.
+
+
+Access Keys
+-----------
+
+Keys provide fine-grained access control. A user's keys field
+contains comma-separated key names:
+
+  SYSOP     Sysop access
+  DEV       Developer files access
+  BETA      Beta tester access
+  (custom)  Any key you define
+
+Keys are checked by scripts and areas. For example, a filebase
+area might require the "DEV" key to access.
+
+
+User Editor (UserEd)
+--------------------
+
+Use the UserEd application to manage users:
+
+  - Add new users
+  - Edit existing users
+  - Reset passwords
+  - Set access levels and keys
+  - Lock/unlock accounts
+
+Run UserEd from the Converse directory.
+
+
+User History
+------------
+
+The system tracks each user's:
+
+  - Last selected messagebase and area
+  - Last selected filebase and area
+  - Last scan timestamp
+
+This is automatically saved and restored on login.
+
+
+User Statistics
+---------------
+
+The system maintains statistics for each user:
+
+  - Login count
+  - Last login time
+  - Messages posted
+  - Files uploaded/downloaded
+  - Time online
+
+
+============================================================================
+8. MESSAGEBASES
+============================================================================
+
+Overview
+--------
+
+Messagebases store messages organised into areas. Converse supports:
+
+  - Local areas (BBS-only messages)
+  - FTN Echomail (networked discussion areas)
+  - FTN Netmail (private network mail)
+  - Private mail (user-to-user)
+
+
+Configuration Structure
+-----------------------
+
+The MsgBases configuration file sets global defaults:
+<Converse$Dir>.Resources.Config.MsgBases
+
+  default_retention <days>
+      How long to keep messages (0 = forever).
+
+  default_accesslevel <level>
+      Minimum access level for new bases.
+
+  storage_root <path>
+      Where messages are stored.
+
+  include <path>
+      Include individual messagebase config files.
+
+
+Individual Messagebase Configuration
+------------------------------------
+
+Each messagebase has its own config file included from MsgBases:
+
+  messagebase <id>
+      name        <string>        Display name
+      type        <0|1|2>         Type: 0=local, 1=echomail, 2=netmail
+      accesslevel <level>         Minimum access level
+      keys        <key list>      Required keys (optional)
+
+      area <id>
+          name        <string>    Area display name
+          tag         <string>    FTN echomail tag (for FTN areas)
+          areatype    <type>      0=local, 1=echo, 2=net, 4=private
+          daystokeep  <days>      Retention for this area
+          accesslevel <level>     Area-specific access (optional)
+          keys        <key list>  Area-specific keys (optional)
+      endarea
+
+  endmessagebase
+
+
+Area Types
+----------
+
+  0 - LOCAL:    Local BBS messages only
+  1 - ECHO:     FTN echomail (networked)
+  2 - NET:      FTN netmail (private network mail)
+  3 - JUNK:     Junk/Unknown area
+  4 - PRIVATE:  Private user-to-user mail
+
+
+Example Messagebase Configuration
+---------------------------------
+
+; Local Messages (MsgBase_0)
+
+messagebase 1
+    name            Local Messages
+    type            0
+    accesslevel     0
+
+    area 1
+        name        General Chat
+        tag         GENERAL
+        areatype    0
+        daystokeep  365
+    endarea
+
+    area 2
+        name        For Sale
+        tag         FORSALE
+        areatype    0
+        daystokeep  90
+    endarea
+
+    area 3
+        name        Private Mail
+        tag         PRIVATE
+        areatype    4
+        daystokeep  0
+    endarea
+
+    area 4
+        name        Sysop Area
+        tag         SYSOP
+        areatype    0
+        daystokeep  0
+        accesslevel 200
+        keys        SYSOP
+    endarea
+
+endmessagebase
+
+
+============================================================================
+9. FILEBASES
+============================================================================
+
+Overview
+--------
+
+Filebases store files organised into areas. Users can browse,
+download, and (optionally) upload files.
+
+
+Configuration Structure
+-----------------------
+
+The FileBases configuration file sets global defaults:
+<Converse$Dir>.Resources.Config.FileBases
+
+  default_accesslevel <level>
+      Minimum access level for new bases.
+
+  storage_root <path>
+      Where files are stored.
+
+  max_upload_size <bytes>
+      Maximum file size for uploads (0 = unlimited).
+
+  include <path>
+      Include individual filebase config files.
+
+
+Individual Filebase Configuration
+---------------------------------
+
+  filebase <id>
+      name        <string>        Display name
+      type        <0>             Type (currently always 0)
+      accesslevel <level>         Minimum access level
+      keys        <key list>      Required keys (optional)
+
+      area <id>
+          name        <string>    Area display name
+          accesslevel <level>     Area-specific access (optional)
+          keys        <key list>  Area-specific keys (optional)
+      endarea
+
+  endfilebase
+
+
+Example Filebase Configuration
+------------------------------
+
+; Main Files (FileBase_0)
+
+filebase 1
+    name            Main Files
+    type            0
+    accesslevel     0
+
+    area 1
+        name        Utilities
+        accesslevel 0
+    endarea
+
+    area 2
+        name        Games
+        accesslevel 0
+    endarea
+
+    area 3
+        name        Development
+        accesslevel 50
+        keys        DEV
+    endarea
+
+endfilebase
+
+
+File Storage Structure
+----------------------
+
+Files are stored in the FileBases directory:
+
+  <Converse$Dir>.FileBases.<base_id>.Files[.A<area_id>].G<group>.<file_id>
+
+Files are grouped (60 per directory) to respect RISC OS limits.
+
+
+============================================================================
+10. ACCESS CONTROL
+============================================================================
+
+The Access configuration file controls IP-based restrictions:
+<Converse$Dir>.Resources.Config.Access
+
+Supported directives:
+
+  ban <ip>
+      Block a specific IP address.
+      Example: ban 192.168.0.55
+
+  ban <network>/<bits>
+      Block a network range (CIDR notation).
+      Example: ban 10.0.0.0/8
+      Example: ban 172.16.0.0/12
+
+
+Example:
+
+  ; Block a nuisance user
+  ban 192.168.0.55
+
+  ; Block an entire subnet
+  ban 10.0.0.0/8
+
+
+============================================================================
+11. FTN NETWORKING
+============================================================================
+
+Overview
+--------
+
+FTN (FidoNet Technology Network) allows your BBS to exchange mail
+with other BBSes worldwide. Converse implements:
+
+  - BinkP protocol for mail transfer
+  - BSO (Binkley-Style Outbound) directory structure
+  - Echomail (public discussion areas)
+  - Netmail (private messages)
+  - TIC file distribution (optional)
+
+
+FTN Addresses
+-------------
+
+FTN addresses use the format: zone:net/node.point
+
+  - Zone: Geographic region (e.g., 1=North America, 2=Europe)
+  - Net: Network within zone
+  - Node: Individual system
+  - Point: Sub-node (0 for full nodes)
+
+Example: 2:250/1.0 (Zone 2, Net 250, Node 1, Point 0)
+
+
+FTN Configuration
+-----------------
+
+The FTN config file: <Converse$Dir>.Resources.Config.FTN
+
+Global settings:
+
+  sysop <name>
+      Your name for FTN packets.
+
+  inbound <path>
+      Incoming mail directory.
+
+  outbound <path>
+      Outgoing mail directory.
+
+  temp <path>
+      Temporary file directory.
+
+  tossinterval <seconds>
+      Seconds between automatic toss runs (0 = manual only).
+
+  pollinterval <seconds>
+      Seconds between automatic uplink polls (0 = manual only).
+
+
+Address Configuration:
+
+  address <id>
+      zone        <number>
+      net         <number>
+      node        <number>
+      point       <number>
+      domain      <string>    Optional domain name
+      akause      <number>    Message base to use this address
+  endaddress
+
+
+Uplink Configuration:
+
+  uplink <id>
+      address     <z:n/n.p>   Uplink's FTN address
+      host        <hostname>  DNS name or IP
+      port        <number>    BinkP port (default 24554)
+      password    <string>    Session password
+      groups      <list>      Echomail groups (A,B,C...)
+      alias       <z:n/n.p>   Additional address (AKA)
+  enduplink
+
+
+Example FTN Configuration
+-------------------------
+
+; FTN Configuration
+
+sysop           Demo Sysop
+inbound         <Converse$Dir>.FTN.Inbound
+outbound        <Converse$Dir>.FTN.Outbound
+temp            <Converse$Dir>.FTN.Temp
+tossinterval    300
+pollinterval    3600
+
+; Our address
+address 1
+    zone        2
+    net         250
+    node        9
+    point       0
+    domain      fidonet
+endaddress
+
+; Hub uplink
+uplink 1
+    address     2:250/0.0
+    host        hub.example.com
+    port        24554
+    password    secretpassword
+    groups      A,B,C
+    alias       2:250/1.0
+enduplink
+
+
+Echomail Groups
+---------------
+
+Areas can be assigned to groups (A, B, C, etc.) and uplinks specify
+which groups they carry. When scanning outbound echomail, messages
+are only routed to uplinks whose groups overlap with the area's groups.
+
+
+Running the FTN Mailer
+----------------------
+
+The FTN Mailer runs as a separate Wimp application. It:
+
+  - Accepts incoming BinkP connections
+  - Initiates outbound connections to uplinks
+  - Tosses inbound packets to messagebases
+  - Scans outbound messages and creates packets
+  - Processes TIC files for file distribution
+
+
+CLI Commands:
+
+  *FTN_Toss            Process incoming mail
+  *FTN_Scan            Create outbound packets
+  *FTN_Poll <uplink>   Connect to uplink
+
+
+============================================================================
+12. DOORS
+============================================================================
+
+Overview
+--------
+
+Doors are external programs that run within a BBS session. Converse
+supports three door types:
+
+  1. Native Doors (ConverseDoors) - Modern API, full features
+  2. RiscBBS Doors - Legacy compatibility layer
+  3. ARCbbs Doors - Legacy ARCbbs emulation
+
+
+Native Doors (ConverseDoors)
+----------------------------
+
+The preferred door API. Features:
+
+  - Session-based registration
+  - 4KB I/O buffers
+  - Full user and system information
+  - Messaging support
+  - Clean activation/deactivation
+
+Script command:
+  call door `<Converse$Dir>.BBS.Doors.MyDoor %{line}`
+
+The door receives the line number and registers with the module.
+
+SWI Interface (0x5AAC0):
+
+  0  Register        Register session, get handle
+  1  Deregister      End session
+  2  GetInfo         Get session info
+  3  ReadByte        Read one byte from user
+  4  WriteByte       Write one byte to user
+  5  ReadLine        Read a line from user
+  6  WriteLine       Write a line to user
+  7  ReadBlock       Read block of data
+  8  WriteBlock      Write block of data
+  9  InputStatus     Bytes available
+  10 OutputStatus    Buffer space available
+  11 ClearInput      Clear input buffer
+  12 ClearOutput     Clear output buffer
+  13 GetUserInfo     Get DOOR_USER_INFO structure
+  14 GetSystemInfo   Get DOOR_SYSTEM_INFO structure
+  15 SendMessage     Send message to host
+  16 ReceiveMessage  Receive message from host
+
+
+RiscBBS Doors
+-------------
+
+Legacy RiscBBS compatibility. Uses the RiscBBS door protocol.
+
+Script command:
+  call riscbbsdoor `<Converse$Dir>.BBS.Doors.RiscDoor %{line}`
+
+
+ARCbbs Doors
+------------
+
+Legacy ARCbbs emulation. The door number must match the door's
+configured DoorNumber.
+
+Script command:
+  call arcbbsdoor <door_number> `<Converse$Dir>.BBS.Doors.ARCbbs.!Door %{line}`
+
+
+Writing a Native Door
+---------------------
+
+Example door code (C):
+
+  #include "kernel.h"
+
+  #define SWI_DOORS_BASE    0x5AAC0
+  #define SWI_Register      (SWI_DOORS_BASE + 0)
+  #define SWI_Deregister    (SWI_DOORS_BASE + 1)
+  #define SWI_WriteLine     (SWI_DOORS_BASE + 6)
+
+  int main(int argc, char *argv[])
+  {
+      _kernel_swi_regs regs;
+      int session;
+
+      if (argc < 2) return 1;
+
+      /* Register */
+      regs.r[0] = atoi(argv[1]);  /* Line number */
+      regs.r[1] = 0;
+      if (_kernel_swi(SWI_Register, &regs, &regs) != NULL)
+          return 1;
+      session = regs.r[0];
+
+      /* Do something */
+      regs.r[0] = session;
+      regs.r[1] = (int)"Hello from my door!\r\n";
+      _kernel_swi(SWI_WriteLine, &regs, &regs);
+
+      /* Deregister */
+      regs.r[0] = session;
+      _kernel_swi(SWI_Deregister, &regs, &regs);
+
+      return 0;
+  }
+
+
+============================================================================
+13. WEB SERVER
+============================================================================
+
+Overview
+--------
+
+The Web Server module provides HTTP access to file downloads.
+Enable it in System configuration:
+
+  webserver yes
+
+
+Features
+--------
+
+  - HTTP/1.0 protocol
+  - Static file serving from <Converse$Dir>.Web
+  - Template processing for filebase listings
+  - Direct file downloads from filebases
+  - Up to 16 simultaneous connections
+
+
+Document Root
+-------------
+
+Place web content in <Converse$Dir>.Web
+
+  - index         Default page (filetype FAF for HTML)
+  - styles/css    Stylesheets
+  - images/       Image files
+
+
+Template Tags
+-------------
+
+In HTML files (filetype 0xFAF), use template tags:
+
+  {{filebase}}
+      Replaced with hierarchical listing of all filebases,
+      areas, and files with download links.
+
+
+Download URLs
+-------------
+
+Files are downloaded via:
+
+  /download/<base_id>/<file_id>/<filename>
+
+The filename is for browser display; actual file is looked up
+by base_id and file_id.
+
+
+Example Web Page
+----------------
+
+Create <Converse$Dir>.Web.index (filetype FAF):
+
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <title>My BBS Files</title>
+  </head>
+  <body>
+    <h1>Welcome to My BBS</h1>
+    <h2>File Downloads</h2>
+    {{filebase}}
+  </body>
+  </html>
+
+
+============================================================================
+14. SCRIPTING
+============================================================================
+
+Overview
+--------
+
+BBS scripts control the user experience. Scripts are text files
+that contain commands for display, input, flow control, and
+BBS operations. The scripting language is powerful enough to
+build complete BBS experiences.
+
+
+Script Location
+---------------
+
+Scripts live in <Converse$Dir>.BBS
+
+Key scripts:
+
+  Prelogon      Before login (welcome, botstopper, login prompt)
+  Postlogon     After login (news, mail check)
+  Logoff        User logout
+  NewUser       New user registration
+  Messagebase   Message reading/posting
+  Filebase      File browsing/downloading
+
+
+Script Formats
+--------------
+
+Scripts support two formats:
+
+**Plain Text Format**
+
+One instruction per line. Labels end with `:` and serve as jump targets.
+Comments start with `#`. Block comments use `/* ... */`.
+
+  # This is a comment
+  /* This is also a comment */
+  label main_menu
+  main_menu:
+  print `Hello!\r\n`
+  goto main_menu
+
+**Embedded Block Format**
+
+Text outside `{...}` blocks is sent directly to the caller as output.
+Commands inside `{...}` blocks are executed. This allows mixing ANSI art
+with script logic:
+
+  Welcome to the BBS!
+  {
+      set name `Guest`
+      prompt name line echo
+  }
+  Hello, %{name}!
+  {
+      goto menu
+  }
+
+Use `{{` to output a literal `{` character in embedded format.
+
+
+Commands Reference
+------------------
+
+FLOW CONTROL
+~~~~~~~~~~~~
+
+  label <name>
+      Define a jump target. Also: <name>:
+
+  goto <name>
+      Jump to label unconditionally.
+
+  if <condition> goto <label>
+      Conditional jump (single-line form).
+      
+      String operators (case-insensitive):
+        ==          Equals
+        !=          Not equals
+        contains    Substring match
+      
+      Numeric operators:
+        >           Greater than
+        <           Less than
+        >=          Greater or equal
+        <=          Less or equal
+      
+      Compound conditions:
+        &&          AND (both must be true)
+        ||          OR (either can be true)
+      
+      Examples:
+        if selection == `1` goto option_one
+        if %{accesslevel} >= 100 goto admin
+        if %{hour} < 12 goto morning
+        if %{day} == 25 && %{month} == 12 goto christmas
+        if choice contains `y` goto confirmed
+
+  if <condition> then
+      ...
+  else
+      ...
+  end if
+
+      Block IF/THEN/ELSE structure. Supports nesting up to 16 levels.
+      The ELSE clause is optional. Use "end if" or "endif" to close.
+      
+      Example:
+        if %{sysop} == 1 then
+            print `Welcome, Sysop!\r\n`
+            script `<Converse$Dir>.BBS.SysopMenu`
+        else
+            if %{accesslevel} >= 100 then
+                print `Welcome, Administrator!\r\n`
+            else
+                print `Welcome, User!\r\n`
+            end if
+        end if
+
+  return
+      Return from subscript to caller, or end script.
+
+  stop
+      End script execution immediately.
+
+  script <path>
+      Call a subscript (up to 8 levels of nesting).
+      Variables are shared between caller and subscript.
+      Example: script `<Converse$Dir>.BBS.SubMenu`
+
+  pause <milliseconds>
+      Pause execution for specified duration.
+
+
+OUTPUT
+~~~~~~
+
+  print <text>
+      Send text to user. Use backticks for multi-word strings.
+      Supports escape sequences: \r \n \t \\
+      Example: print `Hello, %{line}!\r\n`
+
+  type <filename>
+      Stream a text/ANSI file to the user.
+      Example: type `<Converse$Dir>.BBS.Art.Welcome`
+
+  cls
+      Clear screen (ESC[2J) and home cursor (ESC[H).
+
+  cll
+      Clear to end of line (ESC[K).
+
+  pos <column> <row>
+      Move cursor to 1-based position using ANSI escape.
+
+  fg <colour>
+      Set foreground colour (0-7: black,red,green,yellow,blue,magenta,cyan,white).
+
+  bg <colour>
+      Set background colour (0-7).
+
+  fgbg <fg> <bg>
+      Set both foreground and background colours.
+
+  flash <0|1>
+      Enable (1) or disable (0) blinking text attribute.
+
+  anykey [variable]
+      Wait for any keypress. Stores key in variable (default: _key).
+      Displays the configured anykey file if set.
+
+
+INPUT
+~~~~~
+
+  prompt <variable> <mode> <echo>
+      Request input from user.
+      
+      mode:  char (single character) or line (full line)
+      echo:  echo (show input) or noecho (hide, for passwords)
+      
+      Examples:
+        prompt selection char echo
+        prompt password line noecho
+
+
+VARIABLES
+~~~~~~~~~
+
+  set <variable> <value>
+      Assign a value to a variable. Macros are expanded.
+      Example: set greeting `Hello %{line}`
+
+  Variables are referenced using %{name} syntax in text and conditions.
+
+
+MATH OPERATIONS
+~~~~~~~~~~~~~~~
+
+All math commands perform integer arithmetic.
+
+  add <result> <operand1> <operand2>
+      result = operand1 + operand2
+
+  sub <result> <operand1> <operand2>
+      result = operand1 - operand2
+
+  mul <result> <operand1> <operand2>
+      result = operand1 * operand2
+
+  div <result> <operand1> <operand2>
+      result = operand1 / operand2 (division by zero = 0)
+
+  mod <result> <operand1> <operand2>
+      result = operand1 % operand2 (modulo by zero = 0)
+
+  random <result> <min> <max>
+      Generate random integer in [min, max] inclusive.
+      Example: random dice 1 6
+
+
+STRING OPERATIONS
+~~~~~~~~~~~~~~~~~
+
+  strlen <result> <source_variable>
+      Store length of source variable's value in result.
+      Example: strlen len username
+
+  haskey <result> <key>
+      Check if user has access key. Stores "1" or "0" in result.
+      Example: haskey has_download D
+
+
+AUTHENTICATION
+~~~~~~~~~~~~~~
+
+  logon
+      Display login prompt. Prompts for username/password.
+      Users can type "NEW" to register. Allows 3 retries.
+      On success, runs postlogon script.
+
+  logoff
+      End session and disconnect user.
+
+
+STATUS & INFORMATION
+~~~~~~~~~~~~~~~~~~~~
+
+  doing <text>
+      Update activity display in Server status window.
+      Example: doing `Reading messages`
+
+  online
+      Show all connected users with line, name, time, activity.
+
+  loginscan
+      Scan all accessible messagebases and filebases for new
+      content since user's last scan. Updates lastscan timestamp.
+
+  sysopchat
+      Page sysop for interactive chat. Prompts for reason,
+      displays pager on sysop's desktop, opens chat if accepted.
+
+  detectansi <result> [timeout_ms]
+      Detect if terminal supports ANSI. Sends ESC[6n query.
+      Stores "1" if ANSI detected, "0" if timeout.
+      Default timeout: 3000ms.
+
+
+FILEBASE COMMANDS
+~~~~~~~~~~~~~~~~~
+
+  filebase <subcommand> [argument]
+
+    list              List accessible filebases
+    select <id>       Select a filebase
+    areas             List areas in selected filebase
+    area <id>         Select an area (0 = all files)
+    files             List files in current selection
+    info <file_id>    Show file details
+    download <id>     Initiate download
+    reset             Clear selection
+
+
+MESSAGEBASE COMMANDS
+~~~~~~~~~~~~~~~~~~~~
+
+  messagebase <subcommand> [argument]
+
+    list              List accessible messagebases
+    select <id>       Select a messagebase
+    areas             List areas in selected messagebase
+    area <id>         Select an area
+    messages          List messages in current selection
+    read [id]         Open message viewer
+    info <id>         Show message details
+    post              Start message composer
+    reset             Clear selection
+
+
+DIRECT MAIL
+~~~~~~~~~~~
+
+  sendmail <username> <subject> <body>
+      Send private message to local user.
+      Use \r\n for line breaks in body.
+      Example: sendmail sysop `Hello!` `Welcome to the BBS!`
+
+  sendnetmail <address> <name> <subject> <body>
+      Queue netmail to FTN address for export.
+      Example: sendnetmail 2:250/1 `John` `Test` `Hello!`
+
+
+FILE TRANSFER
+~~~~~~~~~~~~~
+
+  sendfile <file_id> [protocol]
+      Download file to user. Protocols:
+        xmodem, xmodem-crc, xmodem-1k,
+        ymodem, ymodem-g, zmodem (recommended)
+
+  receivefile <path> [protocol]
+      Upload file from user to specified path.
+
+
+DOOR COMMANDS
+~~~~~~~~~~~~~
+
+  call door <command>
+      Launch native ConverseDoors door.
+      Example: call door `<Converse$Dir>.BBS.Doors.MyDoor %{line}`
+
+  call riscbbsdoor <command>
+      Launch legacy RiscBBS door.
+
+  call arcbbsdoor <number> <command>
+      Launch ARCbbs door with specified door number.
+
+
+SYSTEM COMMANDS
+~~~~~~~~~~~~~~~
+
+  oscli <command>
+      Execute RISC OS CLI command.
+      Example: oscli `*Dir <Converse$Dir>`
+
+  call time
+      Print current timestamp.
+
+  call lineinfo
+      Print session/door status.
+
+  call message <text>
+      Print text with macro expansion.
+
+  call disconnect
+      Print hangup reminder message.
+
+
+MACROS REFERENCE
+----------------
+
+System Macros:
+  %{line}           Current line number
+  %{t_handle}       Wimp task handle
+  %{time}           Current time (HH:MM:SS)
+  %{date}           Current date (DD/MM/YYYY)
+  %{version}        Converse version
+
+Time Macros:
+  %{hour}           Hour (0-23)
+  %{minute}         Minute (0-59)
+  %{dayofweek}      Day of week (0=Sunday, 6=Saturday)
+  %{day}            Day of month (1-31)
+  %{month}          Month (1-12)
+  %{year}           Four-digit year
+
+User Macros:
+  %{userid}         User's ID (0 if not logged in)
+  %{accesslevel}    User's access level
+  %{registered}     "1" if logged in, "0" if guest
+  %{sysop}          "1" if user is sysop
+  %{keys}           User's access keys string
+
+User Statistics:
+  %{lastlogon}      Last login date/time
+  %{lastscan}       Last scan date/time
+  %{usercalls}      Total calls by user
+  %{todaytime}      Minutes used today
+  %{uploadskb}      KB uploaded by user
+  %{downloadskb}    KB downloaded by user
+  %{useruploads}    Files uploaded count
+  %{userdownloads}  Files downloaded count
+
+User Flags:
+  %{useransi}       User has ANSI enabled (1/0)
+  %{usermore}       User has MORE prompt enabled
+  %{userlines}      Screen lines setting
+  %{usercls}        Clear screen preference
+  %{userexpert}     Expert mode enabled
+  %{usernolimit}    No time limit flag
+  %{userinvisible}  Invisible to WHO list
+  %{userchataccess} Chat access level
+  %{userratios}     Download ratios
+  %{usermaxtime}    Maximum session time
+  %{userprotocol}   Default transfer protocol
+
+Selection Macros:
+  %{filebaseid}           Current filebase ID
+  %{filebasename}         Current filebase name
+  %{filebaseareaid}       Current filebase area ID
+  %{filebaseareaname}     Current filebase area name
+  %{messagebaseid}        Current messagebase ID
+  %{messagebasename}      Current messagebase name
+  %{messagebaseareaid}    Current messagebase area ID
+  %{messagebaseareaname}  Current messagebase area name
+
+
+Example Script
+--------------
+
+# Main menu script
+
+label mainmenu
+cls
+type `<Converse$Dir>.BBS.Menus.Main`
+print `\r\n`
+print `[M]essages [F]iles [W]ho [C]hat [G]oodbye: `
+
+prompt choice char echo
+
+if choice == `M` || choice == `m` goto messages
+if choice == `F` || choice == `f` goto files
+if choice == `W` || choice == `w` goto who
+if choice == `C` || choice == `c` goto chat
+if choice == `G` || choice == `g` goto goodbye
+
+goto mainmenu
+
+label messages
+doing `Reading messages`
+script `<Converse$Dir>.BBS.Messagebase`
+goto mainmenu
+
+label files
+doing `Browsing files`
+script `<Converse$Dir>.BBS.Filebase`
+goto mainmenu
+
+label who
+online
+anykey
+goto mainmenu
+
+label chat
+if %{hour} < 9 || %{hour} >= 18 goto chat_closed
+sysopchat
+goto mainmenu
+
+label chat_closed
+print `\r\nSysop chat only available 9am-6pm.\r\n`
+anykey
+goto mainmenu
+
+label goodbye
+logoff
+stop
+
+
+============================================================================
+15. MONITORING AND LOGS
+============================================================================
+
+Server Status Window
+--------------------
+
+The Server application displays:
+
+  - Connection enable/disable toggle
+  - Chat pager toggle
+  - System uptime (HH:MM:SS)
+  - Total call count
+  - Per-line status:
+    - Line number
+    - Username (or "Waiting...")
+    - Current activity
+    - Hostname/IP
+    - Connection time
+    - Disconnect button (D)
+    - View terminal button (V)
+    - Logon button (L)
+
+
+Log Files
+---------
+
+<Converse$Dir>.Logs.System
+    System events (startup, shutdown, errors)
+
+<Converse$Dir>.Logs.Calls
+    Call log (line, user, status)
+    Format: DD/MM/YYYY,HH:MM:SS,line,user,status
+
+<Converse$Dir>.Logs.Line_N
+    Per-line activity log
+
+<Converse$Dir>.Logs.FTN
+    FTN mailer activity
+
+<Converse$Dir>.Logs.Web
+    Web server requests
+
+
+CLI Commands
+------------
+
+Module status commands:
+
+  *Filer_Status
+      Show database file status.
+
+  *Filer_Stats
+      Show database statistics.
+
+  *Filer_FileBases list
+      List all filebases.
+
+  *Filer_MessageBases list
+      List all messagebases.
+
+  *ConverseDoors_Status
+      Show active door sessions.
+
+  *ARCbbsDoors_Status
+      Show active ARCbbs door lines.
+
+
+============================================================================
+16. TROUBLESHOOTING
+============================================================================
+
+Common Issues
+-------------
+
+"No connections accepted"
+  - Check listen port is not in use
+  - Verify max_lines > 0
+  - Check connections are enabled in status window
+  - Check Access config for IP bans
+
+"Users can't log in"
+  - Verify UserDB exists and is readable
+  - Check needlogin setting
+  - Verify user account not locked
+
+"Messages not appearing"
+  - Check messagebase configuration
+  - Verify storage_root path exists
+  - Check access levels and keys
+
+"FTN mail not working"
+  - Verify FTN config addresses
+  - Check uplink host/port are reachable
+  - Verify passwords match
+  - Check inbound/outbound directories exist
+
+"Web server not responding"
+  - Verify webserver yes in config
+  - Check port 80 is available
+  - Verify document root exists
+
+"Door crashes or doesn't respond"
+  - Check door command path
+  - Verify door supports correct protocol
+  - Check for errors in line log
+
+
+Debug Output
+------------
+
+Enable Reporter module for debug output from all modules.
+Debug messages are sent to Reporter_Text0.
+
+
+Getting Help
+------------
+
+  - Check the Docs directory for detailed documentation
+  - Review example configurations in Demo/Config
+  - Examine example scripts in Demo/BBS
+
+
+============================================================================
+END OF GUIDE
+============================================================================
+
+Good luck with your BBS! May your lines be busy and your users happy.
+

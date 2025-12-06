@@ -1,5 +1,0 @@
-Set NodeDoor$Dir <Obey$Dir>
-Iconsprites <NodeDoor$Dir>.!Sprites
-RMensure ABCLibrary 4.01 RMload <Obey$Dir>.ABCLib
-WimpSlot -Min 64k -Max 64k
-Run <NodeDoor$Dir>.!RunImage
