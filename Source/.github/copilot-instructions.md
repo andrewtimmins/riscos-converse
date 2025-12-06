@@ -511,6 +511,187 @@ Doors use `SendRequest` to query information. The request block format:
 |---------|-------------|
 | `*ARCbbsDoors_Status` | Show status of all active ARCbbs door lines |
 
+## ConverseDoors Module (Native Door Support)
+
+### Overview
+The ConverseDoors module (`Doors/`) provides a native door interface for Converse BBS. Unlike the ARCbbsDoors emulator which provides backward compatibility with legacy doors, ConverseDoors offers a modern registration-based API with full user information and messaging support.
+
+### Architecture
+- **Source**: `Doors/c/doors` (SWI handler), `Doors/c/debug` (debug support)
+- **CMHG**: `Doors/cmhg/doorsHdr`
+- **Max Sessions**: 32 (one per line)
+- **Buffer Size**: 4KB per direction per session
+- **SWI Chunk**: 0x5AAC0
+
+### Key Differences from ARCbbsDoors
+| Feature | ARCbbsDoors | ConverseDoors |
+|---------|-------------|---------------|
+| Registration | Door number polling | Explicit Register/Deregister |
+| User Info | Request/Reply protocol | Direct GetUserInfo SWI |
+| System Info | Not available | GetSystemInfo SWI |
+| Messaging | Not available | SendMessage/ReceiveMessage |
+| Buffers | 1KB | 4KB |
+| Block I/O | Not available | ReadBlock/WriteBlock |
+
+### Door Lifecycle
+1. Door calls `Register` with line number, returns session handle on success
+2. Door uses I/O SWIs with session handle for terminal communication
+3. Door queries user/system info as needed
+4. When finished, door calls `Deregister` with session handle
+5. LineTask receives notification and resumes script execution
+
+### Script Integration
+Use `call door <command>` in scripts:
+```
+call door `<Converse$Dir>.BBS.Doors.MyDoor %{line}`
+```
+The door receives the line number as a command-line argument and registers itself.
+
+### Data Structures
+
+```c
+/* Door session (internal to module) */
+typedef struct {
+    int line;                       /* Line number (0-31) */
+    int active;                     /* Session active flag */
+    uint32_t flags;                 /* Door flags */
+    uint8_t input_buffer[4096];     /* Input buffer (host->door) */
+    uint8_t output_buffer[4096];    /* Output buffer (door->host) */
+    int input_head, input_tail;     /* Input buffer pointers */
+    int output_head, output_tail;   /* Output buffer pointers */
+} DOOR_SESSION;
+
+/* User information structure */
+typedef struct {
+    int user_id;                    /* User ID from database */
+    char username[32];              /* Login name */
+    char realname[64];              /* Full name */
+    int access_level;               /* Access level (0-255) */
+    int sysop;                      /* Sysop flag (1=yes) */
+    char keys[128];                 /* Access keys string */
+    time_t connect_time;            /* Connection timestamp */
+    time_t session_start;           /* Session start time */
+    int terminal_type;              /* 0=dumb,1=vt52,2=vt100,3=ansi */
+    int screen_width;               /* Terminal width (usually 80) */
+    int screen_height;              /* Terminal height (usually 24) */
+} DOOR_USER_INFO;
+
+/* System information structure */
+typedef struct {
+    char bbs_name[64];              /* BBS name */
+    char sysop_name[64];            /* Sysop name */
+    int max_lines;                  /* Maximum lines configured */
+    int total_calls;                /* Total call count */
+    time_t system_uptime;           /* Server start time */
+} DOOR_SYSTEM_INFO;
+```
+
+### ConverseDoors SWI Reference (Base 0x5AAC0)
+
+| Offset | Name | Entry | Exit |
+|--------|------|-------|------|
+| 0 | Register | R0=line, R1=flags | R0=session handle or -1 |
+| 1 | Deregister | R0=session | R0=0/-1 |
+| 2 | GetInfo | R0=session | R0=DOOR_SESSION* or 0 |
+| 3 | ReadByte | R0=session | R0=byte or -1 |
+| 4 | WriteByte | R0=session, R1=byte | R0=0/-1 |
+| 5 | ReadLine | R0=session, R1=buffer, R2=maxlen | R0=length or -1 |
+| 6 | WriteLine | R0=session, R1=string | R0=0/-1 |
+| 7 | ReadBlock | R0=session, R1=buffer, R2=maxlen | R0=bytes read or -1 |
+| 8 | WriteBlock | R0=session, R1=buffer, R2=length | R0=bytes written or -1 |
+| 9 | InputStatus | R0=session | R0=bytes available |
+| 10 | OutputStatus | R0=session | R0=bytes free |
+| 11 | ClearInput | R0=session | R0=0/-1 |
+| 12 | ClearOutput | R0=session | R0=0/-1 |
+| 13 | GetUserInfo | R0=session, R1=DOOR_USER_INFO* | R0=0/-1 |
+| 14 | GetSystemInfo | R0=session, R1=DOOR_SYSTEM_INFO* | R0=0/-1 |
+| 15 | SendMessage | R0=session, R1=type, R2=data | R0=0/-1 |
+| 16 | ReceiveMessage | R0=session, R1=buffer | R0=type or -1 |
+
+### Host Integration Functions
+LineTask uses these functions to integrate with the door module:
+
+```c
+/* Host writes data for door to read */
+int doors_host_write(int session, const uint8_t *data, int len);
+
+/* Host reads data written by door */
+int doors_host_read(int session, uint8_t *buffer, int maxlen);
+
+/* Check if session is active */
+int doors_session_active(int session);
+
+/* Force-close a session (on disconnect) */
+void doors_force_close(int session);
+```
+
+### Message Types (SendMessage/ReceiveMessage)
+| Type | Direction | Purpose |
+|------|-----------|---------|
+| 0 | Door->Host | Door exiting normally |
+| 1 | Door->Host | Door exiting with error |
+| 2 | Door->Host | Request chat with sysop |
+| 3 | Host->Door | Sysop initiated chat |
+| 4 | Host->Door | Time warning (5 min left) |
+| 5 | Host->Door | Force disconnect requested |
+
+### CLI Commands
+| Command | Description |
+|---------|-------------|
+| `*ConverseDoors_Status` | Show status of all active door sessions |
+
+### Example Door Code
+
+```c
+#include "kernel.h"
+
+#define SWI_DOORS_BASE    0x5AAC0
+#define SWI_Register      (SWI_DOORS_BASE + 0)
+#define SWI_Deregister    (SWI_DOORS_BASE + 1)
+#define SWI_ReadByte      (SWI_DOORS_BASE + 3)
+#define SWI_WriteByte     (SWI_DOORS_BASE + 4)
+#define SWI_WriteLine     (SWI_DOORS_BASE + 6)
+
+int main(int argc, char *argv[])
+{
+    _kernel_swi_regs regs;
+    int session, ch;
+    
+    if (argc < 2) return 1;
+    
+    /* Register with ConverseDoors */
+    regs.r[0] = atoi(argv[1]);  /* Line number */
+    regs.r[1] = 0;              /* No special flags */
+    if (_kernel_swi(SWI_Register, &regs, &regs) != NULL || regs.r[0] < 0)
+        return 1;
+    session = regs.r[0];
+    
+    /* Write greeting */
+    regs.r[0] = session;
+    regs.r[1] = (int)"Welcome to my door!\r\n";
+    _kernel_swi(SWI_WriteLine, &regs, &regs);
+    
+    /* Echo loop */
+    while (1) {
+        regs.r[0] = session;
+        if (_kernel_swi(SWI_ReadByte, &regs, &regs) != NULL) break;
+        ch = regs.r[0];
+        if (ch < 0) continue;  /* No data */
+        if (ch == 'q' || ch == 'Q') break;
+        
+        regs.r[0] = session;
+        regs.r[1] = ch;
+        _kernel_swi(SWI_WriteByte, &regs, &regs);
+    }
+    
+    /* Deregister */
+    regs.r[0] = session;
+    _kernel_swi(SWI_Deregister, &regs, &regs);
+    
+    return 0;
+}
+```
+
 ## File Transfer Protocol Implementation Details
 
 ### Architecture Overview

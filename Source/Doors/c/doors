@@ -1,0 +1,1024 @@
+/* ******************************************************************************************************************************************************** */
+/* ConverseDoors Module - Main Implementation                                                                                                               */
+/*                                                                                                                                                          */
+/* Native door support module for Converse BBS.                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "doorshdr.h"
+#include "doors.h"
+#include "debug.h"
+
+/* Per-line door sessions */
+static DOOR_SESSION sessions[DOORS_MAX_LINES];
+
+/* Module state */
+static int module_initialised = 0;
+
+/* ******************************************************************************************************************************************************** */
+/* Session Management                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+void doors_initialise(void)
+{
+    int i;
+    
+    debug_printf("ConverseDoors: Initialising %d sessions\n", DOORS_MAX_LINES);
+    
+    for (i = 0; i < DOORS_MAX_LINES; i++)
+    {
+        memset(&sessions[i], 0, sizeof(DOOR_SESSION));
+        sessions[i].state = DOOR_STATE_INACTIVE;
+    }
+    
+    module_initialised = 1;
+}
+
+void doors_finalise(void)
+{
+    debug_printf("ConverseDoors: Finalising\n");
+    module_initialised = 0;
+}
+
+DOOR_SESSION *doors_get_session(int line)
+{
+    if (line < 0 || line >= DOORS_MAX_LINES)
+    {
+        return NULL;
+    }
+    return &sessions[line];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Helper Functions                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int valid_line(int line)
+{
+    return (line >= 0 && line < DOORS_MAX_LINES);
+}
+
+static int input_bytes_available(const DOOR_SESSION *s)
+{
+    int used = s->input_write_pos - s->input_read_pos;
+    if (used < 0)
+    {
+        used += DOORS_BUFFER_SIZE;
+    }
+    return used;
+}
+
+static int output_bytes_free(const DOOR_SESSION *s)
+{
+    int used = s->output_write_pos - s->output_read_pos;
+    if (used < 0)
+    {
+        used += DOORS_BUFFER_SIZE;
+    }
+    return DOORS_BUFFER_SIZE - used - 1;
+}
+
+static int input_read_byte(DOOR_SESSION *s)
+{
+    int byte;
+    
+    if (input_bytes_available(s) == 0)
+    {
+        return -1;
+    }
+    
+    byte = s->input_buffer[s->input_read_pos];
+    s->input_read_pos = (s->input_read_pos + 1) % DOORS_BUFFER_SIZE;
+    return byte;
+}
+
+static int output_write_byte(DOOR_SESSION *s, int byte)
+{
+    if (output_bytes_free(s) == 0)
+    {
+        return -1;
+    }
+    
+    s->output_buffer[s->output_write_pos] = (unsigned char)byte;
+    s->output_write_pos = (s->output_write_pos + 1) % DOORS_BUFFER_SIZE;
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Module Entry Points                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+    UNUSED(cmd_tail);
+    UNUSED(podule_base);
+    UNUSED(pw);
+    
+    debug_initialise();
+    debug_printf("ConverseDoors: Module initialising\n");
+    
+    doors_initialise();
+    
+    return NULL;
+}
+
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+    UNUSED(fatal);
+    UNUSED(podule);
+    UNUSED(pw);
+    
+    debug_printf("ConverseDoors: Module finalising\n");
+    
+    doors_finalise();
+    
+    return NULL;
+}
+
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    UNUSED(service_number);
+    UNUSED(r);
+    UNUSED(pw);
+}
+
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+    UNUSED(pw);
+    
+    if (r == NULL)
+    {
+        return NULL;
+    }
+    
+    switch ((DOORS_SWI)swi_no)
+    {
+        case SWI_REGISTER:
+            doors_swi_register(r);
+            break;
+            
+        case SWI_DEREGISTER:
+            doors_swi_deregister(r);
+            break;
+            
+        case SWI_GETINFO:
+            doors_swi_getinfo(r);
+            break;
+            
+        case SWI_READBYTE:
+            doors_swi_readbyte(r);
+            break;
+            
+        case SWI_WRITEBYTE:
+            doors_swi_writebyte(r);
+            break;
+            
+        case SWI_READLINE:
+            doors_swi_readline(r);
+            break;
+            
+        case SWI_WRITELINE:
+            doors_swi_writeline(r);
+            break;
+            
+        case SWI_READBLOCK:
+            doors_swi_readblock(r);
+            break;
+            
+        case SWI_WRITEBLOCK:
+            doors_swi_writeblock(r);
+            break;
+            
+        case SWI_INPUTSTATUS:
+            doors_swi_inputstatus(r);
+            break;
+            
+        case SWI_OUTPUTSTATUS:
+            doors_swi_outputstatus(r);
+            break;
+            
+        case SWI_CLEARINPUT:
+            doors_swi_clearinput(r);
+            break;
+            
+        case SWI_CLEAROUTPUT:
+            doors_swi_clearoutput(r);
+            break;
+            
+        case SWI_GETUSERINFO:
+            doors_swi_getuserinfo(r);
+            break;
+            
+        case SWI_GETSYSTEMINFO:
+            doors_swi_getsysteminfo(r);
+            break;
+            
+        case SWI_SENDMESSAGE:
+            doors_swi_sendmessage(r);
+            break;
+            
+        case SWI_RECEIVEMESSAGE:
+            doors_swi_receivemessage(r);
+            break;
+            
+        case SWI_HOSTWRITE:
+            doors_swi_hostwrite(r);
+            break;
+            
+        case SWI_HOSTREAD:
+            doors_swi_hostread(r);
+            break;
+            
+        case SWI_HOSTISREGISTERED:
+            doors_swi_hostisregistered(r);
+            break;
+            
+        case SWI_HOSTSETUSERINFO:
+            doors_swi_hostsetuserinfo(r);
+            break;
+            
+        default:
+            r->r[0] = -1;
+            break;
+    }
+    
+    return NULL;
+}
+
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw)
+{
+    UNUSED(arg_string);
+    UNUSED(argc);
+    UNUSED(pw);
+    
+    switch ((DOORS_COMMAND)cmd_no)
+    {
+        case CMD_STATUS:
+        {
+            int line;
+            int active_count = 0;
+            
+            puts("ConverseDoors Status:\n");
+            puts("Line | State      | Flags | In Buf | Out Buf | User");
+            puts("-----+------------+-------+--------+---------+------------------");
+            
+            for (line = 0; line < DOORS_MAX_LINES; line++)
+            {
+                DOOR_SESSION *s = &sessions[line];
+                
+                if (s->state != DOOR_STATE_INACTIVE)
+                {
+                    const char *state_str;
+                    
+                    switch (s->state)
+                    {
+                        case DOOR_STATE_REGISTERED: state_str = "Registered"; break;
+                        case DOOR_STATE_ACTIVE:     state_str = "Active    "; break;
+                        default:                    state_str = "Unknown   "; break;
+                    }
+                    
+                    printf("%4d | %s | 0x%03X | %6d | %7d | %s\n",
+                           line,
+                           state_str,
+                           s->flags,
+                           input_bytes_available(s),
+                           DOORS_BUFFER_SIZE - output_bytes_free(s) - 1,
+                           s->user_info.username[0] ? s->user_info.username : "-");
+                    
+                    active_count++;
+                }
+            }
+            
+            puts("-----+------------+-------+--------+---------+------------------");
+            printf("Active doors: %d\n\n", active_count);
+            break;
+        }
+    }
+    
+    return NULL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Handlers                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * ConverseDoors_Register (0x5AAC0)
+ * Entry: R0 = line number
+ *        R1 = flags (DOOR_FLAGS)
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void doors_swi_register(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_FLAGS flags;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    flags = (DOOR_FLAGS)r->r[1];
+    
+    if (!valid_line(line))
+    {
+        debug_printf("ConverseDoors: Register failed - invalid line %d\n", line);
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state != DOOR_STATE_INACTIVE)
+    {
+        debug_printf("ConverseDoors: Register failed - line %d already in use\n", line);
+        r->r[0] = -1;
+        return;
+    }
+    
+    /* Initialise session */
+    memset(s, 0, sizeof(DOOR_SESSION));
+    s->state = DOOR_STATE_REGISTERED;
+    s->flags = flags;
+    
+    debug_printf("ConverseDoors: Registered line %d, flags=0x%X\n", line, flags);
+    
+    r->r[0] = 0;
+}
+
+/*
+ * ConverseDoors_Deregister (0x5AAC1)
+ * Entry: R0 = line number
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void doors_swi_deregister(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    debug_printf("ConverseDoors: Deregistered line %d\n", line);
+    
+    s->state = DOOR_STATE_INACTIVE;
+    
+    r->r[0] = 0;
+}
+
+/*
+ * ConverseDoors_GetInfo (0x5AAC2)
+ * Entry: R0 = line number
+ * Exit:  R0 = state (DOOR_STATE)
+ *        R1 = flags (DOOR_FLAGS)
+ */
+void doors_swi_getinfo(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = DOOR_STATE_INACTIVE;
+        r->r[1] = 0;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    r->r[0] = s->state;
+    r->r[1] = s->flags;
+}
+
+/*
+ * ConverseDoors_ReadByte (0x5AAC3)
+ * Entry: R0 = line number
+ *        R1 = timeout in centiseconds (0 = non-blocking, -1 = wait forever)
+ * Exit:  R0 = byte read, or -1 if none available/timeout
+ */
+void doors_swi_readbyte(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    int byte;
+    
+    line = r->r[0];
+    /* R1 = timeout - for now we ignore this and do non-blocking */
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    byte = input_read_byte(s);
+    r->r[0] = byte;
+}
+
+/*
+ * ConverseDoors_WriteByte (0x5AAC4)
+ * Entry: R0 = line number
+ *        R1 = byte to write
+ * Exit:  R0 = 0 on success, -1 on buffer full
+ */
+void doors_swi_writebyte(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    int result;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    result = output_write_byte(s, r->r[1] & 0xFF);
+    r->r[0] = result;
+}
+
+/*
+ * ConverseDoors_ReadLine (0x5AAC5)
+ * Entry: R0 = line number
+ *        R1 = pointer to buffer
+ *        R2 = buffer size
+ *        R3 = timeout in centiseconds (0 = non-blocking)
+ * Exit:  R0 = bytes read, or -1 on error
+ */
+void doors_swi_readline(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    char *buffer;
+    int max_len;
+    int count = 0;
+    int byte;
+    
+    line = r->r[0];
+    buffer = (char *)r->r[1];
+    max_len = r->r[2];
+    
+    if (!valid_line(line) || buffer == NULL || max_len <= 0)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    /* Read until CR/LF or buffer full */
+    while (count < max_len - 1)
+    {
+        byte = input_read_byte(s);
+        if (byte == -1)
+        {
+            break;
+        }
+        
+        if (byte == '\r' || byte == '\n')
+        {
+            break;
+        }
+        
+        buffer[count++] = (char)byte;
+    }
+    
+    buffer[count] = '\0';
+    r->r[0] = count;
+}
+
+/*
+ * ConverseDoors_WriteLine (0x5AAC6)
+ * Entry: R0 = line number
+ *        R1 = pointer to null-terminated string
+ * Exit:  R0 = bytes written, or -1 on error
+ */
+void doors_swi_writeline(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    const char *str;
+    int count = 0;
+    
+    line = r->r[0];
+    str = (const char *)r->r[1];
+    
+    if (!valid_line(line) || str == NULL)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    /* Write string */
+    while (*str && output_bytes_free(s) > 0)
+    {
+        output_write_byte(s, *str++);
+        count++;
+    }
+    
+    r->r[0] = count;
+}
+
+/*
+ * ConverseDoors_ReadBlock (0x5AAC7)
+ * Entry: R0 = line number
+ *        R1 = pointer to buffer
+ *        R2 = max bytes to read
+ * Exit:  R0 = bytes read
+ */
+void doors_swi_readblock(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    unsigned char *buffer;
+    int max_len;
+    int count = 0;
+    int byte;
+    
+    line = r->r[0];
+    buffer = (unsigned char *)r->r[1];
+    max_len = r->r[2];
+    
+    if (!valid_line(line) || buffer == NULL || max_len <= 0)
+    {
+        r->r[0] = 0;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    while (count < max_len)
+    {
+        byte = input_read_byte(s);
+        if (byte == -1)
+        {
+            break;
+        }
+        buffer[count++] = (unsigned char)byte;
+    }
+    
+    r->r[0] = count;
+}
+
+/*
+ * ConverseDoors_WriteBlock (0x5AAC8)
+ * Entry: R0 = line number
+ *        R1 = pointer to data
+ *        R2 = bytes to write
+ * Exit:  R0 = bytes written
+ */
+void doors_swi_writeblock(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    const unsigned char *data;
+    int len;
+    int count = 0;
+    
+    line = r->r[0];
+    data = (const unsigned char *)r->r[1];
+    len = r->r[2];
+    
+    if (!valid_line(line) || data == NULL || len <= 0)
+    {
+        r->r[0] = 0;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    while (count < len && output_bytes_free(s) > 0)
+    {
+        output_write_byte(s, data[count++]);
+    }
+    
+    r->r[0] = count;
+}
+
+/*
+ * ConverseDoors_InputStatus (0x5AAC9)
+ * Entry: R0 = line number
+ * Exit:  R0 = bytes available in input buffer
+ */
+void doors_swi_inputstatus(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = 0;
+        return;
+    }
+    
+    s = &sessions[line];
+    r->r[0] = input_bytes_available(s);
+}
+
+/*
+ * ConverseDoors_OutputStatus (0x5AACA)
+ * Entry: R0 = line number
+ * Exit:  R0 = bytes free in output buffer
+ */
+void doors_swi_outputstatus(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        r->r[0] = 0;
+        return;
+    }
+    
+    s = &sessions[line];
+    r->r[0] = output_bytes_free(s);
+}
+
+/*
+ * ConverseDoors_ClearInput (0x5AACB)
+ * Entry: R0 = line number
+ */
+void doors_swi_clearinput(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        return;
+    }
+    
+    s = &sessions[line];
+    s->input_read_pos = 0;
+    s->input_write_pos = 0;
+}
+
+/*
+ * ConverseDoors_ClearOutput (0x5AACC)
+ * Entry: R0 = line number
+ */
+void doors_swi_clearoutput(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    
+    line = r->r[0];
+    
+    if (!valid_line(line))
+    {
+        return;
+    }
+    
+    s = &sessions[line];
+    s->output_read_pos = 0;
+    s->output_write_pos = 0;
+}
+
+/*
+ * ConverseDoors_GetUserInfo (0x5AACD)
+ * Entry: R0 = line number
+ *        R1 = pointer to DOOR_USER_INFO structure
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void doors_swi_getuserinfo(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SESSION *s;
+    DOOR_USER_INFO *info;
+    
+    line = r->r[0];
+    info = (DOOR_USER_INFO *)r->r[1];
+    
+    if (!valid_line(line) || info == NULL)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    s = &sessions[line];
+    
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    memcpy(info, &s->user_info, sizeof(DOOR_USER_INFO));
+    r->r[0] = 0;
+}
+
+/*
+ * ConverseDoors_GetSystemInfo (0x5AACE)
+ * Entry: R0 = line number
+ *        R1 = pointer to DOOR_SYSTEM_INFO structure
+ * Exit:  R0 = 0 on success, -1 on error
+ */
+void doors_swi_getsysteminfo(_kernel_swi_regs *r)
+{
+    int line;
+    DOOR_SYSTEM_INFO *info;
+    _kernel_swi_regs regs;
+    const char *value;
+    int i;
+    int users_online = 0;
+    
+    line = r->r[0];
+    info = (DOOR_SYSTEM_INFO *)r->r[1];
+    
+    if (!valid_line(line) || info == NULL)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    memset(info, 0, sizeof(DOOR_SYSTEM_INFO));
+    info->line_number = line;
+    info->total_lines = DOORS_MAX_LINES;
+    
+    /* Query Support module for BBS info */
+    /* bbs_name */
+    regs.r[0] = 0;  /* GET */
+    regs.r[1] = (int)"bbs_name";
+    if (_kernel_swi(0x5AA80, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        value = (const char *)regs.r[0];
+        strncpy(info->bbs_name, value, sizeof(info->bbs_name) - 1);
+    }
+    
+    /* sysop_name */
+    regs.r[0] = 0;
+    regs.r[1] = (int)"sysop_name";
+    if (_kernel_swi(0x5AA80, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        value = (const char *)regs.r[0];
+        strncpy(info->sysop_name, value, sizeof(info->sysop_name) - 1);
+    }
+    
+    /* hostname */
+    regs.r[0] = 0;
+    regs.r[1] = (int)"hostname";
+    if (_kernel_swi(0x5AA80, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        value = (const char *)regs.r[0];
+        strncpy(info->hostname, value, sizeof(info->hostname) - 1);
+    }
+    
+    /* Count online users */
+    for (i = 0; i < DOORS_MAX_LINES; i++)
+    {
+        regs.r[0] = 1;  /* GET */
+        regs.r[1] = i;
+        regs.r[2] = 1;  /* CONNECTED field */
+        if (_kernel_swi(0x5AA81, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            users_online++;
+        }
+    }
+    info->users_online = users_online;
+    
+    r->r[0] = 0;
+}
+
+/*
+ * ConverseDoors_SendMessage (0x5AACF) - Future expansion
+ */
+void doors_swi_sendmessage(_kernel_swi_regs *r)
+{
+    r->r[0] = -1;  /* Not implemented yet */
+}
+
+/*
+ * ConverseDoors_ReceiveMessage (0x5AAD0) - Future expansion
+ */
+void doors_swi_receivemessage(_kernel_swi_regs *r)
+{
+    r->r[0] = -1;  /* Not implemented yet */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Host (LineTask) Functions                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Write data to door's input buffer (host -> door)
+ */
+int doors_host_write(int line, const unsigned char *data, int len)
+{
+    DOOR_SESSION *s;
+    int count = 0;
+    int next_pos;
+    
+    if (!valid_line(line) || data == NULL || len <= 0)
+    {
+        return 0;
+    }
+    
+    s = &sessions[line];
+    
+    while (count < len)
+    {
+        next_pos = (s->input_write_pos + 1) % DOORS_BUFFER_SIZE;
+        if (next_pos == s->input_read_pos)
+        {
+            break;  /* Buffer full */
+        }
+        s->input_buffer[s->input_write_pos] = data[count++];
+        s->input_write_pos = next_pos;
+    }
+    
+    return count;
+}
+
+/*
+ * Read data from door's output buffer (door -> host)
+ */
+int doors_host_read(int line, unsigned char *buffer, int max_len)
+{
+    DOOR_SESSION *s;
+    int count = 0;
+    
+    if (!valid_line(line) || buffer == NULL || max_len <= 0)
+    {
+        return 0;
+    }
+    
+    s = &sessions[line];
+    
+    while (count < max_len && s->output_read_pos != s->output_write_pos)
+    {
+        buffer[count++] = s->output_buffer[s->output_read_pos];
+        s->output_read_pos = (s->output_read_pos + 1) % DOORS_BUFFER_SIZE;
+    }
+    
+    return count;
+}
+
+/*
+ * Check if a door is registered on the line
+ */
+int doors_host_is_registered(int line)
+{
+    if (!valid_line(line))
+    {
+        return 0;
+    }
+    
+    return sessions[line].state != DOOR_STATE_INACTIVE;
+}
+
+/*
+ * Set user info for the door session (called by LineTask before door launch)
+ */
+void doors_host_set_user_info(int line, const DOOR_USER_INFO *info)
+{
+    DOOR_SESSION *s;
+    
+    if (!valid_line(line) || info == NULL)
+    {
+        return;
+    }
+    
+    s = &sessions[line];
+    memcpy(&s->user_info, info, sizeof(DOOR_USER_INFO));
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Host SWI Handlers                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * ConverseDoors_HostWrite (0x5AAD1)
+ * Entry: R0 = line number
+ *        R1 = pointer to data
+ *        R2 = number of bytes
+ * Exit:  R0 = bytes written
+ *
+ * LineTask uses this to write user input to the door's input buffer
+ */
+void doors_swi_hostwrite(_kernel_swi_regs *r)
+{
+    int line;
+    const unsigned char *data;
+    int len;
+    
+    line = r->r[0];
+    data = (const unsigned char *)r->r[1];
+    len = r->r[2];
+    
+    r->r[0] = doors_host_write(line, data, len);
+}
+
+/*
+ * ConverseDoors_HostRead (0x5AAD2)
+ * Entry: R0 = line number
+ *        R1 = pointer to buffer
+ *        R2 = max bytes
+ * Exit:  R0 = bytes read
+ *
+ * LineTask uses this to read door output and send to user
+ */
+void doors_swi_hostread(_kernel_swi_regs *r)
+{
+    int line;
+    unsigned char *buffer;
+    int max_len;
+    
+    line = r->r[0];
+    buffer = (unsigned char *)r->r[1];
+    max_len = r->r[2];
+    
+    r->r[0] = doors_host_read(line, buffer, max_len);
+}
+
+/*
+ * ConverseDoors_HostIsRegistered (0x5AAD3)
+ * Entry: R0 = line number
+ * Exit:  R0 = 1 if registered, 0 if not
+ *
+ * LineTask polls this to detect when door has registered or deregistered
+ */
+void doors_swi_hostisregistered(_kernel_swi_regs *r)
+{
+    int line;
+    
+    line = r->r[0];
+    
+    r->r[0] = doors_host_is_registered(line);
+}
+
+/*
+ * ConverseDoors_HostSetUserInfo (0x5AAD4)
+ * Entry: R0 = line number
+ *        R1 = pointer to DOOR_USER_INFO structure
+ * Exit:  R0 = 0 on success, -1 on error
+ *
+ * LineTask uses this to set user info before launching a door
+ */
+void doors_swi_hostsetuserinfo(_kernel_swi_regs *r)
+{
+    int line;
+    const DOOR_USER_INFO *info;
+    
+    line = r->r[0];
+    info = (const DOOR_USER_INFO *)r->r[1];
+    
+    if (!valid_line(line) || info == NULL)
+    {
+        r->r[0] = -1;
+        return;
+    }
+    
+    doors_host_set_user_info(line, info);
+    r->r[0] = 0;
+}

@@ -3340,14 +3340,14 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     state->host.report_line_info(state->host.context);
                 }
             }
-            else if (script_stringcasecmp(action, "door") == 0)
+            else if (script_stringcasecmp(action, "riscbbsdoor") == 0)
             {
-                if (state->host.launch_door != NULL)
+                if (state->host.launch_riscbbs_door != NULL)
                 {
                     char buffer[256];
                     const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
                     script_expand_macros(state, command, buffer, sizeof(buffer));
-                    state->host.launch_door(state->host.context, buffer);
+                    state->host.launch_riscbbs_door(state->host.context, buffer);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }
@@ -3366,6 +3366,17 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     if (door_number < 1) door_number = 1;
                     if (door_number > 254) door_number = 254;
                     state->host.launch_arcbbs_door(state->host.context, door_number, cmd_buffer);
+                    state->status = SCRIPT_STATUS_WAIT_DOOR;
+                }
+            }
+            else if (script_stringcasecmp(action, "door") == 0)
+            {
+                if (state->host.launch_door != NULL)
+                {
+                    char buffer[256];
+                    const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
+                    script_expand_macros(state, command, buffer, sizeof(buffer));
+                    state->host.launch_door(state->host.context, buffer);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }

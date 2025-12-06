@@ -5,7 +5,6 @@ Set Converse$Dir <Obey$Dir>
 Set Converse$Path <Converse$Dir>.
 
 IconSprites <Converse$Dir>.!Sprites
-Set File$Type_120 ANSI
 
 If "<Converse$Running>" = "1" Then Error Converse is already running.
 
@@ -23,12 +22,14 @@ RMEnsure ConverseBBS 0.00 Set Converse$Loaded 0
 If "<Converse$Loaded>" = "1" Then RMKill ConverseBBS
 If "<Converse$Loaded>" = "1" Then RMKill ConversePipes
 If "<Converse$Loaded>" = "1" Then RMKill ConverseFiler
+If "<Converse$Loaded>" = "1" Then RMKill ConverseDoors
 If "<Converse$Loaded>" = "1" Then RMKill ARCbbs_Filer
 If "<Converse$Loaded>" = "1" Then RMKill ARCbbs_Doors
 
 RMLoad <Converse$Dir>.Resources.Support
-RMLoad <Converse$Dir>.Resources.Filer
 RMLoad <Converse$Dir>.Resources.Pipes
+RMLoad <Converse$Dir>.Resources.Filer
+RMLoad <Converse$Dir>.Resources.Doors
 RMLoad <Converse$Dir>.Resources.ARCbbsFlr
 RMLoad <Converse$Dir>.Resources.ARCbbs
 

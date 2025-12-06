@@ -1,0 +1,366 @@
+ConverseDoors Module
+====================
+
+Native door support for Converse BBS.
+
+SWI Chunk Base: &5AAC0
+
+
+Overview
+--------
+The ConverseDoors module provides a modern, registration-based API for external
+door programs to interact with Converse BBS users. Unlike the legacy ARCbbsDoors
+emulator which uses polling and status bytes, ConverseDoors uses explicit
+registration with session handles for cleaner integration.
+
+Key features:
+  * 4KB circular buffers per direction (4x larger than ARCbbsDoors)
+  * Direct user information access via SWI
+  * System information available to doors
+  * Block I/O for efficient data transfer
+  * Message passing for inter-process events
+
+
+Door Lifecycle
+--------------
+1. LineTask launches the door executable with line number as parameter
+2. Door calls ConverseDoors_Register to connect to the line
+3. Door uses Read/Write SWIs for terminal I/O with the user
+4. Door can query user info and system info as needed
+5. Door calls ConverseDoors_Deregister when finished
+6. LineTask detects deregistration and resumes script execution
+
+
+Data Structures
+---------------
+
+DOOR_USER_INFO (returned by GetUserInfo):
+  Offset  Size  Field
+  +0      4     user_id         User ID from database
+  +4      4     access_level    User's access level (0-255)
+  +8      4     is_sysop        Non-zero if user is sysop
+  +12     4     time_online     Seconds online this session
+  +16     4     time_remaining  Seconds remaining (-1 = unlimited)
+  +20     32    username        Username (null-terminated)
+  +52     64    realname        Real name (null-terminated)
+  +116    128   keys            Access keys string
+
+DOOR_SYSTEM_INFO (returned by GetSystemInfo):
+  Offset  Size  Field
+  +0      4     line_number     Current line number (0-31)
+  +4      4     total_lines     Total configured lines
+  +8      4     users_online    Number of users currently online
+  +12     64    bbs_name        BBS name (null-terminated)
+  +76     64    sysop_name      Sysop name (null-terminated)
+  +140    64    hostname        BBS hostname (null-terminated)
+
+
+Registration Flags
+------------------
+Flags are passed in R1 when calling Register:
+
+  Bit 0: Raw mode     - No line editing, pass all characters
+  Bit 1: Echo         - Echo input back to user automatically
+  Bit 2: ANSI         - User terminal supports ANSI escape codes
+
+
+SWI Reference
+-------------
+
+ConverseDoors_Register (&5AAC0)
+  Entry:
+    R0 = Line number (0-31)
+    R1 = Flags (see Registration Flags)
+  Exit:
+    R0 = Session handle (0-31) or -1 on error
+
+  Registers the door for the specified line. Returns a session handle
+  to be used in all subsequent SWI calls. Returns -1 if the line is
+  invalid, not connected, or already has a registered door.
+
+
+ConverseDoors_Deregister (&5AAC1)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Deregisters the door from the line. Must be called before the door
+  exits. LineTask will detect this and resume script execution.
+
+
+ConverseDoors_GetInfo (&5AAC2)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = Pointer to DOOR_SESSION structure, or 0 on error
+
+  Returns a pointer to the internal session structure. This provides
+  access to buffer status and registration state.
+
+
+ConverseDoors_ReadByte (&5AAC3)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = Byte read (0-255) or -1 if no data available
+
+  Reads a single byte from the user input buffer. Non-blocking; returns
+  -1 immediately if no data is available. Use InputStatus to check for
+  available data before calling.
+
+
+ConverseDoors_WriteByte (&5AAC4)
+  Entry:
+    R0 = Session handle
+    R1 = Byte to write (0-255)
+  Exit:
+    R0 = 0 on success, -1 if buffer full
+
+  Writes a single byte to the user output buffer. Returns -1 if the
+  output buffer is full. Use OutputStatus to check available space.
+
+
+ConverseDoors_ReadLine (&5AAC5)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to buffer
+    R2 = Maximum length (including null terminator)
+  Exit:
+    R0 = Length of line read, or -1 if no complete line available
+
+  Reads a complete line (up to CR or LF) from the input buffer. The
+  line is null-terminated. Returns -1 if no complete line is available.
+  Does not include the line terminator in the returned string.
+
+
+ConverseDoors_WriteLine (&5AAC6)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to null-terminated string
+  Exit:
+    R0 = Number of bytes written, or -1 on error
+
+  Writes a null-terminated string to the output buffer. Returns the
+  number of bytes written, or -1 if there was an error.
+
+
+ConverseDoors_ReadBlock (&5AAC7)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to buffer
+    R2 = Maximum bytes to read
+  Exit:
+    R0 = Number of bytes read, or -1 on error
+
+  Reads up to R2 bytes from the input buffer into the supplied buffer.
+  Returns the actual number of bytes read (may be less than requested).
+
+
+ConverseDoors_WriteBlock (&5AAC8)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to data
+    R2 = Number of bytes to write
+  Exit:
+    R0 = Number of bytes written, or -1 on error
+
+  Writes up to R2 bytes from the supplied buffer to the output buffer.
+  Returns the actual number of bytes written (may be less if buffer full).
+
+
+ConverseDoors_InputStatus (&5AAC9)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = Number of bytes available in input buffer
+
+  Returns the number of bytes waiting to be read from the input buffer.
+
+
+ConverseDoors_OutputStatus (&5AACA)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = Number of bytes free in output buffer
+
+  Returns the amount of free space in the output buffer.
+
+
+ConverseDoors_ClearInput (&5AACB)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Clears all data from the input buffer.
+
+
+ConverseDoors_ClearOutput (&5AACC)
+  Entry:
+    R0 = Session handle
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Clears all data from the output buffer.
+
+
+ConverseDoors_GetUserInfo (&5AACD)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to DOOR_USER_INFO structure
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Fills in the DOOR_USER_INFO structure with information about the
+  currently logged-in user on this line.
+
+
+ConverseDoors_GetSystemInfo (&5AACE)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to DOOR_SYSTEM_INFO structure
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Fills in the DOOR_SYSTEM_INFO structure with BBS system information.
+
+
+ConverseDoors_SendMessage (&5AACF)
+  Entry:
+    R0 = Session handle
+    R1 = Message type
+    R2 = Pointer to message data (message-type dependent)
+  Exit:
+    R0 = 0 on success, -1 on error
+
+  Sends a message to the host (LineTask). Message types:
+    0 = Door exiting normally
+    1 = Door exiting with error
+    2 = Request chat with sysop
+
+
+ConverseDoors_ReceiveMessage (&5AAD0)
+  Entry:
+    R0 = Session handle
+    R1 = Pointer to buffer for message data
+  Exit:
+    R0 = Message type, or -1 if no message pending
+
+  Receives a pending message from the host. Message types:
+    3 = Sysop initiated chat
+    4 = Time warning (5 minutes remaining)
+    5 = Force disconnect requested
+
+
+*Commands
+---------
+
+*ConverseDoors_Status
+  Displays the status of all door sessions, showing which lines have
+  registered doors and their current state.
+
+
+Example Door Code (C)
+---------------------
+
+#include "kernel.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#define SWI_Register    0x5AAC0
+#define SWI_Deregister  0x5AAC1
+#define SWI_ReadByte    0x5AAC3
+#define SWI_WriteLine   0x5AAC6
+
+int main(int argc, char *argv[])
+{
+    _kernel_swi_regs regs;
+    int session, ch;
+    
+    if (argc < 2)
+    {
+        fprintf(stderr, "Usage: MyDoor <line>\n");
+        return 1;
+    }
+    
+    /* Register with ConverseDoors */
+    regs.r[0] = atoi(argv[1]);  /* Line number from command line */
+    regs.r[1] = 4;              /* ANSI flag */
+    
+    if (_kernel_swi(SWI_Register, &regs, &regs) != NULL)
+        return 1;
+    
+    if (regs.r[0] < 0)
+    {
+        fprintf(stderr, "Failed to register door\n");
+        return 1;
+    }
+    
+    session = regs.r[0];
+    
+    /* Write welcome message */
+    regs.r[0] = session;
+    regs.r[1] = (int)"Welcome to MyDoor!\r\n\r\n";
+    _kernel_swi(SWI_WriteLine, &regs, &regs);
+    
+    regs.r[0] = session;
+    regs.r[1] = (int)"Press Q to quit, or type anything else...\r\n";
+    _kernel_swi(SWI_WriteLine, &regs, &regs);
+    
+    /* Simple echo loop */
+    while (1)
+    {
+        regs.r[0] = session;
+        if (_kernel_swi(SWI_ReadByte, &regs, &regs) != NULL)
+            break;
+        
+        ch = regs.r[0];
+        if (ch < 0)
+            continue;   /* No data, loop again */
+        
+        if (ch == 'q' || ch == 'Q')
+            break;
+        
+        /* Echo the character back */
+        regs.r[0] = session;
+        regs.r[1] = ch;
+        _kernel_swi(0x5AAC4, &regs, &regs);  /* WriteByte */
+    }
+    
+    /* Deregister and exit */
+    regs.r[0] = session;
+    _kernel_swi(SWI_Deregister, &regs, &regs);
+    
+    return 0;
+}
+
+
+Script Integration
+------------------
+To call a native door from a BBS script, use:
+
+  call door `<Converse$Dir>.BBS.Doors.Native.MyDoor %{line}`
+
+The door receives the line number as a command-line argument and must
+register itself using the ConverseDoors_Register SWI.
+
+
+Comparison with ARCbbsDoors
+---------------------------
+                        ARCbbsDoors         ConverseDoors
+SWI Base                &41040              &5AAC0
+Buffer Size             1KB                 4KB
+Registration            Status byte poll    Explicit SWI
+User Info               Request/Reply       Direct SWI
+System Info             Not available       Direct SWI
+Block I/O               Not available       ReadBlock/WriteBlock
+Messaging               Not available       SendMessage/ReceiveMessage
+
+For new doors, ConverseDoors is recommended. ARCbbsDoors is provided
+for compatibility with existing ARCbbs door programs.
+
+
+Version History
+---------------
+1.00 (06 Dec 2025)  - Initial release

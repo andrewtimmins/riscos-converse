@@ -225,10 +225,18 @@ Status & Information
     Invokes host callbacks:
     - `time` — prints current timestamp
     - `lineinfo` — prints session/door status
-    - `door <command>` — launches a RiscBBS door
+    - `door <command>` — launches a native ConverseDoors door
+    - `riscbbsdoor <command>` — launches a RiscBBS door
     - `arcbbsdoor <number> <command>` — launches an ARCbbs door
     - `disconnect` — prints hangup reminder
     - `message <text>` — prints text with macro expansion
+
+    Door Example:
+        call door `<Converse$Dir>.BBS.Doors.MyDoor %{line}`
+
+    The door receives the line number as a command-line argument and registers
+    itself with the ConverseDoors module. See Doors/docs/ConverseDoors for the
+    full door API specification.
 
 Filebase Commands
 ~~~~~~~~~~~~~~~~~

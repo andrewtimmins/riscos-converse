@@ -101,6 +101,13 @@
 /* Door request code - any value 1-254 can be used to indicate a door launch request */
 #define ARCBBS_STATUS_REQUEST        1
 
+/* ConverseDoors SWIs (native door support) */
+#define CONVERSEDOORS_SWI_BASE       0x5AAC0
+#define SWI_CONVERSEDOORS_HOSTWRITE       (CONVERSEDOORS_SWI_BASE + 17)
+#define SWI_CONVERSEDOORS_HOSTREAD        (CONVERSEDOORS_SWI_BASE + 18)
+#define SWI_CONVERSEDOORS_HOSTISREGISTERED (CONVERSEDOORS_SWI_BASE + 19)
+#define SWI_CONVERSEDOORS_HOSTSETUSERINFO (CONVERSEDOORS_SWI_BASE + 20)
+
 /* Line state reason codes and field indices */
 #define LINE_REASON_SET              0
 #define LINE_REASON_GET              1
@@ -209,6 +216,10 @@ typedef struct
     clock_t arcbbs_door_launch_deadline;
     clock_t arcbbs_poll_tick;
     int arcbbs_requested_door_number;
+    /* ConverseDoors (native door) state */
+    Desk_bool native_door_active;
+    Desk_bool native_door_launch_pending;
+    clock_t native_door_launch_deadline;
     /* Botstopper state */
     BOTSTOPPER_STATE botstopper_state;
     time_t botstopper_deadline;
@@ -310,17 +321,26 @@ static void arcbbs_door_close_session(line_task_state *state, const char *messag
 static int arcbbs_activate_line(int line_id);
 static int arcbbs_deactivate_line(int line_id);
 static int arcbbs_set_status(int line_id, unsigned char status);
-static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref);
-static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref);
-static Desk_bool handle_terminal_click(Desk_event_pollblock *event, void *ref);
 static int arcbbs_get_status(int line_id);
 static int arcbbs_write_input(int line_id, unsigned char byte);
 static int arcbbs_read_output(int line_id);
 static int arcbbs_write_input_block(int line_id, const unsigned char *data, int count);
 static int arcbbs_read_output_block(int line_id, unsigned char *buffer, int max_count);
+/* Native door (ConverseDoors) functions */
+static void native_door_reset_state(line_task_state *state);
+static void native_door_process(line_task_state *state);
+static void native_door_close_session(line_task_state *state, const char *message);
+static int native_door_is_registered(int line_id);
+static int native_door_host_write(int line_id, const unsigned char *data, int len);
+static int native_door_host_read(int line_id, unsigned char *buffer, int max_len);
+static void native_door_set_user_info(line_task_state *state);
+static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_terminal_click(Desk_event_pollblock *event, void *ref);
 static void script_host_write(void *context, const char *text);
-static void script_host_launch_door(void *context, const char *command_line);
+static void script_host_launch_riscbbs_door(void *context, const char *command_line);
 static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line);
+static void script_host_launch_door(void *context, const char *command_line);
 static void script_host_report_time(void *context);
 static void script_host_report_line_info(void *context);
 static void script_host_request_disconnect(void *context);
@@ -520,8 +540,9 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         memset(&host, 0, sizeof(host));
         host.context = state;
         host.write_text = script_host_write;
-        host.launch_door = script_host_launch_door;
+        host.launch_riscbbs_door = script_host_launch_riscbbs_door;
         host.launch_arcbbs_door = script_host_launch_arcbbs_door;
+        host.launch_door = script_host_launch_door;
         host.report_time = script_host_report_time;
         host.report_line_info = script_host_report_line_info;
         host.request_disconnect = script_host_request_disconnect;
@@ -730,6 +751,10 @@ static void perform_session_disconnect(line_task_state *state)
     if (state->arcbbs_door_active != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE)
     {
         arcbbs_door_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
+    }
+    if (state->native_door_active != Desk_bool_FALSE || state->native_door_launch_pending != Desk_bool_FALSE)
+    {
+        native_door_close_session(state, "\r\n[Native door session ended]\r\n");
     }
     
     /* Reset filebase and messagebase session and user state on disconnect */
@@ -972,6 +997,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
         botstopper_process(state);
         door_process(state);
         arcbbs_door_process(state);
+        native_door_process(state);
         chat_process(state);
     }
     
@@ -1765,6 +1791,177 @@ static int arcbbs_read_output_block(int line_id, unsigned char *buffer, int max_
     return regs.r[0]; /* Returns bytes read */
 }
 
+/* ******************************************************************************************************************************************************** */
+/* Native ConverseDoors Support                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static void native_door_reset_state(line_task_state *state)
+{
+    state->native_door_active = Desk_bool_FALSE;
+    state->native_door_launch_pending = Desk_bool_FALSE;
+    state->native_door_launch_deadline = 0;
+}
+
+static int native_door_is_registered(int line_id)
+{
+    _kernel_swi_regs regs;
+    
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_CONVERSEDOORS_HOSTISREGISTERED, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    
+    return regs.r[0];
+}
+
+static int native_door_host_write(int line_id, const unsigned char *data, int len)
+{
+    _kernel_swi_regs regs;
+    
+    if (data == NULL || len <= 0)
+    {
+        return 0;
+    }
+    
+    regs.r[0] = line_id;
+    regs.r[1] = (int)data;
+    regs.r[2] = len;
+    if (_kernel_swi(SWI_CONVERSEDOORS_HOSTWRITE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    
+    return regs.r[0];
+}
+
+static int native_door_host_read(int line_id, unsigned char *buffer, int max_len)
+{
+    _kernel_swi_regs regs;
+    
+    if (buffer == NULL || max_len <= 0)
+    {
+        return 0;
+    }
+    
+    regs.r[0] = line_id;
+    regs.r[1] = (int)buffer;
+    regs.r[2] = max_len;
+    if (_kernel_swi(SWI_CONVERSEDOORS_HOSTREAD, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    
+    return regs.r[0];
+}
+
+static void native_door_set_user_info(line_task_state *state)
+{
+    _kernel_swi_regs regs;
+    /* DOOR_USER_INFO structure for ConverseDoors */
+    struct {
+        int user_id;
+        int access_level;
+        int is_sysop;
+        int time_online;
+        int time_remaining;
+        char username[32];
+        char realname[64];
+        char keys[128];
+    } user_info;
+    
+    memset(&user_info, 0, sizeof(user_info));
+    user_info.user_id = state->user_id;
+    user_info.access_level = state->user_accesslevel;
+    user_info.is_sysop = state->user_sysop;
+    user_info.time_online = 0;  /* TODO: calculate from connect time */
+    user_info.time_remaining = -1;  /* Unlimited for now */
+    
+    strncpy(user_info.username, state->user_realname, sizeof(user_info.username) - 1);
+    strncpy(user_info.realname, state->user_realname, sizeof(user_info.realname) - 1);
+    strncpy(user_info.keys, state->user_keys, sizeof(user_info.keys) - 1);
+    
+    regs.r[0] = state->line_id;
+    regs.r[1] = (int)&user_info;
+    _kernel_swi(SWI_CONVERSEDOORS_HOSTSETUSERINFO, &regs, &regs);
+}
+
+static void native_door_process(line_task_state *state)
+{
+    unsigned char buffer[PIPE_TRANSFER_CHUNK];
+    int output_count;
+    int input_count;
+    
+    /* Handle launch pending state - wait for door to register */
+    if (state->native_door_launch_pending != Desk_bool_FALSE)
+    {
+        if (native_door_is_registered(state->line_id))
+        {
+            /* Door registered - transition to active state */
+            debug_printf("LineTask Native: door registered, now active\n");
+            state->native_door_launch_pending = Desk_bool_FALSE;
+            state->native_door_active = Desk_bool_TRUE;
+            state->native_door_launch_deadline = 0;
+            return;
+        }
+        
+        /* Check for launch timeout */
+        if (state->native_door_launch_deadline != 0 && clock() >= state->native_door_launch_deadline)
+        {
+            debug_printf("LineTask Native: door launch timeout\n");
+            native_door_close_session(state, "\r\n[Native door launch timeout]\r\n");
+            return;
+        }
+        
+        /* Still waiting for door to register */
+        return;
+    }
+    
+    /* If door is active, bridge I/O */
+    if (state->native_door_active != Desk_bool_FALSE)
+    {
+        /* Check if door has deregistered */
+        if (!native_door_is_registered(state->line_id))
+        {
+            debug_printf("LineTask Native: door deregistered\n");
+            native_door_close_session(state, "");
+            return;
+        }
+        
+        /* Read output from door and send to pipe (door->user) */
+        output_count = native_door_host_read(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
+        if (output_count > 0)
+        {
+            pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
+            
+            /* Feed to terminal for sysop snoop */
+            if (state->terminal != NULL && state->terminal->snoop_mode)
+            {
+                ansiterm_process_block(state->terminal, buffer, output_count);
+                ansiterm_update_dirty(state->terminal);
+            }
+        }
+        
+        /* Read input from pipe and send to door (user->door) */
+        input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
+        if (input_count > 0)
+        {
+            native_door_host_write(state->line_id, buffer, input_count);
+        }
+    }
+}
+
+static void native_door_close_session(line_task_state *state, const char *message)
+{
+    if (message != NULL && *message != '\0')
+    {
+        pipes_output_write_string(state->line_id, message);
+    }
+    
+    native_door_reset_state(state);
+    script_notify_door_closed(&state->script);
+}
+
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
 {
     /* Check if botstopper is active first */
@@ -2314,7 +2511,7 @@ static void script_host_write(void *context, const char *text)
     }
 }
 
-static void script_host_launch_door(void *context, const char *command_line)
+static void script_host_launch_riscbbs_door(void *context, const char *command_line)
 {
     line_task_state *state = (line_task_state *)context;
 
@@ -2325,7 +2522,7 @@ static void script_host_launch_door(void *context, const char *command_line)
 
     if (state->session_active == 0)
     {
-        pipes_output_write_string(state->line_id, "\r\n[Door unavailable until connected]\r\n");
+        pipes_output_write_string(state->line_id, "\r\n[RiscBBS door unavailable until connected]\r\n");
         script_notify_door_closed(&state->script);
         return;
     }
@@ -2346,7 +2543,7 @@ static void script_host_launch_door(void *context, const char *command_line)
 
     if (command_line == NULL || *command_line == '\0')
     {
-        pipes_output_write_string(state->line_id, "\r\n[Door command missing]\r\n");
+        pipes_output_write_string(state->line_id, "\r\n[RiscBBS door command missing]\r\n");
         script_notify_door_closed(&state->script);
         return;
     }
@@ -2354,7 +2551,7 @@ static void script_host_launch_door(void *context, const char *command_line)
     Desk_Wimp_StartTask(command_line);
     state->door_launch_pending = Desk_bool_TRUE;
     state->door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
-    pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
+    pipes_output_write_string(state->line_id, "\r\n[Launching RiscBBS door]\r\n");
 }
 
 static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line)
@@ -2432,6 +2629,56 @@ static void script_host_launch_arcbbs_door(void *context, int door_number, const
 
     debug_printf("LineTask ARCbbs: door launched, waiting for status 255\n");
     pipes_output_write_string(state->line_id, "\r\n[Launching ARCbbs door]\r\n");
+}
+
+static void script_host_launch_door(void *context, const char *command_line)
+{
+    line_task_state *state = (line_task_state *)context;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->session_active == 0)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Door unavailable until connected]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    /* Check no other door type is running */
+    if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE ||
+        state->arcbbs_door_active != Desk_bool_FALSE || state->arcbbs_door_launch_pending != Desk_bool_FALSE ||
+        state->native_door_active != Desk_bool_FALSE || state->native_door_launch_pending != Desk_bool_FALSE)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[A door is already running]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (command_line == NULL || *command_line == '\0')
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Door command missing]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    /* Set user info in ConverseDoors module before launching */
+    native_door_set_user_info(state);
+
+    debug_printf("LineTask Door: launching '%s'\n", command_line);
+
+    /* Launch the door */
+    Desk_Wimp_StartTask(command_line);
+
+    /* Enter launch pending state - wait for door to register */
+    state->native_door_launch_pending = Desk_bool_TRUE;
+    state->native_door_active = Desk_bool_FALSE;
+    state->native_door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
+
+    debug_printf("LineTask Door: door launched, waiting for registration\n");
+    pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
 }
 
 static void script_host_report_time(void *context)

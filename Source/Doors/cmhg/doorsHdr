@@ -1,0 +1,20 @@
+; ConverseDoors Module Header
+;
+; Native door support module for Converse BBS
+; SWI chunk base: 0x5AAC0
+
+date-string:            06 Dec 2025
+title-string:           ConverseDoors
+help-string:            ConverseDoors 0.01 (c) Andrew Timmins
+initialisation-code:    module_initialise
+finalisation-code:      module_finalise
+service-call-handler:   module_service
+
+swi-chunk-base-number:  0x5AAC0
+swi-handler-code:       module_swi_handler
+swi-decoding-table:     ConverseDoors, Register, Deregister, GetInfo, ReadByte, WriteByte, ReadLine, WriteLine, ReadBlock, WriteBlock, InputStatus, OutputStatus, ClearInput, ClearOutput, GetUserInfo, GetSystemInfo, SendMessage, ReceiveMessage, HostWrite, HostRead, HostIsRegistered, HostSetUserInfo
+
+command-keyword-table:  module_command_handler
+    Doors_Status(min-args:0, max-args:0,
+        help-text: "*Doors_Status shows the status of all active doors\n",
+        invalid-syntax: "Syntax: *Doors_Status")
