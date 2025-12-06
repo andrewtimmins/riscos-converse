@@ -1,0 +1,66 @@
+ARCbbsFiler Emulator Module
+===========================
+
+Purpose
+-------
+This module provides compatibility with legacy ARCbbs doors that use
+the ARCbbsFiler module's StatusPointer SWI (0x41014) to query which
+users are online.
+
+The original ARCbbsFiler module was part of the ARCbbs system and
+provided database access and status information. This emulator only
+implements the SWIs that doors actually need - primarily StatusPointer.
+
+SWI Chunk
+---------
+Base: 0x41000 (ARCbbsFiler)
+
+Implemented SWIs
+----------------
+
+ARCbbsFiler_StatusPointer (0x41014)
+  Entry: None
+  Exit:  R0 = pointer to status block
+
+  Returns a pointer to an array of user_list structures, one per line.
+  Each structure is 64 bytes:
+
+  Offset  Size  Field       Description
+  ------  ----  -----       -----------
+  0       4     baudrate    Connection speed (0 = not connected)
+  4       4     usernumber  User ID (-1 = no user)
+  8       31    username    Username string (null-terminated)
+  39      18    doing       Activity string (null-terminated)
+  57      7     fill        Padding
+
+  To access line N: base_pointer + (64 * N)
+
+ARCbbsFiler_ReadCallCount (0x41018)
+  Entry: None
+  Exit:  R0 = total call count
+
+  Returns the system-wide call counter from the Converse Filer module.
+
+ARCbbsFiler_MaxUser (0x41013)
+  Entry: None
+  Exit:  R0 = maximum number of lines (32)
+
+Stub SWIs
+---------
+All other ARCbbsFiler SWIs are implemented as stubs that return 0.
+They are provided so that doors don't crash if they call them, but
+they don't perform any actual database operations.
+
+Integration
+-----------
+This module queries the Converse Support module (SWIs 0x5AA81, 0x5AA82)
+for line state and activity, and the Converse Filer module (SWI 0x5AA41)
+for user information.
+
+The status block is refreshed each time StatusPointer is called, so
+doors always get current information.
+
+Usage
+-----
+1. Load the module: *RMLoad <path>.ARCbbsFiler
+2. Legacy doors can now call SWI ARCbbsFiler_StatusPointer

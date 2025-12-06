@@ -1,0 +1,62 @@
+/* ******************************************************************************************************************************************************** */
+/* ARCbbsDoors Emulator Module                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef ARCBBS_H
+#define ARCBBS_H
+
+#include "kernel.h"
+
+#ifndef UNUSED
+#define UNUSED(param) ((void)(param))
+#endif
+
+/* Maximum number of lines supported (matches Converse) */
+#define ARCBBS_MAX_LINES 32
+
+/* Buffer sizes (original ARCbbsDoors used 1KB buffers) */
+#define ARCBBS_BUFFER_SIZE 1024
+
+/* Status byte values */
+#define ARCBBS_STATUS_IDLE      0       /* Line idle, no door running */
+#define ARCBBS_STATUS_ACTIVE    255     /* Door is actively running */
+/* Values 1-254 are door request codes - LineTask sets to request door launch */
+
+/* SWI numbers (offset from chunk base 0x41040) - matches original ARCbbsDoors API */
+typedef enum
+{
+    SWI_READSTATUS = 0,     /* 0x41040: Read status byte */
+    SWI_WRITESTATUS = 1,    /* 0x41041: Write status byte */
+    SWI_SENDREQUEST = 2,    /* 0x41042: Send request block (request/reply protocol) */
+    SWI_GETREPLY = 3,       /* 0x41043: Get reply block */
+    SWI_RESERVED_4 = 4,     /* 0x41044: Reserved */
+    SWI_RESERVED_5 = 5,     /* 0x41045: Reserved */
+    SWI_INPUTSTATUS = 6,    /* 0x41046: Get bytes waiting in input buffer */
+    SWI_INPUTREAD = 7,      /* 0x41047: Read byte from input buffer */
+    SWI_OUTPUTSTATUS = 8,   /* 0x41048: Get bytes free in output buffer */
+    SWI_OUTPUTWRITE = 9,    /* 0x41049: Write byte to output buffer */
+    SWI_CLEARINPUT = 10,    /* 0x4104A: Clear input buffer */
+    SWI_CLEAROUTPUT = 11,   /* 0x4104B: Clear output buffer */
+    /* Extended SWIs for host (LineTask) use - not in original API */
+    SWI_HOSTWRITE = 12,     /* 0x4104C: Host writes to door's input */
+    SWI_HOSTREAD = 13,      /* 0x4104D: Host reads from door's output */
+    SWI_ACTIVATE = 14,      /* 0x4104E: Activate line for door use */
+    SWI_DEACTIVATE = 15,    /* 0x4104F: Deactivate line */
+    SWI_HOSTWRITEBLOCK = 16,/* 0x41050: Host writes block to door's input */
+    SWI_HOSTREADBLOCK = 17  /* 0x41051: Host reads block from door's output */
+} ARCBBS_SWI;
+
+/* Command numbers */
+typedef enum
+{
+    CMD_STATUS = 0
+} ARCBBS_COMMAND;
+
+/* Module entry points */
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw);
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw);
+void module_service(int service_number, _kernel_swi_regs *r, void *pw);
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw);
+_kernel_oserror *module_command_handler(const char *arg_string, int argc, int cmd_no, void *pw);
+
+#endif

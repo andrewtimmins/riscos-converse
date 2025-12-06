@@ -1,0 +1,11 @@
+/*
+ * ARCbbsFiler Emulator Module - Debug Support
+ */
+
+#ifndef DEBUG_H
+#define DEBUG_H
+
+void debug_initialise(void);
+void debug_printf(const char *fmt, ...);
+
+#endif /* DEBUG_H */

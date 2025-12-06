@@ -1,0 +1,60 @@
+/*
+ * ARCbbsFiler Emulator Module - Debug Support
+ * 
+ * Uses the Reporter module for debug output if available.
+ */
+
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+#include "kernel.h"
+#include "swis.h"
+#include "debug.h"
+
+#define REPORT_TEXT0    0x54C80
+
+static int reporter_available = 0;
+
+/*
+ * Check if Reporter module is available
+ */
+void debug_initialise(void)
+{
+    _kernel_swi_regs regs;
+    static const char test_msg[] = "ARCbbsFiler: Debug initialised\n";
+    
+    /* Try to call Reporter with a valid string - if it fails, it's not loaded */
+    regs.r[0] = (int)test_msg;
+    if (_kernel_swi(REPORT_TEXT0, &regs, &regs) == NULL)
+    {
+        reporter_available = 1;
+    }
+    else
+    {
+        reporter_available = 0;
+    }
+}
+
+/*
+ * Debug printf - outputs to Reporter if available
+ */
+void debug_printf(const char *fmt, ...)
+{
+    _kernel_swi_regs regs;
+    char buffer[256];
+    va_list args;
+    
+    if (!reporter_available)
+    {
+        return;
+    }
+    
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    
+    buffer[sizeof(buffer) - 1] = '\0';
+    
+    regs.r[0] = (int)buffer;
+    _kernel_swi(REPORT_TEXT0, &regs, &regs);
+}

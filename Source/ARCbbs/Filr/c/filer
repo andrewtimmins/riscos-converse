@@ -1,0 +1,467 @@
+/*
+ * ARCbbsFiler Emulator Module - Main Implementation
+ * 
+ * Provides compatibility with legacy ARCbbs doors that use the
+ * ARCbbsFiler module's StatusPointer SWI to query online users.
+ *
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "kernel.h"
+#include "swis.h"
+#include "filer.h"
+#include "debug.h"
+
+/* Status block - allocated from RMA at init time */
+static USER_LIST *status_block = NULL;
+
+/* Module workspace */
+static int module_initialised = 0;
+
+/* OS_Module reason codes */
+#define OS_MODULE_CLAIM     6
+#define OS_MODULE_FREE      7
+
+/*
+ * Query Support module for line connection state
+ * Returns 0 if not connected or on any error
+ */
+static int support_get_line_connected(int line)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    
+    if (line < 0 || line >= MAX_LINES)
+    {
+        return 0;
+    }
+    
+    regs.r[0] = SUPPORT_LINE_GET;
+    regs.r[1] = line;
+    regs.r[2] = SUPPORT_LINE_FIELD_CONNECTED;
+    
+    err = _kernel_swi(SWI_CONVERSE_SUPPORT_LINE, &regs, &regs);
+    if (err != NULL)
+    {
+        return 0;
+    }
+    
+    return regs.r[0];
+}
+
+/*
+ * Query Support module for line user ID
+ * Returns -1 on any error
+ */
+static int support_get_line_user_id(int line)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    
+    if (line < 0 || line >= MAX_LINES)
+    {
+        return -1;
+    }
+    
+    regs.r[0] = SUPPORT_LINE_GET;
+    regs.r[1] = line;
+    regs.r[2] = SUPPORT_LINE_FIELD_USER_ID;
+    
+    err = _kernel_swi(SWI_CONVERSE_SUPPORT_LINE, &regs, &regs);
+    if (err != NULL)
+    {
+        return -1;
+    }
+    
+    return regs.r[0];
+}
+
+/*
+ * Query Support module for line activity string
+ * Returns NULL on any error
+ */
+static const char *support_get_line_activity(int line)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    
+    if (line < 0 || line >= MAX_LINES)
+    {
+        return NULL;
+    }
+    
+    regs.r[0] = SUPPORT_ACTIVITY_GET;
+    regs.r[1] = line;
+    
+    err = _kernel_swi(SWI_CONVERSE_SUPPORT_ACTIVITY, &regs, &regs);
+    if (err != NULL)
+    {
+        return NULL;
+    }
+    
+    return (const char *)regs.r[0];
+}
+
+/*
+ * Query Filer module for user record
+ * Returns pointer to USER_RECORD or NULL
+ */
+static void *filer_get_user_record(int user_id)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    
+    if (user_id <= 0)
+    {
+        return NULL;
+    }
+    
+    regs.r[0] = FILER_USERBASE_SEARCH;
+    regs.r[1] = user_id;
+    
+    err = _kernel_swi(SWI_CONVERSE_FILER_USERBASE, &regs, &regs);
+    if (err != NULL)
+    {
+        return NULL;
+    }
+    
+    return (void *)regs.r[0];
+}
+
+/*
+ * Initialise the status block
+ */
+void filer_initialise(void)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int i;
+    int block_size;
+    
+    debug_printf("ARCbbsFiler: Initialising\n");
+    
+    /* Verify structure size - critical for legacy door compatibility */
+    if (sizeof(USER_LIST) != 64)
+    {
+        debug_printf("ARCbbsFiler: FATAL - USER_LIST is %d bytes, expected 64!\n",
+                     (int)sizeof(USER_LIST));
+        return;
+    }
+    
+    /* Allocate status block from RMA - use ALLOC_LINES for buggy doors that read past end */
+    block_size = sizeof(USER_LIST) * ALLOC_LINES;
+    debug_printf("ARCbbsFiler: Allocating %d bytes from RMA (%d lines)\n", block_size, ALLOC_LINES);
+    
+    regs.r[0] = OS_MODULE_CLAIM;
+    regs.r[3] = block_size;
+    
+    err = _kernel_swi(OS_Module, &regs, &regs);
+    if (err != NULL)
+    {
+        debug_printf("ARCbbsFiler: FATAL - RMA allocation failed: %s\n", err->errmess);
+        status_block = NULL;
+        return;
+    }
+    
+    status_block = (USER_LIST *)regs.r[2];
+    debug_printf("ARCbbsFiler: Status block allocated at 0x%08X\n", (unsigned int)status_block);
+    
+    /* Initialise ALL entries (including extra buffer space) */
+    for (i = 0; i < ALLOC_LINES; i++)
+    {
+        status_block[i].baudrate = 0;
+        status_block[i].usernumber = -1;
+        memset(status_block[i].username, 0, sizeof(status_block[i].username));
+        memset(status_block[i].doing, 0, sizeof(status_block[i].doing));
+        memset(status_block[i].fill, 0, sizeof(status_block[i].fill));
+    }
+    
+    module_initialised = 1;
+    debug_printf("ARCbbsFiler: Initialisation complete\n");
+}
+
+/*
+ * Finalise the module
+ */
+void filer_finalise(void)
+{
+    _kernel_swi_regs regs;
+    
+    debug_printf("ARCbbsFiler: Finalising\n");
+    
+    /* Free the RMA block */
+    if (status_block != NULL)
+    {
+        regs.r[0] = OS_MODULE_FREE;
+        regs.r[2] = (int)status_block;
+        _kernel_swi(OS_Module, &regs, &regs);
+        status_block = NULL;
+    }
+    
+    module_initialised = 0;
+}
+
+/*
+ * Refresh the status block from Support/Filer modules
+ * Called before returning the status pointer
+ */
+void filer_refresh_status(void)
+{
+    int line;
+    
+    debug_printf("ARCbbsFiler: refresh_status starting\n");
+    
+    if (status_block == NULL)
+    {
+        debug_printf("ARCbbsFiler: ERROR - status_block is NULL!\n");
+        return;
+    }
+    
+    for (line = 0; line < MAX_LINES; line++)
+    {
+        int connected;
+        int user_id;
+        const char *activity;
+        void *user_record;
+        
+        debug_printf("ARCbbsFiler: checking line %d\n", line);
+        
+        connected = support_get_line_connected(line);
+        debug_printf("ARCbbsFiler: line %d connected=%d\n", line, connected);
+        
+        if (connected)
+        {
+            debug_printf("ARCbbsFiler: line %d is connected, getting details\n", line);
+            
+            user_id = support_get_line_user_id(line);
+            debug_printf("ARCbbsFiler: line %d user_id=%d\n", line, user_id);
+            
+            activity = support_get_line_activity(line);
+            debug_printf("ARCbbsFiler: line %d activity ptr=0x%08X\n", line, (unsigned int)activity);
+            
+            status_block[line].baudrate = DEFAULT_BAUDRATE;  /* 115200 for telnet */
+            status_block[line].usernumber = user_id;
+            
+            /* Get username from Filer if we have a user ID */
+            if (user_id > 0)
+            {
+                debug_printf("ARCbbsFiler: line %d fetching user record\n", line);
+                user_record = filer_get_user_record(user_id);
+                debug_printf("ARCbbsFiler: line %d user_record ptr=0x%08X\n", line, (unsigned int)user_record);
+                
+                if (user_record != NULL)
+                {
+                    /* Username is at offset 4 in USER_RECORD (after int id) */
+                    const char *username = (const char *)((char *)user_record + 4);
+                    debug_printf("ARCbbsFiler: line %d username ptr=0x%08X\n", line, (unsigned int)username);
+                    strncpy(status_block[line].username, username, 30);
+                    status_block[line].username[30] = '\0';
+                    debug_printf("ARCbbsFiler: line %d username='%s'\n", line, status_block[line].username);
+                }
+                else
+                {
+                    strcpy(status_block[line].username, "Unknown");
+                }
+            }
+            else
+            {
+                strcpy(status_block[line].username, "Logging in...");
+            }
+            
+            /* Copy activity string */
+            if (activity != NULL && activity[0] != '\0')
+            {
+                debug_printf("ARCbbsFiler: line %d copying activity\n", line);
+                strncpy(status_block[line].doing, activity, 17);
+                status_block[line].doing[17] = '\0';
+            }
+            else
+            {
+                strcpy(status_block[line].doing, "Online");
+            }
+            debug_printf("ARCbbsFiler: line %d complete\n", line);
+        }
+        else
+        {
+            /* Line not connected */
+            status_block[line].baudrate = 0;
+            status_block[line].usernumber = -1;
+            status_block[line].username[0] = '\0';
+            status_block[line].doing[0] = '\0';
+        }
+    }
+}
+
+/*
+ * Get pointer to the status block
+ */
+USER_LIST *filer_get_status_pointer(void)
+{
+    debug_printf("ARCbbsFiler: get_status_pointer called\n");
+    
+    if (!module_initialised)
+    {
+        debug_printf("ARCbbsFiler: WARNING - module not initialised!\n");
+        return NULL;
+    }
+    
+    if (status_block == NULL)
+    {
+        debug_printf("ARCbbsFiler: WARNING - status_block is NULL!\n");
+        return NULL;
+    }
+    
+    /* Refresh status before returning pointer */
+    filer_refresh_status();
+    
+    /* Debug: dump first entry */
+    debug_printf("ARCbbsFiler: Line 0: baud=%d user=%d name='%s' doing='%s'\n",
+                 status_block[0].baudrate,
+                 status_block[0].usernumber,
+                 status_block[0].username,
+                 status_block[0].doing);
+    
+    /* Debug: check structure size and offsets */
+    debug_printf("ARCbbsFiler: sizeof(USER_LIST)=%d\n", (int)sizeof(USER_LIST));
+    debug_printf("ARCbbsFiler: Offsets: baudrate=%d usernumber=%d username=%d doing=%d fill=%d\n",
+                 (int)((char*)&status_block[0].baudrate - (char*)&status_block[0]),
+                 (int)((char*)&status_block[0].usernumber - (char*)&status_block[0]),
+                 (int)((char*)&status_block[0].username - (char*)&status_block[0]),
+                 (int)((char*)&status_block[0].doing - (char*)&status_block[0]),
+                 (int)((char*)&status_block[0].fill - (char*)&status_block[0]));
+    
+    debug_printf("ARCbbsFiler: returning status_block at 0x%08X\n", (unsigned int)status_block);
+    return status_block;
+}
+
+/*
+ * Module initialisation
+ */
+_kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *pw)
+{
+    (void)cmd_tail;
+    (void)podule_base;
+    (void)pw;
+    
+    debug_initialise();
+    debug_printf("ARCbbsFiler: Module initialising\n");
+    
+    filer_initialise();
+    
+    return NULL;
+}
+
+/*
+ * Module finalisation
+ */
+_kernel_oserror *module_finalise(int fatal, int podule, void *pw)
+{
+    (void)fatal;
+    (void)podule;
+    (void)pw;
+    
+    debug_printf("ARCbbsFiler: Module finalising\n");
+    
+    filer_finalise();
+    
+    return NULL;
+}
+
+/*
+ * Service call handler
+ */
+void module_service(int service_number, _kernel_swi_regs *r, void *pw)
+{
+    (void)service_number;
+    (void)r;
+    (void)pw;
+}
+
+/*
+ * SWI handler
+ */
+_kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+    static _kernel_oserror err_unknown = { 0x1E6, "Unknown ARCbbsFiler operation" };
+    
+    (void)pw;
+    
+    switch (swi_no)
+    {
+        case SWI_STATUSPOINTER:
+            /* Return pointer to status block */
+            debug_printf("ARCbbsFiler: StatusPointer called\n");
+            r->r[0] = (int)filer_get_status_pointer();
+            break;
+            
+        case SWI_READCALLCOUNT:
+            /* Return call count from Converse Filer */
+            {
+                _kernel_swi_regs regs;
+                regs.r[0] = 0;  /* Read call totals */
+                if (_kernel_swi(0x5AA44, &regs, &regs) == NULL)
+                {
+                    r->r[0] = regs.r[0];
+                }
+                else
+                {
+                    r->r[0] = 0;
+                }
+            }
+            break;
+            
+        case SWI_MAXUSER:
+            /* Return maximum number of lines */
+            r->r[0] = MAX_LINES;
+            break;
+            
+        /* Unimplemented SWIs - return success but do nothing */
+        case SWI_READAREA:
+        case SWI_WRITEAREA:
+        case SWI_READDATA:
+        case SWI_WRITEDATA:
+        case SWI_READLOOKUP:
+        case SWI_WRITELOOKUP:
+        case SWI_LOCKDATA:
+        case SWI_FREEDATA:
+        case SWI_LOCKLOOKUP:
+        case SWI_FREELOOKUP:
+        case SWI_LASTLOOKUP:
+        case SWI_GETLASTLOOKUP:
+        case SWI_LASTAREA:
+        case SWI_SAVEALL:
+        case SWI_READUSERDATA:
+        case SWI_WRITEUSERDATA:
+        case SWI_READUSERLOOKUP:
+        case SWI_WRITEUSERLOOKUP:
+        case SWI_EXTENTUSER:
+        case SWI_OPENALL:
+        case SWI_CLOSEALL:
+        case SWI_INCCALLCOUNT:
+        case SWI_FILENUMBER:
+        case SWI_READFILENUMBER:
+        case SWI_CLEARFLAG:
+        case SWI_LOOKUPMAP:
+        case SWI_DATAMAP:
+        case SWI_LOOKUPLEN:
+        case SWI_DATALEN:
+        case SWI_DATAEXT:
+        case SWI_ENSURELOOKUP:
+        case SWI_ENSUREDATA:
+        case SWI_SAVEMAPS:
+        case SWI_ENSUREUSER:
+        case SWI_SAVEDATABLOCK:
+        case SWI_LOADDATABLOCK:
+        case SWI_LOOKUPEXT:
+            /* Stub - return 0 */
+            r->r[0] = 0;
+            break;
+            
+        default:
+            return &err_unknown;
+    }
+    
+    return NULL;
+}

@@ -1,28 +1,19 @@
 /* ******************************************************************************************************************************************************** */
-/* FTN Mailer - Timer Header                                                                                                                                */
+/* Server - Timer Header                                                                                                                                    */
 /* ******************************************************************************************************************************************************** */
 
-#ifndef TIMER_H
-#define TIMER_H
+#ifndef SERVER_TIMER_H
+#define SERVER_TIMER_H
 
-/* Timer handles */
-typedef long timer_handle;
+#include "oslib/os.h"
 
-/* Timer types */
-typedef enum
-{
-    TIMER_TYPE_POLL = 0,        /* Outbound poll timer */
-    TIMER_TYPE_SCAN,            /* Queue scan timer */
-    TIMER_TYPE_TIMEOUT,         /* Session timeout */
-    TIMER_TYPE_RETRY            /* Connection retry */
-} TIMER_TYPE;
+/* Timer functions - returns monotonic time in centiseconds */
+os_t timer_monotonic_time(void);
 
-/* Timer functions */
-void timer_initialise(void);
-void timer_finalise(void);
-timer_handle timer_set(TIMER_TYPE type, int centiseconds, void *context);
-void timer_cancel(timer_handle handle);
-void timer_action(timer_handle handle);
-int timer_get_next_wakeup(void);
+/* Set a timer to fire after 'delay' centiseconds, returns timer handle */
+os_t timer_set(os_t delay);
+
+/* Check if timer has expired (returns non-zero if expired) */
+os_t timer_action(os_t timer);
 
 #endif

@@ -56,6 +56,8 @@
 
     #define Resolver_GetHost         0x66001
 
+    #define MAX_LINES                32
+
     /* Variables */
     struct wimp_components
     {
@@ -92,6 +94,19 @@
         char aftermail[256];
     } system_components;
 
+    /* Icon text buffers for dynamic line icons */
+    typedef struct
+    {
+        char *line_text;
+        char *user_text;
+        char *activity_text;
+        char *hostname_text;
+        char *timer_text;
+        char *action_text;
+        char *view_text;
+        char *logon_text;
+    } line_icon_buffers;
+
     typedef struct
     {
         char line[4];
@@ -105,45 +120,48 @@
         long timer;
         int resolved;
         char remote[128];
+        line_icon_buffers icons;
     } line_components;
 
-    static Desk_dialog2_block *proginfo_window;
-    static Desk_dialog2_block *systeminfo_window;
-    static Desk_window_handle main_window;
-    static Desk_window_handle waiting_window;
+    /* Extern declarations - definitions in main.c */
+    extern Desk_dialog2_block *proginfo_window;
+    extern Desk_dialog2_block *systeminfo_window;
+    extern Desk_window_handle main_window;
+    extern Desk_window_handle waiting_window;
     
-    static char app_version[] = "0.01";
-    static char app_compiled[]=__DATE__" at "__TIME__;
-    static char small_app_compiled[]=__DATE__" ["__TIME__"]";
+    extern char app_version[];
+    extern char app_compiled[];
+    extern char small_app_compiled[];
 
-    static char waiting_user[100];
-    static char user_activity[100];
+    extern char waiting_user[];
+    extern char user_activity[];
 
-    static char error_bind[100];
-    static char error_listen[100];
-    static char error_busy[100];
+    extern char error_bind[];
+    extern char error_listen[];
+    extern char error_busy[];
     
-    static char error_cantfindsystemconfig[100];
-    static char error_cantfindlineconfig[100];
-    static char error_toomanylines[100];
-    static char error_nolinesdefined[100];
+    extern char error_cantfindsystemconfig[];
+    extern char error_cantfindlineconfig[];
+    extern char error_toomanylines[];
+    extern char error_nolinesdefined[];
 
-    static system_components system_configuration[1];
+    extern system_components system_configuration[];
 
-    static line_components line_configuration[32];
-    static int line_configurations=0;
-    static int line_task_handles[32];
+    extern line_components line_configuration[];
+    extern int line_configurations;
+    extern int line_task_handles[];
 
-    static int listening_socket = 0;
-    static int active_sockets = 0;
-    static fd_set is_socket_ready;
-    static struct timeval socket_timeout;
-    static char socket_buffer[256] = "";
+    extern int listening_socket;
+    extern int active_sockets;
+    extern fd_set is_socket_ready;
+    extern struct timeval socket_timeout;
+    extern char socket_buffer[];
 
     /* Status window state */
-    static int connections_enabled = 1;      /* 1 = accepting connections */
-    static int chat_pager_enabled = 0;       /* 1 = chat pager on */
-    static time_t server_start_time = 0;     /* When server started */
-    static long status_update_timer = 0;     /* Timer for status updates */
-    static char error_connections_disabled[128] = "Sorry, connections to this BBS have been disabled by the Sysop.\r\n";
+    extern int connections_enabled;
+    extern int chat_pager_enabled;
+    extern time_t server_start_time;
+    extern long status_update_timer;
+    extern char error_connections_disabled[];
+
 #endif

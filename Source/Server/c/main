@@ -49,8 +49,56 @@
 #include "ansi.h"
 #include "debug.h"
 #include "config.h"
+#include "timer.h"
 
-/* Function Prototypes */
+/* ******************************************************************************************************************************************************** */
+/* Global Variable Definitions (declared extern in main.h)                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+Desk_dialog2_block *proginfo_window;
+Desk_dialog2_block *systeminfo_window;
+Desk_window_handle main_window;
+Desk_window_handle waiting_window;
+
+char app_version[] = "0.01";
+char app_compiled[] = __DATE__ " at " __TIME__;
+char small_app_compiled[] = __DATE__ " [" __TIME__ "]";
+
+char waiting_user[100];
+char user_activity[100];
+
+char error_bind[100];
+char error_listen[100];
+char error_busy[100];
+
+char error_cantfindsystemconfig[100];
+char error_cantfindlineconfig[100];
+char error_toomanylines[100];
+char error_nolinesdefined[100];
+
+system_components system_configuration[1];
+
+line_components line_configuration[MAX_LINES];
+int line_configurations = 0;
+int line_task_handles[MAX_LINES];
+
+int listening_socket = 0;
+int active_sockets = 0;
+fd_set is_socket_ready;
+struct timeval socket_timeout;
+char socket_buffer[256] = "";
+
+/* Status window state */
+int connections_enabled = 1;
+int chat_pager_enabled = 0;
+time_t server_start_time = 0;
+long status_update_timer = 0;
+char error_connections_disabled[128] = "Sorry, connections to this BBS have been disabled by the Sysop.\r\n";
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
 Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_window_close(Desk_event_pollblock *event, void *ref);
@@ -79,10 +127,7 @@ void resolve_address(int line_id);
 void send_byte_to_socket(int socket_address, int first_byte, int second_byte);
 void send_string_to_socket(int socket_address, char *string_to_send);
 
-extern long timer_monotonictime(void);
-extern long timer_set(unsigned int delay);
-extern int timer_action(long timer);
-
+static void free_line_icon_buffers(void);
 static void pipes_reset_line(int line_id);
 static void notify_line_tasks_shutdown(void);
 static void close_line_connection(int line_id);
@@ -1097,12 +1142,61 @@ void display_error_dialog(int exit_code, const char *error_message, ...)
 /* *********************************************************************************************************************************************************************************** */
 /* *********************************************************************************************************************************************************************************** */
 
+/* Free all allocated icon text buffers */
+static void free_line_icon_buffers(void)
+{
+	int i;
+	for (i = 0; i < MAX_LINES; i++)
+	{
+		if (line_configuration[i].icons.line_text != NULL)
+		{
+			free(line_configuration[i].icons.line_text);
+			line_configuration[i].icons.line_text = NULL;
+		}
+		if (line_configuration[i].icons.user_text != NULL)
+		{
+			free(line_configuration[i].icons.user_text);
+			line_configuration[i].icons.user_text = NULL;
+		}
+		if (line_configuration[i].icons.activity_text != NULL)
+		{
+			free(line_configuration[i].icons.activity_text);
+			line_configuration[i].icons.activity_text = NULL;
+		}
+		if (line_configuration[i].icons.hostname_text != NULL)
+		{
+			free(line_configuration[i].icons.hostname_text);
+			line_configuration[i].icons.hostname_text = NULL;
+		}
+		if (line_configuration[i].icons.timer_text != NULL)
+		{
+			free(line_configuration[i].icons.timer_text);
+			line_configuration[i].icons.timer_text = NULL;
+		}
+		if (line_configuration[i].icons.action_text != NULL)
+		{
+			free(line_configuration[i].icons.action_text);
+			line_configuration[i].icons.action_text = NULL;
+		}
+		if (line_configuration[i].icons.view_text != NULL)
+		{
+			free(line_configuration[i].icons.view_text);
+			line_configuration[i].icons.view_text = NULL;
+		}
+		if (line_configuration[i].icons.logon_text != NULL)
+		{
+			free(line_configuration[i].icons.logon_text);
+			line_configuration[i].icons.logon_text = NULL;
+		}
+	}
+}
+
 int create_line_icons(void) 
 {
 	int current_line_configuration = 0;
 	int y_base;
-	char *text_buffer;
 	int column_x;
+	line_icon_buffers *icons;
 
 	Desk_icon_createblock icon_create_block;
 	Desk_icon_handle icon_handle;
@@ -1112,13 +1206,47 @@ int create_line_icons(void)
 		
 	do
 	{
+		icons = &line_configuration[current_line_configuration].icons;
+		
+		/* Allocate all buffers for this line */
+		icons->line_text = malloc(25);
+		icons->user_text = malloc(sizeof(waiting_user));
+		icons->activity_text = malloc(sizeof(user_activity));
+		icons->hostname_text = malloc(MAIN_WINDOW_HOSTNAME_TEXT_LEN);
+		icons->timer_text = malloc(25);
+		icons->action_text = malloc(1);
+		icons->view_text = malloc(1);
+		icons->logon_text = malloc(1);
+		
+		/* Check allocations */
+		if (icons->line_text == NULL || icons->user_text == NULL ||
+		    icons->activity_text == NULL || icons->hostname_text == NULL ||
+		    icons->timer_text == NULL || icons->action_text == NULL ||
+		    icons->view_text == NULL || icons->logon_text == NULL)
+		{
+			display_error_dialog(1, "Unable to allocate icon buffers");
+			return Desk_bool_FALSE;
+		}
+		
+		/* Initialize buffers */
+		snprintf(icons->line_text, 25, "%d", current_line_configuration);
+		strncpy(icons->user_text, waiting_user, sizeof(waiting_user) - 1);
+		icons->user_text[sizeof(waiting_user) - 1] = '\0';
+		strncpy(icons->activity_text, user_activity, sizeof(user_activity) - 1);
+		icons->activity_text[sizeof(user_activity) - 1] = '\0';
+		strncpy(icons->hostname_text, "-----", MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1);
+		icons->hostname_text[MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1] = '\0';
+		strcpy(icons->timer_text, "00:00");
+		icons->action_text[0] = '\0';
+		icons->view_text[0] = '\0';
+		icons->logon_text[0] = '\0';
+
 		icon_create_block.icondata.workarearect.max.y = y_base - (MAIN_WINDOW_ICON_HEIGHT * current_line_configuration);
 		icon_create_block.icondata.workarearect.min.y = icon_create_block.icondata.workarearect.max.y - MAIN_WINDOW_ICON_HEIGHT;
 
 		column_x = MAIN_WINDOW_COLUMN_START;
 
-		text_buffer=malloc(25);
-		sprintf(text_buffer, "%d", current_line_configuration);
+		/* Line number column */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_LINE_COLUMN_WIDTH;
@@ -1139,6 +1267,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
+		/* User column */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_USER_COLUMN_WIDTH;
@@ -1151,15 +1280,7 @@ int create_line_icons(void)
 												(Desk_icon_FORECOLOUR*7) |
 												(Desk_icon_BACKCOLOUR*1) |
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		text_buffer=malloc(sizeof(waiting_user));
-		if (text_buffer == NULL)
-		{
-			display_error_dialog(1, "Unable to allocate user icon buffer");
-			return Desk_bool_FALSE;
-		}
-		strncpy(text_buffer, waiting_user, sizeof(waiting_user) - 1);
-		text_buffer[sizeof(waiting_user) - 1] = '\0';
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->user_text;
 		icon_create_block.icondata.data.indirecttext.validstring="R2";
 		icon_create_block.icondata.data.indirecttext.bufflen=sizeof(waiting_user);
 
@@ -1167,6 +1288,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
+		/* Activity column */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH;
@@ -1179,30 +1301,15 @@ int create_line_icons(void)
 											(Desk_icon_FORECOLOUR*7) |
 											(Desk_icon_BACKCOLOUR*1) |
 											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		text_buffer=malloc(sizeof(user_activity));
-		if (text_buffer == NULL)
-		{
-			display_error_dialog(1, "Unable to allocate activity icon buffer");
-			return Desk_bool_FALSE;
-		}
-		strncpy(text_buffer, user_activity, sizeof(user_activity) - 1);
-		text_buffer[sizeof(user_activity) - 1] = '\0';
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->activity_text;
 		icon_create_block.icondata.data.indirecttext.validstring="R2";
 		icon_create_block.icondata.data.indirecttext.bufflen=sizeof(user_activity);
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
-		text_buffer=malloc(MAIN_WINDOW_HOSTNAME_TEXT_LEN);
-		if (text_buffer == NULL)
-		{
-			display_error_dialog(1, "Unable to allocate hostname icon buffer");
-			return Desk_bool_FALSE;
-		}
-		text_buffer[0] = '\0';
-		strncpy(text_buffer, "-----", MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1);
-		text_buffer[MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1] = '\0';
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		/* Hostname column */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH;
@@ -1215,7 +1322,7 @@ int create_line_icons(void)
 												(Desk_icon_FORECOLOUR*7) |
 												(Desk_icon_BACKCOLOUR*1) |
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->hostname_text;
 		icon_create_block.icondata.data.indirecttext.validstring="R2";
 		icon_create_block.icondata.data.indirecttext.bufflen=MAIN_WINDOW_HOSTNAME_TEXT_LEN;
 
@@ -1223,8 +1330,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(25);
-		strcpy(text_buffer, "00:00");
+		/* Timer column */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_TIMER_COLUMN_WIDTH;
@@ -1237,7 +1343,7 @@ int create_line_icons(void)
 												(Desk_icon_FORECOLOUR*7) |
 												(Desk_icon_BACKCOLOUR*1) |
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->timer_text;
 		icon_create_block.icondata.data.indirecttext.validstring="R2";
 		icon_create_block.icondata.data.indirecttext.bufflen=25;
 
@@ -1245,8 +1351,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(1);
-		text_buffer[0] = '\0';
+		/* Action (disconnect) button */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_ACTION_COLUMN_WIDTH;
@@ -1260,7 +1365,7 @@ int create_line_icons(void)
 												(Desk_icon_FORECOLOUR*7) |
 												(Desk_icon_BACKCOLOUR*1) |
 												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->action_text;
 		icon_create_block.icondata.data.indirecttext.validstring="Sdisconnect;R5";
 		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
@@ -1268,8 +1373,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(1);
-		text_buffer[0] = '\0';
+		/* View (snoop) button */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_VIEW_COLUMN_WIDTH;
@@ -1283,7 +1387,7 @@ int create_line_icons(void)
 											(Desk_icon_FORECOLOUR*7) |
 											(Desk_icon_BACKCOLOUR*1) |
 											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->view_text;
 		icon_create_block.icondata.data.indirecttext.validstring="Ssnoop;R5";
 		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
@@ -1291,8 +1395,7 @@ int create_line_icons(void)
 
 		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
 
-		text_buffer=malloc(1);
-		text_buffer[0] = '\0';
+		/* Logon (local) button */
 		icon_create_block.icondata.flags.value=0;
 		icon_create_block.icondata.workarearect.min.x=column_x;
 		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_LOGON_COLUMN_WIDTH;
@@ -1306,7 +1409,7 @@ int create_line_icons(void)
 											(Desk_icon_FORECOLOUR*7) |
 											(Desk_icon_BACKCOLOUR*1) |
 											(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
-		icon_create_block.icondata.data.indirecttext.buffer=text_buffer;
+		icon_create_block.icondata.data.indirecttext.buffer=icons->logon_text;
 		icon_create_block.icondata.data.indirecttext.validstring="Slocal;R5";
 		icon_create_block.icondata.data.indirecttext.bufflen=1;
 
@@ -1329,35 +1432,35 @@ void create_listener(void)
 	int  args[2];
   	struct sockaddr_in saddr;
 
-	// Create the socket
+	/* Create the socket */
 	listening_socket = socket(AF_INET, SOCK_STREAM, PF_UNSPEC);
 
-	// Allow address reuse - *very* *important*. If you don't do this, then you'll need to
-	// wait for the socket to "expire" in between running this program, and running it again.
-	args[0] = 1; // non-zero = enable
+	/* Allow address reuse - very important. If you don't do this, then you'll need to
+	   wait for the socket to "expire" in between running this program, and running it again. */
+	args[0] = 1; /* non-zero = enable */
 	setsockopt(listening_socket, SOL_SOCKET, SO_REUSEADDR, &args, sizeof(int));
 
-	// Set linger time to 10 seconds maximum
-	args[0] = 1;  // wait for data to drain
-	args[1] = 10; // 10 seconds manimum
+	/* Set linger time to 10 seconds maximum */
+	args[0] = 1;  /* wait for data to drain */
+	args[1] = 10; /* 10 seconds maximum */
 	setsockopt(listening_socket, SOL_SOCKET, SO_LINGER, &args, (sizeof(int) * 2));
 
-	// Bind to configured port
-	memset(&saddr, 0, sizeof(saddr));   // zero everything before use
-	saddr.sin_family = AF_INET;         // accept internet connection...
+	/* Bind to configured port */
+	memset(&saddr, 0, sizeof(saddr));   /* zero everything before use */
+	saddr.sin_family = AF_INET;         /* accept internet connection... */
 	saddr.sin_port = htons(system_configuration[0].port);
-	saddr.sin_addr.s_addr = INADDR_ANY; // ...from anybody.
+	saddr.sin_addr.s_addr = INADDR_ANY; /* ...from anybody. */
 	if ( bind(listening_socket, (struct sockaddr *)&saddr, sizeof(saddr)) != 0 )
 	{
 		socketclose(listening_socket);
 			display_error_dialog(1, error_bind);
 	}
 
-	// Make it non-blocking; so the machine won't hang up waiting for something to happen.
+	/* Make it non-blocking so the machine won't hang up waiting for something to happen */
 	args[0] = 1;
 	socketioctl(listening_socket, FIONBIO, &args[0]);
 
-	// Now place an ear against the wire
+	/* Now place an ear against the wire */
 	if ( listen(listening_socket, 1) != 0 )
 	{
 		socketclose(listening_socket);
@@ -1368,8 +1471,8 @@ void create_listener(void)
 
 void check_listener(void)
 {
-   // Check to see if there's an incoming connection
-   struct sockaddr_in saddr;
+	/* Check to see if there's an incoming connection */
+	struct sockaddr_in saddr;
 	int namelen = sizeof(saddr);
 	int socket_poll = 0;
 
@@ -1384,9 +1487,9 @@ void check_listener(void)
 
    if (FD_ISSET(listening_socket, &is_socket_ready))
    {
-      // There is a connection pending.
+      /* There is a connection pending. */
 
-      // Check if connections are disabled by sysop
+      /* Check if connections are disabled by sysop */
       if (!connections_enabled)
       {
          int orphaned_socket;
@@ -1424,7 +1527,7 @@ void check_listener(void)
 		{
 			int nonblock = 1;
 
-			// We are not connected, so accept this connection.
+			/* We are not connected, so accept this connection. */
 			line_configuration[socket_poll].socket = accept(listening_socket, (struct sockaddr *)&saddr, &namelen);
 			active_sockets++;
 
@@ -1432,7 +1535,7 @@ void check_listener(void)
 			{
 				line_configuration[socket_poll].socket = 0;
 				active_sockets--;
-				// Something went wrong. Just get out of here, the listener is still active...
+				/* Something went wrong. Just get out of here, the listener is still active. */
 				return;
 			}
 
@@ -1459,7 +1562,7 @@ void check_listener(void)
 				}
 			}
 
-			// Make the client socket non-blocking so we don't hang waiting for data
+			/* Make the client socket non-blocking so we don't hang waiting for data */
 			socketioctl(line_configuration[socket_poll].socket, FIONBIO, &nonblock);
 		}
 
@@ -1469,19 +1572,20 @@ void check_listener(void)
 		pipes_reset_line(socket_poll);
 		pipes_send_control_command(socket_poll, PIPE_CONTROL_CONNECT);
 
-		// The IP address of the remote user is saddr.sin_addr.s_addr, if you need it.
-
-		char ip[30];
-		strcpy(ip, (char*)inet_ntoa((struct in_addr)saddr.sin_addr));
-	  	strncpy(line_configuration[socket_poll].remote, ip, 128);
+		/* Copy the remote IP address */
+		{
+			char *ip_str = inet_ntoa(saddr.sin_addr);
+			strncpy(line_configuration[socket_poll].remote, ip_str, sizeof(line_configuration[socket_poll].remote) - 1);
+			line_configuration[socket_poll].remote[sizeof(line_configuration[socket_poll].remote) - 1] = '\0';
+		}
 
 		/* Update Support module with connection state */
 		support_set_line_connected(socket_poll, 1);
-		support_set_line_hostname(socket_poll, ip);
+		support_set_line_hostname(socket_poll, line_configuration[socket_poll].remote);
 		support_set_line_connect_time(socket_poll, time(NULL));
 
-		// At this point, "mysock" will be != -1 so it will be treated as a live socket and any
-		// other connections will result in busy message followed by a disconnect.
+		/* At this point, socket will be != -1 so it will be treated as a live socket and any
+		   other connections will result in busy message followed by a disconnect. */
 
 		telnet_advertise_capabilities(line_configuration[socket_poll].socket);
 
@@ -1547,7 +1651,7 @@ void destroy_listener(void)
 		if (line_configuration[socket_poll].socket != -1 )
 		{
 			shutdown(line_configuration[socket_poll].socket, 0);
-      		socketclose(line_configuration[socket_poll].socket);
+			socketclose(line_configuration[socket_poll].socket);
 		}
 
 		socket_poll++;
@@ -1558,7 +1662,10 @@ void destroy_listener(void)
 		socketclose(listening_socket);
 	}
 
- 	Desk_Template_ClearAll();
+	/* Free allocated icon text buffers */
+	free_line_icon_buffers();
+
+	Desk_Template_ClearAll();
 	
 	system("RMKill ConverseBBS");
 	system("RMKill ConversePipes");
@@ -1580,9 +1687,16 @@ void send_byte_to_socket(int socket_address, int first_byte, int second_byte)
 void send_string_to_socket(int socket_address, char *string_to_send)
 {
 	char buffer[256];
+	size_t len;
 	
-	strcpy(buffer, string_to_send);
-	socketwrite(socket_address, buffer, strlen(buffer));
+	len = strlen(string_to_send);
+	if (len >= sizeof(buffer))
+	{
+		len = sizeof(buffer) - 1;
+	}
+	memcpy(buffer, string_to_send, len);
+	buffer[len] = '\0';
+	socketwrite(socket_address, buffer, (int)len);
 }
 
 static int pipes_input_status(int line_id)
@@ -2021,146 +2135,173 @@ void load_system_config(void)
 	/* Set defaults */
 	system_configuration[0].port = 23;
 	system_configuration[0].timeout = 120;
-	strcpy(system_configuration[0].ftnmail, "no");
-	strcpy(system_configuration[0].webserver, "no");
+	strncpy(system_configuration[0].ftnmail, "no", sizeof(system_configuration[0].ftnmail) - 1);
+	system_configuration[0].ftnmail[sizeof(system_configuration[0].ftnmail) - 1] = '\0';
+	strncpy(system_configuration[0].webserver, "no", sizeof(system_configuration[0].webserver) - 1);
+	system_configuration[0].webserver[sizeof(system_configuration[0].webserver) - 1] = '\0';
 
 	if ((system_config=fopen("<Converse$Dir>.Config.System","r"))==NULL)
 	{
 		display_error_dialog(1, error_cantfindsystemconfig);
 	}
 
- 	do
-  	{
-    	config_line[0]=0;
-    	fgets(config_line, 120, system_config);
-		do
+	while (fgets(config_line, sizeof(config_line), system_config) != NULL)
+	{
+		/* Strip trailing control chars */
+		while (strlen(config_line) > 0 && config_line[strlen(config_line)-1] < 32)
 		{
-			fgets(config_line, 120, system_config);
-			if (config_line[strlen(config_line)-1]<32)
-			{
-          		config_line[strlen(config_line)-1]=0;
-			}
-        	while(config_line[strlen(config_line)-1]==32)
-			{
-				config_line[strlen(config_line)-1]=0;
-			}
-			/* Find first space or tab as delimiter */
-          	if ((temporary_line=strchr(config_line,' '))!=NULL)
-			{
-          		*temporary_line++=0; 
-			}
-			else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
-			{
-          		*temporary_line++=0; 
-			} 
-			else
-			{
-          		temporary_line="";
-			}
-			/* Skip any whitespace (spaces or tabs) */
-        	while(*temporary_line==' ' || *temporary_line=='\t')
-			{
-				temporary_line++;
-			}
+			config_line[strlen(config_line)-1] = 0;
+		}
+		/* Strip trailing spaces */
+		while (strlen(config_line) > 0 && config_line[strlen(config_line)-1] == 32)
+		{
+			config_line[strlen(config_line)-1] = 0;
+		}
 
-			if (strcmp(config_line,"name")==0)
-			{
-				strcpy(system_configuration[0].name, temporary_line);
-			}
-			if (strcmp(config_line,"sysop")==0)
-			{
-				strcpy(system_configuration[0].sysop, temporary_line);
-			}
-			if (strcmp(config_line,"contact")==0)
-			{
-				strcpy(system_configuration[0].contact, temporary_line);
-			}
-			if (strcmp(config_line,"hostname")==0)
-			{
-				strcpy(system_configuration[0].hostname, temporary_line);
-			}
-			if (strcmp(config_line,"port")==0)
-			{
-				system_configuration[0].port = atoi(temporary_line);
-			}
-			if (strcmp(config_line,"timeout")==0)
-			{
-				system_configuration[0].timeout = atoi(temporary_line);
-			}
-			if (strcmp(config_line,"botstopper")==0)
-			{
-				strcpy(system_configuration[0].botstopper, temporary_line);
-			}
-			if (strcmp(config_line,"needlogin")==0)
-			{
-				strcpy(system_configuration[0].needlogin, temporary_line);
-			}
-			if (strcmp(config_line,"closed")==0)
-			{
-				strcpy(system_configuration[0].closed, temporary_line);
-			}
-			if (strcmp(config_line,"pager")==0)
-			{
-				strcpy(system_configuration[0].pager, temporary_line);
-			}
-			if (strcmp(config_line,"ftnmail")==0)
-			{
-				strcpy(system_configuration[0].ftnmail, temporary_line);
-			}
-			if (strcmp(config_line,"webserver")==0)
-			{
-				strcpy(system_configuration[0].webserver, temporary_line);
-			}
-			if (strcmp(config_line,"anykey")==0)
-			{
-				strcpy(system_configuration[0].anykey, temporary_line);
-			}
-			if (strcmp(config_line,"chatstart")==0)
-			{
-				strcpy(system_configuration[0].chatstart, temporary_line);
-			}
-			if (strcmp(config_line,"chatend")==0)
-			{
-				strcpy(system_configuration[0].chatend, temporary_line);
-			}
-			if (strcmp(config_line,"prelogon")==0)
-			{
-				strcpy(system_configuration[0].prelogon, temporary_line);
-			}
-			if (strcmp(config_line,"postlogon")==0)
-			{
-				strcpy(system_configuration[0].postlogon, temporary_line);
-			}
-			if (strcmp(config_line,"logoff")==0)
-			{
-				strcpy(system_configuration[0].logoff, temporary_line);
-			}
-			if (strcmp(config_line,"welcome")==0)
-			{
-				strcpy(system_configuration[0].welcome, temporary_line);
-			}
-			if (strcmp(config_line,"newuser")==0)
-			{
-				strcpy(system_configuration[0].newuser, temporary_line);
-			}
-			if (strcmp(config_line,"timeup")==0)
-			{
-				strcpy(system_configuration[0].timeup, temporary_line);
-			}
-			if (strcmp(config_line,"lockedout")==0)
-			{
-				strcpy(system_configuration[0].lockedout, temporary_line);
-			}
-			if (strcmp(config_line,"closedsys")==0)
-			{
-				strcpy(system_configuration[0].closedsys, temporary_line);
-			}
-			if (strcmp(config_line,"aftermail")==0)
-			{
-				strcpy(system_configuration[0].aftermail, temporary_line);
-			}
-		} while(feof(system_config)==0 && strcmp(config_line,"end")!=0);
-	} while(feof(system_config)==0);
+		/* Skip empty lines and comments */
+		if (config_line[0] == '\0' || config_line[0] == ';')
+		{
+			continue;
+		}
+
+		/* Find first space or tab as delimiter */
+		if ((temporary_line=strchr(config_line,' '))!=NULL)
+		{
+			*temporary_line++=0; 
+		}
+		else if ((temporary_line=strchr(config_line,'\t'))!=NULL)
+		{
+			*temporary_line++=0; 
+		} 
+		else
+		{
+			temporary_line="";
+		}
+		/* Skip any whitespace (spaces or tabs) */
+		while(*temporary_line==' ' || *temporary_line=='\t')
+		{
+			temporary_line++;
+		}
+
+		if (strcmp(config_line,"name")==0)
+		{
+			strncpy(system_configuration[0].name, temporary_line, sizeof(system_configuration[0].name) - 1);
+			system_configuration[0].name[sizeof(system_configuration[0].name) - 1] = '\0';
+		}
+		if (strcmp(config_line,"sysop")==0)
+		{
+			strncpy(system_configuration[0].sysop, temporary_line, sizeof(system_configuration[0].sysop) - 1);
+			system_configuration[0].sysop[sizeof(system_configuration[0].sysop) - 1] = '\0';
+		}
+		if (strcmp(config_line,"contact")==0)
+		{
+			strncpy(system_configuration[0].contact, temporary_line, sizeof(system_configuration[0].contact) - 1);
+			system_configuration[0].contact[sizeof(system_configuration[0].contact) - 1] = '\0';
+		}
+		if (strcmp(config_line,"hostname")==0)
+		{
+			strncpy(system_configuration[0].hostname, temporary_line, sizeof(system_configuration[0].hostname) - 1);
+			system_configuration[0].hostname[sizeof(system_configuration[0].hostname) - 1] = '\0';
+		}
+		if (strcmp(config_line,"port")==0)
+		{
+			system_configuration[0].port = atoi(temporary_line);
+		}
+		if (strcmp(config_line,"timeout")==0)
+		{
+			system_configuration[0].timeout = atoi(temporary_line);
+		}
+		if (strcmp(config_line,"botstopper")==0)
+		{
+			strncpy(system_configuration[0].botstopper, temporary_line, sizeof(system_configuration[0].botstopper) - 1);
+			system_configuration[0].botstopper[sizeof(system_configuration[0].botstopper) - 1] = '\0';
+		}
+		if (strcmp(config_line,"needlogin")==0)
+		{
+			strncpy(system_configuration[0].needlogin, temporary_line, sizeof(system_configuration[0].needlogin) - 1);
+			system_configuration[0].needlogin[sizeof(system_configuration[0].needlogin) - 1] = '\0';
+		}
+		if (strcmp(config_line,"closed")==0)
+		{
+			strncpy(system_configuration[0].closed, temporary_line, sizeof(system_configuration[0].closed) - 1);
+			system_configuration[0].closed[sizeof(system_configuration[0].closed) - 1] = '\0';
+		}
+		if (strcmp(config_line,"pager")==0)
+		{
+			strncpy(system_configuration[0].pager, temporary_line, sizeof(system_configuration[0].pager) - 1);
+			system_configuration[0].pager[sizeof(system_configuration[0].pager) - 1] = '\0';
+		}
+		if (strcmp(config_line,"ftnmail")==0)
+		{
+			strncpy(system_configuration[0].ftnmail, temporary_line, sizeof(system_configuration[0].ftnmail) - 1);
+			system_configuration[0].ftnmail[sizeof(system_configuration[0].ftnmail) - 1] = '\0';
+		}
+		if (strcmp(config_line,"webserver")==0)
+		{
+			strncpy(system_configuration[0].webserver, temporary_line, sizeof(system_configuration[0].webserver) - 1);
+			system_configuration[0].webserver[sizeof(system_configuration[0].webserver) - 1] = '\0';
+		}
+		if (strcmp(config_line,"anykey")==0)
+		{
+			strncpy(system_configuration[0].anykey, temporary_line, sizeof(system_configuration[0].anykey) - 1);
+			system_configuration[0].anykey[sizeof(system_configuration[0].anykey) - 1] = '\0';
+		}
+		if (strcmp(config_line,"chatstart")==0)
+		{
+			strncpy(system_configuration[0].chatstart, temporary_line, sizeof(system_configuration[0].chatstart) - 1);
+			system_configuration[0].chatstart[sizeof(system_configuration[0].chatstart) - 1] = '\0';
+		}
+		if (strcmp(config_line,"chatend")==0)
+		{
+			strncpy(system_configuration[0].chatend, temporary_line, sizeof(system_configuration[0].chatend) - 1);
+			system_configuration[0].chatend[sizeof(system_configuration[0].chatend) - 1] = '\0';
+		}
+		if (strcmp(config_line,"prelogon")==0)
+		{
+			strncpy(system_configuration[0].prelogon, temporary_line, sizeof(system_configuration[0].prelogon) - 1);
+			system_configuration[0].prelogon[sizeof(system_configuration[0].prelogon) - 1] = '\0';
+		}
+		if (strcmp(config_line,"postlogon")==0)
+		{
+			strncpy(system_configuration[0].postlogon, temporary_line, sizeof(system_configuration[0].postlogon) - 1);
+			system_configuration[0].postlogon[sizeof(system_configuration[0].postlogon) - 1] = '\0';
+		}
+		if (strcmp(config_line,"logoff")==0)
+		{
+			strncpy(system_configuration[0].logoff, temporary_line, sizeof(system_configuration[0].logoff) - 1);
+			system_configuration[0].logoff[sizeof(system_configuration[0].logoff) - 1] = '\0';
+		}
+		if (strcmp(config_line,"welcome")==0)
+		{
+			strncpy(system_configuration[0].welcome, temporary_line, sizeof(system_configuration[0].welcome) - 1);
+			system_configuration[0].welcome[sizeof(system_configuration[0].welcome) - 1] = '\0';
+		}
+		if (strcmp(config_line,"newuser")==0)
+		{
+			strncpy(system_configuration[0].newuser, temporary_line, sizeof(system_configuration[0].newuser) - 1);
+			system_configuration[0].newuser[sizeof(system_configuration[0].newuser) - 1] = '\0';
+		}
+		if (strcmp(config_line,"timeup")==0)
+		{
+			strncpy(system_configuration[0].timeup, temporary_line, sizeof(system_configuration[0].timeup) - 1);
+			system_configuration[0].timeup[sizeof(system_configuration[0].timeup) - 1] = '\0';
+		}
+		if (strcmp(config_line,"lockedout")==0)
+		{
+			strncpy(system_configuration[0].lockedout, temporary_line, sizeof(system_configuration[0].lockedout) - 1);
+			system_configuration[0].lockedout[sizeof(system_configuration[0].lockedout) - 1] = '\0';
+		}
+		if (strcmp(config_line,"closedsys")==0)
+		{
+			strncpy(system_configuration[0].closedsys, temporary_line, sizeof(system_configuration[0].closedsys) - 1);
+			system_configuration[0].closedsys[sizeof(system_configuration[0].closedsys) - 1] = '\0';
+		}
+		if (strcmp(config_line,"aftermail")==0)
+		{
+			strncpy(system_configuration[0].aftermail, temporary_line, sizeof(system_configuration[0].aftermail) - 1);
+			system_configuration[0].aftermail[sizeof(system_configuration[0].aftermail) - 1] = '\0';
+		}
+	}
 
 	fclose(system_config);
 
@@ -2288,10 +2429,18 @@ void load_line_config(void)
 				{
 					debug_printf("load_line_config: Adding line %s (index %d) - ENABLED\n", 
 					             temp_line, line_configurations);
-					strcpy(line_configuration[line_configurations].line, temp_line);
-					strcpy(line_configuration[line_configurations].enabled, temp_enabled);
-					strcpy(line_configuration[line_configurations].botstopper, temp_botstopper);
-					strcpy(line_configuration[line_configurations].hello, temp_hello);
+					strncpy(line_configuration[line_configurations].line, temp_line, 
+					        sizeof(line_configuration[line_configurations].line) - 1);
+					line_configuration[line_configurations].line[sizeof(line_configuration[line_configurations].line) - 1] = '\0';
+					strncpy(line_configuration[line_configurations].enabled, temp_enabled, 
+					        sizeof(line_configuration[line_configurations].enabled) - 1);
+					line_configuration[line_configurations].enabled[sizeof(line_configuration[line_configurations].enabled) - 1] = '\0';
+					strncpy(line_configuration[line_configurations].botstopper, temp_botstopper, 
+					        sizeof(line_configuration[line_configurations].botstopper) - 1);
+					line_configuration[line_configurations].botstopper[sizeof(line_configuration[line_configurations].botstopper) - 1] = '\0';
+					strncpy(line_configuration[line_configurations].hello, temp_hello, 
+					        sizeof(line_configuration[line_configurations].hello) - 1);
+					line_configuration[line_configurations].hello[sizeof(line_configuration[line_configurations].hello) - 1] = '\0';
 					line_configurations++;
 				}
 				else

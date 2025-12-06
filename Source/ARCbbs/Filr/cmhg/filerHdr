@@ -1,0 +1,10 @@
+date-string:            06 Dec 2025
+title-string:           ARCbbs_Filer
+help-string:            ARCbbs_Filer 0.01 (c) Andrew Timmins
+initialisation-code:    module_initialise
+finalisation-code:      module_finalise
+service-call-handler:   module_service
+
+swi-chunk-base-number:  0x41000
+swi-handler-code:       module_swi_handler
+swi-decoding-table:     ARCbbsFiler, ReadArea, WriteArea, ReadData, WriteData, ReadLookup, WriteLookup, LockData, FreeData, LockLookup, FreeLookup, LastLookup, GetLastLookup, LastArea, SaveAll, ReadUserData, WriteUserData, ReadUserLookup, WriteUserLookup, ExtentUser, MaxUser, StatusPointer, OpenAll, CloseAll, IncCallCount, ReadCallCount, FileNumber, ReadFileNumber, ClearFlag, LookupMap, DataMap, LookupLen, DataLen, DataExt, EnsureLookup, EnsureData, SaveMaps, EnsureUser, SaveDataBlock, LoadDataBlock, LookupExt

@@ -21,6 +21,7 @@
 /* Buffer geometry is fixed because the assembler clients hard-code record sizes and 4 KB buffers. */
 #define PIPES_MAX_LINES 32
 #define PIPES_BUFFER_SIZE 4096
+#define PIPES_BUFFER_MASK (PIPES_BUFFER_SIZE - 1)  /* For fast wraparound with power-of-2 size */
 #define PIPES_LINE_BYTES 32
 #define PIPES_INPUT_HIGH_MARK (PIPES_BUFFER_SIZE * 3 / 4)
 #define PIPES_INPUT_LOW_MARK (PIPES_BUFFER_SIZE / 2)
@@ -127,13 +128,8 @@ static int pipes_is_valid_line(int line)
 
 static int pipes_next_index(int index)
 {
-  /* Wrap buffer cursors manually instead of using modulus to keep Norcroft's code generation small. */
-  ++index;
-  if (index >= PIPES_BUFFER_SIZE)
-  {
-    index = 0;
-  }
-  return index;
+  /* Use bitmask for fast wraparound; works because PIPES_BUFFER_SIZE is a power of 2. */
+  return (index + 1) & PIPES_BUFFER_MASK;
 }
 
 static void pipes_update_watermarks(int line)
@@ -716,6 +712,12 @@ static void pipes_swi_input_write_block(_kernel_swi_regs *r)
     return;
   }
 
+  /* Clamp request to buffer size to prevent overflow in arithmetic */
+  if (request > PIPES_BUFFER_SIZE)
+  {
+    request = PIPES_BUFFER_SIZE;
+  }
+
   requested = (size_t)request;
 
   record = pipes_line(line);
@@ -747,7 +749,7 @@ static void pipes_swi_input_write_block(_kernel_swi_regs *r)
     memcpy(buffer, source + first, chunk);
   }
 
-  record->input_head = (uint32_t)((head + requested) % PIPES_BUFFER_SIZE);
+  record->input_head = (uint32_t)((head + requested) & PIPES_BUFFER_MASK);
   record->input_used += (uint32_t)requested;
   pipes_update_watermarks(line);
   r->r[0] = (int)requested;
@@ -783,6 +785,12 @@ static void pipes_swi_output_read_block(_kernel_swi_regs *r)
     return;
   }
 
+  /* Clamp request to buffer size to prevent overflow in arithmetic */
+  if (request > PIPES_BUFFER_SIZE)
+  {
+    request = PIPES_BUFFER_SIZE;
+  }
+
   requested = (size_t)request;
 
   record = pipes_line(line);
@@ -814,7 +822,7 @@ static void pipes_swi_output_read_block(_kernel_swi_regs *r)
     memcpy(target + first, buffer, chunk);
   }
 
-  record->output_tail = (uint32_t)((tail + requested) % PIPES_BUFFER_SIZE);
+  record->output_tail = (uint32_t)((tail + requested) & PIPES_BUFFER_MASK);
   record->output_free += (uint32_t)requested;
   pipes_update_watermarks(line);
   r->r[0] = (int)requested;

@@ -91,6 +91,8 @@
 #define SWI_ARCBBSDOORS_HOSTREAD     (ARCBBS_SWI_BASE + 13)  /* Extended: Host reads from door output */
 #define SWI_ARCBBSDOORS_ACTIVATE     (ARCBBS_SWI_BASE + 14)  /* Extended: Activate line */
 #define SWI_ARCBBSDOORS_DEACTIVATE   (ARCBBS_SWI_BASE + 15)  /* Extended: Deactivate line */
+#define SWI_ARCBBSDOORS_HOSTWRITEBLOCK (ARCBBS_SWI_BASE + 16) /* Extended: Host writes block */
+#define SWI_ARCBBSDOORS_HOSTREADBLOCK  (ARCBBS_SWI_BASE + 17) /* Extended: Host reads block */
 
 /* ARCbbsDoors status byte values */
 #define ARCBBS_STATUS_IDLE           0
@@ -314,6 +316,8 @@ static Desk_bool handle_terminal_click(Desk_event_pollblock *event, void *ref);
 static int arcbbs_get_status(int line_id);
 static int arcbbs_write_input(int line_id, unsigned char byte);
 static int arcbbs_read_output(int line_id);
+static int arcbbs_write_input_block(int line_id, const unsigned char *data, int count);
+static int arcbbs_read_output_block(int line_id, unsigned char *buffer, int max_count);
 static void script_host_write(void *context, const char *text);
 static void script_host_launch_door(void *context, const char *command_line);
 static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line);
@@ -1532,10 +1536,57 @@ static void arcbbs_door_process(line_task_state *state)
 {
     int status;
 
+    /* Debug: always log entry to track if function is called */
+    if (state->arcbbs_door_launch_pending != Desk_bool_FALSE || state->arcbbs_door_active != Desk_bool_FALSE)
+    {
+        static int entry_count = 0;
+        if (entry_count < 20)
+        {
+            debug_printf("LineTask ARCbbs: door_process entry pending=%d active=%d\n",
+                (int)state->arcbbs_door_launch_pending, (int)state->arcbbs_door_active);
+            entry_count++;
+        }
+    }
+
+    /* Handle launch pending state - wait for door to acknowledge with status 255 */
+    if (state->arcbbs_door_launch_pending != Desk_bool_FALSE)
+    {
+        status = arcbbs_get_status(state->line_id);
+        
+        if (status == ARCBBS_STATUS_ACTIVE)
+        {
+            /* Door acknowledged - transition to active state */
+            debug_printf("LineTask ARCbbs: door acknowledged (status=255), now active\n");
+            state->arcbbs_door_launch_pending = Desk_bool_FALSE;
+            state->arcbbs_door_active = Desk_bool_TRUE;
+            state->arcbbs_door_launch_deadline = 0;
+            return;
+        }
+        
+        if (status == ARCBBS_STATUS_IDLE)
+        {
+            /* Door exited without acknowledging */
+            debug_printf("LineTask ARCbbs: door exited during launch (status=0)\n");
+            arcbbs_door_close_session(state, "\r\n[ARCbbs door failed to start]\r\n");
+            return;
+        }
+        
+        /* Check for launch timeout */
+        if (state->arcbbs_door_launch_deadline != 0 && clock() >= state->arcbbs_door_launch_deadline)
+        {
+            debug_printf("LineTask ARCbbs: door launch timeout\n");
+            arcbbs_door_close_session(state, "\r\n[ARCbbs door launch timeout]\r\n");
+            return;
+        }
+        
+        /* Still waiting for door to acknowledge */
+        return;
+    }
+
     /* If door is active, bridge I/O */
     if (state->arcbbs_door_active != Desk_bool_FALSE)
     {
-        int byte;
+        unsigned char buffer[PIPE_TRANSFER_CHUNK];
         int output_count = 0;
         int input_count = 0;
         static int debug_poll_count = 0;
@@ -1556,40 +1607,27 @@ static void arcbbs_door_process(line_task_state *state)
             debug_poll_count++;
         }
 
-        /* Read output from door and send to pipe (door->user) */
-        while (output_count < PIPE_TRANSFER_CHUNK && (byte = arcbbs_read_output(state->line_id)) >= 0)
-        {
-            char ch = (char)byte;
-            pipes_output_write_block(state->line_id, &ch, 1);
-            output_count++;
-        }
-
-        /* Debug: log if we got output */
+        /* Read output from door and send to pipe (door->user) using block I/O */
+        output_count = arcbbs_read_output_block(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
         if (output_count > 0)
         {
-            debug_printf("LineTask ARCbbs: read %d bytes from door output\n", output_count);
+            int written = pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
+            debug_printf("LineTask ARCbbs: read %d bytes from door, wrote %d to pipe\n", output_count, written);
+            
+            /* Feed to terminal for sysop snoop */
+            if (state->terminal != NULL && state->terminal->snoop_mode)
+            {
+                ansiterm_process_block(state->terminal, buffer, output_count);
+                ansiterm_update_dirty(state->terminal);
+            }
         }
 
-        /* Read input from pipe and send to door (user->door) */
-        while (input_count < PIPE_TRANSFER_CHUNK)
-        {
-            byte = pipes_input_read_byte(state->line_id);
-            if (byte < 0)
-            {
-                break;
-            }
-            if (arcbbs_write_input(state->line_id, (unsigned char)byte) != 0)
-            {
-                /* ARCbbs input buffer full - stop for now */
-                break;
-            }
-            input_count++;
-        }
-
-        /* Debug: log if we sent input */
+        /* Read input from pipe and send to door (user->door) using block I/O */
+        input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
         if (input_count > 0)
         {
-            debug_printf("LineTask ARCbbs: wrote %d bytes to door input\n", input_count);
+            int written = arcbbs_write_input_block(state->line_id, buffer, input_count);
+            debug_printf("LineTask ARCbbs: wrote %d/%d bytes to door input\n", written, input_count);
         }
     }
 }
@@ -1685,6 +1723,46 @@ static int arcbbs_read_output(int line_id)
     }
 
     return regs.r[0]; /* Returns byte or -1 if empty */
+}
+
+static int arcbbs_write_input_block(int line_id, const unsigned char *data, int count)
+{
+    _kernel_swi_regs regs;
+
+    if (data == NULL || count <= 0)
+    {
+        return 0;
+    }
+
+    regs.r[0] = line_id;
+    regs.r[1] = (int)data;
+    regs.r[2] = count;
+    if (_kernel_swi(SWI_ARCBBSDOORS_HOSTWRITEBLOCK, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return regs.r[0]; /* Returns bytes written */
+}
+
+static int arcbbs_read_output_block(int line_id, unsigned char *buffer, int max_count)
+{
+    _kernel_swi_regs regs;
+
+    if (buffer == NULL || max_count <= 0)
+    {
+        return 0;
+    }
+
+    regs.r[0] = line_id;
+    regs.r[1] = (int)buffer;
+    regs.r[2] = max_count;
+    if (_kernel_swi(SWI_ARCBBSDOORS_HOSTREADBLOCK, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return regs.r[0]; /* Returns bytes read */
 }
 
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte)
@@ -2347,12 +2425,12 @@ static void script_host_launch_arcbbs_door(void *context, int door_number, const
     /* Launch the door */
     Desk_Wimp_StartTask(command_line);
 
-    /* Mark as active immediately */
-    state->arcbbs_door_active = Desk_bool_TRUE;
-    state->arcbbs_door_launch_pending = Desk_bool_FALSE;
-    state->arcbbs_door_launch_deadline = 0;
+    /* Enter launch pending state - wait for door to acknowledge with status 255 */
+    state->arcbbs_door_launch_pending = Desk_bool_TRUE;
+    state->arcbbs_door_active = Desk_bool_FALSE;
+    state->arcbbs_door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
 
-    debug_printf("LineTask ARCbbs: door launched, active=TRUE\n");
+    debug_printf("LineTask ARCbbs: door launched, waiting for status 255\n");
     pipes_output_write_string(state->line_id, "\r\n[Launching ARCbbs door]\r\n");
 }
 

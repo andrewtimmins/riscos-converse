@@ -15,6 +15,18 @@
 /* Variables */
 #define DEBUG_MAX_LINE_LENGTH 256
 
+/* Cache for Reporter availability: -1 = not checked, 0 = unavailable, 1 = available */
+static int debug_reporter_available = -1;
+
+static int debug_check_reporter(void)
+{
+    if (debug_reporter_available < 0)
+    {
+        debug_reporter_available = (xos_swi_number_from_string("Report_Text0", NULL) == NULL) ? 1 : 0;
+    }
+    return debug_reporter_available;
+}
+
 int debug_printf(char *cntrl_string, ...)
 {
     char            s[DEBUG_MAX_LINE_LENGTH];
@@ -22,8 +34,8 @@ int debug_printf(char *cntrl_string, ...)
     va_list         ap;
 
     /* Bail out if Report_Text0 is unavailable so modules still run on minimal ROMs. */
-    if (xos_swi_number_from_string("Report_Text0", NULL) != NULL)
-            return 0;
+    if (!debug_check_reporter())
+        return 0;
 
     /* Format into a fixed buffer to avoid allocating while the module is paged in. */
     va_start(ap, cntrl_string);

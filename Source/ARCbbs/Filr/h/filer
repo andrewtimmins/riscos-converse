@@ -1,0 +1,104 @@
+/*
+ * ARCbbsFiler Emulator Module
+ * 
+ * Provides compatibility with legacy ARCbbs doors that use the
+ * ARCbbsFiler module's StatusPointer SWI to query online users.
+ *
+ * SWI chunk: 0x41000 (ARCbbsFiler)
+ * Implemented: StatusPointer (0x41014)
+ */
+
+#ifndef ARCBBSFILER_H
+#define ARCBBSFILER_H
+
+#include "kernel.h"
+
+/* SWI offsets within chunk 0x41000 */
+#define SWI_READAREA            0
+#define SWI_WRITEAREA           1
+#define SWI_READDATA            2
+#define SWI_WRITEDATA           3
+#define SWI_READLOOKUP          4
+#define SWI_WRITELOOKUP         5
+#define SWI_LOCKDATA            6
+#define SWI_FREEDATA            7
+#define SWI_LOCKLOOKUP          8
+#define SWI_FREELOOKUP          9
+#define SWI_LASTLOOKUP          10
+#define SWI_GETLASTLOOKUP       11
+#define SWI_LASTAREA            12
+#define SWI_SAVEALL             13
+#define SWI_READUSERDATA        14
+#define SWI_WRITEUSERDATA       15
+#define SWI_READUSERLOOKUP      16
+#define SWI_WRITEUSERLOOKUP     17
+#define SWI_EXTENTUSER          18
+#define SWI_MAXUSER             19
+#define SWI_STATUSPOINTER       20  /* 0x14 - The key SWI we implement */
+#define SWI_OPENALL             21
+#define SWI_CLOSEALL            22
+#define SWI_INCCALLCOUNT        23
+#define SWI_READCALLCOUNT       24
+#define SWI_FILENUMBER          25
+#define SWI_READFILENUMBER      26
+#define SWI_CLEARFLAG           27
+#define SWI_LOOKUPMAP           28
+#define SWI_DATAMAP             29
+#define SWI_LOOKUPLEN           30
+#define SWI_DATALEN             31
+#define SWI_DATAEXT             32
+#define SWI_ENSURELOOKUP        33
+#define SWI_ENSUREDATA          34
+#define SWI_SAVEMAPS            35
+#define SWI_ENSUREUSER          36
+#define SWI_SAVEDATABLOCK       37
+#define SWI_LOADDATABLOCK       38
+#define SWI_LOOKUPEXT           39
+
+/* Maximum lines supported - we support 32, but allocate 64 for buggy doors */
+#define MAX_LINES               32
+#define ALLOC_LINES             64
+
+/* Default baud rate for telnet connections */
+/* Note: Original ARCbbs doors may display this as signed 16-bit, so use 19200 */
+/* to avoid overflow issues. 115200 becomes -15872 when truncated to 16-bit signed */
+#define DEFAULT_BAUDRATE        19200
+
+/*
+ * ARCbbs user_list structure - 64 bytes per line
+ * This is the original ARCbbs format that doors expect
+ * 
+ * MUST be exactly 64 bytes with no compiler padding!
+ * The original ARCbbs structure used word-aligned fields.
+ */
+#pragma no_member_alignment
+typedef struct
+{
+    int  baudrate;              /* Offset 0: Connection speed (0 = not connected) */
+    int  usernumber;            /* Offset 4: User ID (-1 = no user) */
+    char username[31];          /* Offset 8: Username string (31 bytes) */
+    char doing[18];             /* Offset 39: Activity/status string (18 bytes) */
+    char fill[7];               /* Offset 57: Padding to 64 bytes */
+} USER_LIST;
+#pragma member_alignment
+
+/* Converse Support module SWIs */
+#define SWI_CONVERSE_SUPPORT_LINE       0x5AA81
+#define SUPPORT_LINE_GET                1
+#define SUPPORT_LINE_FIELD_CONNECTED    1
+#define SUPPORT_LINE_FIELD_USER_ID      2
+
+#define SWI_CONVERSE_SUPPORT_ACTIVITY   0x5AA82
+#define SUPPORT_ACTIVITY_GET            1
+
+/* Converse Filer module SWIs */
+#define SWI_CONVERSE_FILER_USERBASE     0x5AA41
+#define FILER_USERBASE_SEARCH           3
+
+/* Function prototypes */
+void filer_initialise(void);
+void filer_finalise(void);
+void filer_refresh_status(void);
+USER_LIST *filer_get_status_pointer(void);
+
+#endif /* ARCBBSFILER_H */

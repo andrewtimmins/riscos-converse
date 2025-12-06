@@ -20,5 +20,6 @@
     loginscan
     anykey
 
+    call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126`
     script `<Converse$Dir>.BBS.MainMenu`
 }
