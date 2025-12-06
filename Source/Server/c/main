@@ -1670,7 +1670,9 @@ void destroy_listener(void)
 	system("RMKill ConverseBBS");
 	system("RMKill ConversePipes");
 	system("RMKill ConverseFiler");
+	system("RMKill ConverseDoors");
 	system("RMKill ARCbbs_Doors");
+	system("RMKill ARCbbs_Filer");
 	system("Set Converse$Running 0");
 }
 
