@@ -43,7 +43,8 @@
         FILER_USERDB_CMD_DELETE,
         FILER_USERDB_CMD_SEARCH,
         FILER_USERDB_CMD_AUTHENTICATE,
-        FILER_USERDB_CMD_UPDATE_HISTORY
+        FILER_USERDB_CMD_UPDATE_HISTORY,
+        FILER_USERDB_CMD_UPDATE_STATS
     } FILER_USERDB_COMMAND;
 
     typedef enum
@@ -90,29 +91,6 @@
         FILER_COMMAND_FILEAREAS,
         FILER_COMMAND_MESSAGEAREAS
     } FILER_COMMAND;
-
-    /* ******************************************************************************************************************************************************** */
-    /* Internal Counters                                                                                                                                        */
-    /* ******************************************************************************************************************************************************** */
-
-    typedef struct {
-        long programstarttime;         /* time & date software was loaded */
-        int configuredlines;           /* number of configured lines, does not mean enabled lines */
-        int activesockets;             /* number of acting tcp connections */
-        int callstoday;                /* number of calls today (resets at 00:00)*/
-        int currentonlineusers;        /* number of users currently connected (authenticated users only)*/
-    } COUNTERS;
-
-    /* ******************************************************************************************************************************************************** */
-    /* Open File List                                                                                                                                           */
-    /* ******************************************************************************************************************************************************** */
-    
-    typedef struct {
-        char filepath[500];            /* path of the file */
-        FILE *filehandle;              /* handle for the file */
-        time_t opened;                 /* time & date the file was opened */
-        time_t lastaccessed;           /* time & date the file was last accessed */
-    } OPEN_FILES;
 
     /* ******************************************************************************************************************************************************** */
     /* User Database                                                                                                                                            */

@@ -79,6 +79,7 @@ The workspace includes `SharedLibs` containing:
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
   - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback).
   - **Subscript Calls**: `SCRIPT <path>` loads and executes a subscript, then returns to the calling script. Supports up to 8 levels of nesting. Variables are shared between calling and called scripts. Use `return` or `stop` in the subscript to return early. Block IF/ELSE/ENDIF structures are fully supported in subscripts. Example: `script `<Converse$Dir>.BBS.Welcome``.
+  - **Login Scan**: `LOGINSCAN` scans all accessible messagebases and filebases for new content since the user's last scan. Reports counts of new private messages addressed to the user (unread, by `receivedby` field) and new files uploaded since `lastscan`. After scanning, updates the user's `lastscan` timestamp in USER_STATS. Typically called in Postlogon script.
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
   - **Selection Macros**: `%{filebaseid}`, `%{filebasename}`, `%{filebaseareaid}`, `%{filebaseareaname}`, `%{messagebaseid}`, `%{messagebasename}`, `%{messagebaseareaid}`, `%{messagebaseareaname}`. Returns current user's selected filebase/messagebase and area IDs and names. Returns empty string or 0 if nothing selected.
   - **User History Persistence**: When a user selects a filebase/messagebase/area via script commands, the selection is automatically saved to their `USER_HISTORY` record in the userdb. On next login, these selections are restored to the session state automatically.
@@ -340,6 +341,7 @@ void log_ftn(char *entry);
   - 3 (Search): R1=ID -> R0=RecordPtr
   - 4 (Authenticate): R1=Username, R2=Password -> R0=AuthResult, R1=RecordPtr
   - 5 (UpdateHistory): R1=ID, R2=USER_HISTORY* -> R0=Success(1)/Failure(0)
+  - 6 (UpdateStats): R1=ID, R2=USER_STATS* -> R0=Success(1)/Failure(0)
 - **Messagebase (0x5AA42)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord

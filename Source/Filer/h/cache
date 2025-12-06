@@ -1,0 +1,138 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module - In-Memory Cache                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef CACHE_H
+#define CACHE_H
+
+#include "structs.h"
+
+/* Maximum cache sizes - adjust based on expected usage */
+#define CACHE_MAX_BASES         32
+#define CACHE_MAX_AREAS         256
+#define CACHE_MAX_FILES         4096
+#define CACHE_MAX_MESSAGES      8192
+#define CACHE_MAX_USERS         512
+
+/* Hash table sizes (prime numbers for better distribution) */
+#define CACHE_HASH_BASES        37
+#define CACHE_HASH_AREAS        257
+#define CACHE_HASH_FILES        4099
+#define CACHE_HASH_MESSAGES     8209
+#define CACHE_HASH_USERS        521
+
+/* Invalid index marker for hash chains */
+#define CACHE_HASH_EMPTY        (-1)
+
+/* Cache entry with valid flag and hash chain pointer */
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain, or CACHE_HASH_EMPTY */
+    FILEBASE_RECORD record;
+} FILEBASE_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain */
+    int base_id;  /* Which filebase this area belongs to */
+    FILEBASE_AREA_RECORD record;
+} FILEBASE_AREA_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain */
+    int base_id;  /* Which filebase this file belongs to */
+    FILE_RECORD record;
+} FILE_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain */
+    MESSAGEBASE_RECORD record;
+} MESSAGEBASE_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain */
+    int base_id;  /* Which messagebase this area belongs to */
+    MESSAGEBASE_AREA record;
+} MESSAGEBASE_AREA_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;  /* Next entry in hash chain */
+    int base_id;  /* Which messagebase this message belongs to */
+    MESSAGE_RECORD record;
+} MESSAGE_CACHE_ENTRY;
+
+typedef struct
+{
+    int valid;
+    int hash_next;      /* Next entry in hash chain (by ID) */
+    int hash_next_name; /* Next entry in hash chain (by username) */
+    USER_RECORD record;
+} USER_CACHE_ENTRY;
+
+/* Filebase cache functions */
+void filebase_cache_init(void);
+void filebase_cache_clear(void);
+int filebase_cache_load(void);
+int filebase_cache_get_base_count(void);
+const FILEBASE_RECORD *filebase_cache_get_base(int index);
+const FILEBASE_RECORD *filebase_cache_find_base(int base_id);
+int filebase_cache_add_base(const FILEBASE_RECORD *record);
+int filebase_cache_update_base(const FILEBASE_RECORD *record);
+int filebase_cache_get_area_count(int base_id);
+const FILEBASE_AREA_RECORD *filebase_cache_get_area(int base_id, int index);
+const FILEBASE_AREA_RECORD *filebase_cache_find_area(int base_id, int area_id);
+int filebase_cache_add_area(int base_id, const FILEBASE_AREA_RECORD *record);
+int filebase_cache_load_areas(int base_id);
+int filebase_cache_get_file_count(int base_id, int area_id);
+const FILE_RECORD *filebase_cache_get_file(int base_id, int area_id, int index);
+const FILE_RECORD *filebase_cache_find_file(int base_id, int file_id);
+int filebase_cache_add_file(int base_id, const FILE_RECORD *record);
+int filebase_cache_update_file(int base_id, const FILE_RECORD *record);
+int filebase_cache_delete_file(int base_id, int file_id);
+int filebase_cache_load_files(int base_id);
+
+/* Messagebase cache functions */
+void messagebase_cache_init(void);
+void messagebase_cache_clear(void);
+int messagebase_cache_load(void);
+int messagebase_cache_get_base_count(void);
+const MESSAGEBASE_RECORD *messagebase_cache_get_base(int index);
+const MESSAGEBASE_RECORD *messagebase_cache_find_base(int base_id);
+int messagebase_cache_add_base(const MESSAGEBASE_RECORD *record);
+int messagebase_cache_update_base(const MESSAGEBASE_RECORD *record);
+int messagebase_cache_get_area_count(int base_id);
+const MESSAGEBASE_AREA *messagebase_cache_get_area(int base_id, int index);
+const MESSAGEBASE_AREA *messagebase_cache_find_area(int base_id, int area_id);
+int messagebase_cache_add_area(int base_id, const MESSAGEBASE_AREA *record);
+int messagebase_cache_load_areas(int base_id);
+int messagebase_cache_get_message_count(int base_id, int area_id);
+const MESSAGE_RECORD *messagebase_cache_get_message(int base_id, int area_id, int index);
+const MESSAGE_RECORD *messagebase_cache_find_message(int base_id, int message_id);
+int messagebase_cache_add_message(int base_id, const MESSAGE_RECORD *record);
+int messagebase_cache_update_message(int base_id, const MESSAGE_RECORD *record);
+int messagebase_cache_delete_message(int base_id, int message_id);
+int messagebase_cache_load_messages(int base_id);
+
+/* Userdb cache functions */
+void userdb_cache_init(void);
+void userdb_cache_clear(void);
+int userdb_cache_load(void);
+int userdb_cache_get_count(void);
+const USER_RECORD *userdb_cache_get_user(int index);
+const USER_RECORD *userdb_cache_find_user(int user_id);
+const USER_RECORD *userdb_cache_find_username(const char *username);
+int userdb_cache_add_user(const USER_RECORD *record);
+int userdb_cache_update_user(const USER_RECORD *record);
+int userdb_cache_delete_user(int user_id);
+
+#endif

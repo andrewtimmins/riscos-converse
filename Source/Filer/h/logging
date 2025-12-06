@@ -11,8 +11,12 @@
 #define FTNLOG "<Converse$Dir>.Logs.FTN"
 #define WEBLOG "<Converse$Dir>.Logs.Web"
 
+#define LOGGING_MAX_LINES 32
+
 #include "structs.h"
 
+void logging_initialise(void);
+void logging_finalise(void);
 void log_header(int log_type);
 void log_footer(int log_type);
 void log_line_header(int line_id);

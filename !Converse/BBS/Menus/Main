@@ -1,0 +1,12 @@
+{type `<Converse$Dir>.BBS.ANSI.Header`}
+{fgbg 7 0}
+ [{fg 5 }P{fg 7}]ublic/Private messages       [{fg 3 }F{fg 7}]iles and filelists
+
+ [{fg 3 }Y{fg 7}]our user account (Q'nairre)  [{fg 1 }C{fg 7}] Page the sysop
+
+ [{fg 6 }A{fg 7}]reas / News / Info           [{fg 5 }D{fg 7}]oors / Leisure / Utils
+
+ [{fg 2 }O{fg 7}]nline users                  [{fg 3 }U{fg 7}]serlist/search
+
+ [{fg 1 }R{fg 7}]SDFS     [{fg 6 }T{fg 7}]rilink updates   [{fg 2 }G{fg 7}]oodbye (Logoff)
+{type `<Converse$Dir>.BBS.ANSI.Footer`}

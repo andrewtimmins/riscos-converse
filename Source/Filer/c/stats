@@ -67,21 +67,14 @@ void stats_finalise(void)
 
 int stats_get_call_totals(int *total_out)
 {
-    if (stats_load_from_file(&stats_call_totals))
-    {
-        if (total_out != NULL)
-        {
-            *total_out = stats_call_totals;
-        }
-        return 1;
-    }
-
+    /* Use cached in-memory value - no file read needed.
+     * Value is loaded at init and updated by set/increment functions.
+     */
     if (total_out != NULL)
     {
         *total_out = stats_call_totals;
     }
-
-    return 0;
+    return 1;
 }
 
 int stats_set_call_totals(int total)

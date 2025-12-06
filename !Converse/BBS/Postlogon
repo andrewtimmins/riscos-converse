@@ -17,7 +17,8 @@
 
     cls
     doing `Login scan...`
-    /* loginscan */
+    loginscan
     anykey
 
+    script `<Converse$Dir>.BBS.MainMenu`
 }

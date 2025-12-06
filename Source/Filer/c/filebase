@@ -13,6 +13,7 @@
 #include "kernel.h"
 #include "swis.h"
 
+#include "cache.h"
 #include "debug.h"
 #include "logging.h"
 #include "misc.h"
@@ -91,11 +92,16 @@ int filebase_initialise(void)
   }
   fclose(file);
 
+  /* Initialize and load the in-memory cache */
+  filebase_cache_init();
+  filebase_cache_load();
+
   return 1;
 }
 
 void filebase_finalise(void)
 {
+  filebase_cache_clear();
   filebase_next_id = 0;
 }
 
@@ -145,6 +151,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Add to cache */
+      filebase_cache_add_base(&record);
+
       filebase_log("Filebase %d created", new_id);
       r->r[0] = new_id;
       break;
@@ -174,6 +183,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Update cache */
+      filebase_cache_update_base(&record);
+
       filebase_log("Filebase %d updated", base_id);
       r->r[0] = 0;
       break;
@@ -182,16 +194,27 @@ void filebase_swi_handler(_kernel_swi_regs *r)
     case FILER_FILEBASE_CMD_INFO:
     {
       int base_id = r->r[1];
+      const FILEBASE_RECORD *cached;
 
-      filebase_log("CMD_INFO: base_id=%d", base_id);
+      filebase_log("CMD_INFO: base_id=%d (using cache)", base_id);
 
-      if (base_id <= 0 || !filebase_find_base_record(base_id, &filebase_info_cache))
+      if (base_id <= 0)
       {
-        filebase_log("CMD_INFO: not found, returning -1");
+        filebase_log("CMD_INFO: invalid base_id, returning -1");
         r->r[0] = -1;
         return;
       }
 
+      cached = filebase_cache_find_base(base_id);
+      if (cached == NULL)
+      {
+        filebase_log("CMD_INFO: not found in cache, returning -1");
+        r->r[0] = -1;
+        return;
+      }
+
+      filebase_info_cache = *cached;
+      filebase_assign_directory(&filebase_info_cache);
       filebase_log("CMD_INFO: found record name='%s' id=%d", filebase_info_cache.name, filebase_info_cache.id);
       r->r[0] = (int)(uintptr_t)&filebase_info_cache;
       break;
@@ -248,6 +271,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
+
+      /* Add file to cache */
+      filebase_cache_add_file(base_id, &record);
 
       if (!filebase_format_file_path(path, sizeof(path), base_id, record.filebaseareaid, file_id))
       {
@@ -441,6 +467,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Add area to cache */
+      filebase_cache_add_area(base_id, &record);
+
       filebase_log("Filebase %d area %d stored", base_id, record.id);
       r->r[0] = record.id;
       break;
@@ -450,6 +479,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
     {
       int base_id = r->r[1];
       int area_id = r->r[2];
+      const FILEBASE_AREA_RECORD *cached;
 
       if (base_id <= 0 || area_id <= 0)
       {
@@ -457,18 +487,14 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      if (!filebase_find_base_record(base_id, &filebase_info_cache))
+      cached = filebase_cache_find_area(base_id, area_id);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      if (!filebase_find_area_record(base_id, area_id, &filebase_area_cache))
-      {
-        r->r[0] = -1;
-        return;
-      }
-
+      filebase_area_cache = *cached;
       r->r[0] = (int)(uintptr_t)&filebase_area_cache;
       break;
     }
@@ -477,10 +503,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
     {
       /* R1 = index (0-based), returns pointer to record in R0 or -1 if end */
       int index = r->r[1];
-      FILE *file;
-      int current = 0;
+      const FILEBASE_RECORD *cached;
 
-      filebase_log("ENUMERATE_BASES: index=%d", index);
+      filebase_log("ENUMERATE_BASES: index=%d (using cache)", index);
 
       if (index < 0)
       {
@@ -489,31 +514,19 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      file = fopen(FILEBASE_DB_PATH, "rb");
-      if (file == NULL)
+      cached = filebase_cache_get_base(index);
+      if (cached == NULL)
       {
-        filebase_log("ENUMERATE_BASES: failed to open FileDB");
+        filebase_log("ENUMERATE_BASES: end of cache, returning -1");
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&filebase_info_cache, sizeof(FILEBASE_RECORD), 1, file) == 1)
-      {
-        filebase_log("ENUMERATE_BASES: read record id=%d current=%d", filebase_info_cache.id, current);
-        if (current == index)
-        {
-          fclose(file);
-          filebase_assign_directory(&filebase_info_cache);
-          filebase_log("ENUMERATE_BASES: returning record ptr=%p", (void*)&filebase_info_cache);
-          r->r[0] = (int)(uintptr_t)&filebase_info_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      filebase_log("ENUMERATE_BASES: end of file, returning -1");
-      r->r[0] = -1; /* No more records */
+      /* Copy to static buffer and assign directory path */
+      filebase_info_cache = *cached;
+      filebase_assign_directory(&filebase_info_cache);
+      filebase_log("ENUMERATE_BASES: returning record id=%d ptr=%p", filebase_info_cache.id, (void*)&filebase_info_cache);
+      r->r[0] = (int)(uintptr_t)&filebase_info_cache;
       break;
     }
 
@@ -522,9 +535,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
       /* R1 = base_id, R2 = index (0-based), returns pointer to area record or -1 */
       int base_id = r->r[1];
       int index = r->r[2];
-      char path[300];
-      FILE *file;
-      int current = 0;
+      const FILEBASE_AREA_RECORD *cached;
 
       if (base_id <= 0 || index < 0)
       {
@@ -532,27 +543,15 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      filebase_format_area_db_path(path, sizeof(path), base_id);
-      file = fopen(path, "rb");
-      if (file == NULL)
+      cached = filebase_cache_get_area(base_id, index);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&filebase_area_cache, sizeof(FILEBASE_AREA_RECORD), 1, file) == 1)
-      {
-        if (current == index)
-        {
-          fclose(file);
-          r->r[0] = (int)(uintptr_t)&filebase_area_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      r->r[0] = -1;
+      filebase_area_cache = *cached;
+      r->r[0] = (int)(uintptr_t)&filebase_area_cache;
       break;
     }
 
@@ -562,9 +561,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
       int base_id = r->r[1];
       int area_id = r->r[2];
       int index = r->r[3];
-      char path[300];
-      FILE *file;
-      int current = 0;
+      const FILE_RECORD *cached;
 
       if (base_id <= 0 || index < 0)
       {
@@ -572,39 +569,15 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      filebase_format_file_db_path(path, sizeof(path), base_id);
-      file = fopen(path, "rb");
-      if (file == NULL)
+      cached = filebase_cache_get_file(base_id, area_id, index);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
-      {
-        /* Skip deleted files */
-        if (filebase_file_cache.deleted)
-        {
-          continue;
-        }
-
-        /* Filter by area if specified */
-        if (area_id > 0 && filebase_file_cache.filebaseareaid != area_id)
-        {
-          continue;
-        }
-
-        if (current == index)
-        {
-          fclose(file);
-          r->r[0] = (int)(uintptr_t)&filebase_file_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      r->r[0] = -1;
+      filebase_file_cache = *cached;
+      r->r[0] = (int)(uintptr_t)&filebase_file_cache;
       break;
     }
 
@@ -613,8 +586,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
       /* R1 = base_id, R2 = file_id, returns pointer to FILE_RECORD or -1 */
       int base_id = r->r[1];
       int file_id = r->r[2];
-      char path[300];
-      FILE *file;
+      const FILE_RECORD *cached;
 
       if (base_id <= 0 || file_id <= 0)
       {
@@ -622,26 +594,15 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      filebase_format_file_db_path(path, sizeof(path), base_id);
-      file = fopen(path, "rb");
-      if (file == NULL)
+      cached = filebase_cache_find_file(base_id, file_id);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
-      {
-        if (filebase_file_cache.id == file_id && !filebase_file_cache.deleted)
-        {
-          fclose(file);
-          r->r[0] = (int)(uintptr_t)&filebase_file_cache;
-          return;
-        }
-      }
-
-      fclose(file);
-      r->r[0] = -1;
+      filebase_file_cache = *cached;
+      r->r[0] = (int)(uintptr_t)&filebase_file_cache;
       break;
     }
 

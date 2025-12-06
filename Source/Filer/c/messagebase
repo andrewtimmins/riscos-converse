@@ -13,6 +13,7 @@
 #include "kernel.h"
 #include "swis.h"
 
+#include "cache.h"
 #include "debug.h"
 #include "logging.h"
 #include "misc.h"
@@ -92,11 +93,16 @@ int messagebase_initialise(void)
   }
   fclose(file);
 
+  /* Initialize and load the in-memory cache */
+  messagebase_cache_init();
+  messagebase_cache_load();
+
   return 1;
 }
 
 void messagebase_finalise(void)
 {
+  messagebase_cache_clear();
   messagebase_next_id = 0;
 }
 
@@ -144,6 +150,9 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Add to cache */
+      messagebase_cache_add_base(&record);
+
       messagebase_log("Messagebase %d created", new_id);
       r->r[0] = new_id;
       break;
@@ -173,6 +182,9 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Update cache */
+      messagebase_cache_update_base(&record);
+
       messagebase_log("Messagebase %d updated", base_id);
       r->r[0] = 0;
       break;
@@ -181,13 +193,23 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
     case FILER_MESSAGEBASE_CMD_INFO:
     {
       int base_id = r->r[1];
+      const MESSAGEBASE_RECORD *cached;
 
-      if (base_id <= 0 || !messagebase_find_base_record(base_id, &messagebase_info_cache))
+      if (base_id <= 0)
       {
         r->r[0] = -1;
         return;
       }
 
+      cached = messagebase_cache_find_base(base_id);
+      if (cached == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      messagebase_info_cache = *cached;
+      messagebase_assign_directory(&messagebase_info_cache);
       r->r[0] = (int)(uintptr_t)&messagebase_info_cache;
       break;
     }
@@ -271,6 +293,9 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
+
+      /* Add message to cache */
+      messagebase_cache_add_message(base_id, &record);
 
       messagebase_log("Messagebase %d new message %d", base_id, message_id);
       r->r[0] = message_id;
@@ -474,6 +499,9 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      /* Add area to cache */
+      messagebase_cache_add_area(base_id, &record);
+
       messagebase_log("Messagebase %d area %d stored", base_id, record.id);
       r->r[0] = record.id;
       break;
@@ -483,6 +511,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
     {
       int base_id = r->r[1];
       int area_id = r->r[2];
+      const MESSAGEBASE_AREA *cached;
 
       if (base_id <= 0 || area_id <= 0)
       {
@@ -490,18 +519,14 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      if (!messagebase_find_base_record(base_id, &messagebase_info_cache))
+      cached = messagebase_cache_find_area(base_id, area_id);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      if (!messagebase_find_area_record(base_id, area_id, &messagebase_area_cache))
-      {
-        r->r[0] = -1;
-        return;
-      }
-
+      messagebase_area_cache = *cached;
       r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
       break;
     }
@@ -510,8 +535,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
     {
       /* R1 = index (0-based), returns pointer to record in R0 or -1 if end */
       int index = r->r[1];
-      FILE *file;
-      int current = 0;
+      const MESSAGEBASE_RECORD *cached;
 
       if (index < 0)
       {
@@ -519,27 +543,16 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      file = fopen(MESSAGEBASE_DB_PATH, "rb");
-      if (file == NULL)
+      cached = messagebase_cache_get_base(index);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&messagebase_info_cache, sizeof(MESSAGEBASE_RECORD), 1, file) == 1)
-      {
-        if (current == index)
-        {
-          fclose(file);
-          messagebase_assign_directory(&messagebase_info_cache);
-          r->r[0] = (int)(uintptr_t)&messagebase_info_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      r->r[0] = -1; /* No more records */
+      messagebase_info_cache = *cached;
+      messagebase_assign_directory(&messagebase_info_cache);
+      r->r[0] = (int)(uintptr_t)&messagebase_info_cache;
       break;
     }
 
@@ -548,9 +561,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       /* R1 = base_id, R2 = index (0-based), returns pointer to area record or -1 */
       int base_id = r->r[1];
       int index = r->r[2];
-      char path[300];
-      FILE *file;
-      int current = 0;
+      const MESSAGEBASE_AREA *cached;
 
       if (base_id <= 0 || index < 0)
       {
@@ -558,27 +569,15 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      messagebase_format_area_db_path(path, sizeof(path), base_id);
-      file = fopen(path, "rb");
-      if (file == NULL)
+      cached = messagebase_cache_get_area(base_id, index);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&messagebase_area_cache, sizeof(MESSAGEBASE_AREA), 1, file) == 1)
-      {
-        if (current == index)
-        {
-          fclose(file);
-          r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      r->r[0] = -1;
+      messagebase_area_cache = *cached;
+      r->r[0] = (int)(uintptr_t)&messagebase_area_cache;
       break;
     }
 
@@ -588,9 +587,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       int base_id = r->r[1];
       int area_id = r->r[2];
       int index = r->r[3];
-      char path[300];
-      FILE *file;
-      int current = 0;
+      const MESSAGE_RECORD *cached;
 
       if (base_id <= 0 || index < 0)
       {
@@ -598,39 +595,15 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      messagebase_format_message_db_path(path, sizeof(path), base_id);
-      file = fopen(path, "rb");
-      if (file == NULL)
+      cached = messagebase_cache_get_message(base_id, area_id, index);
+      if (cached == NULL)
       {
         r->r[0] = -1;
         return;
       }
 
-      while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1)
-      {
-        /* Skip deleted messages */
-        if (messagebase_message_cache.deleted)
-        {
-          continue;
-        }
-
-        /* Filter by area if specified */
-        if (area_id > 0 && messagebase_message_cache.messagebaseareaid != area_id)
-        {
-          continue;
-        }
-
-        if (current == index)
-        {
-          fclose(file);
-          r->r[0] = (int)(uintptr_t)&messagebase_message_cache;
-          return;
-        }
-        current++;
-      }
-
-      fclose(file);
-      r->r[0] = -1;
+      messagebase_message_cache = *cached;
+      r->r[0] = (int)(uintptr_t)&messagebase_message_cache;
       break;
     }
 
@@ -639,6 +612,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       /* R1 = base_id, R2 = message_id, returns pointer to MESSAGE_RECORD or -1 */
       int base_id = r->r[1];
       int message_id = r->r[2];
+      const MESSAGE_RECORD *cached;
 
       if (base_id <= 0 || message_id <= 0)
       {
@@ -646,10 +620,19 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
-      if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
+      cached = messagebase_cache_find_message(base_id, message_id);
+      if (cached == NULL)
       {
-        r->r[0] = -1;
-        return;
+        /* Fall back to disk lookup for messages not in cache */
+        if (!messagebase_find_message_record(base_id, message_id, &messagebase_message_cache))
+        {
+          r->r[0] = -1;
+          return;
+        }
+      }
+      else
+      {
+        messagebase_message_cache = *cached;
       }
 
       r->r[0] = (int)(uintptr_t)&messagebase_message_cache;
@@ -673,6 +656,9 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
+
+      /* Update cache */
+      messagebase_cache_update_message(base_id, input);
 
       r->r[0] = 0;
       break;

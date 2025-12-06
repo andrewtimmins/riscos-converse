@@ -1,0 +1,1542 @@
+/* ******************************************************************************************************************************************************** */
+/* Filer Module - In-Memory Cache Implementation                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+
+#include "cache.h"
+#include "debug.h"
+#include "filebase.h"
+#include "messagebase.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Static cache storage - allocated in RMA via module workspace                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static FILEBASE_CACHE_ENTRY filebase_bases[CACHE_MAX_BASES];
+static int filebase_base_count = 0;
+static int filebase_base_hash[CACHE_HASH_BASES];  /* Hash table: ID -> cache index */
+
+static FILEBASE_AREA_CACHE_ENTRY filebase_areas[CACHE_MAX_AREAS];
+static int filebase_area_count = 0;
+static int filebase_area_hash[CACHE_HASH_AREAS];  /* Hash by (base_id << 16 | area_id) */
+
+static FILE_CACHE_ENTRY filebase_files[CACHE_MAX_FILES];
+static int filebase_file_count = 0;
+static int filebase_file_hash[CACHE_HASH_FILES];  /* Hash by (base_id << 16 | file_id) */
+
+static MESSAGEBASE_CACHE_ENTRY messagebase_bases[CACHE_MAX_BASES];
+static int messagebase_base_count = 0;
+static int messagebase_base_hash[CACHE_HASH_BASES];
+
+static MESSAGEBASE_AREA_CACHE_ENTRY messagebase_areas[CACHE_MAX_AREAS];
+static int messagebase_area_count = 0;
+static int messagebase_area_hash[CACHE_HASH_AREAS];
+
+static MESSAGE_CACHE_ENTRY messagebase_messages[CACHE_MAX_MESSAGES];
+static int messagebase_message_count = 0;
+static int messagebase_message_hash[CACHE_HASH_MESSAGES];
+
+/* Cached result buffers for SWI returns */
+static FILEBASE_RECORD filebase_result_cache;
+static FILEBASE_AREA_RECORD filebase_area_result_cache;
+static FILE_RECORD filebase_file_result_cache;
+static MESSAGEBASE_RECORD messagebase_result_cache;
+static MESSAGEBASE_AREA messagebase_area_result_cache;
+static MESSAGE_RECORD messagebase_message_result_cache;
+
+/* ******************************************************************************************************************************************************** */
+/* Hash Helper Functions                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned int hash_id(int id, int table_size)
+{
+    unsigned int h = (unsigned int)id;
+    return h % table_size;
+}
+
+static unsigned int hash_compound(int id1, int id2, int table_size)
+{
+    unsigned int h = ((unsigned int)id1 << 16) ^ (unsigned int)id2;
+    return h % table_size;
+}
+
+static unsigned int hash_string(const char *str, int table_size)
+{
+    unsigned int h = 0;
+    while (*str)
+    {
+        unsigned char c = (unsigned char)*str++;
+        if (c >= 'A' && c <= 'Z') c += 32;  /* Case insensitive */
+        h = h * 31 + c;
+    }
+    return h % table_size;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filebase Cache Functions                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+void filebase_cache_init(void)
+{
+    int i;
+    
+    /* Initialize hash tables to empty */
+    for (i = 0; i < CACHE_HASH_BASES; i++)
+    {
+        filebase_base_hash[i] = CACHE_HASH_EMPTY;
+    }
+    for (i = 0; i < CACHE_HASH_AREAS; i++)
+    {
+        filebase_area_hash[i] = CACHE_HASH_EMPTY;
+    }
+    for (i = 0; i < CACHE_HASH_FILES; i++)
+    {
+        filebase_file_hash[i] = CACHE_HASH_EMPTY;
+    }
+
+    /* Initialize cache entries */
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        filebase_bases[i].valid = 0;
+        filebase_bases[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    filebase_base_count = 0;
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        filebase_areas[i].valid = 0;
+        filebase_areas[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    filebase_area_count = 0;
+
+    for (i = 0; i < CACHE_MAX_FILES; i++)
+    {
+        filebase_files[i].valid = 0;
+        filebase_files[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    filebase_file_count = 0;
+
+    debug_printf("filebase_cache_init: cache initialized with hash tables");
+}
+
+void filebase_cache_clear(void)
+{
+    filebase_cache_init();
+}
+
+int filebase_cache_load(void)
+{
+    FILE *file;
+    FILEBASE_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    debug_printf("filebase_cache_load: loading bases from disk");
+
+    file = fopen(FILEBASE_DB_PATH, "rb");
+    if (file == NULL)
+    {
+        debug_printf("filebase_cache_load: failed to open FileDB");
+        return 0;
+    }
+
+    while (fread(&record, sizeof(FILEBASE_RECORD), 1, file) == 1)
+    {
+        if (filebase_base_count >= CACHE_MAX_BASES)
+        {
+            debug_printf("filebase_cache_load: cache full, stopping");
+            break;
+        }
+
+        slot = filebase_base_count;
+        filebase_bases[slot].valid = 1;
+        filebase_bases[slot].record = record;
+
+        /* Add to hash table */
+        bucket = hash_id(record.id, CACHE_HASH_BASES);
+        filebase_bases[slot].hash_next = filebase_base_hash[bucket];
+        filebase_base_hash[bucket] = slot;
+
+        filebase_base_count++;
+        loaded++;
+
+        /* Load areas for this base */
+        filebase_cache_load_areas(record.id);
+        
+        /* Load files for this base */
+        filebase_cache_load_files(record.id);
+    }
+
+    fclose(file);
+    debug_printf("filebase_cache_load: loaded %d bases", loaded);
+    return loaded;
+}
+
+int filebase_cache_get_base_count(void)
+{
+    return filebase_base_count;
+}
+
+const FILEBASE_RECORD *filebase_cache_get_base(int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (filebase_bases[i].valid)
+        {
+            if (count == index)
+            {
+                filebase_result_cache = filebase_bases[i].record;
+                return &filebase_result_cache;
+            }
+            count++;
+        }
+    }
+
+    return NULL;
+}
+
+const FILEBASE_RECORD *filebase_cache_find_base(int base_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup */
+    bucket = hash_id(base_id, CACHE_HASH_BASES);
+    idx = filebase_base_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_bases[idx].valid && filebase_bases[idx].record.id == base_id)
+        {
+            filebase_result_cache = filebase_bases[idx].record;
+            return &filebase_result_cache;
+        }
+        idx = filebase_bases[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int filebase_cache_add_base(const FILEBASE_RECORD *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Find empty slot */
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (!filebase_bases[i].valid)
+        {
+            filebase_bases[i].valid = 1;
+            filebase_bases[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_id(record->id, CACHE_HASH_BASES);
+            filebase_bases[i].hash_next = filebase_base_hash[bucket];
+            filebase_base_hash[bucket] = i;
+
+            filebase_base_count++;
+            debug_printf("filebase_cache_add_base: added base %d at slot %d", record->id, i);
+            return 1;
+        }
+    }
+
+    debug_printf("filebase_cache_add_base: cache full");
+    return 0;
+}
+
+int filebase_cache_update_base(const FILEBASE_RECORD *record)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Hash lookup to find entry */
+    bucket = hash_id(record->id, CACHE_HASH_BASES);
+    idx = filebase_base_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_bases[idx].valid && filebase_bases[idx].record.id == record->id)
+        {
+            filebase_bases[idx].record = *record;
+            debug_printf("filebase_cache_update_base: updated base %d", record->id);
+            return 1;
+        }
+        idx = filebase_bases[idx].hash_next;
+    }
+
+    /* Not found, add it */
+    return filebase_cache_add_base(record);
+}
+
+int filebase_cache_load_areas(int base_id)
+{
+    char path[300];
+    FILE *file;
+    FILEBASE_AREA_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    snprintf(path, sizeof(path), "%s.%04d.AreaDB", FILEBASE_ROOT_DIR, base_id);
+    
+    file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    while (fread(&record, sizeof(FILEBASE_AREA_RECORD), 1, file) == 1)
+    {
+        if (filebase_area_count >= CACHE_MAX_AREAS)
+        {
+            debug_printf("filebase_cache_load_areas: cache full");
+            break;
+        }
+
+        slot = filebase_area_count;
+        filebase_areas[slot].valid = 1;
+        filebase_areas[slot].base_id = base_id;
+        filebase_areas[slot].record = record;
+
+        /* Add to hash table using compound key */
+        bucket = hash_compound(base_id, record.id, CACHE_HASH_AREAS);
+        filebase_areas[slot].hash_next = filebase_area_hash[bucket];
+        filebase_area_hash[bucket] = slot;
+
+        filebase_area_count++;
+        loaded++;
+    }
+
+    fclose(file);
+    debug_printf("filebase_cache_load_areas: base %d loaded %d areas", base_id, loaded);
+    return loaded;
+}
+
+int filebase_cache_get_area_count(int base_id)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (filebase_areas[i].valid && filebase_areas[i].base_id == base_id)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+const FILEBASE_AREA_RECORD *filebase_cache_get_area(int base_id, int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (filebase_areas[i].valid && filebase_areas[i].base_id == base_id)
+        {
+            if (count == index)
+            {
+                filebase_area_result_cache = filebase_areas[i].record;
+                return &filebase_area_result_cache;
+            }
+            count++;
+        }
+    }
+
+    return NULL;
+}
+
+const FILEBASE_AREA_RECORD *filebase_cache_find_area(int base_id, int area_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup using compound key */
+    bucket = hash_compound(base_id, area_id, CACHE_HASH_AREAS);
+    idx = filebase_area_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_areas[idx].valid && 
+            filebase_areas[idx].base_id == base_id &&
+            filebase_areas[idx].record.id == area_id)
+        {
+            filebase_area_result_cache = filebase_areas[idx].record;
+            return &filebase_area_result_cache;
+        }
+        idx = filebase_areas[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int filebase_cache_add_area(int base_id, const FILEBASE_AREA_RECORD *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (!filebase_areas[i].valid)
+        {
+            filebase_areas[i].valid = 1;
+            filebase_areas[i].base_id = base_id;
+            filebase_areas[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_compound(base_id, record->id, CACHE_HASH_AREAS);
+            filebase_areas[i].hash_next = filebase_area_hash[bucket];
+            filebase_area_hash[bucket] = i;
+
+            filebase_area_count++;
+            debug_printf("filebase_cache_add_area: added area %d for base %d", record->id, base_id);
+            return 1;
+        }
+    }
+
+    debug_printf("filebase_cache_add_area: cache full");
+    return 0;
+}
+
+int filebase_cache_load_files(int base_id)
+{
+    char path[300];
+    FILE *file;
+    FILE_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    snprintf(path, sizeof(path), "%s.%04d.FileDB", FILEBASE_ROOT_DIR, base_id);
+    
+    file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    while (fread(&record, sizeof(FILE_RECORD), 1, file) == 1)
+    {
+        if (filebase_file_count >= CACHE_MAX_FILES)
+        {
+            debug_printf("filebase_cache_load_files: cache full");
+            break;
+        }
+
+        /* Skip deleted files */
+        if (record.deleted)
+        {
+            continue;
+        }
+
+        slot = filebase_file_count;
+        filebase_files[slot].valid = 1;
+        filebase_files[slot].base_id = base_id;
+        filebase_files[slot].record = record;
+
+        /* Add to hash table using compound key (base_id, file_id) */
+        bucket = hash_compound(base_id, record.id, CACHE_HASH_FILES);
+        filebase_files[slot].hash_next = filebase_file_hash[bucket];
+        filebase_file_hash[bucket] = slot;
+
+        filebase_file_count++;
+        loaded++;
+    }
+
+    fclose(file);
+    debug_printf("filebase_cache_load_files: base %d loaded %d files", base_id, loaded);
+    return loaded;
+}
+
+int filebase_cache_get_file_count(int base_id, int area_id)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < CACHE_MAX_FILES; i++)
+    {
+        if (filebase_files[i].valid && 
+            filebase_files[i].base_id == base_id &&
+            !filebase_files[i].record.deleted)
+        {
+            if (area_id <= 0 || filebase_files[i].record.filebaseareaid == area_id)
+            {
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+const FILE_RECORD *filebase_cache_get_file(int base_id, int area_id, int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_FILES; i++)
+    {
+        if (filebase_files[i].valid && 
+            filebase_files[i].base_id == base_id &&
+            !filebase_files[i].record.deleted)
+        {
+            if (area_id <= 0 || filebase_files[i].record.filebaseareaid == area_id)
+            {
+                if (count == index)
+                {
+                    filebase_file_result_cache = filebase_files[i].record;
+                    return &filebase_file_result_cache;
+                }
+                count++;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+const FILE_RECORD *filebase_cache_find_file(int base_id, int file_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup using compound key */
+    bucket = hash_compound(base_id, file_id, CACHE_HASH_FILES);
+    idx = filebase_file_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_files[idx].valid && 
+            filebase_files[idx].base_id == base_id &&
+            filebase_files[idx].record.id == file_id &&
+            !filebase_files[idx].record.deleted)
+        {
+            filebase_file_result_cache = filebase_files[idx].record;
+            return &filebase_file_result_cache;
+        }
+        idx = filebase_files[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int filebase_cache_add_file(int base_id, const FILE_RECORD *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < CACHE_MAX_FILES; i++)
+    {
+        if (!filebase_files[i].valid)
+        {
+            filebase_files[i].valid = 1;
+            filebase_files[i].base_id = base_id;
+            filebase_files[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_compound(base_id, record->id, CACHE_HASH_FILES);
+            filebase_files[i].hash_next = filebase_file_hash[bucket];
+            filebase_file_hash[bucket] = i;
+
+            filebase_file_count++;
+            debug_printf("filebase_cache_add_file: added file %d for base %d", record->id, base_id);
+            return 1;
+        }
+    }
+
+    debug_printf("filebase_cache_add_file: cache full");
+    return 0;
+}
+
+int filebase_cache_update_file(int base_id, const FILE_RECORD *record)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Hash lookup */
+    bucket = hash_compound(base_id, record->id, CACHE_HASH_FILES);
+    idx = filebase_file_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_files[idx].valid && 
+            filebase_files[idx].base_id == base_id &&
+            filebase_files[idx].record.id == record->id)
+        {
+            filebase_files[idx].record = *record;
+            debug_printf("filebase_cache_update_file: updated file %d", record->id);
+            return 1;
+        }
+        idx = filebase_files[idx].hash_next;
+    }
+
+    /* Not found, add it */
+    return filebase_cache_add_file(base_id, record);
+}
+
+int filebase_cache_delete_file(int base_id, int file_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* Hash lookup */
+    bucket = hash_compound(base_id, file_id, CACHE_HASH_FILES);
+    idx = filebase_file_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (filebase_files[idx].valid && 
+            filebase_files[idx].base_id == base_id &&
+            filebase_files[idx].record.id == file_id)
+        {
+            filebase_files[idx].record.deleted = 1;
+            debug_printf("filebase_cache_delete_file: marked file %d as deleted", file_id);
+            return 1;
+        }
+        idx = filebase_files[idx].hash_next;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Messagebase Cache Functions                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+void messagebase_cache_init(void)
+{
+    int i;
+
+    /* Initialize hash tables to empty */
+    for (i = 0; i < CACHE_HASH_BASES; i++)
+    {
+        messagebase_base_hash[i] = CACHE_HASH_EMPTY;
+    }
+    for (i = 0; i < CACHE_HASH_AREAS; i++)
+    {
+        messagebase_area_hash[i] = CACHE_HASH_EMPTY;
+    }
+    for (i = 0; i < CACHE_HASH_MESSAGES; i++)
+    {
+        messagebase_message_hash[i] = CACHE_HASH_EMPTY;
+    }
+    
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        messagebase_bases[i].valid = 0;
+        messagebase_bases[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    messagebase_base_count = 0;
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        messagebase_areas[i].valid = 0;
+        messagebase_areas[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    messagebase_area_count = 0;
+
+    for (i = 0; i < CACHE_MAX_MESSAGES; i++)
+    {
+        messagebase_messages[i].valid = 0;
+        messagebase_messages[i].hash_next = CACHE_HASH_EMPTY;
+    }
+    messagebase_message_count = 0;
+
+    debug_printf("messagebase_cache_init: cache initialized with hash tables");
+}
+
+void messagebase_cache_clear(void)
+{
+    messagebase_cache_init();
+}
+
+int messagebase_cache_load(void)
+{
+    FILE *file;
+    MESSAGEBASE_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    debug_printf("messagebase_cache_load: loading bases from disk");
+
+    file = fopen(MESSAGEBASE_DB_PATH, "rb");
+    if (file == NULL)
+    {
+        debug_printf("messagebase_cache_load: failed to open MsgDB");
+        return 0;
+    }
+
+    while (fread(&record, sizeof(MESSAGEBASE_RECORD), 1, file) == 1)
+    {
+        if (messagebase_base_count >= CACHE_MAX_BASES)
+        {
+            debug_printf("messagebase_cache_load: cache full, stopping");
+            break;
+        }
+
+        slot = messagebase_base_count;
+        messagebase_bases[slot].valid = 1;
+        messagebase_bases[slot].record = record;
+
+        /* Add to hash table */
+        bucket = hash_id(record.id, CACHE_HASH_BASES);
+        messagebase_bases[slot].hash_next = messagebase_base_hash[bucket];
+        messagebase_base_hash[bucket] = slot;
+
+        messagebase_base_count++;
+        loaded++;
+
+        /* Load areas for this base */
+        messagebase_cache_load_areas(record.id);
+        
+        /* Load messages for this base */
+        messagebase_cache_load_messages(record.id);
+    }
+
+    fclose(file);
+    debug_printf("messagebase_cache_load: loaded %d bases", loaded);
+    return loaded;
+}
+
+int messagebase_cache_get_base_count(void)
+{
+    return messagebase_base_count;
+}
+
+const MESSAGEBASE_RECORD *messagebase_cache_get_base(int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (messagebase_bases[i].valid)
+        {
+            if (count == index)
+            {
+                messagebase_result_cache = messagebase_bases[i].record;
+                return &messagebase_result_cache;
+            }
+            count++;
+        }
+    }
+
+    return NULL;
+}
+
+const MESSAGEBASE_RECORD *messagebase_cache_find_base(int base_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup */
+    bucket = hash_id(base_id, CACHE_HASH_BASES);
+    idx = messagebase_base_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_bases[idx].valid && messagebase_bases[idx].record.id == base_id)
+        {
+            messagebase_result_cache = messagebase_bases[idx].record;
+            return &messagebase_result_cache;
+        }
+        idx = messagebase_bases[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int messagebase_cache_add_base(const MESSAGEBASE_RECORD *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (!messagebase_bases[i].valid)
+        {
+            messagebase_bases[i].valid = 1;
+            messagebase_bases[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_id(record->id, CACHE_HASH_BASES);
+            messagebase_bases[i].hash_next = messagebase_base_hash[bucket];
+            messagebase_base_hash[bucket] = i;
+
+            messagebase_base_count++;
+            debug_printf("messagebase_cache_add_base: added base %d at slot %d", record->id, i);
+            return 1;
+        }
+    }
+
+    debug_printf("messagebase_cache_add_base: cache full");
+    return 0;
+}
+
+int messagebase_cache_update_base(const MESSAGEBASE_RECORD *record)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Hash lookup */
+    bucket = hash_id(record->id, CACHE_HASH_BASES);
+    idx = messagebase_base_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_bases[idx].valid && messagebase_bases[idx].record.id == record->id)
+        {
+            messagebase_bases[idx].record = *record;
+            debug_printf("messagebase_cache_update_base: updated base %d", record->id);
+            return 1;
+        }
+        idx = messagebase_bases[idx].hash_next;
+    }
+
+    /* Not found, add it */
+    return messagebase_cache_add_base(record);
+}
+
+int messagebase_cache_load_areas(int base_id)
+{
+    char path[300];
+    FILE *file;
+    MESSAGEBASE_AREA record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    snprintf(path, sizeof(path), "%s.%04d.AreaDB", MESSAGEBASE_ROOT_DIR, base_id);
+    
+    file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    while (fread(&record, sizeof(MESSAGEBASE_AREA), 1, file) == 1)
+    {
+        if (messagebase_area_count >= CACHE_MAX_AREAS)
+        {
+            debug_printf("messagebase_cache_load_areas: cache full");
+            break;
+        }
+
+        slot = messagebase_area_count;
+        messagebase_areas[slot].valid = 1;
+        messagebase_areas[slot].base_id = base_id;
+        messagebase_areas[slot].record = record;
+
+        /* Add to hash table */
+        bucket = hash_compound(base_id, record.id, CACHE_HASH_AREAS);
+        messagebase_areas[slot].hash_next = messagebase_area_hash[bucket];
+        messagebase_area_hash[bucket] = slot;
+
+        messagebase_area_count++;
+        loaded++;
+    }
+
+    fclose(file);
+    debug_printf("messagebase_cache_load_areas: base %d loaded %d areas", base_id, loaded);
+    return loaded;
+}
+
+int messagebase_cache_get_area_count(int base_id)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (messagebase_areas[i].valid && messagebase_areas[i].base_id == base_id)
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+const MESSAGEBASE_AREA *messagebase_cache_get_area(int base_id, int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (messagebase_areas[i].valid && messagebase_areas[i].base_id == base_id)
+        {
+            if (count == index)
+            {
+                messagebase_area_result_cache = messagebase_areas[i].record;
+                return &messagebase_area_result_cache;
+            }
+            count++;
+        }
+    }
+
+    return NULL;
+}
+
+const MESSAGEBASE_AREA *messagebase_cache_find_area(int base_id, int area_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup */
+    bucket = hash_compound(base_id, area_id, CACHE_HASH_AREAS);
+    idx = messagebase_area_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_areas[idx].valid && 
+            messagebase_areas[idx].base_id == base_id &&
+            messagebase_areas[idx].record.id == area_id)
+        {
+            messagebase_area_result_cache = messagebase_areas[idx].record;
+            return &messagebase_area_result_cache;
+        }
+        idx = messagebase_areas[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int messagebase_cache_add_area(int base_id, const MESSAGEBASE_AREA *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (!messagebase_areas[i].valid)
+        {
+            messagebase_areas[i].valid = 1;
+            messagebase_areas[i].base_id = base_id;
+            messagebase_areas[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_compound(base_id, record->id, CACHE_HASH_AREAS);
+            messagebase_areas[i].hash_next = messagebase_area_hash[bucket];
+            messagebase_area_hash[bucket] = i;
+
+            messagebase_area_count++;
+            debug_printf("messagebase_cache_add_area: added area %d for base %d", record->id, base_id);
+            return 1;
+        }
+    }
+
+    debug_printf("messagebase_cache_add_area: cache full");
+    return 0;
+}
+
+int messagebase_cache_load_messages(int base_id)
+{
+    char path[300];
+    FILE *file;
+    MESSAGE_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket;
+
+    snprintf(path, sizeof(path), "%s.%04d.MsgDB", MESSAGEBASE_ROOT_DIR, base_id);
+    
+    file = fopen(path, "rb");
+    if (file == NULL)
+    {
+        return 0;
+    }
+
+    while (fread(&record, sizeof(MESSAGE_RECORD), 1, file) == 1)
+    {
+        if (messagebase_message_count >= CACHE_MAX_MESSAGES)
+        {
+            debug_printf("messagebase_cache_load_messages: cache full");
+            break;
+        }
+
+        /* Skip deleted messages */
+        if (record.deleted)
+        {
+            continue;
+        }
+
+        slot = messagebase_message_count;
+        messagebase_messages[slot].valid = 1;
+        messagebase_messages[slot].base_id = base_id;
+        messagebase_messages[slot].record = record;
+
+        /* Add to hash table */
+        bucket = hash_compound(base_id, record.id, CACHE_HASH_MESSAGES);
+        messagebase_messages[slot].hash_next = messagebase_message_hash[bucket];
+        messagebase_message_hash[bucket] = slot;
+
+        messagebase_message_count++;
+        loaded++;
+    }
+
+    fclose(file);
+    debug_printf("messagebase_cache_load_messages: base %d loaded %d messages", base_id, loaded);
+    return loaded;
+}
+
+int messagebase_cache_get_message_count(int base_id, int area_id)
+{
+    int count = 0;
+    int i;
+
+    for (i = 0; i < CACHE_MAX_MESSAGES; i++)
+    {
+        if (messagebase_messages[i].valid && 
+            messagebase_messages[i].base_id == base_id &&
+            !messagebase_messages[i].record.deleted)
+        {
+            if (area_id <= 0 || messagebase_messages[i].record.messagebaseareaid == area_id)
+            {
+                count++;
+            }
+        }
+    }
+
+    return count;
+}
+
+const MESSAGE_RECORD *messagebase_cache_get_message(int base_id, int area_id, int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_MESSAGES; i++)
+    {
+        if (messagebase_messages[i].valid && 
+            messagebase_messages[i].base_id == base_id &&
+            !messagebase_messages[i].record.deleted)
+        {
+            if (area_id <= 0 || messagebase_messages[i].record.messagebaseareaid == area_id)
+            {
+                if (count == index)
+                {
+                    messagebase_message_result_cache = messagebase_messages[i].record;
+                    return &messagebase_message_result_cache;
+                }
+                count++;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+const MESSAGE_RECORD *messagebase_cache_find_message(int base_id, int message_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup */
+    bucket = hash_compound(base_id, message_id, CACHE_HASH_MESSAGES);
+    idx = messagebase_message_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_messages[idx].valid && 
+            messagebase_messages[idx].base_id == base_id &&
+            messagebase_messages[idx].record.id == message_id &&
+            !messagebase_messages[idx].record.deleted)
+        {
+            messagebase_message_result_cache = messagebase_messages[idx].record;
+            return &messagebase_message_result_cache;
+        }
+        idx = messagebase_messages[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+int messagebase_cache_add_message(int base_id, const MESSAGE_RECORD *record)
+{
+    int i;
+    unsigned int bucket;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < CACHE_MAX_MESSAGES; i++)
+    {
+        if (!messagebase_messages[i].valid)
+        {
+            messagebase_messages[i].valid = 1;
+            messagebase_messages[i].base_id = base_id;
+            messagebase_messages[i].record = *record;
+
+            /* Add to hash table */
+            bucket = hash_compound(base_id, record->id, CACHE_HASH_MESSAGES);
+            messagebase_messages[i].hash_next = messagebase_message_hash[bucket];
+            messagebase_message_hash[bucket] = i;
+
+            messagebase_message_count++;
+            debug_printf("messagebase_cache_add_message: added message %d for base %d", record->id, base_id);
+            return 1;
+        }
+    }
+
+    debug_printf("messagebase_cache_add_message: cache full");
+    return 0;
+}
+
+int messagebase_cache_update_message(int base_id, const MESSAGE_RECORD *record)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Hash lookup */
+    bucket = hash_compound(base_id, record->id, CACHE_HASH_MESSAGES);
+    idx = messagebase_message_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_messages[idx].valid && 
+            messagebase_messages[idx].base_id == base_id &&
+            messagebase_messages[idx].record.id == record->id)
+        {
+            messagebase_messages[idx].record = *record;
+            debug_printf("messagebase_cache_update_message: updated message %d", record->id);
+            return 1;
+        }
+        idx = messagebase_messages[idx].hash_next;
+    }
+
+    /* Not found, add it */
+    return messagebase_cache_add_message(base_id, record);
+}
+
+int messagebase_cache_delete_message(int base_id, int message_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* Hash lookup */
+    bucket = hash_compound(base_id, message_id, CACHE_HASH_MESSAGES);
+    idx = messagebase_message_hash[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (messagebase_messages[idx].valid && 
+            messagebase_messages[idx].base_id == base_id &&
+            messagebase_messages[idx].record.id == message_id)
+        {
+            messagebase_messages[idx].record.deleted = 1;
+            debug_printf("messagebase_cache_delete_message: marked message %d as deleted", message_id);
+            return 1;
+        }
+        idx = messagebase_messages[idx].hash_next;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Userdb Cache Functions                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+static USER_CACHE_ENTRY userdb_users[CACHE_MAX_USERS];
+static int userdb_user_count = 0;
+static int userdb_hash_by_id[CACHE_HASH_USERS];    /* Hash by user ID */
+static int userdb_hash_by_name[CACHE_HASH_USERS];  /* Hash by username */
+static USER_RECORD userdb_result_cache;
+
+/* Forward declaration for encryption/decryption */
+extern void encrypt_decrypt_ex(char *data, int size, unsigned int nonce);
+
+static void userdb_cache_decrypt_record(USER_RECORD *record)
+{
+    if (record == NULL) return;
+    /* Use user ID as nonce for per-record unique encryption */
+    encrypt_decrypt_ex((char *)record + offsetof(USER_RECORD, username), 
+                       sizeof(USER_RECORD) - offsetof(USER_RECORD, username),
+                       (unsigned int)record->id);
+}
+
+static void userdb_cache_normalise_strings(USER_RECORD *record)
+{
+    if (record == NULL) return;
+    
+    /* Ensure null termination */
+    record->username[sizeof(record->username) - 1] = '\0';
+    record->realname[sizeof(record->realname) - 1] = '\0';
+    record->email[sizeof(record->email) - 1] = '\0';
+    record->password[sizeof(record->password) - 1] = '\0';
+    record->keys[sizeof(record->keys) - 1] = '\0';
+    record->userdir[sizeof(record->userdir) - 1] = '\0';
+}
+
+static int userdb_cache_string_casecmp(const char *lhs, const char *rhs)
+{
+    unsigned char a, b;
+
+    if (lhs == NULL || rhs == NULL)
+    {
+        return (lhs == rhs) ? 0 : (lhs == NULL ? -1 : 1);
+    }
+
+    do
+    {
+        a = (unsigned char)*lhs++;
+        b = (unsigned char)*rhs++;
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return (int)a - (int)b;
+    } while (a != '\0' && b != '\0');
+
+    return (int)a - (int)b;
+}
+
+void userdb_cache_init(void)
+{
+    int i;
+
+    /* Initialize hash tables */
+    for (i = 0; i < CACHE_HASH_USERS; i++)
+    {
+        userdb_hash_by_id[i] = CACHE_HASH_EMPTY;
+        userdb_hash_by_name[i] = CACHE_HASH_EMPTY;
+    }
+    
+    for (i = 0; i < CACHE_MAX_USERS; i++)
+    {
+        userdb_users[i].valid = 0;
+        userdb_users[i].hash_next = CACHE_HASH_EMPTY;
+        userdb_users[i].hash_next_name = CACHE_HASH_EMPTY;
+    }
+    userdb_user_count = 0;
+    debug_printf("userdb_cache_init: cache initialized with hash tables");
+}
+
+void userdb_cache_clear(void)
+{
+    userdb_cache_init();
+}
+
+int userdb_cache_load(void)
+{
+    FILE *file;
+    USER_RECORD record;
+    int loaded = 0;
+    int slot;
+    unsigned int bucket_id, bucket_name;
+
+    debug_printf("userdb_cache_load: loading users from disk");
+
+    file = fopen("<Converse$Dir>.Resources.Data.UserDB", "rb");
+    if (file == NULL)
+    {
+        debug_printf("userdb_cache_load: failed to open UserDB");
+        return 0;
+    }
+
+    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
+    {
+        if (userdb_user_count >= CACHE_MAX_USERS)
+        {
+            debug_printf("userdb_cache_load: cache full, stopping at %d users", loaded);
+            break;
+        }
+
+        /* Decrypt and normalise the record */
+        userdb_cache_decrypt_record(&record);
+        userdb_cache_normalise_strings(&record);
+
+        /* Skip deleted users */
+        if (record.user_flags.deleted)
+        {
+            continue;
+        }
+
+        slot = userdb_user_count;
+        userdb_users[slot].valid = 1;
+        userdb_users[slot].record = record;
+
+        /* Add to ID hash table */
+        bucket_id = hash_id(record.id, CACHE_HASH_USERS);
+        userdb_users[slot].hash_next = userdb_hash_by_id[bucket_id];
+        userdb_hash_by_id[bucket_id] = slot;
+
+        /* Add to username hash table */
+        bucket_name = hash_string(record.username, CACHE_HASH_USERS);
+        userdb_users[slot].hash_next_name = userdb_hash_by_name[bucket_name];
+        userdb_hash_by_name[bucket_name] = slot;
+
+        userdb_user_count++;
+        loaded++;
+    }
+
+    fclose(file);
+    debug_printf("userdb_cache_load: loaded %d users", loaded);
+    return loaded;
+}
+
+int userdb_cache_get_count(void)
+{
+    return userdb_user_count;
+}
+
+const USER_RECORD *userdb_cache_get_user(int index)
+{
+    int count = 0;
+    int i;
+
+    if (index < 0)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < CACHE_MAX_USERS; i++)
+    {
+        if (userdb_users[i].valid && !userdb_users[i].record.user_flags.deleted)
+        {
+            if (count == index)
+            {
+                userdb_result_cache = userdb_users[i].record;
+                return &userdb_result_cache;
+            }
+            count++;
+        }
+    }
+
+    return NULL;
+}
+
+const USER_RECORD *userdb_cache_find_user(int user_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* O(1) hash lookup by ID */
+    bucket = hash_id(user_id, CACHE_HASH_USERS);
+    idx = userdb_hash_by_id[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (userdb_users[idx].valid && 
+            userdb_users[idx].record.id == user_id &&
+            !userdb_users[idx].record.user_flags.deleted)
+        {
+            userdb_result_cache = userdb_users[idx].record;
+            return &userdb_result_cache;
+        }
+        idx = userdb_users[idx].hash_next;
+    }
+
+    return NULL;
+}
+
+const USER_RECORD *userdb_cache_find_username(const char *username)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (username == NULL || *username == '\0')
+    {
+        return NULL;
+    }
+
+    /* O(1) hash lookup by username */
+    bucket = hash_string(username, CACHE_HASH_USERS);
+    idx = userdb_hash_by_name[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (userdb_users[idx].valid && 
+            !userdb_users[idx].record.user_flags.deleted &&
+            userdb_cache_string_casecmp(userdb_users[idx].record.username, username) == 0)
+        {
+            userdb_result_cache = userdb_users[idx].record;
+            return &userdb_result_cache;
+        }
+        idx = userdb_users[idx].hash_next_name;
+    }
+
+    return NULL;
+}
+
+int userdb_cache_add_user(const USER_RECORD *record)
+{
+    int i;
+    unsigned int bucket_id, bucket_name;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Find empty slot */
+    for (i = 0; i < CACHE_MAX_USERS; i++)
+    {
+        if (!userdb_users[i].valid)
+        {
+            userdb_users[i].valid = 1;
+            userdb_users[i].record = *record;
+
+            /* Add to ID hash table */
+            bucket_id = hash_id(record->id, CACHE_HASH_USERS);
+            userdb_users[i].hash_next = userdb_hash_by_id[bucket_id];
+            userdb_hash_by_id[bucket_id] = i;
+
+            /* Add to username hash table */
+            bucket_name = hash_string(record->username, CACHE_HASH_USERS);
+            userdb_users[i].hash_next_name = userdb_hash_by_name[bucket_name];
+            userdb_hash_by_name[bucket_name] = i;
+
+            userdb_user_count++;
+            debug_printf("userdb_cache_add_user: added user %d '%s' at slot %d", 
+                         record->id, record->username, i);
+            return 1;
+        }
+    }
+
+    debug_printf("userdb_cache_add_user: cache full");
+    return 0;
+}
+
+int userdb_cache_update_user(const USER_RECORD *record)
+{
+    unsigned int bucket;
+    int idx;
+
+    if (record == NULL)
+    {
+        return 0;
+    }
+
+    /* Hash lookup by ID */
+    bucket = hash_id(record->id, CACHE_HASH_USERS);
+    idx = userdb_hash_by_id[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (userdb_users[idx].valid && userdb_users[idx].record.id == record->id)
+        {
+            userdb_users[idx].record = *record;
+            debug_printf("userdb_cache_update_user: updated user %d", record->id);
+            return 1;
+        }
+        idx = userdb_users[idx].hash_next;
+    }
+
+    /* Not found, add it */
+    return userdb_cache_add_user(record);
+}
+
+int userdb_cache_delete_user(int user_id)
+{
+    unsigned int bucket;
+    int idx;
+
+    /* Hash lookup by ID */
+    bucket = hash_id(user_id, CACHE_HASH_USERS);
+    idx = userdb_hash_by_id[bucket];
+
+    while (idx != CACHE_HASH_EMPTY)
+    {
+        if (userdb_users[idx].valid && userdb_users[idx].record.id == user_id)
+        {
+            userdb_users[idx].record.user_flags.deleted = 1;
+            debug_printf("userdb_cache_delete_user: marked user %d as deleted", user_id);
+            return 1;
+        }
+        idx = userdb_users[idx].hash_next;
+    }
+
+    return 0;
+}

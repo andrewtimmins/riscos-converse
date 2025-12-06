@@ -1,22 +1,96 @@
 /* ******************************************************************************************************************************************************** */
-/* Filer Module                                                                                                                                       */
+/* Filer Module - XTEA Encryption                                                                                                                     */
 /* ******************************************************************************************************************************************************** */
 
-#include <time.h>
-#include <stdlib.h>
-
+#include <stddef.h>
 #include "encrypt.h"
 
-static unsigned char key[KEY_SIZE] = ENCRYPTION_KEY;
+/* 128-bit key as 4 x 32-bit words */
+static const unsigned long xtea_key[4] = ENCRYPTION_KEY;
 
 /* ******************************************************************************************************************************************************** */
-/* Encryption Routines                                                                                                                                      */
+/* XTEA Core Algorithm                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
+
+/**
+ * XTEA block encryption (64-bit block, 128-bit key)
+ * Encrypts two 32-bit words in place using 64 rounds (32 cycles)
+ */
+static void xtea_encrypt_block(unsigned long *v0, unsigned long *v1)
+{
+    unsigned long sum = 0;
+    int i;
+
+    for (i = 0; i < XTEA_ROUNDS / 2; i++)
+    {
+        *v0 += (((*v1 << 4) ^ (*v1 >> 5)) + *v1) ^ (sum + xtea_key[sum & 3]);
+        sum += XTEA_DELTA;
+        *v1 += (((*v0 << 4) ^ (*v0 >> 5)) + *v0) ^ (sum + xtea_key[(sum >> 11) & 3]);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* CTR Mode Encryption/Decryption                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/**
+ * Generate keystream block for CTR mode
+ * Counter format: [nonce:32][block_counter:32]
+ */
+static void generate_keystream(unsigned long nonce, unsigned long block_num, 
+                                unsigned char *keystream)
+{
+    unsigned long v0, v1;
+    
+    /* Set up counter block: nonce in high word, block number in low word */
+    v0 = nonce;
+    v1 = block_num;
+    
+    /* Encrypt the counter to produce keystream */
+    xtea_encrypt_block(&v0, &v1);
+    
+    /* Convert to bytes (little-endian) */
+    keystream[0] = (unsigned char)(v0 & 0xFF);
+    keystream[1] = (unsigned char)((v0 >> 8) & 0xFF);
+    keystream[2] = (unsigned char)((v0 >> 16) & 0xFF);
+    keystream[3] = (unsigned char)((v0 >> 24) & 0xFF);
+    keystream[4] = (unsigned char)(v1 & 0xFF);
+    keystream[5] = (unsigned char)((v1 >> 8) & 0xFF);
+    keystream[6] = (unsigned char)((v1 >> 16) & 0xFF);
+    keystream[7] = (unsigned char)((v1 >> 24) & 0xFF);
+}
+
+void encrypt_decrypt_ex(char *data, int size, unsigned int nonce)
+{
+    unsigned char keystream[XTEA_BLOCK_SIZE];
+    unsigned long block_num = 0;
+    int i;
+    int ks_pos = XTEA_BLOCK_SIZE;  /* Force generation of first keystream block */
+
+    if (data == NULL || size <= 0)
+    {
+        return;
+    }
+
+    for (i = 0; i < size; i++)
+    {
+        /* Generate new keystream block when needed */
+        if (ks_pos >= XTEA_BLOCK_SIZE)
+        {
+            generate_keystream((unsigned long)nonce, block_num, keystream);
+            block_num++;
+            ks_pos = 0;
+        }
+
+        /* XOR data with keystream (CTR mode) */
+        data[i] ^= (char)keystream[ks_pos];
+        ks_pos++;
+    }
+}
 
 void encrypt_decrypt(char *data, int size)
 {
-    for (int i = 0; i < size; i++) {
-        data[i] ^= key[i % KEY_SIZE];
-    }
+    /* Legacy function - uses nonce=0 for backwards compatibility */
+    encrypt_decrypt_ex(data, size, 0);
 }
 

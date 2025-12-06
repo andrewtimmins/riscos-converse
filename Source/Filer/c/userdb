@@ -9,6 +9,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "cache.h"
 #include "structs.h"
 #include "userdb.h"
 #include "logging.h"
@@ -59,6 +60,7 @@ int userdb_get_next_id(void)
 int userdb_add_record(USER_RECORD *user_record)
 {
     USER_RECORD stored_record;
+    USER_RECORD cache_record;
     FILE *file;
 
     if (user_record == NULL) {
@@ -73,6 +75,9 @@ int userdb_add_record(USER_RECORD *user_record)
     stored_record.id = userdb_get_next_id();
     userdb_normalise_strings(&stored_record);
 
+    /* Keep a copy for cache before encryption */
+    cache_record = stored_record;
+
     userdb_log_event("Created new user: #%d", stored_record.id);
 
     userdb_encrypt_payload(&stored_record);
@@ -83,12 +88,17 @@ int userdb_add_record(USER_RECORD *user_record)
     }
 
     fclose(file);
-    return stored_record.id;
+
+    /* Add to cache (using unencrypted copy) */
+    userdb_cache_add_user(&cache_record);
+
+    return cache_record.id;
 }
 
 int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
 {
     USER_RECORD stored_record = {0};
+    USER_RECORD cache_record;
     FILE *file;
 
     if (updated_user_record == NULL) {
@@ -104,6 +114,10 @@ int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
             USER_RECORD working = *updated_user_record;
             working.id = user_id;
             userdb_normalise_strings(&working);
+
+            /* Keep unencrypted copy for cache */
+            cache_record = working;
+
             userdb_encrypt_payload(&working);
 
             if (fseek(file, -(long)sizeof(USER_RECORD), SEEK_CUR) != 0 ||
@@ -113,6 +127,10 @@ int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
             }
 
             fclose(file);
+
+            /* Update cache */
+            userdb_cache_update_user(&cache_record);
+
             userdb_log_event("Updated user: #%d", user_id);
             return 1;
         }
@@ -125,6 +143,7 @@ int userdb_update_record(int user_id, USER_RECORD *updated_user_record)
 int userdb_update_history(int user_id, const USER_HISTORY *history)
 {
     USER_RECORD stored_record = {0};
+    USER_RECORD cache_record;
     FILE *file;
 
     if (history == NULL) {
@@ -142,6 +161,9 @@ int userdb_update_history(int user_id, const USER_HISTORY *history)
             
             /* Update just the history portion */
             stored_record.user_history = *history;
+
+            /* Keep unencrypted copy for cache */
+            cache_record = stored_record;
             
             /* Re-encrypt and write back */
             userdb_encrypt_payload(&stored_record);
@@ -153,6 +175,10 @@ int userdb_update_history(int user_id, const USER_HISTORY *history)
             }
 
             fclose(file);
+
+            /* Update cache */
+            userdb_cache_update_user(&cache_record);
+
             {
                 char log_msg[128];
                 snprintf(log_msg, sizeof(log_msg), "Updated history for user: #%d (mb=%d/%d fb=%d/%d)", 
@@ -167,30 +193,101 @@ int userdb_update_history(int user_id, const USER_HISTORY *history)
     fclose(file);
     return 0;
 }
- 
-USER_RECORD *userdb_search_record(int user_id)
-{
-    FILE *file = fopen(USERDB, "rb");
-    USER_RECORD record;
 
+int userdb_update_stats(int user_id, const USER_STATS *stats)
+{
+    USER_RECORD stored_record = {0};
+    USER_RECORD cache_record;
+    FILE *file;
+
+    if (stats == NULL) {
+        return 0;
+    }
+    file = fopen(USERDB, "r+b");
     if (file == NULL) {
         return 0;
     }
 
-    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1) {
-        if (record.id == user_id) {
+    while (fread(&stored_record, sizeof(USER_RECORD), 1, file) == 1) {
+        if (stored_record.id == user_id) {
+            /* Decrypt the record to work with it */
+            userdb_decrypt_payload(&stored_record);
+            
+            /* Update just the stats portion */
+            stored_record.user_stats = *stats;
+
+            /* Keep unencrypted copy for cache */
+            cache_record = stored_record;
+            
+            /* Re-encrypt and write back */
+            userdb_encrypt_payload(&stored_record);
+
+            if (fseek(file, -(long)sizeof(USER_RECORD), SEEK_CUR) != 0 ||
+                fwrite(&stored_record, sizeof(USER_RECORD), 1, file) != 1) {
+                fclose(file);
+                return 0;
+            }
+
             fclose(file);
 
-            userdb_cached_record = record;
-            userdb_decrypt_payload(&userdb_cached_record);
-            userdb_normalise_strings(&userdb_cached_record);
-            userdb_log_event("Found user: #%d", user_id);
+            /* Update cache */
+            userdb_cache_update_user(&cache_record);
 
-            return &userdb_cached_record;
+            {
+                char log_msg[128];
+                snprintf(log_msg, sizeof(log_msg), "Updated stats for user: #%d", user_id);
+                log_system(log_msg);
+            }
+            return 1;
         }
     }
 
     fclose(file);
+    return 0;
+}
+ 
+USER_RECORD *userdb_search_record(int user_id)
+{
+    const USER_RECORD *cached;
+
+    /* Try cache first - O(1) lookup */
+    cached = userdb_cache_find_user(user_id);
+    if (cached != NULL)
+    {
+        userdb_cached_record = *cached;
+        userdb_log_event("Found user: #%d", user_id);
+        return &userdb_cached_record;
+    }
+
+    /* Not in cache - shouldn't happen if cache is properly loaded */
+    debug_printf("userdb_search_record: user %d not in cache, falling back to file", user_id);
+    
+    {
+        FILE *file = fopen(USERDB, "rb");
+        USER_RECORD record;
+
+        if (file == NULL) {
+            return 0;
+        }
+
+        while (fread(&record, sizeof(USER_RECORD), 1, file) == 1) {
+            if (record.id == user_id) {
+                fclose(file);
+
+                userdb_cached_record = record;
+                userdb_decrypt_payload(&userdb_cached_record);
+                userdb_normalise_strings(&userdb_cached_record);
+                userdb_log_event("Found user: #%d", user_id);
+
+                /* Add to cache for next time */
+                userdb_cache_add_user(&userdb_cached_record);
+
+                return &userdb_cached_record;
+            }
+        }
+
+        fclose(file);
+    }
     return 0;
 }
 
@@ -201,49 +298,56 @@ USER_RECORD *userdb_find_username(const char *username)
 
 int userdb_delete_record(int user_id)
 {
-    FILE *file = fopen(USERDB, "rb");
-    FILE *temp = fopen(TEMPUSERDB, "wb");
+    /* Soft delete: set deleted flag in-place instead of copying entire file */
+    FILE *file;
     USER_RECORD record;
-    int found = 0;
+    long record_pos;
 
-    if (file == NULL || temp == NULL) {
-        if (file != NULL) fclose(file);
-        if (temp != NULL) fclose(temp);
+    file = fopen(USERDB, "r+b");
+    if (file == NULL)
+    {
         return 0;
     }
 
-    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1) {
-        if (record.id != user_id) {
-            if (fwrite(&record, sizeof(USER_RECORD), 1, temp) != 1) {
+    while (1)
+    {
+        record_pos = ftell(file);
+        if (fread(&record, sizeof(USER_RECORD), 1, file) != 1)
+        {
+            break;
+        }
+
+        if (record.id == user_id)
+        {
+            /* Decrypt to modify, set deleted flag, re-encrypt */
+            userdb_decrypt_payload(&record);
+            record.user_flags.deleted = 1;
+            userdb_encrypt_payload(&record);
+
+            /* Seek back and write updated record */
+            if (fseek(file, record_pos, SEEK_SET) != 0 ||
+                fwrite(&record, sizeof(USER_RECORD), 1, file) != 1)
+            {
                 fclose(file);
-                fclose(temp);
                 return 0;
             }
-        } else {
-            found = 1;
+
+            fclose(file);
+
+            /* Remove from cache */
+            userdb_cache_delete_user(user_id);
+            userdb_log_event("Deleted user: #%d", user_id);
+            return 1;
         }
     }
 
     fclose(file);
-    fclose(temp);
-
-    if (remove(USERDB) != 0 || rename(TEMPUSERDB, USERDB) != 0) {
-        return 0;
-    }
-
-    if (found) {
-        userdb_log_event("Deleted user: #%d", user_id);
-        return 1;
-    }
-
     return 0;
 }
 
 USER_RECORD *userdb_authenticate(const char *username, const char *password, FILER_USERDB_AUTH_RESULT *result)
 {
-    FILE *file;
-    USER_RECORD record;
-    int record_count = 0;
+    const USER_RECORD *cached;
 
     debug_printf("userdb_authenticate: username='%s'", username != NULL ? username : "(null)");
 
@@ -258,72 +362,113 @@ USER_RECORD *userdb_authenticate(const char *username, const char *password, FIL
         return NULL;
     }
 
-    /* Open the database file */
-    file = fopen(USERDB, "rb");
-    if (file == NULL)
+    /* Try cache first - O(1) lookup by username */
+    cached = userdb_cache_find_username(username);
+    if (cached != NULL)
     {
-        debug_printf("userdb_authenticate: failed to open %s", USERDB);
-        return NULL;
-    }
+        debug_printf("userdb_authenticate: found user %d in cache", cached->id);
 
-    debug_printf("userdb_authenticate: opened database, searching...");
-
-    /* Search for the user by username - use local record to avoid race conditions */
-    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
-    {
-        record_count++;
-        userdb_decrypt_payload(&record);
-        userdb_normalise_strings(&record);
-
-        debug_printf("userdb_authenticate: record %d id=%d username='%s' deleted=%d",
-                     record_count, record.id, record.username, record.user_flags.deleted);
-
-        if (record.user_flags.deleted != 0)
+        if (cached->user_flags.lockedout != 0)
         {
-            continue;
-        }
-
-        if (userdb_string_casecmp(record.username, username) == 0)
-        {
-            /* Found the user - check password while still holding local copy */
-            debug_printf("userdb_authenticate: found matching user id=%d", record.id);
-            fclose(file);
-
-            if (record.user_flags.lockedout != 0)
-            {
-                debug_printf("userdb_authenticate: user is locked out");
-                if (result != NULL)
-                {
-                    *result = FILER_USERDB_AUTH_LOCKED;
-                }
-                return NULL;
-            }
-
-            if (strcmp(record.password, password) != 0)
-            {
-                debug_printf("userdb_authenticate: password mismatch");
-                if (result != NULL)
-                {
-                    *result = FILER_USERDB_AUTH_BAD_PASSWORD;
-                }
-                return NULL;
-            }
-
-            /* Password matches - copy to cached record and return */
-            debug_printf("userdb_authenticate: password correct, success");
+            debug_printf("userdb_authenticate: user is locked out");
             if (result != NULL)
             {
-                *result = FILER_USERDB_AUTH_SUCCESS;
+                *result = FILER_USERDB_AUTH_LOCKED;
             }
-
-            userdb_cached_record = record;
-            userdb_log_event("Authenticated user: #%d", record.id);
-            return &userdb_cached_record;
+            return NULL;
         }
+
+        if (strcmp(cached->password, password) != 0)
+        {
+            debug_printf("userdb_authenticate: password mismatch");
+            if (result != NULL)
+            {
+                *result = FILER_USERDB_AUTH_BAD_PASSWORD;
+            }
+            return NULL;
+        }
+
+        /* Password matches */
+        debug_printf("userdb_authenticate: password correct, success");
+        if (result != NULL)
+        {
+            *result = FILER_USERDB_AUTH_SUCCESS;
+        }
+
+        userdb_cached_record = *cached;
+        userdb_log_event("Authenticated user: #%d", cached->id);
+        return &userdb_cached_record;
     }
 
-    debug_printf("userdb_authenticate: user not found after %d records", record_count);
-    fclose(file);
+    /* Not in cache - fallback to file scan */
+    debug_printf("userdb_authenticate: user not in cache, falling back to file");
+
+    {
+        FILE *file;
+        USER_RECORD record;
+        int record_count = 0;
+
+        file = fopen(USERDB, "rb");
+        if (file == NULL)
+        {
+            debug_printf("userdb_authenticate: failed to open %s", USERDB);
+            return NULL;
+        }
+
+        while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
+        {
+            record_count++;
+            userdb_decrypt_payload(&record);
+            userdb_normalise_strings(&record);
+
+            if (record.user_flags.deleted != 0)
+            {
+                continue;
+            }
+
+            if (userdb_string_casecmp(record.username, username) == 0)
+            {
+                debug_printf("userdb_authenticate: found matching user id=%d", record.id);
+                fclose(file);
+
+                /* Add to cache for next time */
+                userdb_cache_add_user(&record);
+
+                if (record.user_flags.lockedout != 0)
+                {
+                    debug_printf("userdb_authenticate: user is locked out");
+                    if (result != NULL)
+                    {
+                        *result = FILER_USERDB_AUTH_LOCKED;
+                    }
+                    return NULL;
+                }
+
+                if (strcmp(record.password, password) != 0)
+                {
+                    debug_printf("userdb_authenticate: password mismatch");
+                    if (result != NULL)
+                    {
+                        *result = FILER_USERDB_AUTH_BAD_PASSWORD;
+                    }
+                    return NULL;
+                }
+
+                debug_printf("userdb_authenticate: password correct, success");
+                if (result != NULL)
+                {
+                    *result = FILER_USERDB_AUTH_SUCCESS;
+                }
+
+                userdb_cached_record = record;
+                userdb_log_event("Authenticated user: #%d", record.id);
+                return &userdb_cached_record;
+            }
+        }
+
+        debug_printf("userdb_authenticate: user not found after %d records", record_count);
+        fclose(file);
+    }
     return NULL;
 }
 
@@ -333,11 +478,15 @@ static void userdb_encrypt_payload(USER_RECORD *record)
         return;
     }
 
-    encrypt_decrypt((char *)record + offsetof(USER_RECORD, username), sizeof(USER_RECORD) - offsetof(USER_RECORD, username));
+    /* Use user ID as nonce for per-record unique encryption */
+    encrypt_decrypt_ex((char *)record + offsetof(USER_RECORD, username), 
+                       sizeof(USER_RECORD) - offsetof(USER_RECORD, username),
+                       (unsigned int)record->id);
 }
 
 static void userdb_decrypt_payload(USER_RECORD *record)
 {
+    /* CTR mode is symmetric - encrypt and decrypt are the same operation */
     userdb_encrypt_payload(record);
 }
 
@@ -392,39 +541,59 @@ static int userdb_string_casecmp(const char *lhs, const char *rhs)
 
 static USER_RECORD *userdb_find_record_by_username(const char *username)
 {
-    FILE *file;
-    USER_RECORD record;
+    const USER_RECORD *cached;
 
     if (username == NULL || *username == '\0')
     {
         return NULL;
     }
 
-    file = fopen(USERDB, "rb");
-    if (file == NULL)
+    /* Try cache first - O(1) lookup */
+    cached = userdb_cache_find_username(username);
+    if (cached != NULL)
     {
-        return NULL;
+        userdb_cached_record = *cached;
+        userdb_log_event("Found user: #%d", userdb_cached_record.id);
+        return &userdb_cached_record;
     }
 
-    while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
+    /* Not in cache - fallback to file scan */
+    debug_printf("userdb_find_record_by_username: '%s' not in cache, falling back to file", username);
+
     {
-        userdb_decrypt_payload(&record);
-        userdb_normalise_strings(&record);
+        FILE *file;
+        USER_RECORD record;
 
-        if (record.user_flags.deleted != 0)
+        file = fopen(USERDB, "rb");
+        if (file == NULL)
         {
-            continue;
+            return NULL;
         }
 
-        if (userdb_string_casecmp(record.username, username) == 0)
+        while (fread(&record, sizeof(USER_RECORD), 1, file) == 1)
         {
-            fclose(file);
-            userdb_cached_record = record;
-            userdb_log_event("Found user: #%d", record.id);
-            return &userdb_cached_record;
+            userdb_decrypt_payload(&record);
+            userdb_normalise_strings(&record);
+
+            if (record.user_flags.deleted != 0)
+            {
+                continue;
+            }
+
+            if (userdb_string_casecmp(record.username, username) == 0)
+            {
+                fclose(file);
+                userdb_cached_record = record;
+                userdb_log_event("Found user: #%d", record.id);
+                
+                /* Add to cache for next time */
+                userdb_cache_add_user(&userdb_cached_record);
+                
+                return &userdb_cached_record;
+            }
         }
+
+        fclose(file);
     }
-
-    fclose(file);
     return NULL;
 }

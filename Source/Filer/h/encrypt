@@ -5,9 +5,37 @@
 #ifndef ENCRYPT_H
 #define ENCRYPT_H
 
-#define KEY_SIZE 16
-#define ENCRYPTION_KEY { 0x90, 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 0x12, 0x34, 0x56, 0x78 }
+/* XTEA encryption parameters */
+#define XTEA_KEY_SIZE       16      /* 128-bit key (4 x 32-bit words) */
+#define XTEA_BLOCK_SIZE     8       /* 64-bit block size */
+#define XTEA_ROUNDS         64      /* Number of Feistel rounds (32 cycles) */
+#define XTEA_DELTA          0x9E3779B9  /* Golden ratio derived constant */
 
+/* 128-bit encryption key - 4 x 32-bit words */
+/* IMPORTANT: Change this key for production use! */
+#define ENCRYPTION_KEY { 0x90ABCDEF, 0x12345678, 0xFEDCBA09, 0x87654321 }
+
+/* Legacy compatibility - kept for reference */
+#define KEY_SIZE XTEA_KEY_SIZE
+
+/**
+ * Encrypt or decrypt data using XTEA in CTR mode with a nonce.
+ * CTR mode is symmetric - same function encrypts and decrypts.
+ * 
+ * @param data   Pointer to data buffer (modified in-place)
+ * @param size   Size of data in bytes
+ * @param nonce  Unique value per record (e.g., user ID) to prevent identical plaintexts
+ *               producing identical ciphertexts
+ */
+void encrypt_decrypt_ex(char *data, int size, unsigned int nonce);
+
+/**
+ * Legacy encrypt/decrypt function for backwards compatibility.
+ * Uses nonce=0, equivalent to old XOR behaviour location-wise but with XTEA strength.
+ * 
+ * @param data   Pointer to data buffer (modified in-place)
+ * @param size   Size of data in bytes
+ */
 void encrypt_decrypt(char *data, int size);
 
 #endif

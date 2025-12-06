@@ -16,30 +16,47 @@
 /* Misc Routines                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
-char* pad_with_spaces(const char *str, int length) {
-  int str_length = strlen(str);
-  char *padded_str = (char*)malloc((length + 1) * sizeof(char));
+char* pad_with_spaces(const char *str, int length)
+{
+    int str_length;
+    int i;
+    char *padded_str;
 
-  if (!padded_str) {
-  }
+    str_length = (int)strlen(str);
+    padded_str = (char*)malloc((size_t)(length + 1) * sizeof(char));
 
-  strcpy(padded_str, str);
+    if (padded_str == NULL)
+    {
+        return NULL;
+    }
 
-  if (str_length < length) {
-      for (int i = str_length; i < length; i++) {
-          padded_str[i] = ' ';
-      }
-      padded_str[length] = '\0';
-  }
+    strcpy(padded_str, str);
 
-  return padded_str;
+    if (str_length < length)
+    {
+        for (i = str_length; i < length; i++)
+        {
+            padded_str[i] = ' ';
+        }
+        padded_str[length] = '\0';
+    }
+
+    return padded_str;
 }
 
-void null_terminate_string(char *str, size_t max_length) {
+void null_terminate_string(char *str, size_t max_length)
+{
+    size_t i;
+
     str[max_length - 1] = '\0';
-    for (size_t i = 0; i < max_length; i++) {
-        if (str[i] == '\0') break;
-        if (str[i] == '\r' || str[i] == '\n') {
+    for (i = 0; i < max_length; i++)
+    {
+        if (str[i] == '\0')
+        {
+            break;
+        }
+        if (str[i] == '\r' || str[i] == '\n')
+        {
             str[i] = '\0';
             break;
         }

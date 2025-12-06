@@ -1,0 +1,16 @@
+{
+    goto main_menu
+
+    label main_menu
+    cls
+    fgbg 7 0
+
+    type `<Converse$Dir>.BBS.Menu.Main`
+
+    print `\r\nEnter choice: `
+    prompt choice char echo
+
+    label end_session
+    logoff
+    return
+}

@@ -12,191 +12,252 @@
 #include "debug.h"
 
 /* *********************************************************************************************************************************************************************************** */
+/* Cached file handles for performance - avoid open/close on every log entry                                                                                                           */
+/* *********************************************************************************************************************************************************************************** */
+
+static FILE *log_system_handle = NULL;
+static FILE *log_call_handle = NULL;
+static FILE *log_ftn_handle = NULL;
+static FILE *log_web_handle = NULL;
+static FILE *log_line_handles[LOGGING_MAX_LINES];
+static int log_line_initialised[LOGGING_MAX_LINES];
+
 /* *********************************************************************************************************************************************************************************** */
 /* Logging Routines                                                                                                                                                                       */
 /* *********************************************************************************************************************************************************************************** */
-/* *********************************************************************************************************************************************************************************** */
 
-void log_header(int log_type)
+static void log_write_header(FILE *log_file)
 {
-    FILE *log_file;
-
-    switch (log_type)
-    {
-        case 0:
-            log_file = fopen(SYSTEMLOG, "a+");
-            break;
-        case 1:
-            log_file = fopen(LINELOG, "a+");
-            break;
-        case 3:
-            log_file = fopen(FTNLOG, "a+");
-            break;
-        default:
-            log_file = fopen(SYSTEMLOG, "a+");
-        break;
-    }
-
+    if (log_file == NULL) return;
     fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
     fprintf(log_file, "| LOG FILE STARTED      |\n");
     fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
     fprintf(log_file, "| Date       | Time     | Log Entry\n");
     fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fclose(log_file);
+    fflush(log_file);
+}
+
+static void log_write_footer(FILE *log_file)
+{
+    if (log_file == NULL) return;
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fprintf(log_file, "| LOG FILE STOPPED      |\n");
+    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
+    fflush(log_file);
+}
+
+void logging_initialise(void)
+{
+    int i;
+
+    /* Initialize line handle tracking */
+    for (i = 0; i < LOGGING_MAX_LINES; i++)
+    {
+        log_line_handles[i] = NULL;
+        log_line_initialised[i] = 0;
+    }
+
+    /* Open main log files */
+    log_system_handle = fopen(SYSTEMLOG, "a+");
+    log_ftn_handle = fopen(FTNLOG, "a+");
+    log_web_handle = fopen(WEBLOG, "a+");
+    log_call_handle = fopen(CALLLOG, "a+");
+
+    /* Write CSV header for call log if empty */
+    if (log_call_handle != NULL)
+    {
+        long pos;
+        fseek(log_call_handle, 0, SEEK_END);
+        pos = ftell(log_call_handle);
+        if (pos == 0)
+        {
+            fprintf(log_call_handle, "Date,Time,Line,User,Status\n");
+            fflush(log_call_handle);
+        }
+    }
+}
+
+void logging_finalise(void)
+{
+    int i;
+
+    /* Close all line log handles */
+    for (i = 0; i < LOGGING_MAX_LINES; i++)
+    {
+        if (log_line_handles[i] != NULL)
+        {
+            log_write_footer(log_line_handles[i]);
+            fclose(log_line_handles[i]);
+            log_line_handles[i] = NULL;
+        }
+        log_line_initialised[i] = 0;
+    }
+
+    /* Close main log handles */
+    if (log_system_handle != NULL)
+    {
+        log_write_footer(log_system_handle);
+        fclose(log_system_handle);
+        log_system_handle = NULL;
+    }
+
+    if (log_ftn_handle != NULL)
+    {
+        log_write_footer(log_ftn_handle);
+        fclose(log_ftn_handle);
+        log_ftn_handle = NULL;
+    }
+
+    if (log_web_handle != NULL)
+    {
+        log_write_footer(log_web_handle);
+        fclose(log_web_handle);
+        log_web_handle = NULL;
+    }
+
+    if (log_call_handle != NULL)
+    {
+        fclose(log_call_handle);
+        log_call_handle = NULL;
+    }
+}
+
+void log_header(int log_type)
+{
+    switch (log_type)
+    {
+        case 0:
+            log_write_header(log_system_handle);
+            break;
+        case 3:
+            log_write_header(log_ftn_handle);
+            break;
+        case 4:
+            log_write_header(log_web_handle);
+            break;
+        default:
+            log_write_header(log_system_handle);
+            break;
+    }
 }
 
 void log_footer(int log_type)
 {
-    FILE *log_file;
-
-    switch (log_type)
-    {
-        case 0:
-            log_file = fopen(SYSTEMLOG, "a+");
-            break;
-        case 1:
-            log_file = fopen(LINELOG, "a+");
-            break;
-        case 3:
-            log_file = fopen(FTNLOG, "a+");
-            break;
-        case 4:
-            log_file = fopen(WEBLOG, "a+");
-            break;
-        default:
-            log_file = fopen(SYSTEMLOG, "a+");
-        break;
-    }
-
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fprintf(log_file, "| LOG FILE STOPPED      |\n");
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fclose(log_file);
+    /* Footers are now written in logging_finalise() when handles close */
+    (void)log_type;
 }
 
 void log_line_header(int line_id)
 {
     char log_file_name[64];
-    FILE *log_file;
 
-    if (line_id < 0)
+    if (line_id < 0 || line_id >= LOGGING_MAX_LINES)
+    {
+        return;
+    }
+
+    /* Already initialised? */
+    if (log_line_initialised[line_id])
     {
         return;
     }
 
     sprintf(log_file_name, "%s%d", LINELOG, line_id);
 
-    log_file = fopen(log_file_name, "r");
-    if (log_file != NULL)
+    /* Open handle if not already open */
+    if (log_line_handles[line_id] == NULL)
     {
-        fclose(log_file);
-        return;
+        log_line_handles[line_id] = fopen(log_file_name, "a+");
     }
 
-    log_file = fopen(log_file_name, "a+");
-    if (log_file == NULL)
+    if (log_line_handles[line_id] != NULL)
     {
-        return;
+        long pos;
+        fseek(log_line_handles[line_id], 0, SEEK_END);
+        pos = ftell(log_line_handles[line_id]);
+        
+        /* Only write header if file is empty */
+        if (pos == 0)
+        {
+            log_write_header(log_line_handles[line_id]);
+        }
+        log_line_initialised[line_id] = 1;
     }
-
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fprintf(log_file, "| LOG FILE STARTED      |\n");
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fprintf(log_file, "| Date       | Time     | Log Entry\n");
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fclose(log_file);
 }
 
 void log_line_footer(int line_id)
 {
-    char log_file_name[64];
-    FILE *log_file;
-
-    if (line_id < 0)
-    {
-        return;
-    }
-
-    sprintf(log_file_name, "%s%d", LINELOG, line_id);
-
-    log_file = fopen(log_file_name, "r");
-    if (log_file == NULL)
-    {
-        return;
-    }
-    fclose(log_file);
-
-    log_file = fopen(log_file_name, "a+");
-    if (log_file == NULL)
-    {
-        return;
-    }
-
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fprintf(log_file, "| LOG FILE STOPPED      |\n");
-    fprintf(log_file, "+------------+----------+------------------------------------------------------\n");
-    fclose(log_file);
+    /* Footers are now written in logging_finalise() when handles close */
+    (void)line_id;
 }
 
 void log_system(char *log_entry)
 {
-    FILE *log_file;
-
     char timestamp[50];
     char timestamped_log_entry[500];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    time_t now;
+    struct tm *t;
+
+    if (log_system_handle == NULL)
+    {
+        return;
+    }
+
+    now = time(NULL);
+    t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
     sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
      
-    log_file = fopen(SYSTEMLOG, "a+");
-    fprintf(log_file, timestamped_log_entry);
-    fclose(log_file);
+    fprintf(log_system_handle, "%s", timestamped_log_entry);
+    fflush(log_system_handle);
 }
 
 void log_line(int line_id, char *log_entry)
 {
-    FILE *log_file;
-
     char timestamp[50];
     char timestamped_log_entry[500];
-    char log_file_name[50];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    time_t now;
+    struct tm *t;
 
+    if (line_id < 0 || line_id >= LOGGING_MAX_LINES)
+    {
+        return;
+    }
+
+    /* Ensure line log is initialised */
     log_line_header(line_id);
+
+    if (log_line_handles[line_id] == NULL)
+    {
+        return;
+    }
+
+    now = time(NULL);
+    t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
     sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
      
-    sprintf(log_file_name, "%s%d", LINELOG, line_id);
-    log_file = fopen(log_file_name, "a+");
-    fprintf(log_file, timestamped_log_entry);
-    fclose(log_file);
+    fprintf(log_line_handles[line_id], "%s", timestamped_log_entry);
+    fflush(log_line_handles[line_id]);
 }
+
 void log_call(int line_id, int user_id, int status_id)
 {
-    FILE *log_file;
-
-    char log_entry[500];
     char timestamp[50];
     char timestamped_log_entry[500];
     char status[10];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    time_t now;
+    struct tm *t;
 
-    if ((log_file = fopen(CALLLOG, "r")) != NULL)
+    if (log_call_handle == NULL)
     {
-        fclose(log_file);
+        return;
     }
-    else
-    {
-        log_file = fopen(CALLLOG, "a+");
-        strcpy(log_entry, "Date,Time,Line,User,Status\n");
-        fprintf(log_file, log_entry);
-        fclose(log_file);
-    }
+
+    now = time(NULL);
+    t = localtime(&now);
 
     switch (status_id) {
         case 0:
@@ -211,48 +272,60 @@ void log_call(int line_id, int user_id, int status_id)
         case 3:
             strcpy(status, "Rejected");
             break;
+        default:
+            strcpy(status, "Unknown");
+            break;
     }
 
     strftime(timestamp, sizeof(timestamp)-1, "%d/%m/%Y,%H:%M:%S", t);
     sprintf(timestamped_log_entry, "%s,%d,%d,%s\n", timestamp, line_id, user_id, status);
     
-    log_file = fopen(CALLLOG, "a+");
-    fprintf(log_file, timestamped_log_entry);
-    fclose(log_file);
+    fprintf(log_call_handle, "%s", timestamped_log_entry);
+    fflush(log_call_handle);
 
     (void)stats_increment_call_totals();
 }
 
 void log_ftn(char *log_entry)
 {
-    FILE *log_file;
-
     char timestamp[50];
     char timestamped_log_entry[500];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    time_t now;
+    struct tm *t;
+
+    if (log_ftn_handle == NULL)
+    {
+        return;
+    }
+
+    now = time(NULL);
+    t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
     sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
      
-    log_file = fopen(FTNLOG, "a+");
-    fprintf(log_file, timestamped_log_entry);
-    fclose(log_file);
+    fprintf(log_ftn_handle, "%s", timestamped_log_entry);
+    fflush(log_ftn_handle);
 }
 
 void log_web(char *log_entry)
 {
-    FILE *log_file;
-
     char timestamp[50];
     char timestamped_log_entry[500];
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
+    time_t now;
+    struct tm *t;
+
+    if (log_web_handle == NULL)
+    {
+        return;
+    }
+
+    now = time(NULL);
+    t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
     sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
      
-    log_file = fopen(WEBLOG, "a+");
-    fprintf(log_file, timestamped_log_entry);
-    fclose(log_file);
+    fprintf(log_web_handle, "%s", timestamped_log_entry);
+    fflush(log_web_handle);
 }

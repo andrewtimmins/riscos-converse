@@ -134,7 +134,8 @@ typedef enum
     SCRIPT_CMD_SENDNETMAIL,
     SCRIPT_CMD_FLASH,
     SCRIPT_CMD_OSCLI,
-    SCRIPT_CMD_CLL
+    SCRIPT_CMD_CLL,
+    SCRIPT_CMD_LOGINSCAN
 } script_command_type;
 
 typedef enum

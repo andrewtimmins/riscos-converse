@@ -1804,6 +1804,12 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "loginscan") == 0)
+    {
+        instruction->type = SCRIPT_CMD_LOGINSCAN;
+        return 1;
+    }
+
     if (script_stringcasecmp(token, "filebase") == 0)
     {
         char *subcmd = strtok(NULL, " \t");
@@ -3559,6 +3565,324 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.report_online_users != NULL)
             {
                 state->host.report_online_users(state->host.context);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_LOGINSCAN:
+        {
+            /* Login scan - find new messages and files for the user since last scan */
+            messagebase_session *msg_session = NULL;
+            filebase_session *file_session = NULL;
+            const script_user_stats *user_stats = NULL;
+            time_t last_scan_time = 0;
+            int user_id = 0;
+            int user_accesslevel = 0;
+            const char *user_keys = NULL;
+            int new_messages = 0;
+            int new_files = 0;
+            _kernel_swi_regs regs;
+            char line[256];
+            int base_index;
+
+            /* Get user info */
+            if (state->host.get_user_id != NULL)
+            {
+                user_id = state->host.get_user_id(state->host.context);
+            }
+            if (state->host.get_user_accesslevel != NULL)
+            {
+                user_accesslevel = state->host.get_user_accesslevel(state->host.context);
+            }
+            if (state->host.get_user_keys != NULL)
+            {
+                user_keys = state->host.get_user_keys(state->host.context);
+            }
+            if (state->host.get_user_stats != NULL)
+            {
+                user_stats = state->host.get_user_stats(state->host.context);
+            }
+
+            if (user_stats != NULL)
+            {
+                last_scan_time = user_stats->lastscan;
+            }
+
+            script_write_output(state, "\r\n\033[1;36mScanning for new messages and files...\033[0m\r\n\r\n");
+
+            /* Get sessions */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                msg_session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            }
+            if (state->host.get_filebase_session != NULL)
+            {
+                file_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            }
+
+            /* Scan messagebases for new messages addressed to user */
+            if (msg_session != NULL && user_id > 0)
+            {
+                int saved_base = msg_session->current_messagebase;
+                int saved_area = msg_session->current_area;
+
+                /* Enumerate all messagebases */
+                base_index = 0;
+                while (1)
+                {
+                    LINETASK_MESSAGEBASE_RECORD *base_rec;
+                    int area_index;
+
+                    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
+                    regs.r[1] = base_index;
+
+                    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                    {
+                        break;
+                    }
+
+                    base_rec = (LINETASK_MESSAGEBASE_RECORD *)regs.r[0];
+                    if (base_rec == NULL)
+                    {
+                        break;
+                    }
+
+                    /* Check access to this messagebase */
+                    if (!messagebase_check_access(base_rec->accesslevel, base_rec->keys,
+                                                  user_accesslevel, user_keys != NULL ? user_keys : ""))
+                    {
+                        base_index++;
+                        continue;
+                    }
+
+                    /* Enumerate all areas in this messagebase */
+                    area_index = 0;
+                    while (1)
+                    {
+                        LINETASK_MESSAGEBASE_AREA_RECORD *area_rec;
+                        int msg_index;
+                        int area_new_count = 0;
+
+                        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+                        regs.r[1] = base_rec->id;
+                        regs.r[2] = area_index;
+
+                        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                        {
+                            break;
+                        }
+
+                        area_rec = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+
+                        /* Enumerate messages in this area */
+                        msg_index = 0;
+                        while (1)
+                        {
+                            LINETASK_MESSAGE_RECORD *msg_rec;
+
+                            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+                            regs.r[1] = base_rec->id;
+                            regs.r[2] = area_rec->id;
+                            regs.r[3] = msg_index;
+
+                            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                            {
+                                break;
+                            }
+
+                            msg_rec = (LINETASK_MESSAGE_RECORD *)regs.r[0];
+
+                            /* Check if this message is for the user and is new */
+                            if (msg_rec->deleted == 0 &&
+                                msg_rec->receivedby == user_id &&
+                                (last_scan_time == 0 || msg_rec->imported > last_scan_time) &&
+                                msg_rec->read_time == 0)
+                            {
+                                area_new_count++;
+                                new_messages++;
+                            }
+
+                            msg_index++;
+                        }
+
+                        /* Report if new messages found in this area */
+                        if (area_new_count > 0)
+                        {
+                            snprintf(line, sizeof(line),
+                                     "\033[1;33m%d new message(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
+                                     area_new_count, base_rec->name, area_rec->name);
+                            script_write_output(state, line);
+                        }
+
+                        area_index++;
+                    }
+
+                    base_index++;
+                }
+
+                /* Restore session state */
+                msg_session->current_messagebase = saved_base;
+                msg_session->current_area = saved_area;
+            }
+
+            /* Scan filebases for new files */
+            if (file_session != NULL)
+            {
+                int saved_base = file_session->current_filebase;
+                int saved_area = file_session->current_area;
+
+                /* Enumerate all filebases */
+                base_index = 0;
+                while (1)
+                {
+                    LINETASK_FILEBASE_RECORD *base_rec;
+                    int area_index;
+
+                    regs.r[0] = FILEBASE_CMD_ENUMERATE_BASES;
+                    regs.r[1] = base_index;
+
+                    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                    {
+                        break;
+                    }
+
+                    base_rec = (LINETASK_FILEBASE_RECORD *)regs.r[0];
+                    if (base_rec == NULL)
+                    {
+                        break;
+                    }
+
+                    /* Check access to this filebase */
+                    if (!filebase_check_access(base_rec->accesslevel, base_rec->keys,
+                                               user_accesslevel, user_keys != NULL ? user_keys : ""))
+                    {
+                        base_index++;
+                        continue;
+                    }
+
+                    /* Enumerate all areas in this filebase */
+                    area_index = 0;
+                    while (1)
+                    {
+                        LINETASK_FILEBASE_AREA_RECORD *area_rec;
+                        int file_index;
+                        int area_new_count = 0;
+
+                        regs.r[0] = FILEBASE_CMD_ENUMERATE_AREAS;
+                        regs.r[1] = base_rec->id;
+                        regs.r[2] = area_index;
+
+                        if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                        {
+                            break;
+                        }
+
+                        area_rec = (LINETASK_FILEBASE_AREA_RECORD *)regs.r[0];
+
+                        /* Check access to this area */
+                        if (!filebase_check_access(area_rec->accesslevel, area_rec->keys,
+                                                   user_accesslevel, user_keys != NULL ? user_keys : ""))
+                        {
+                            area_index++;
+                            continue;
+                        }
+
+                        /* Enumerate files in this area */
+                        file_index = 0;
+                        while (1)
+                        {
+                            LINETASK_FILE_RECORD *file_rec;
+
+                            regs.r[0] = FILEBASE_CMD_ENUMERATE_FILES;
+                            regs.r[1] = base_rec->id;
+                            regs.r[2] = area_rec->id;
+                            regs.r[3] = file_index;
+
+                            if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+                            {
+                                break;
+                            }
+
+                            file_rec = (LINETASK_FILE_RECORD *)regs.r[0];
+
+                            /* Check if this file is new since last scan */
+                            if (file_rec->deleted == 0 &&
+                                (last_scan_time == 0 || file_rec->uploaddate > last_scan_time))
+                            {
+                                /* Check access to this file */
+                                if (filebase_check_access(file_rec->accesslevel, file_rec->keys,
+                                                          user_accesslevel, user_keys != NULL ? user_keys : ""))
+                                {
+                                    area_new_count++;
+                                    new_files++;
+                                }
+                            }
+
+                            file_index++;
+                        }
+
+                        /* Report if new files found in this area */
+                        if (area_new_count > 0)
+                        {
+                            snprintf(line, sizeof(line),
+                                     "\033[1;32m%d new file(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
+                                     area_new_count, base_rec->name, area_rec->name);
+                            script_write_output(state, line);
+                        }
+
+                        area_index++;
+                    }
+
+                    base_index++;
+                }
+
+                /* Restore session state */
+                file_session->current_filebase = saved_base;
+                file_session->current_area = saved_area;
+            }
+
+            /* Summary */
+            script_write_output(state, "\r\n");
+            if (new_messages == 0 && new_files == 0)
+            {
+                script_write_output(state, "\033[1;30mNo new messages or files since your last scan.\033[0m\r\n");
+            }
+            else
+            {
+                snprintf(line, sizeof(line),
+                         "\033[1;36mScan complete: \033[1;33m%d\033[1;36m new message(s), \033[1;32m%d\033[1;36m new file(s).\033[0m\r\n",
+                         new_messages, new_files);
+                script_write_output(state, line);
+            }
+
+            /* Update lastscan timestamp in user record */
+            if (user_id > 0 && user_stats != NULL)
+            {
+                typedef struct {
+                    time_t lastlogon;
+                    time_t lastscan;
+                    int calls;
+                    int todaytime;
+                    int uploadskb;
+                    int downloadskb;
+                    int uploads;
+                    int downloads;
+                } LOGINSCAN_USER_STATS;
+
+                LOGINSCAN_USER_STATS updated_stats;
+                updated_stats.lastlogon = user_stats->lastlogon;
+                updated_stats.lastscan = time(NULL);  /* Update to current time */
+                updated_stats.calls = user_stats->calls;
+                updated_stats.todaytime = user_stats->todaytime;
+                updated_stats.uploadskb = user_stats->uploadskb;
+                updated_stats.downloadskb = user_stats->downloadskb;
+                updated_stats.uploads = user_stats->uploads;
+                updated_stats.downloads = user_stats->downloads;
+
+                regs.r[0] = 6;  /* FILER_USERDB_CMD_UPDATE_STATS */
+                regs.r[1] = user_id;
+                regs.r[2] = (int)&updated_stats;
+                _kernel_swi(0x5AA41, &regs, &regs);  /* SWI_FILER_USERDB */
             }
         }
         break;

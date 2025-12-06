@@ -11,6 +11,7 @@
 #include "kernel.h"
 
 #include "filerhdr.h"
+#include "cache.h"
 #include "structs.h"
 #include "filer.h"
 #include "logging.h"
@@ -95,6 +96,13 @@ _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *
 
   stats_initialise();
 
+  /* Initialize logging with cached file handles */
+  logging_initialise();
+
+  /* Initialize userdb cache */
+  userdb_cache_init();
+  userdb_cache_load();
+
   log_header(0);
   log_header(3);
   log_header(4);
@@ -120,19 +128,12 @@ _kernel_oserror *module_finalise(int fatal, int podule, void *pw)
 
   messagebase_finalise();
   filebase_finalise();
+  userdb_cache_clear();
   stats_finalise();
 
-  log_footer(0);
-  log_footer(3);
-  log_footer(4);
+  /* Close all log file handles - this writes footers automatically */
+  logging_finalise();
 
-  {
-    int line_id;
-    for (line_id = 0; line_id < FILER_MAX_LINE_LOGS; ++line_id)
-    {
-      log_line_footer(line_id);
-    }
-  }
   return NULL;
 }
 
@@ -326,6 +327,17 @@ static void filer_swi_userdb(_kernel_swi_regs *r)
         return;
       }
       r->r[0] = userdb_update_history((int)r->r[1], history);
+      break;
+    }
+    case FILER_USERDB_CMD_UPDATE_STATS:
+    {
+      USER_STATS *stats = (USER_STATS *)r->r[2];
+      if (stats == NULL)
+      {
+        r->r[0] = -1;
+        return;
+      }
+      r->r[0] = userdb_update_stats((int)r->r[1], stats);
       break;
     }
     default:

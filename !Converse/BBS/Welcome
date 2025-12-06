@@ -9,11 +9,15 @@ You can find out more at https://www.github.com/andrewtimmins/riscos-converse
 
 {fg 2,flash 1}Please mail the sysop if you're interested in running an Converse system!{flash 0}
 
+--------------------------------------------------------------------------------
+
 {fg 3}The time is %{time} and the date is %{date}.
 {fg 2}You have used %{todaytime} minutes so far today.
 {fg 3}You have logged on %{usercalls} times.
 {fg 2}You last called on %{lastlogon}.
 {fg 3}Your user-level is %{accesslevel}, and your usernumber is #%{userid}
+
+--------------------------------------------------------------------------------
 
 {fg 6}You are using Converse version %{version}.
 
