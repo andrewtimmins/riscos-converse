@@ -804,8 +804,44 @@ int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len)
 int tosser_match_area(const char *echotag, int *base_id, int *area_id)
 {
     _kernel_swi_regs regs;
-    int base_count = 0;
-    int b, a;
+    
+    /* Global config structure from Support module */
+    typedef struct
+    {
+        int id;
+        char name[64];
+        char tag[64];
+        int areatype;
+        int daystokeep;
+        int akause;
+        int accesslevel;
+        char keys[128];
+    } AREA_CFG;
+
+    typedef struct
+    {
+        int id;
+        char name[64];
+        int type;
+        int accesslevel;
+        char keys[128];
+        int readonly;
+        char path[256];
+        int area_count;
+        AREA_CFG areas[64];
+    } BASE_CFG;
+
+    typedef struct
+    {
+        int default_retention;
+        int default_accesslevel;
+        char storage_root[256];
+        int base_count;
+        BASE_CFG bases[32];
+    } GLOBAL_CFG;
+
+    GLOBAL_CFG *global;
+    int b;
     
     if (echotag == NULL || *echotag == '\0' || base_id == NULL || area_id == NULL)
     {
@@ -815,62 +851,37 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
     *base_id = 0;
     *area_id = 0;
     
-    /* Get number of messagebases from Support module */
-    regs.r[0] = MSGBASE_CONFIG_COUNT_BASES;
-    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+    /* Get global config pointer from Support module */
+    regs.r[0] = 0;  /* MSGBASE_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
     {
-        debug_printf("tosser: Failed to get messagebase count");
+        debug_printf("tosser: Failed to get messagebase global config");
         return 0;
     }
-    base_count = regs.r[0];
+    
+    global = (GLOBAL_CFG *)regs.r[0];
+    
+    debug_printf("tosser: Searching %d messagebases for tag '%s'", global->base_count, echotag);
     
     /* Search through each messagebase */
-    for (b = 1; b <= base_count; b++)
+    for (b = 0; b < global->base_count; b++)
     {
-        int area_count = 0;
+        BASE_CFG *base = &global->bases[b];
+        int a;
         
-        /* Get area count for this base */
-        regs.r[0] = MSGBASE_CONFIG_COUNT_AREAS;
-        regs.r[1] = b;
-        if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+        /* Search through areas by array index */
+        for (a = 0; a < base->area_count; a++)
         {
-            continue;
-        }
-        area_count = regs.r[0];
-        
-        /* Search through areas */
-        for (a = 1; a <= area_count; a++)
-        {
-            /* Get area config */
-            regs.r[0] = MSGBASE_CONFIG_GET_AREA;
-            regs.r[1] = b;
-            regs.r[2] = a;
-            if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
+            AREA_CFG *area = &base->areas[a];
+            
+            /* Case-insensitive tag comparison */
+            if (area->tag[0] != '\0' && str_casecmp(area->tag, echotag) == 0)
             {
-                /* MSGBASE_AREA_CONFIG structure */
-                typedef struct
-                {
-                    int id;
-                    char name[64];
-                    char tag[64];
-                    int areatype;
-                    int daystokeep;
-                    int akause;
-                    int accesslevel;
-                    char keys[128];
-                } AREA_CFG;
-                
-                AREA_CFG *area = (AREA_CFG *)regs.r[0];
-                
-                /* Case-insensitive tag comparison */
-                if (str_casecmp(area->tag, echotag) == 0)
-                {
-                    *base_id = b;
-                    *area_id = area->id;
-                    debug_printf("tosser: Matched %s to base %d area %d (%s)",
-                                 echotag, b, area->id, area->name);
-                    return 1;
-                }
+                *base_id = base->id;
+                *area_id = area->id;
+                debug_printf("tosser: Matched %s to base %d area %d (%s)",
+                             echotag, base->id, area->id, area->name);
+                return 1;
             }
         }
     }

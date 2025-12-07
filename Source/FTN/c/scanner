@@ -768,10 +768,47 @@ int scanner_mark_messages_exported(SCANNER_UPLINK_BATCH *batch)
 int scanner_scan_outbound(void)
 {
     _kernel_swi_regs regs;
-    int base_count = 0;
-    int b, a;
+    int b;
     int total_messages = 0;
     int message_ids[SCANNER_MAX_MESSAGES];
+    
+    /* Global config structure from Support module */
+    typedef struct
+    {
+        int id;
+        char name[64];
+        char tag[64];
+        int areatype;
+        int daystokeep;
+        int akause;
+        int accesslevel;
+        char keys[128];
+        char groups[64];
+    } SCAN_AREA_CFG;
+
+    typedef struct
+    {
+        int id;
+        char name[64];
+        int type;
+        int accesslevel;
+        char keys[128];
+        int readonly;
+        char path[256];
+        int area_count;
+        SCAN_AREA_CFG areas[64];
+    } SCAN_BASE_CFG;
+
+    typedef struct
+    {
+        int default_retention;
+        int default_accesslevel;
+        char storage_root[256];
+        int base_count;
+        SCAN_BASE_CFG bases[32];
+    } SCAN_GLOBAL_CFG;
+
+    SCAN_GLOBAL_CFG *global;
 
     debug_printf("scanner: Starting outbound scan");
     ftnlog_printf("-- Scanning for outbound mail");
@@ -780,64 +817,49 @@ int scanner_scan_outbound(void)
     memset(uplink_batches, 0, sizeof(uplink_batches));
     uplink_batch_count = 0;
 
-    /* Get messagebase count from Support module */
-    regs.r[0] = MSGBASE_CONFIG_COUNT_BASES;
-    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+    /* Get global config pointer from Support module */
+    regs.r[0] = 0;  /* MSGBASE_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
     {
-        debug_printf("scanner: Failed to get messagebase count");
+        debug_printf("scanner: Failed to get messagebase global config");
         return 0;
     }
-    base_count = regs.r[0];
+    global = (SCAN_GLOBAL_CFG *)regs.r[0];
 
-    debug_printf("scanner: Found %d messagebases to scan", base_count);
+    debug_printf("scanner: Found %d messagebases to scan", global->base_count);
 
-    /* Scan each messagebase */
-    for (b = 1; b <= base_count; b++)
+    /* Scan each messagebase by array index */
+    for (b = 0; b < global->base_count; b++)
     {
-        int area_count = 0;
+        SCAN_BASE_CFG *base = &global->bases[b];
+        int a;
 
-        /* Get area count */
-        regs.r[0] = MSGBASE_CONFIG_COUNT_AREAS;
-        regs.r[1] = b;
-        if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL)
+        /* Scan each area by array index */
+        for (a = 0; a < base->area_count; a++)
         {
-            continue;
-        }
-        area_count = regs.r[0];
-
-        /* Scan each area */
-        for (a = 1; a <= area_count; a++)
-        {
-            char echotag[64];
-            char area_groups[64];
-            int areatype = 0;
-            int akause = 0;
+            SCAN_AREA_CFG *area = &base->areas[a];
+            int real_base_id = base->id;
+            int real_area_id = area->id;
             int msg_count;
             int m;
 
             scanner_stats.areas_scanned++;
 
-            /* Get area info including groups */
-            if (!scanner_get_area_info_full(b, a, echotag, &areatype, &akause, area_groups))
-            {
-                continue;
-            }
-
             /* Only scan ECHO and NETMAIL areas */
-            if (areatype != SCANNER_AREATYPE_ECHO && areatype != SCANNER_AREATYPE_NETMAIL)
+            if (area->areatype != SCANNER_AREATYPE_ECHO && area->areatype != SCANNER_AREATYPE_NETMAIL)
             {
                 continue;
             }
 
-            /* Find unexported messages */
-            msg_count = scanner_find_unexported_messages(b, a, message_ids, SCANNER_MAX_MESSAGES);
+            /* Find unexported messages using REAL IDs */
+            msg_count = scanner_find_unexported_messages(real_base_id, real_area_id, message_ids, SCANNER_MAX_MESSAGES);
             if (msg_count <= 0)
             {
                 continue;
             }
 
             debug_printf("scanner: Base %d area %d (%s): %d unexported messages",
-                         b, a, echotag, msg_count);
+                         real_base_id, real_area_id, area->tag, msg_count);
 
             scanner_stats.messages_found += msg_count;
             total_messages += msg_count;
@@ -850,21 +872,21 @@ int scanner_scan_outbound(void)
                 char password[32] = "";
 
                 memset(&scan_msg, 0, sizeof(scan_msg));
-                scan_msg.base_id = b;
-                scan_msg.area_id = a;
+                scan_msg.base_id = real_base_id;
+                scan_msg.area_id = real_area_id;
                 scan_msg.message_id = message_ids[m];
-                scan_msg.areatype = areatype;
-                scan_msg.akause = akause;
-                strncpy(scan_msg.echotag, echotag, sizeof(scan_msg.echotag) - 1);
+                scan_msg.areatype = area->areatype;
+                scan_msg.akause = area->akause;
+                strncpy(scan_msg.echotag, area->tag, sizeof(scan_msg.echotag) - 1);
 
-                if (areatype == SCANNER_AREATYPE_ECHO)
+                if (area->areatype == SCANNER_AREATYPE_ECHO)
                 {
                     /* Echomail: send to uplinks with matching groups */
                     FTN_ADDR uplinks[SCANNER_MAX_UPLINKS];
                     int uplink_count;
                     int u;
 
-                    uplink_count = scanner_get_echomail_uplinks(area_groups, uplinks, SCANNER_MAX_UPLINKS);
+                    uplink_count = scanner_get_echomail_uplinks(area->groups, uplinks, SCANNER_MAX_UPLINKS);
 
                     for (u = 0; u < uplink_count; u++)
                     {
@@ -884,8 +906,8 @@ int scanner_scan_outbound(void)
                     /* Netmail: route to appropriate uplink based on destination address */
                     FTN_ADDR msg_dest;
                     
-                    /* Get the actual destination address from the message record */
-                    if (scanner_get_message_dest(b, message_ids[m], &msg_dest))
+                    /* Get the actual destination address from the message record using REAL base ID */
+                    if (scanner_get_message_dest(real_base_id, message_ids[m], &msg_dest))
                     {
                         scan_msg.dest_addr = msg_dest;
                         
