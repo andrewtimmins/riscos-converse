@@ -48,6 +48,12 @@ typedef enum
 #define BINKP_OPT_MB                "MB"        /* Multiple batch */
 #define BINKP_OPT_EXTCMD            "EXTCMD"    /* Extended commands */
 
+/* NR/ND mode flags (bitfield) */
+#define BINKP_WE_NR                 0x01        /* We requested NR mode */
+#define BINKP_THEY_NR               0x02        /* They requested NR mode */
+#define BINKP_WE_ND                 0x01        /* We requested ND mode */
+#define BINKP_THEY_ND               0x02        /* They requested ND mode */
+
 /* ******************************************************************************************************************************************************** */
 /* BinkP Frame Structure                                                                                                                                    */
 /* ******************************************************************************************************************************************************** */
@@ -126,6 +132,8 @@ void binkp_process_req_file(MAILER_SESSION *session, const char *path);
 /* Session flow */
 void binkp_process_session(MAILER_SESSION *session);
 void binkp_check_for_files(MAILER_SESSION *session);
+void binkp_try_session_restart(MAILER_SESSION *session);
+int binkp_is_file_received(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
 
 /* ******************************************************************************************************************************************************** */
 /* Function Prototypes - Authentication                                                                                                                     */

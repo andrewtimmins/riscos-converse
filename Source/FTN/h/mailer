@@ -141,6 +141,19 @@ typedef struct
     /* End of batch flags */
     int local_eob;
     int remote_eob;
+
+    /* BinkP 1.1 mode flags */
+    int nr_mode;                    /* NR mode: 1=we want, 2=they want, 3=both */
+    int nd_mode;                    /* ND mode: 1=we want, 2=they want, 3=both */
+    int nda_mode;                   /* NDA (asymmetric ND) supported */
+    int buggy_nr;                   /* Remote has buggy NR implementation */
+    int remote_major;               /* Remote BinkP major version */
+    int remote_minor;               /* Remote BinkP minor version */
+    int batch_number;               /* Current batch number for session restart */
+
+    /* ND mode received files tracking (to prevent duplicates) */
+    char nd_received_files[32][MAILER_PATH_SIZE];  /* Track received filenames */
+    int nd_received_count;
 } MAILER_SESSION;
 
 /* ******************************************************************************************************************************************************** */

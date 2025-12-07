@@ -19,6 +19,49 @@
 #include "md5.h"
 
 /* ******************************************************************************************************************************************************** */
+/* C90 Compatibility - strtok_r implementation                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Thread-safe strtok replacement for C90.
+ * Not available in Norcroft C library.
+ */
+static char *strtok_r(char *str, const char *delim, char **saveptr)
+{
+    char *token;
+    
+    if (str == NULL)
+    {
+        str = *saveptr;
+    }
+    
+    /* Skip leading delimiters */
+    str += strspn(str, delim);
+    if (*str == '\0')
+    {
+        *saveptr = str;
+        return NULL;
+    }
+    
+    /* Find end of token */
+    token = str;
+    str = strpbrk(token, delim);
+    if (str == NULL)
+    {
+        /* No more delimiters - this is the last token */
+        *saveptr = token + strlen(token);
+    }
+    else
+    {
+        /* Terminate token and point to next */
+        *str = '\0';
+        *saveptr = str + 1;
+    }
+    
+    return token;
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Frame Building                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
 
@@ -372,6 +415,7 @@ void binkp_process_req_file(MAILER_SESSION *session, const char *path)
 void binkp_send_handshake(MAILER_SESSION *session)
 {
     char buf[128];
+    char opt_buf[128];
 
     /* Send system information */
     binkp_send_nul(session, "SYS", mailer.system_name);
@@ -384,8 +428,15 @@ void binkp_send_handshake(MAILER_SESSION *session)
     binkp_send_nul(session, "TIME", "");  /* TODO: Format time */
     binkp_send_nul(session, "VER", MAILER_NAME "/" MAILER_VERSION " binkp/" BINKP_VERSION);
 
-    /* Send options */
-    binkp_send_nul(session, "OPT", "NR");
+    /* Build and send options: NR ND NDA */
+    snprintf(opt_buf, sizeof(opt_buf), "%s %s %s", 
+             BINKP_OPT_NR, BINKP_OPT_ND, BINKP_OPT_NDA);
+    binkp_send_nul(session, "OPT", opt_buf);
+    
+    /* Mark that we requested NR and ND modes */
+    session->nr_mode |= BINKP_WE_NR;
+    session->nd_mode |= BINKP_WE_ND;
+    session->nda_mode = 1;  /* We support asymmetric ND */
 
     /* Send our addresses */
     binkp_send_adr(session);
@@ -450,24 +501,78 @@ void binkp_handle_nul(MAILER_SESSION *session, const char *data)
         }
         else if (strcmp(key, "OPT") == 0)
         {
-            /* Parse options */
-            const char *cram = strstr(value, BINKP_OPT_CRAM_MD5);
-            if (cram != NULL)
+            /* Parse options - space-separated words */
+            char opt_copy[256];
+            char *word, *saveptr;
+            
+            strncpy(opt_copy, value, sizeof(opt_copy) - 1);
+            opt_copy[sizeof(opt_copy) - 1] = '\0';
+            
+            for (word = strtok_r(opt_copy, " ", &saveptr); word != NULL; 
+                 word = strtok_r(NULL, " ", &saveptr))
             {
-                session->cram_enabled = 1;
-                /* Extract challenge - format is CRAM-MD5-<challenge> */
-                cram += strlen(BINKP_OPT_CRAM_MD5);
-                if (*cram == '-') {
-                    cram++;
-                    strncpy(session->cram_challenge, cram, sizeof(session->cram_challenge) - 1);
-                    session->cram_challenge[sizeof(session->cram_challenge) - 1] = '\0';
-                    /* Remove any trailing options after the challenge */
+                /* CRAM-MD5 challenge */
+                if (strncmp(word, BINKP_OPT_CRAM_MD5, strlen(BINKP_OPT_CRAM_MD5)) == 0)
+                {
+                    session->cram_enabled = 1;
+                    if (word[strlen(BINKP_OPT_CRAM_MD5)] == '-')
                     {
-                        char *space = strchr(session->cram_challenge, ' ');
-                        if (space) *space = '\0';
+                        strncpy(session->cram_challenge, 
+                                word + strlen(BINKP_OPT_CRAM_MD5) + 1,
+                                sizeof(session->cram_challenge) - 1);
+                        session->cram_challenge[sizeof(session->cram_challenge) - 1] = '\0';
+                        debug_printf("binkp: CRAM-MD5 challenge: %s", session->cram_challenge);
                     }
-                    debug_printf("binkp: CRAM-MD5 challenge: %s", session->cram_challenge);
                 }
+                /* NR mode - remote requests non-reliable mode */
+                else if (strcmp(word, BINKP_OPT_NR) == 0)
+                {
+                    session->nr_mode |= BINKP_THEY_NR;
+                    debug_printf("binkp: Remote requests NR mode");
+                    ftnlog_printf("   NR mode enabled (remote request)");
+                }
+                /* ND mode - remote requests no-dupes mode */
+                else if (strcmp(word, BINKP_OPT_ND) == 0)
+                {
+                    session->nd_mode |= BINKP_THEY_ND;
+                    debug_printf("binkp: Remote requests ND mode");
+                    ftnlog_printf("   ND mode enabled (remote request)");
+                }
+                /* NDA - asymmetric ND supported */
+                else if (strcmp(word, BINKP_OPT_NDA) == 0)
+                {
+                    session->nda_mode = 1;
+                    debug_printf("binkp: Remote supports asymmetric ND mode");
+                }
+            }
+        }
+        else if (strcmp(key, "VER") == 0)
+        {
+            /* Parse version string to detect buggy implementations */
+            /* Format: "software/version binkp/major.minor" */
+            const char *binkp_ver = strstr(value, "binkp/");
+            if (binkp_ver != NULL)
+            {
+                const char *dot = strchr(binkp_ver + 6, '.');
+                if (dot != NULL)
+                {
+                    session->remote_major = atoi(binkp_ver + 6);
+                    session->remote_minor = atoi(dot + 1);
+                    debug_printf("binkp: Remote uses binkp/%d.%d", 
+                                 session->remote_major, session->remote_minor);
+                }
+            }
+            
+            /* Check for buggy NR implementations in old binkd versions */
+            if (strstr(value, "binkd/0.9/") != NULL ||
+                strstr(value, "binkd/0.9.1/") != NULL ||
+                strstr(value, "binkd/0.9.2/") != NULL ||
+                strstr(value, "binkd/0.9.3/") != NULL ||
+                strstr(value, "binkd/0.9.4/") != NULL)
+            {
+                session->buggy_nr = 1;
+                debug_printf("binkp: Remote has buggy NR, using workaround");
+                ftnlog_printf("   Remote has buggy NR implementation, using workaround");
             }
         }
     }
@@ -723,18 +828,13 @@ void binkp_handle_eob(MAILER_SESSION *session)
 
     session->remote_eob = 1;
 
-    /* If we've also sent EOB AND no file transfer in progress, session is complete */
+    /* If we've also sent EOB AND no file transfer in progress, try session restart */
     if (session->local_eob && session->remote_eob &&
         session->recv_file.state != TRANSFER_STATE_RECEIVING &&
         session->send_file.state != TRANSFER_STATE_SENDING)
     {
-        debug_printf("binkp: Session complete");
-        ftnlog_printf("Session complete: sent %d, recv %d files",
-                       session->files_sent, session->files_received);
-        mailer_log("Session complete (sent %d files/%ld bytes, recv %d files/%ld bytes)",
-                   session->files_sent, session->bytes_sent,
-                   session->files_received, session->bytes_received);
-        session->state = SESSION_STATE_CLOSING;
+        /* BinkP 1.1 session restart: Check for new files before closing */
+        binkp_try_session_restart(session);
     }
     else if (session->local_eob && session->remote_eob)
     {
@@ -742,9 +842,100 @@ void binkp_handle_eob(MAILER_SESSION *session)
     }
 }
 
+/*
+ * BinkP 1.1 Session Restart
+ * 
+ * After both sides exchange EOB, check if new files have been queued.
+ * If so, reset EOB flags and continue the session with a new batch.
+ * This allows a single connection to handle multiple batches of mail.
+ */
+void binkp_try_session_restart(MAILER_SESSION *session)
+{
+    int zone;
+    int pending_files;
+    
+    /* Determine which zone we're working with */
+    if (session->direction == SESSION_DIR_OUTBOUND)
+    {
+        zone = session->target_addr.zone;
+    }
+    else
+    {
+        zone = session->remote_addr.zone;
+    }
+    
+    /* Check if there are new files queued for this zone */
+    pending_files = queue_count_files_for_zone(zone);
+    
+    if (pending_files > 0)
+    {
+        /* New files available - restart the session */
+        session->batch_number++;
+        debug_printf("binkp: Session restart - batch %d, %d files pending", 
+                     session->batch_number, pending_files);
+        ftnlog_printf("Session restart: batch %d, %d files pending", 
+                       session->batch_number, pending_files);
+        mailer_log("Session restart (batch %d, %d new files)", 
+                   session->batch_number, pending_files);
+        
+        /* Reset EOB flags for new batch */
+        session->local_eob = 0;
+        session->remote_eob = 0;
+        
+        /* Start sending new files */
+        binkp_check_for_files(session);
+    }
+    else
+    {
+        /* No new files - session complete */
+        debug_printf("binkp: Session complete (no files for restart)");
+        ftnlog_printf("Session complete: sent %d, recv %d files (batch %d)",
+                       session->files_sent, session->files_received, session->batch_number);
+        mailer_log("Session complete (sent %d files/%ld bytes, recv %d files/%ld bytes)",
+                   session->files_sent, session->bytes_sent,
+                   session->files_received, session->bytes_received);
+        session->state = SESSION_STATE_CLOSING;
+    }
+}
+
 /* ******************************************************************************************************************************************************** */
 /* File Transfer Handlers                                                                                                                                   */
 /* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if a file has already been received in this session (ND mode).
+ * Returns 1 if the file is a duplicate, 0 otherwise.
+ */
+int binkp_is_file_received(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
+{
+    int i;
+    char key[MAILER_PATH_SIZE];
+    
+    /* Build a key from filename, size, and mtime for comparison */
+    snprintf(key, sizeof(key), "%s:%ld:%ld", filename, size, (long)mtime);
+    
+    for (i = 0; i < session->nd_received_count && i < 32; i++)
+    {
+        if (strcmp(session->nd_received_files[i], key) == 0)
+        {
+            return 1;  /* Duplicate found */
+        }
+    }
+    return 0;
+}
+
+/*
+ * Record a file as received for ND mode duplicate tracking.
+ */
+static void binkp_mark_file_received(MAILER_SESSION *session, const char *filename, long size, time_t mtime)
+{
+    if (session->nd_received_count < 32)
+    {
+        snprintf(session->nd_received_files[session->nd_received_count],
+                 MAILER_PATH_SIZE, "%s:%ld:%ld", filename, size, (long)mtime);
+        session->nd_received_count++;
+    }
+}
 
 void binkp_handle_file(MAILER_SESSION *session, const char *data)
 {
@@ -763,6 +954,19 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
     if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) >= 3)
     {
         ftnlog_printf("<< FILE: %s (%ld bytes, offset %ld)", filename, size, offset);
+        
+        /* ND mode: Check for duplicate file in this session */
+        if ((session->nd_mode & BINKP_WE_ND) && 
+            (session->nd_mode & BINKP_THEY_ND))
+        {
+            if (binkp_is_file_received(session, filename, size, (time_t)mtime))
+            {
+                debug_printf("binkp: ND mode - duplicate file %s, sending M_GOT", filename);
+                ftnlog_printf(">> GOT: %s (ND duplicate)", filename);
+                binkp_send_got(session, filename, size, (time_t)mtime);
+                return;
+            }
+        }
         
         /* NR mode: offset -1 means sender is waiting for M_GET */
         if (offset == -1)
@@ -813,10 +1017,56 @@ void binkp_handle_skip(MAILER_SESSION *session, const char *data)
 
 void binkp_handle_get(MAILER_SESSION *session, const char *data)
 {
+    char filename[128];
+    long size, mtime, offset;
+    FILE_TRANSFER *ft = &session->send_file;
+    
     debug_printf("binkp: << M_GET %s", data);
     ftnlog_printf("<< GET: %s", data);
-    (void)session;
-    /* TODO: Resume file transfer from offset */
+    
+    /* Parse: filename size time offset */
+    if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) < 4)
+    {
+        debug_printf("binkp: M_GET parse failed");
+        return;
+    }
+    
+    /* Check if this is for the file we're currently sending */
+    if (ft->state == TRANSFER_STATE_SENDING && 
+        strcmp(ft->filename, filename) == 0 &&
+        ft->size == size)
+    {
+        /* Seek to requested offset and continue sending */
+        if (offset >= 0 && offset < ft->size && ft->file != NULL)
+        {
+            fseek(ft->file, offset, SEEK_SET);
+            ft->offset = offset;
+            
+            debug_printf("binkp: Resuming send of %s from offset %ld", filename, offset);
+            ftnlog_printf(">> FILE: %s (resume from %ld)", filename, offset);
+            
+            /* Re-send M_FILE with the new offset */
+            binkp_send_file(session, ft->filename, ft->size, ft->mtime, offset);
+        }
+        else
+        {
+            debug_printf("binkp: M_GET invalid offset %ld (file size %ld)", offset, ft->size);
+        }
+    }
+    /* Check if this is for a file we've already sent (NR mode - resend request) */
+    else if (ft->state == TRANSFER_STATE_IDLE)
+    {
+        /* In NR mode, we might receive M_GET for a file we thought was sent.
+         * This is a request to resend. We would need to re-queue or find the file.
+         * For now, log it - full implementation would need file tracking. */
+        debug_printf("binkp: M_GET for non-active file %s (NR mode resend?)", filename);
+        ftnlog_printf(">> GET resend request for %s (not implemented)", filename);
+    }
+    else
+    {
+        debug_printf("binkp: M_GET for unknown file %s (current: %s)", 
+                     filename, ft->filename);
+    }
 }
 
 void binkp_handle_data(MAILER_SESSION *session, const unsigned char *data, int length)
@@ -1061,6 +1311,12 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
         ft->file = NULL;
     }
 
+    /* ND mode: Mark file as received to prevent duplicates on session restart */
+    if (session->nd_mode & BINKP_WE_ND)
+    {
+        binkp_mark_file_received(session, ft->filename, ft->size, ft->mtime);
+    }
+
     /* Ensure zone-specific inbound directory exists */
     ftn_format_zone_path(zone_path, sizeof(zone_path), mailer.inbound_path, zone);
     ensure_directory_exists(zone_path);
@@ -1088,11 +1344,11 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
 
     mailer_log("Received: %s (%ld bytes)", ft->filename, ft->size);
 
-    /* Check if session should complete now that transfer is done */
+    /* Check if session should complete/restart now that transfer is done */
     if (session->local_eob && session->remote_eob)
     {
-        debug_printf("binkp: File received, both EOBs exchanged - session complete");
-        session->state = SESSION_STATE_CLOSING;
+        debug_printf("binkp: File received, both EOBs exchanged - checking for restart");
+        binkp_try_session_restart(session);
     }
 }
 
@@ -1139,11 +1395,25 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
     ft->offset = 0;
     ft->state = TRANSFER_STATE_SENDING;
 
-    /* Send M_FILE header with DOS filename */
-    binkp_send_file(session, dos_filename, ft->size, ft->mtime, 0);
-
-    debug_printf("binkp: Sending %s as %s (%ld bytes)", riscos_filename, dos_filename, fsize);
-    ftnlog_printf(">> FILE: %s (%ld bytes)", dos_filename, fsize);
+    /* NR mode: If both sides support NR, send with offset -1 to wait for M_GET.
+     * Exception: Buggy old binkd versions don't handle NR properly. */
+    if ((session->nr_mode & BINKP_WE_NR) && 
+        (session->nr_mode & BINKP_THEY_NR) && 
+        !session->buggy_nr)
+    {
+        /* NR mode: Send M_FILE with offset -1, wait for M_GET before sending data */
+        binkp_send_file(session, dos_filename, ft->size, ft->mtime, -1);
+        debug_printf("binkp: Sending %s in NR mode (waiting for M_GET)", dos_filename);
+        ftnlog_printf(">> FILE: %s (%ld bytes, NR mode)", dos_filename, fsize);
+    }
+    else
+    {
+        /* Normal mode: Send M_FILE with offset 0 and start sending data immediately */
+        binkp_send_file(session, dos_filename, ft->size, ft->mtime, 0);
+        debug_printf("binkp: Sending %s as %s (%ld bytes)", riscos_filename, dos_filename, fsize);
+        ftnlog_printf(">> FILE: %s (%ld bytes)", dos_filename, fsize);
+    }
+    
     mailer_log("Sending: %s (%ld bytes)", dos_filename, fsize);
     
     /* Update status window with transfer progress */
@@ -1160,6 +1430,19 @@ void binkp_send_file_data(MAILER_SESSION *session)
 
     if (ft->state != TRANSFER_STATE_SENDING || ft->file == NULL)
     {
+        return;
+    }
+
+    /* In NR mode, don't send data until we've received M_GET (offset will be set).
+     * We send M_FILE with offset -1, then wait. When M_GET arrives, it sets ft->offset
+     * to the requested position. If offset is still 0 and we're in full NR mode,
+     * check if we've had the M_GET response yet. */
+    if ((session->nr_mode & BINKP_WE_NR) && 
+        (session->nr_mode & BINKP_THEY_NR) && 
+        !session->buggy_nr &&
+        ft->offset == 0 && ftell(ft->file) == 0)
+    {
+        /* Still waiting for M_GET - check if file position indicates we got one */
         return;
     }
 
@@ -1223,14 +1506,13 @@ void binkp_finish_send_file(MAILER_SESSION *session)
     debug_printf("binkp: Sent %s successfully", ft->filename);
     mailer_log("Sent: %s (%ld bytes)", ft->filename, ft->size);
     session->files_sent++;
-    session->files_sent++;
 
-    /* Check if session should complete now that transfer is done */
+    /* Check if session should complete/restart now that transfer is done */
     if (session->local_eob && session->remote_eob &&
         session->recv_file.state != TRANSFER_STATE_RECEIVING)
     {
-        debug_printf("binkp: File sent, both EOBs exchanged - session complete");
-        session->state = SESSION_STATE_CLOSING;
+        debug_printf("binkp: File sent, both EOBs exchanged - checking for restart");
+        binkp_try_session_restart(session);
     }
 }
 
