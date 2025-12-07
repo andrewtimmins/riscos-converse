@@ -14,6 +14,8 @@
 #define MSGBASE_CONFIG_TAG_LEN          64
 #define MSGBASE_CONFIG_KEYS_LEN         128
 #define MSGBASE_CONFIG_PATH_LEN         256
+#define MSGBASE_CONFIG_MAX_ORIGINS      16
+#define MSGBASE_CONFIG_ORIGIN_LEN       128
 
 /* Area types */
 typedef enum
@@ -72,6 +74,8 @@ typedef struct
     char storage_root[MSGBASE_CONFIG_PATH_LEN]; /* root path for message storage */
     int base_count;                             /* number of messagebases */
     MSGBASE_CONFIG bases[MSGBASE_CONFIG_MAX_BASES];  /* messagebase configs */
+    int origin_count;                           /* number of origin lines */
+    char origins[MSGBASE_CONFIG_MAX_ORIGINS][MSGBASE_CONFIG_ORIGIN_LEN];  /* origin text lines */
 } MSGBASE_GLOBAL_CONFIG;
 
 /* SWI reason codes for ConverseBBS_MsgBaseConfig (0x5AA84) */
@@ -92,7 +96,8 @@ typedef enum
 {
     MSGBASE_GLOBAL_FIELD_RETENTION = 0,
     MSGBASE_GLOBAL_FIELD_ACCESSLEVEL = 1,
-    MSGBASE_GLOBAL_FIELD_STORAGE_ROOT = 2
+    MSGBASE_GLOBAL_FIELD_STORAGE_ROOT = 2,
+    MSGBASE_GLOBAL_FIELD_ORIGIN = 3             /* R2=origin text (adds to list) */
 } MSGBASE_GLOBAL_FIELD;
 
 /* Initialisation and finalisation */

@@ -25,10 +25,14 @@
 
 #define SWI_FILER_MESSAGEBASE       0x5AA42
 #define SWI_SUPPORT_FTN             0x5AA86
+#define SWI_SUPPORT_MSGBASE         0x5AA84
 
 /* Filer messagebase commands */
 #define MSGBASE_CMD_MESSAGE_INFO    11
 #define MSGBASE_CMD_DOWNLOAD_BLOCK  5
+
+/* Support msgbase reasons */
+#define MSGBASE_REASON_GET_GLOBAL   0
 
 /* ******************************************************************************************************************************************************** */
 /* Global State                                                                                                                                             */
@@ -36,6 +40,79 @@
 
 static PACKER_STATS packer_stats;
 static unsigned long packer_serial = 0;     /* Serial number for MSGID generation */
+
+/* ******************************************************************************************************************************************************** */
+/* Helper: Get Random Origin Line                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/* Replicate msgbaseconfig structures for direct memory access */
+#define P_MSGBASE_MAX_BASES        32
+#define P_MSGBASE_MAX_AREAS        64
+#define P_MSGBASE_NAME_LEN         64
+#define P_MSGBASE_TAG_LEN          64
+#define P_MSGBASE_KEYS_LEN         128
+#define P_MSGBASE_PATH_LEN         256
+#define P_MSGBASE_MAX_ORIGINS      16
+#define P_MSGBASE_ORIGIN_LEN       128
+#define P_MSGBASE_GROUPS_LEN       64
+
+typedef struct
+{
+    int id;
+    char name[P_MSGBASE_NAME_LEN];
+    char tag[P_MSGBASE_TAG_LEN];
+    int areatype;
+    int daystokeep;
+    int akause;
+    int accesslevel;
+    char keys[P_MSGBASE_KEYS_LEN];
+    char groups[P_MSGBASE_GROUPS_LEN];
+} P_MSGBASE_AREA_CONFIG;
+
+typedef struct
+{
+    int id;
+    char name[P_MSGBASE_NAME_LEN];
+    int type;
+    int accesslevel;
+    char keys[P_MSGBASE_KEYS_LEN];
+    int area_count;
+    P_MSGBASE_AREA_CONFIG areas[P_MSGBASE_MAX_AREAS];
+} P_MSGBASE_CONFIG;
+
+typedef struct
+{
+    int default_retention;
+    int default_accesslevel;
+    char storage_root[P_MSGBASE_PATH_LEN];
+    int base_count;
+    P_MSGBASE_CONFIG bases[P_MSGBASE_MAX_BASES];
+    int origin_count;
+    char origins[P_MSGBASE_MAX_ORIGINS][P_MSGBASE_ORIGIN_LEN];
+} P_MSGBASE_GLOBAL_CONFIG;
+
+static const char *packer_get_random_origin(void)
+{
+    _kernel_swi_regs regs;
+    P_MSGBASE_GLOBAL_CONFIG *cfg;
+    int idx;
+
+    regs.r[0] = MSGBASE_REASON_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    cfg = (P_MSGBASE_GLOBAL_CONFIG *)regs.r[0];
+    if (cfg->origin_count <= 0)
+    {
+        return NULL;
+    }
+
+    /* Random selection */
+    idx = (int)(time(NULL) % cfg->origin_count);
+    return cfg->origins[idx];
+}
 
 /* ******************************************************************************************************************************************************** */
 /* Helper: Write little-endian 16-bit value                                                                                                                 */
@@ -559,23 +636,35 @@ int packer_write_message(PACKER_CONTEXT *ctx, const PACKER_MESSAGE *msg)
         }
     }
 
-    /* Tearline */
-    fprintf(ctx->file, "--- Converse BBS %s\r", MAILER_VERSION);
+    /* Tearline and Origin - only for locally posted messages */
+    if (msg->is_local)
+    {
+        const char *origin_text = packer_get_random_origin();
+        
+        /* Use configured origin or fall back to system name */
+        if (origin_text == NULL || origin_text[0] == '\0')
+        {
+            origin_text = mailer.system_name;
+        }
 
-    /* Origin line */
-    if (msg->orig_addr.point == 0)
-    {
-        snprintf(origin_line, sizeof(origin_line), " * Origin: %s (%d:%d/%d)",
-                 mailer.system_name,
-                 msg->orig_addr.zone, msg->orig_addr.net, msg->orig_addr.node);
+        /* Tearline - just three dashes */
+        fprintf(ctx->file, "---\r");
+
+        /* Origin line with FTN address */
+        if (msg->orig_addr.point == 0)
+        {
+            snprintf(origin_line, sizeof(origin_line), " * Origin: %s (%d:%d/%d)",
+                     origin_text,
+                     msg->orig_addr.zone, msg->orig_addr.net, msg->orig_addr.node);
+        }
+        else
+        {
+            snprintf(origin_line, sizeof(origin_line), " * Origin: %s (%d:%d/%d.%d)",
+                     origin_text,
+                     msg->orig_addr.zone, msg->orig_addr.net, msg->orig_addr.node, msg->orig_addr.point);
+        }
+        fprintf(ctx->file, "%s\r", origin_line);
     }
-    else
-    {
-        snprintf(origin_line, sizeof(origin_line), " * Origin: %s (%d:%d/%d.%d)",
-                 mailer.system_name,
-                 msg->orig_addr.zone, msg->orig_addr.net, msg->orig_addr.node, msg->orig_addr.point);
-    }
-    fprintf(ctx->file, "%s\r", origin_line);
 
     /* SEEN-BY and PATH for echomail */
     if (msg->is_echomail)
@@ -716,9 +805,10 @@ int packer_pack_message_from_filer(PACKER_CONTEXT *ctx, int base_id, int message
     msg.dest_addr.point = record->dstaddr.point;
     strncpy(msg.dest_addr.domain, record->dstaddr.domain, sizeof(msg.dest_addr.domain) - 1);
 
-    /* If origin address is empty, use our AKA */
+    /* If origin address is empty, this is a locally posted message - use our AKA */
     if (msg.orig_addr.zone == 0 && msg.orig_addr.net == 0)
     {
+        msg.is_local = 1;  /* Needs tearline/origin */
         if (aka_index >= 0 && aka_index < mailer.our_addr_count)
         {
             msg.orig_addr = mailer.our_addrs[aka_index];
@@ -727,6 +817,10 @@ int packer_pack_message_from_filer(PACKER_CONTEXT *ctx, int base_id, int message
         {
             msg.orig_addr = mailer.our_addrs[0];
         }
+    }
+    else
+    {
+        msg.is_local = 0;  /* Already has tearline/origin from source */
     }
 
     /* Header fields */

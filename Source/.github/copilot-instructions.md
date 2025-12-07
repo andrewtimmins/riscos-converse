@@ -385,7 +385,7 @@ void log_ftn(char *entry);
   - Fields: 0=enabled, 1=botstopper (char*), 2=hello (char*)
 - **MsgBaseConfig (0x5AA84)**:
   - 0 (GetGlobal): -> R0=MSGBASE_GLOBAL_CONFIG ptr
-  - 1 (SetGlobal): R1=Field (0=retention, 1=accesslevel, 2=storage_root), R2=Value
+  - 1 (SetGlobal): R1=Field (0=retention, 1=accesslevel, 2=storage_root, 3=origin), R2=Value
   - 2 (GetBase): R1=BaseID -> R0=MSGBASE_CONFIG ptr
   - 3 (SetBase): R1=BaseID, R2=MSGBASE_CONFIG ptr
   - 4 (GetArea): R1=BaseID, R2=AreaID -> R0=MSGBASE_AREA_CONFIG ptr
@@ -1336,6 +1336,40 @@ Netmail addressed to nodes other than our configured addresses is marked as tran
 2. Else → route via zone uplink (first uplink in same zone, or default uplink)
 
 Points are handled by routing to the boss node (point=0).
+
+### Echomail Origin Lines
+When locally posted echomail is exported, the packer adds a tearline and origin line. The origin text is configurable in the MsgBases config file.
+
+**Configuration (`Demo/Config/MsgBases`):**
+```
+; Multiple origin lines can be specified - one is randomly selected
+origin `The Yellow Toaster BBS`
+origin `Your friendly neighbourhood BBS`
+origin `We're not dead yet!`
+```
+
+**Format:**
+- Tearline: `---` (just three dashes)
+- Origin: ` * Origin: <text> (<zone:net/node[.point]>)`
+
+**Example output:**
+```
+---
+ * Origin: The Yellow Toaster BBS (2:250/1.0)
+```
+
+**Behaviour:**
+- Only locally posted messages get tearline/origin added
+- Forwarded echomail retains its original tearline/origin
+- The FTN address uses the area's `akause` setting to pick the correct AKA
+- If no origins are configured, falls back to `system_name` from FTN config
+- Random selection uses `time(NULL) % origin_count`
+
+**Implementation:**
+- Origins stored in Support module via `MSGBASE_GLOBAL_FIELD_ORIGIN` (field 3)
+- Max 16 origins, 128 chars each
+- `PACKER_MESSAGE.is_local` flag controls whether to add tearline/origin
+- Locally posted messages have empty origin address in MESSAGE_RECORD (zone=0, net=0)
 
 ### TIC File Processing
 TIC files accompany files in FTN file distribution networks. The TIC module provides

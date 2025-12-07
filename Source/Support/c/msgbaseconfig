@@ -117,6 +117,16 @@ void msgbaseconfig_swi_handler(_kernel_swi_regs *r)
                     }
                     break;
 
+                case MSGBASE_GLOBAL_FIELD_ORIGIN:
+                    /* Add origin line to list */
+                    if (value != NULL && msgbase_config.origin_count < MSGBASE_CONFIG_MAX_ORIGINS)
+                    {
+                        snprintf(msgbase_config.origins[msgbase_config.origin_count],
+                                 MSGBASE_CONFIG_ORIGIN_LEN, "%s", value);
+                        msgbase_config.origin_count++;
+                    }
+                    break;
+
                 default:
                     break;
             }

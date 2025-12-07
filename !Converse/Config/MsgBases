@@ -11,5 +11,8 @@ default_accesslevel 0
 ; Path to message storage root
 storage_root        <Converse$Dir>.MsgBases
 
+; Default origins - if more than one is present then randomly chosen
+origin `The Yellow Toaster BBS`
+
 ; Include individual messagebase definitions
 include <Converse$Dir>.Config.MsgBase_1

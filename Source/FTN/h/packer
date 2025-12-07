@@ -72,6 +72,9 @@ typedef struct
     /* Existing SEEN-BY/PATH (from imported messages) */
     char *seen_by;                      /* Existing SEEN-BY lines */
     char *path;                         /* Existing PATH lines */
+    
+    /* Origin control */
+    int is_local;                       /* 1 if locally posted (add tearline/origin) */
 } PACKER_MESSAGE;
 
 /* ******************************************************************************************************************************************************** */
