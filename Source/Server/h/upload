@@ -1,0 +1,77 @@
+/* ******************************************************************************************************************************************************** */
+/* Server - File Upload Module                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef UPLOAD_H
+#define UPLOAD_H
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.Window.h"
+
+/* SWI numbers */
+#define SWI_CONVERSE_FILER_FILEBASE     0x5AA43
+
+/* Filer filebase command codes */
+#define FILER_FILEBASE_CMD_CREATE           0
+#define FILER_FILEBASE_CMD_UPDATE           1
+#define FILER_FILEBASE_CMD_INFO             2
+#define FILER_FILEBASE_CMD_BEGIN_UPLOAD     3
+#define FILER_FILEBASE_CMD_UPLOAD_BLOCK     4
+#define FILER_FILEBASE_CMD_DOWNLOAD_BLOCK   5
+#define FILER_FILEBASE_CMD_STORE_AREA       6
+#define FILER_FILEBASE_CMD_AREA_INFO        7
+#define FILER_FILEBASE_CMD_ENUMERATE_BASES  8
+#define FILER_FILEBASE_CMD_ENUMERATE_AREAS  9
+#define FILER_FILEBASE_CMD_ENUMERATE_FILES  10
+#define FILER_FILEBASE_CMD_FILE_INFO        11
+
+/* SYSOP user ID for uploads */
+#define SYSOP_USER_ID   1
+
+/* Upload state structure */
+typedef struct
+{
+    int filebase_id;            /* Currently selected filebase ID */
+    int filebase_count;         /* Total number of filebases */
+    int area_id;                /* Currently selected area ID */
+    int area_count;             /* Total areas in current filebase */
+    int access_level;           /* Required access level */
+    char file_path[256];        /* Full path to file to upload */
+    char file_name[64];         /* Filename for display */
+    long file_size;             /* File size in bytes */
+    int file_type;              /* RISC OS filetype */
+    int file_ready;             /* Flag: file has been dropped */
+} upload_state;
+
+/* Global upload state */
+extern upload_state upload;
+extern Desk_window_handle upload_window;
+
+/* Initialisation and shutdown */
+void upload_initialise(void);
+void upload_shutdown(void);
+
+/* Window management */
+void upload_open_window(void);
+void upload_close_window(void);
+
+/* Event handlers */
+Desk_bool upload_handle_click(Desk_event_pollblock *event, void *ref);
+Desk_bool upload_handle_dataload(Desk_event_pollblock *event, void *ref);
+
+/* UI updates */
+void upload_refresh_filebase_info(void);
+void upload_refresh_area_info(void);
+void upload_refresh_file_info(void);
+void upload_clear_file_info(void);
+
+/* Filebase/area navigation */
+void upload_change_filebase(int delta);
+void upload_change_area(int delta);
+void upload_change_access(int delta);
+
+/* Perform the upload */
+int upload_do_upload(void);
+
+#endif /* UPLOAD_H */

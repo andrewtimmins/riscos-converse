@@ -19,7 +19,8 @@
     #define iconbar_menu_proginfo    0
     #define iconbar_menu_systeminfo  1
     #define iconbar_menu_usereditor  2
-    #define iconbar_menu_quit        3
+    #define iconbar_menu_uploadfile  3
+    #define iconbar_menu_quit        4
 
     #define Telnet_EOF               236
     #define Telnet_SUSP              237

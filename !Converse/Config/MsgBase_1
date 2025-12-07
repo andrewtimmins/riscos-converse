@@ -3,10 +3,10 @@
 ;
 
 messagebase 1
-    name            Local Messages
+    name            Main
     type            0
     accesslevel     0
-    keys            
+    keys
 
     ; === GENERAL DISCUSSION ===
     area 1
@@ -216,6 +216,74 @@ messagebase 1
         tag         SPORTS
         areatype    0
         daystokeep  60
+    endarea
+
+   ; == FTN ===
+
+   ; Netmail area - no groups means it routes everywhere
+    area 30
+        name        Netmail
+        tag         NETMAIL
+        areatype    2
+        daystokeep  0
+    endarea
+
+    ; Example FTN echo areas with group filtering
+    ; Only uplinks whose groups match will receive these echoes
+
+    area 31
+        name        BBS Discussion
+        tag         BBS_DISCUSSION
+        areatype    1
+        daystokeep  90
+        groups      A
+    endarea
+
+    area 32
+        name        Retro Computing
+        tag         RETRO_COMPUTING
+        areatype    1
+        daystokeep  90
+        groups      B,C
+    endarea
+
+    area 33
+        name        RISC OS
+        tag         RISCOS
+        areatype    1
+        daystokeep  90
+        groups      C
+    endarea
+
+  ; === SYSTEM AREAS ===
+    area 34
+        name        Private Mail
+        tag         PRIVATE
+        areatype    4
+        daystokeep  0
+    endarea
+
+    area 35
+        name        Feedback & Suggestions
+        tag         FEEDBACK
+        areatype    0
+        daystokeep  180
+    endarea
+
+    area 36
+        name        SysOp Messages
+        tag         SYSOP
+        areatype    0
+        daystokeep  0
+        accesslevel 200
+        keys        SYSOP
+    endarea
+
+    area 37
+        name        System Notices
+        tag         NOTICES
+        areatype    0
+        daystokeep  30
     endarea
 
 endmessagebase

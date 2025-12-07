@@ -3,215 +3,233 @@
 ;
 
 filebase 1
-    name            Acorn/RISC OS
+    name            Main
     type            0
     accesslevel     0
-    keys            
+    keys
 
     ; === GENERAL & INFORMATION ===
     area 1
         name        New User Files
         accesslevel 0
-        keys        
+        keys
     endarea
 
     area 2
         name        General Files
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 3
         name        Text Files & Documents
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 4
         name        Technical Specs & Manuals
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === APPLICATIONS ===
     area 5
         name        Applications
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 6
         name        Desktop Enhancements
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 7
         name        Utilities
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 8
         name        Educational Software
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === GAMES & ENTERTAINMENT ===
     area 9
         name        Games
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 10
         name        Game Cheats & Trainers
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 11
         name        Demos
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === GRAPHICS & MULTIMEDIA ===
     area 12
         name        Graphics & Images
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 13
         name        Fonts
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 14
         name        Sprites & Icons
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 15
         name        Sound & Music Files
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 16
         name        Trackers & Music Players
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 17
         name        Fractals & Mathematical Art
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === COMMUNICATIONS & NETWORKING ===
     area 18
         name        Communications Software
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 19
         name        BBS Software & Doors
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 20
         name        FTN & Networking Utils
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 21
         name        Internet & Web Tools
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 22
         name        Email & Messaging
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === PROGRAMMING & DEVELOPMENT ===
     area 23
         name        Programming Tools
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 24
         name        Source Code - C
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 25
         name        Source Code - BASIC
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 26
         name        Source Code - Other
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 27
         name        Libraries & Modules
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === SYSTEM & ADMINISTRATION ===
     area 28
         name        System Utilities
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 29
         name        Archive & Compression
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 30
         name        Security & Encryption
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 31
         name        PGP & Public Keys
         accesslevel 10
-        keys        
+        keys
     endarea
 
     ; === FUN & MISCELLANEOUS ===
     area 32
         name        Humour & Jokes
         accesslevel 10
-        keys        
+        keys
     endarea
 
     area 33
         name        Miscellaneous
         accesslevel 10
-        keys        
+        keys
     endarea
 
+    ; === USERS/SYSOP/PRIVATE ===#
+    area 34
+        name        User Uploads
+        accesslevel 10
+        keys
+    endarea
+
+    area 35
+        name        User to User Transfers
+        accesslevel 10
+        keys
+    endarea
+
+    area 36
+        name        Uploads to SysOp
+        accesslevel 500
+        keys
+    endarea
 endfilebase

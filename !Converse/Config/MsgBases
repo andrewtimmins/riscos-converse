@@ -13,5 +13,3 @@ storage_root        <Converse$Dir>.MsgBases
 
 ; Include individual messagebase definitions
 include <Converse$Dir>.Config.MsgBase_1
-include <Converse$Dir>.Config.MsgBase_2
-include <Converse$Dir>.Config.MsgBase_99

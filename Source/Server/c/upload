@@ -1,0 +1,741 @@
+/* ******************************************************************************************************************************************************** */
+/* Server - File Upload Module                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+/* Standard Includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* OS Includes */
+#include "kernel.h"
+#include "swis.h"
+
+/* Desk Includes */
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Window.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Error.h"
+#include "C:Desk.File.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.WimpSWIs.h"
+
+/* Our Includes */
+#include "upload.h"
+#include "iconnames.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Global Variables                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+upload_state upload;
+Desk_window_handle upload_window = 0;
+
+/* Static buffers for icon text */
+static char filebase_num_buffer[16];
+static char filebase_name_buffer[64];
+static char area_num_buffer[16];
+static char area_name_buffer[64];
+static char access_level_buffer[16];
+static char file_name_buffer[64];
+static char file_size_buffer[32];
+static char file_type_buffer[16];
+
+/* ******************************************************************************************************************************************************** */
+/* Forward Declarations                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static int upload_create_window(void);
+static int filer_get_filebase_count(void);
+static int filer_get_area_count(int filebase_id);
+static int filer_get_filebase_info(int filebase_id, char *name_out, int name_size);
+static int filer_get_area_info(int filebase_id, int area_id, char *name_out, int name_size);
+static int filer_upload_file(int filebase_id, int area_id, const char *host_path,
+                             const char *name, const char *description,
+                             int access_level, const char *keys, int uploader_id);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void upload_initialise(void)
+{
+    /* Just initialise state - window created on first use */
+    upload_window = 0;
+
+    memset(&upload, 0, sizeof(upload));
+    upload.filebase_id = 1;
+    upload.area_id = 1;
+    upload.access_level = 0;
+    upload.file_ready = 0;
+
+    /* Get filebase count */
+    upload.filebase_count = filer_get_filebase_count();
+    if (upload.filebase_count < 1)
+    {
+        upload.filebase_count = 1;
+    }
+
+    debug_printf("Upload module initialised, %d filebases found", upload.filebase_count);
+}
+
+static int upload_create_window(void)
+{
+    if (upload_window != 0)
+    {
+        return 1;  /* Already created */
+    }
+
+    /* Try to create the upload window from template */
+    upload_window = Desk_Window_Create("upload", Desk_template_TITLEMIN);
+    if (upload_window == 0)
+    {
+        Desk_Error_Report(1, "Cannot create upload window. Check 'upload' template exists in Resources.Templates.");
+        return 0;
+    }
+
+    /* Register event handlers */
+    Desk_Event_Claim(Desk_event_CLICK, upload_window, Desk_event_ANY, upload_handle_click, NULL);
+
+    /* Register for file drops on our window */
+    Desk_EventMsg_Claim(Desk_message_DATALOAD, upload_window, upload_handle_dataload, NULL);
+
+    debug_printf("Upload window created");
+    return 1;
+}
+
+void upload_shutdown(void)
+{
+    if (upload_window != 0)
+    {
+        Desk_Event_Release(Desk_event_CLICK, upload_window, Desk_event_ANY, upload_handle_click, NULL);
+        Desk_EventMsg_Release(Desk_message_DATALOAD, upload_window, upload_handle_dataload);
+        Desk_Window_Delete(upload_window);
+        upload_window = 0;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Window Management                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+void upload_open_window(void)
+{
+    /* Create window if not already done */
+    if (!upload_create_window())
+    {
+        return;  /* Failed to create window */
+    }
+
+    /* Reset state for new upload */
+    upload.file_ready = 0;
+    upload.file_path[0] = '\0';
+    upload.file_name[0] = '\0';
+    upload.file_size = 0;
+    upload.file_type = 0;
+
+    /* Refresh filebase count in case it changed */
+    upload.filebase_count = filer_get_filebase_count();
+    if (upload.filebase_count < 1)
+    {
+        Desk_Error_Report(1, "No filebases configured. Please configure at least one filebase first.");
+        return;
+    }
+
+    /* Ensure valid filebase selection */
+    if (upload.filebase_id < 1)
+    {
+        upload.filebase_id = 1;
+    }
+    if (upload.filebase_id > upload.filebase_count)
+    {
+        upload.filebase_id = upload.filebase_count;
+    }
+
+    /* Update area count for selected filebase */
+    upload.area_count = filer_get_area_count(upload.filebase_id);
+    if (upload.area_count < 1)
+    {
+        Desk_Error_Report(1, "Selected filebase has no areas. Please configure at least one area.");
+        return;
+    }
+
+    /* Ensure valid area selection */
+    if (upload.area_id < 1)
+    {
+        upload.area_id = 1;
+    }
+    if (upload.area_id > upload.area_count)
+    {
+        upload.area_id = upload.area_count;
+    }
+
+    /* Refresh all UI elements */
+    upload_refresh_filebase_info();
+    upload_refresh_area_info();
+    upload_clear_file_info();
+
+    /* Clear description and keys */
+    Desk_Icon_SetText(upload_window, UPLOAD_DESCRIPTIONTEXT, "");
+    Desk_Icon_SetText(upload_window, UPLOAD_KEYLIST, "");
+
+    /* Set default access level */
+    snprintf(access_level_buffer, sizeof(access_level_buffer), "%d", upload.access_level);
+    Desk_Icon_SetText(upload_window, UPLOAD_ACCESSLEVEL, access_level_buffer);
+
+    /* Show the window */
+    Desk_Window_Show(upload_window, Desk_open_CENTERED);
+}
+
+void upload_close_window(void)
+{
+    Desk_Window_Hide(upload_window);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Event Handlers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+Desk_bool upload_handle_click(Desk_event_pollblock *event, void *ref)
+{
+    Desk_icon_handle icon;
+
+    Desk_UNUSED(ref);
+
+    icon = event->data.mouse.icon;
+
+    /* Only handle select clicks */
+    if (!event->data.mouse.button.data.select && !event->data.mouse.button.data.adjust)
+    {
+        return Desk_bool_TRUE;
+    }
+
+    /* Filebase navigation */
+    if (icon == UPLOAD_FILEBASENUMBERDOWN)
+    {
+        upload_change_filebase(-1);
+        return Desk_bool_TRUE;
+    }
+    if (icon == UPLOAD_FILEBASENUMBERUP)
+    {
+        upload_change_filebase(1);
+        return Desk_bool_TRUE;
+    }
+
+    /* Area navigation */
+    if (icon == UPLOAD_FILEAREANUMBERDOWN)
+    {
+        upload_change_area(-1);
+        return Desk_bool_TRUE;
+    }
+    if (icon == UPLOAD_FILEAREANUMBERUP)
+    {
+        upload_change_area(1);
+        return Desk_bool_TRUE;
+    }
+
+    /* Access level navigation */
+    if (icon == UPLOAD_ACCESSDOWN)
+    {
+        upload_change_access(-1);
+        return Desk_bool_TRUE;
+    }
+    if (icon == UPLOAD_ACCESSUP)
+    {
+        upload_change_access(1);
+        return Desk_bool_TRUE;
+    }
+
+    /* Upload button */
+    if (icon == UPLOAD_UPLOAD)
+    {
+        if (upload_do_upload() == 0)
+        {
+            upload_close_window();
+        }
+        return Desk_bool_TRUE;
+    }
+
+    /* Cancel button */
+    if (icon == UPLOAD_CANCEL)
+    {
+        upload_close_window();
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_TRUE;
+}
+
+Desk_bool upload_handle_dataload(Desk_event_pollblock *event, void *ref)
+{
+    Desk_message_dataload *dataload;
+
+    Desk_UNUSED(ref);
+
+    dataload = &event->data.message.data.dataload;
+
+    /* Store file path */
+    strncpy(upload.file_path, dataload->filename, sizeof(upload.file_path) - 1);
+    upload.file_path[sizeof(upload.file_path) - 1] = '\0';
+
+    /* Extract just the leafname */
+    {
+        const char *leaf = strrchr(upload.file_path, '.');
+        if (leaf != NULL)
+        {
+            leaf++;  /* Skip the dot */
+        }
+        else
+        {
+            leaf = upload.file_path;
+        }
+        strncpy(upload.file_name, leaf, sizeof(upload.file_name) - 1);
+        upload.file_name[sizeof(upload.file_name) - 1] = '\0';
+    }
+
+    /* Get file info from DATALOAD message */
+    upload.file_type = dataload->filetype;
+    upload.file_size = dataload->size;
+    upload.file_ready = 1;
+
+    /* Update file info display */
+    upload_refresh_file_info();
+
+    /* Acknowledge the dataload */
+    event->data.message.header.yourref = event->data.message.header.myref;
+    event->data.message.header.action = Desk_message_DATALOADACK;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &event->data.message, event->data.message.header.sender, 0);
+
+    debug_printf("File dropped: %s (%ld bytes, type &%03X)", upload.file_name, upload.file_size, upload.file_type);
+
+    return Desk_bool_TRUE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* UI Updates                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+void upload_refresh_filebase_info(void)
+{
+    /* Update filebase number */
+    snprintf(filebase_num_buffer, sizeof(filebase_num_buffer), "%d", upload.filebase_id);
+    Desk_Icon_SetText(upload_window, UPLOAD_FILEBASENUMBER, filebase_num_buffer);
+
+    /* Get and display filebase name */
+    if (filer_get_filebase_info(upload.filebase_id, filebase_name_buffer, sizeof(filebase_name_buffer)) == 0)
+    {
+        Desk_Icon_SetText(upload_window, UPLOAD_FILEBASENAME, filebase_name_buffer);
+    }
+    else
+    {
+        Desk_Icon_SetText(upload_window, UPLOAD_FILEBASENAME, "(Unknown)");
+    }
+
+    /* Update area count for this filebase */
+    upload.area_count = filer_get_area_count(upload.filebase_id);
+    if (upload.area_count < 1)
+    {
+        upload.area_count = 1;
+    }
+
+    /* Reset area to 1 when filebase changes */
+    upload.area_id = 1;
+    upload_refresh_area_info();
+}
+
+void upload_refresh_area_info(void)
+{
+    /* Update area number */
+    snprintf(area_num_buffer, sizeof(area_num_buffer), "%d", upload.area_id);
+    Desk_Icon_SetText(upload_window, UPLOAD_FILEAREANUMBER, area_num_buffer);
+
+    /* Get and display area name */
+    if (filer_get_area_info(upload.filebase_id, upload.area_id, area_name_buffer, sizeof(area_name_buffer)) == 0)
+    {
+        Desk_Icon_SetText(upload_window, UPLOAD_FILEAREANAME, area_name_buffer);
+    }
+    else
+    {
+        Desk_Icon_SetText(upload_window, UPLOAD_FILEAREANAME, "(Unknown)");
+    }
+}
+
+void upload_refresh_file_info(void)
+{
+    long size_kb;
+
+    /* Display filename */
+    strncpy(file_name_buffer, upload.file_name, sizeof(file_name_buffer) - 1);
+    file_name_buffer[sizeof(file_name_buffer) - 1] = '\0';
+    Desk_Icon_SetText(upload_window, UPLOAD_NAMETEXT, file_name_buffer);
+
+    /* Display size in KB */
+    size_kb = (upload.file_size + 1023) / 1024;  /* Round up */
+    if (size_kb < 1)
+    {
+        size_kb = 1;
+    }
+    snprintf(file_size_buffer, sizeof(file_size_buffer), "%ld KB", size_kb);
+    Desk_Icon_SetText(upload_window, UPLOAD_SIZETOTAL, file_size_buffer);
+
+    /* Display file type */
+    snprintf(file_type_buffer, sizeof(file_type_buffer), "&%03X", upload.file_type);
+    Desk_Icon_SetText(upload_window, UPLOAD_TYPETEXT, file_type_buffer);
+}
+
+void upload_clear_file_info(void)
+{
+    Desk_Icon_SetText(upload_window, UPLOAD_NAMETEXT, "");
+    Desk_Icon_SetText(upload_window, UPLOAD_SIZETOTAL, "");
+    Desk_Icon_SetText(upload_window, UPLOAD_TYPETEXT, "");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Navigation                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+void upload_change_filebase(int delta)
+{
+    int new_id;
+
+    new_id = upload.filebase_id + delta;
+
+    /* Wrap around */
+    if (new_id < 1)
+    {
+        new_id = upload.filebase_count;
+    }
+    if (new_id > upload.filebase_count)
+    {
+        new_id = 1;
+    }
+
+    if (new_id != upload.filebase_id)
+    {
+        upload.filebase_id = new_id;
+        upload_refresh_filebase_info();
+    }
+}
+
+void upload_change_area(int delta)
+{
+    int new_id;
+
+    new_id = upload.area_id + delta;
+
+    /* Wrap around */
+    if (new_id < 1)
+    {
+        new_id = upload.area_count;
+    }
+    if (new_id > upload.area_count)
+    {
+        new_id = 1;
+    }
+
+    if (new_id != upload.area_id)
+    {
+        upload.area_id = new_id;
+        upload_refresh_area_info();
+    }
+}
+
+void upload_change_access(int delta)
+{
+    int new_level;
+
+    new_level = upload.access_level + delta;
+
+    /* Clamp to valid range 0-255 */
+    if (new_level < 0)
+    {
+        new_level = 0;
+    }
+    if (new_level > 255)
+    {
+        new_level = 255;
+    }
+
+    upload.access_level = new_level;
+
+    snprintf(access_level_buffer, sizeof(access_level_buffer), "%d", upload.access_level);
+    Desk_Icon_SetText(upload_window, UPLOAD_ACCESSLEVEL, access_level_buffer);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Upload Execution                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int upload_do_upload(void)
+{
+    char description[256];
+    char keys[128];
+    int result;
+
+    /* Check file is ready */
+    if (!upload.file_ready)
+    {
+        Desk_Error_Report(1, "No file selected. Please drag a file onto the window first.");
+        return -1;
+    }
+
+    /* Get description from icon */
+    Desk_Icon_GetText(upload_window, UPLOAD_DESCRIPTIONTEXT, description);
+    if (strlen(description) == 0)
+    {
+        Desk_Error_Report(1, "Please enter a description for the file.");
+        return -1;
+    }
+
+    /* Get keys from icon */
+    Desk_Icon_GetText(upload_window, UPLOAD_KEYLIST, keys);
+
+    /* Perform the upload */
+    result = filer_upload_file(upload.filebase_id, upload.area_id,
+                               upload.file_path, upload.file_name,
+                               description, upload.access_level, keys,
+                               SYSOP_USER_ID);
+
+    if (result < 0)
+    {
+        Desk_Error_Report(1, "Upload failed. Please check the filebase configuration.");
+        return -1;
+    }
+
+    debug_printf("File uploaded successfully: %s to filebase %d area %d (file ID %d)",
+                 upload.file_name, upload.filebase_id, upload.area_id, result);
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filer SWI Interface                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+static int filer_get_filebase_count(void)
+{
+    _kernel_swi_regs regs;
+    int count = 0;
+    int index = 0;
+
+    /* Enumerate filebases to count them */
+    while (1)
+    {
+        regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_BASES;
+        regs.r[1] = index;
+
+        if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] == -1)
+        {
+            /* No more filebases */
+            break;
+        }
+
+        count++;
+        index++;
+    }
+
+    return count;
+}
+
+static int filer_get_area_count(int filebase_id)
+{
+    _kernel_swi_regs regs;
+    int count = 0;
+    int index = 0;
+
+    /* Enumerate areas to count them */
+    while (1)
+    {
+        regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_AREAS;
+        regs.r[1] = filebase_id;
+        regs.r[2] = index;
+
+        if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] == -1)
+        {
+            /* No more areas */
+            break;
+        }
+
+        count++;
+        index++;
+    }
+
+    return count;
+}
+
+static int filer_get_filebase_info(int filebase_id, char *name_out, int name_size)
+{
+    _kernel_swi_regs regs;
+    char *record;
+
+    regs.r[0] = FILER_FILEBASE_CMD_INFO;
+    regs.r[1] = filebase_id;
+
+    if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    record = (char *)regs.r[0];
+    if (record == NULL)
+    {
+        return -1;
+    }
+
+    /* FILEBASE_RECORD layout:
+     * offset 0: id (int)
+     * offset 4: type (int)
+     * offset 8: accesslevel (int)
+     * offset 12: keys[128]
+     * offset 140: name[64]
+     * offset 204: filebasedir[256]
+     */
+    strncpy(name_out, record + 140, name_size - 1);
+    name_out[name_size - 1] = '\0';
+
+    return 0;
+}
+
+static int filer_get_area_info(int filebase_id, int area_id, char *name_out, int name_size)
+{
+    _kernel_swi_regs regs;
+    char *record;
+
+    regs.r[0] = FILER_FILEBASE_CMD_AREA_INFO;
+    regs.r[1] = filebase_id;
+    regs.r[2] = area_id;
+
+    if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    record = (char *)regs.r[0];
+    if (record == NULL)
+    {
+        return -1;
+    }
+
+    /* FILEBASE_AREA_RECORD layout:
+     * offset 0: id (int)
+     * offset 4: filebaseid (int)
+     * offset 8: accesslevel (int)
+     * offset 12: keys[128]
+     * offset 140: name[64]
+     */
+    strncpy(name_out, record + 140, name_size - 1);
+    name_out[name_size - 1] = '\0';
+
+    return 0;
+}
+
+static int filer_upload_file(int filebase_id, int area_id, const char *host_path,
+                             const char *name, const char *description,
+                             int access_level, const char *keys, int uploader_id)
+{
+    _kernel_swi_regs regs;
+    FILE *f;
+    static char file_record[512];  /* Large enough for FILE_RECORD */
+    static char block_buffer[1024];
+    int file_id;
+    int bytes_read;
+
+    /* Build FILE_RECORD structure
+     * Layout:
+     * offset 0: id (int) - set to 0 for new file
+     * offset 4: filebaseid (int)
+     * offset 8: filebaseareaid (int)
+     * offset 12: deleted (int) - 0
+     * offset 16: accesslevel (int)
+     * offset 20: keys[128]
+     * offset 148: name[64]
+     * offset 212: uploadedby (int)
+     * offset 216: uploaddate (time_t)
+     * offset 220: description[256]
+     * offset 476: filesize (long)
+     * offset 480: downloads (int)
+     */
+    memset(file_record, 0, sizeof(file_record));
+
+    /* id = 0 (will be assigned) */
+    *((int *)(file_record + 0)) = 0;
+    /* filebaseid */
+    *((int *)(file_record + 4)) = filebase_id;
+    /* filebaseareaid */
+    *((int *)(file_record + 8)) = area_id;
+    /* deleted = 0 */
+    *((int *)(file_record + 12)) = 0;
+    /* accesslevel */
+    *((int *)(file_record + 16)) = access_level;
+    /* keys */
+    strncpy(file_record + 20, keys, 127);
+    /* name */
+    strncpy(file_record + 148, name, 63);
+    /* uploadedby */
+    *((int *)(file_record + 212)) = uploader_id;
+    /* uploaddate */
+    *((time_t *)(file_record + 216)) = time(NULL);
+    /* description */
+    strncpy(file_record + 220, description, 255);
+    /* filesize - get from state */
+    *((long *)(file_record + 476)) = upload.file_size;
+    /* downloads = 0 */
+    *((int *)(file_record + 480)) = 0;
+
+    /* Begin upload - creates record and returns file ID */
+    regs.r[0] = FILER_FILEBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = filebase_id;
+    regs.r[2] = (int)file_record;
+
+    if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    file_id = regs.r[0];
+    if (file_id <= 0)
+    {
+        return -1;
+    }
+
+    /* Open source file and upload in blocks */
+    f = fopen(host_path, "rb");
+    if (f == NULL)
+    {
+        return -1;
+    }
+
+    while ((bytes_read = fread(block_buffer, 1, sizeof(block_buffer), f)) > 0)
+    {
+        regs.r[0] = FILER_FILEBASE_CMD_UPLOAD_BLOCK;
+        regs.r[1] = filebase_id;
+        regs.r[2] = file_id;
+        regs.r[3] = (int)block_buffer;
+        regs.r[4] = bytes_read;
+
+        if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+        {
+            fclose(f);
+            return -1;
+        }
+    }
+
+    fclose(f);
+
+    return file_id;
+}

@@ -50,6 +50,7 @@
 #include "debug.h"
 #include "config.h"
 #include "timer.h"
+#include "upload.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variable Definitions (declared extern in main.h)                                                                                                  */
@@ -815,6 +816,11 @@ Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, void *ref
 	if(event->data.selection[0] == iconbar_menu_usereditor)
 	{
 		Desk_Wimp_StartTask("<Converse$Dir>.Resources.!RunUser");
+	}
+
+	if(event->data.selection[0] == iconbar_menu_uploadfile)
+	{
+		upload_open_window();
 	}
 
 	if(event->data.selection[0] == iconbar_menu_quit)
@@ -2603,6 +2609,8 @@ int main(void) {
 	load_msgbase_config();
 	waiting_update("Checking filebases...");
 	load_filebase_config();
+	waiting_update("Initialising upload module...");
+	upload_initialise();
 	waiting_update("Loading FTN configuration...");
 	load_ftn_config();
 	waiting_update("Loading access control...");
@@ -2633,6 +2641,8 @@ int main(void) {
 	atexit(destroy_listener);
 
 	while(wimp.quit == Desk_bool_FALSE) poll_idle();
+
+	upload_shutdown();
 
 	return(0);
 }

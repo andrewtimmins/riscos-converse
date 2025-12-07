@@ -13,7 +13,3 @@ max_upload_size     0
 
 ; Include individual filebase definitions
 include <Converse$Dir>.Config.FileBase_1
-include <Converse$Dir>.Config.FileBase_2
-include <Converse$Dir>.Config.FileBase_3
-include <Converse$Dir>.Config.FileBase_4
-include <Converse$Dir>.Config.FileBase_5

@@ -1,0 +1,28 @@
+do mkdir -p o
+do mkdir -p od
+do mkdir -p oz
+do mkdir -p aof
+do mkdir -p linked
+Touch o._dirs
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.main c.main
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.main", line 744: Warning: implicit narrowing cast: <argument 1 to 'timer_action'>
+"c.main", line 1116: Warning: unused earlier static declaration of 'free_line_icon_buffers'
+"c.main", line 1578: Warning: implicit narrowing cast: <argument 1 to 'timer_action'>
+c.main: 3 warnings, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.upload c.upload
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.upload", line 55: Error: undeclared name, inventing 'extern int Desk_template_TITLEMIN'
+"c.upload", line 85: Error: wrong number of parameters to 'Desk_EventMsg_Release'
+"c.upload", line 469: Error: wrong number of parameters to 'Desk_Icon_GetText'
+"c.upload", line 477: Error: wrong number of parameters to 'Desk_Icon_GetText'
+"c.upload", line 673: Error: undeclared name, inventing 'extern int time_t'
+"c.upload", line 673: Serious error: <expression> expected but found ')'
+"c.upload", line 673: Error: undeclared name, inventing 'extern int time()'
+"c.upload", line 723: Warning: static 'keys_buffer' declared but not used
+"c.upload", line 723: Warning: static 'description_buffer' declared but not used
+c.upload: 2 warnings, 6 errors, 1 serious error
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+
