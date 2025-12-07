@@ -38,8 +38,17 @@
 #define MSGBASE_CONFIG_GET_AREA     4
 
 /* Support FTN config reasons */
+#define FTN_CONFIG_GET_GLOBAL       0
 #define FTN_CONFIG_COUNT_UPLINKS    7
 #define FTN_CONFIG_GET_UPLINK       4
+
+/* FTN config structure sizes */
+#define FTN_MAX_UPLINKS             16
+#define FTN_NAME_LEN                64
+#define FTN_PATH_LEN                256
+#define FTN_PASSWORD_LEN            32
+#define FTN_GROUPS_LEN              64
+#define FTN_MAX_ALIASES             8
 
 /* ******************************************************************************************************************************************************** */
 /* Global State                                                                                                                                             */
@@ -309,50 +318,82 @@ int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out)
 /* Uplink Lookup                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
+/* FTN global config structure (must match Support module) */
+typedef struct
+{
+    int id;
+    char address[FTN_NAME_LEN];
+    char network[FTN_NAME_LEN];
+    char host[FTN_NAME_LEN];
+    int port;
+    char password[FTN_PASSWORD_LEN];
+    char groups[FTN_GROUPS_LEN];
+    int alias_count;
+    char aliases[FTN_MAX_ALIASES][FTN_NAME_LEN];
+} SCAN_UPLINK_CFG;
+
+typedef struct
+{
+    int id;
+    char network[FTN_NAME_LEN];
+    int zone, net, node, point;
+    char type[8];
+    char packet_password[FTN_PASSWORD_LEN];
+    char areafix_password[FTN_PASSWORD_LEN];
+} SCAN_ADDRESS_CFG;
+
+typedef struct
+{
+    char sysop[FTN_NAME_LEN];
+    char system[FTN_NAME_LEN];
+    char location[FTN_NAME_LEN];
+    char phone[FTN_NAME_LEN];
+    int speed;
+    char flags[FTN_GROUPS_LEN];
+    char inbound[FTN_PATH_LEN];
+    char outbound[FTN_PATH_LEN];
+    char netmail[FTN_PATH_LEN];
+    char freqpath[FTN_PATH_LEN];
+    char freqexec[FTN_PATH_LEN];
+    long max_packet_size;
+    int listen_port;
+    int max_sessions;
+    int connect_timeout;
+    int session_timeout;
+    int scan_interval;
+    int toss_interval;
+    int poll_interval;
+    int retry_delay;
+    int address_count;
+    SCAN_ADDRESS_CFG addresses[8];
+    int uplink_count;
+    SCAN_UPLINK_CFG uplinks[FTN_MAX_UPLINKS];
+} SCAN_FTN_GLOBAL_CFG;
+
 int scanner_find_uplink_by_address(const FTN_ADDR *addr, char *password_out, size_t pw_size)
 {
     _kernel_swi_regs regs;
-    int i, uplink_count;
-
-    /* FTN_UPLINK_CONFIG structure from Support module */
-    typedef struct
-    {
-        int id;
-        char address[64];
-        char network[64];
-        char host[64];
-        int port;
-        char password[32];
-        char groups[64];
-    } UPLINK_CFG;
+    SCAN_FTN_GLOBAL_CFG *global;
+    int i;
 
     if (addr == NULL)
     {
         return 0;
     }
 
-    /* Get uplink count */
-    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    uplink_count = regs.r[0];
+    global = (SCAN_FTN_GLOBAL_CFG *)regs.r[0];
 
-    /* Search uplinks */
-    for (i = 1; i <= uplink_count; i++)
+    /* Search uplinks by array index */
+    for (i = 0; i < global->uplink_count; i++)
     {
-        UPLINK_CFG *uplink;
+        SCAN_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
-
-        regs.r[0] = FTN_CONFIG_GET_UPLINK;
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
-        {
-            continue;
-        }
-
-        uplink = (UPLINK_CFG *)regs.r[0];
 
         /* Parse uplink address */
         if (ftn_string_to_addr(uplink->address, &uplink_addr))
@@ -375,44 +416,25 @@ int scanner_find_uplink_by_address(const FTN_ADDR *addr, char *password_out, siz
 int scanner_find_uplink_for_zone(int zone, FTN_ADDR *uplink_out, char *password_out, size_t pw_size)
 {
     _kernel_swi_regs regs;
-    int i, uplink_count;
+    SCAN_FTN_GLOBAL_CFG *global;
+    int i;
     int found_default = 0;
     FTN_ADDR default_uplink;
     char default_password[32] = "";
 
-    typedef struct
-    {
-        int id;
-        char address[64];
-        char network[64];
-        char host[64];
-        int port;
-        char password[32];
-        char groups[64];
-    } UPLINK_CFG;
-
-    /* Get uplink count */
-    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    uplink_count = regs.r[0];
+    global = (SCAN_FTN_GLOBAL_CFG *)regs.r[0];
 
     /* Search for uplink in target zone, or save first as default */
-    for (i = 1; i <= uplink_count; i++)
+    for (i = 0; i < global->uplink_count; i++)
     {
-        UPLINK_CFG *uplink;
+        SCAN_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
-
-        regs.r[0] = FTN_CONFIG_GET_UPLINK;
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
-        {
-            continue;
-        }
-
-        uplink = (UPLINK_CFG *)regs.r[0];
 
         if (ftn_string_to_addr(uplink->address, &uplink_addr))
         {
@@ -548,47 +570,28 @@ int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *pass
 int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks)
 {
     _kernel_swi_regs regs;
-    int i, uplink_count;
+    SCAN_FTN_GLOBAL_CFG *global;
+    int i;
     int found = 0;
-
-    typedef struct
-    {
-        int id;
-        char address[64];
-        char network[64];
-        char host[64];
-        int port;
-        char password[32];
-        char groups[64];
-    } UPLINK_CFG;
 
     if (uplinks == NULL || max_uplinks <= 0)
     {
         return 0;
     }
 
-    /* Get uplink count */
-    regs.r[0] = FTN_CONFIG_COUNT_UPLINKS;
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    uplink_count = regs.r[0];
+    global = (SCAN_FTN_GLOBAL_CFG *)regs.r[0];
 
     /* Send echomail to uplinks whose groups overlap with the area's groups */
-    for (i = 1; i <= uplink_count && found < max_uplinks; i++)
+    for (i = 0; i < global->uplink_count && found < max_uplinks; i++)
     {
-        UPLINK_CFG *uplink;
+        SCAN_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
-
-        regs.r[0] = FTN_CONFIG_GET_UPLINK;
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
-        {
-            continue;
-        }
-
-        uplink = (UPLINK_CFG *)regs.r[0];
 
         /* Check if area groups match uplink groups */
         if (!groups_match(area_groups, uplink->groups))

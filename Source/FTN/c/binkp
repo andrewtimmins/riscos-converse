@@ -21,6 +21,69 @@
 #include "compress.h"
 #include "freq.h"
 
+/* FTN config constants and structures */
+#define SWI_SUPPORT_FTN             0x5AA86
+#define FTN_CONFIG_GET_GLOBAL       0
+
+#define B_FTN_MAX_UPLINKS           16
+#define B_FTN_NAME_LEN              64
+#define B_FTN_PATH_LEN              256
+#define B_FTN_PASSWORD_LEN          32
+#define B_FTN_GROUPS_LEN            64
+#define B_FTN_MAX_ALIASES           8
+
+/* FTN global config structures (must match Support module) */
+typedef struct
+{
+    int id;
+    char address[B_FTN_NAME_LEN];
+    char network[B_FTN_NAME_LEN];
+    char host[B_FTN_NAME_LEN];
+    int port;
+    char password[B_FTN_PASSWORD_LEN];
+    char groups[B_FTN_GROUPS_LEN];
+    int alias_count;
+    char aliases[B_FTN_MAX_ALIASES][B_FTN_NAME_LEN];
+} B_UPLINK_CFG;
+
+typedef struct
+{
+    int id;
+    char network[B_FTN_NAME_LEN];
+    int zone, net, node, point;
+    char type[8];
+    char packet_password[B_FTN_PASSWORD_LEN];
+    char areafix_password[B_FTN_PASSWORD_LEN];
+} B_ADDRESS_CFG;
+
+typedef struct
+{
+    char sysop[B_FTN_NAME_LEN];
+    char system[B_FTN_NAME_LEN];
+    char location[B_FTN_NAME_LEN];
+    char phone[B_FTN_NAME_LEN];
+    int speed;
+    char flags[B_FTN_GROUPS_LEN];
+    char inbound[B_FTN_PATH_LEN];
+    char outbound[B_FTN_PATH_LEN];
+    char netmail[B_FTN_PATH_LEN];
+    char freqpath[B_FTN_PATH_LEN];
+    char freqexec[B_FTN_PATH_LEN];
+    long max_packet_size;
+    int listen_port;
+    int max_sessions;
+    int connect_timeout;
+    int session_timeout;
+    int scan_interval;
+    int toss_interval;
+    int poll_interval;
+    int retry_delay;
+    int address_count;
+    B_ADDRESS_CFG addresses[8];
+    int uplink_count;
+    B_UPLINK_CFG uplinks[B_FTN_MAX_UPLINKS];
+} B_FTN_GLOBAL_CFG;
+
 /* ******************************************************************************************************************************************************** */
 /* C90 Compatibility - strtok_r implementation                                                                                                              */
 /* ******************************************************************************************************************************************************** */
@@ -694,45 +757,22 @@ void binkp_handle_nul(MAILER_SESSION *session, const char *data)
 static int binkp_find_uplink_for_address(const FTN_ADDR *addr, FTN_ADDR *uplink_primary_out)
 {
     _kernel_swi_regs regs;
+    B_FTN_GLOBAL_CFG *global;
     int i, j;
-    int uplink_count;
 
-    /* FTN_UPLINK_CONFIG structure - matches Support/h/ftnconfig */
-    typedef struct
-    {
-        int id;
-        char address[64];
-        char network[64];
-        char host[64];
-        int port;
-        char password[32];
-        char groups[64];
-        int alias_count;
-        char aliases[8][64];
-    } UPLINK_CFG;
-
-    /* Get uplink count from Support module */
-    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
-    if (_kernel_swi(0x5AA86, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    uplink_count = regs.r[0];
+    global = (B_FTN_GLOBAL_CFG *)regs.r[0];
 
-    /* Check each uplink */
-    for (i = 1; i <= uplink_count; i++)
+    /* Check each uplink by array index */
+    for (i = 0; i < global->uplink_count; i++)
     {
-        UPLINK_CFG *uplink;
+        B_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
-
-        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
-        regs.r[1] = i;
-        if (_kernel_swi(0x5AA86, &regs, &regs) != NULL || regs.r[0] == 0)
-        {
-            continue;
-        }
-
-        uplink = (UPLINK_CFG *)regs.r[0];
 
         /* Check primary address */
         if (ftn_string_to_addr(uplink->address, &uplink_addr) &&

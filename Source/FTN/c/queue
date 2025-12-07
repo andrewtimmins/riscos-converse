@@ -19,6 +19,71 @@
 /* SWI numbers */
 #define SWI_SUPPORT_FTN     0x5AA86
 
+/* FTN config reasons */
+#define FTN_CONFIG_GET_GLOBAL       0
+#define FTN_CONFIG_COUNT_UPLINKS    7
+#define FTN_CONFIG_GET_UPLINK       4
+
+/* FTN config structure sizes */
+#define Q_FTN_MAX_UPLINKS           16
+#define Q_FTN_NAME_LEN              64
+#define Q_FTN_PATH_LEN              256
+#define Q_FTN_PASSWORD_LEN          32
+#define Q_FTN_GROUPS_LEN            64
+#define Q_FTN_MAX_ALIASES           8
+
+/* FTN global config structures (must match Support module) */
+typedef struct
+{
+    int id;
+    char address[Q_FTN_NAME_LEN];
+    char network[Q_FTN_NAME_LEN];
+    char host[Q_FTN_NAME_LEN];
+    int port;
+    char password[Q_FTN_PASSWORD_LEN];
+    char groups[Q_FTN_GROUPS_LEN];
+    int alias_count;
+    char aliases[Q_FTN_MAX_ALIASES][Q_FTN_NAME_LEN];
+} Q_UPLINK_CFG;
+
+typedef struct
+{
+    int id;
+    char network[Q_FTN_NAME_LEN];
+    int zone, net, node, point;
+    char type[8];
+    char packet_password[Q_FTN_PASSWORD_LEN];
+    char areafix_password[Q_FTN_PASSWORD_LEN];
+} Q_ADDRESS_CFG;
+
+typedef struct
+{
+    char sysop[Q_FTN_NAME_LEN];
+    char system[Q_FTN_NAME_LEN];
+    char location[Q_FTN_NAME_LEN];
+    char phone[Q_FTN_NAME_LEN];
+    int speed;
+    char flags[Q_FTN_GROUPS_LEN];
+    char inbound[Q_FTN_PATH_LEN];
+    char outbound[Q_FTN_PATH_LEN];
+    char netmail[Q_FTN_PATH_LEN];
+    char freqpath[Q_FTN_PATH_LEN];
+    char freqexec[Q_FTN_PATH_LEN];
+    long max_packet_size;
+    int listen_port;
+    int max_sessions;
+    int connect_timeout;
+    int session_timeout;
+    int scan_interval;
+    int toss_interval;
+    int poll_interval;
+    int retry_delay;
+    int address_count;
+    Q_ADDRESS_CFG addresses[8];
+    int uplink_count;
+    Q_UPLINK_CFG uplinks[Q_FTN_MAX_UPLINKS];
+} Q_FTN_GLOBAL_CFG;
+
 /* ******************************************************************************************************************************************************** */
 /* Global Queue                                                                                                                                             */
 /* ******************************************************************************************************************************************************** */
@@ -146,9 +211,9 @@ QUEUE_NODE *queue_find_node(const FTN_ADDR *addr)
 QUEUE_NODE *queue_find_node_by_any_address(const FTN_ADDR *addr)
 {
     _kernel_swi_regs regs;
+    Q_FTN_GLOBAL_CFG *global;
     QUEUE_NODE *node;
     int i, j;
-    int uplink_count;
 
     /* First try exact match */
     node = queue_find_node(addr);
@@ -157,42 +222,19 @@ QUEUE_NODE *queue_find_node_by_any_address(const FTN_ADDR *addr)
         return node;
     }
 
-    /* Get uplink count from Support module */
-    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return NULL;
     }
-    uplink_count = regs.r[0];
+    global = (Q_FTN_GLOBAL_CFG *)regs.r[0];
 
-    /* Check each uplink's aliases */
-    for (i = 1; i <= uplink_count; i++)
+    /* Check each uplink's aliases by array index */
+    for (i = 0; i < global->uplink_count; i++)
     {
-        /* FTN_UPLINK_CONFIG structure - matches Support/h/ftnconfig */
-        typedef struct
-        {
-            int id;
-            char address[64];
-            char network[64];
-            char host[64];
-            int port;
-            char password[32];
-            char groups[64];
-            int alias_count;
-            char aliases[8][64];
-        } UPLINK_CFG;
-
-        UPLINK_CFG *uplink;
+        Q_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
-
-        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
-        {
-            continue;
-        }
-
-        uplink = (UPLINK_CFG *)regs.r[0];
 
         /* Check each alias */
         for (j = 0; j < uplink->alias_count; j++)
@@ -1021,54 +1063,37 @@ static int get_flavour_from_name(const char *name, QUEUE_FLAVOUR *flavour, int *
 static int lookup_uplink_for_node(const FTN_ADDR *addr, char *hostname, size_t host_size, int *port)
 {
     _kernel_swi_regs regs;
+    Q_FTN_GLOBAL_CFG *global;
     int i;
-    int uplink_count;
 
-    /* Get uplink count */
-    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    uplink_count = regs.r[0];
+    global = (Q_FTN_GLOBAL_CFG *)regs.r[0];
 
-    /* Check each uplink */
-    for (i = 1; i <= uplink_count; i++)
+    /* Check each uplink by array index */
+    for (i = 0; i < global->uplink_count; i++)
     {
-        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        Q_UPLINK_CFG *uplink = &global->uplinks[i];
+        FTN_ADDR uplink_addr;
+
+        /* Parse the uplink address */
+        if (ftn_string_to_addr(uplink->address, &uplink_addr))
         {
-            /* FTN_UPLINK_CONFIG structure */
-            typedef struct
+            /* Check if this uplink handles our zone/net */
+            /* Uplink addresses are typically hubs like 2:250/0 */
+            if (uplink_addr.zone == addr->zone)
             {
-                int id;
-                char address[64];
-                char network[64];
-                char host[64];
-                int port;
-                char password[32];
-                char groups[64];
-            } UPLINK_CFG;
-
-            UPLINK_CFG *uplink = (UPLINK_CFG *)regs.r[0];
-            FTN_ADDR uplink_addr;
-
-            /* Parse the uplink address */
-            if (ftn_string_to_addr(uplink->address, &uplink_addr))
-            {
-                /* Check if this uplink handles our zone/net */
-                /* Uplink addresses are typically hubs like 2:250/0 */
-                if (uplink_addr.zone == addr->zone)
+                /* Found matching zone - use this uplink */
+                if (uplink->host[0] != '\0')
                 {
-                    /* Found matching zone - use this uplink */
-                    if (uplink->host[0] != '\0')
-                    {
-                        strncpy(hostname, uplink->host, host_size - 1);
-                        hostname[host_size - 1] = '\0';
-                        *port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
-                        return 1;
-                    }
+                    strncpy(hostname, uplink->host, host_size - 1);
+                    hostname[host_size - 1] = '\0';
+                    *port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
+                    return 1;
                 }
             }
         }
@@ -1396,87 +1421,70 @@ QUEUE_NODE *queue_get_next_poll_node(void)
 void queue_add_uplinks_for_poll(void)
 {
     _kernel_swi_regs regs;
+    Q_FTN_GLOBAL_CFG *global;
     int i;
-    int uplink_count;
 
-    /* Get uplink count */
-    regs.r[0] = 7;  /* FTN_CONFIG_REASON_COUNT_UPLINKS */
-    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    /* Get global FTN config */
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
     {
-        debug_printf("queue: Failed to get uplink count from Support module");
+        debug_printf("queue: Failed to get FTN config from Support module");
         return;
     }
-    uplink_count = regs.r[0];
+    global = (Q_FTN_GLOBAL_CFG *)regs.r[0];
 
-    if (uplink_count == 0)
+    if (global->uplink_count == 0)
     {
         debug_printf("queue: No uplinks configured in Support module - check FTN config was loaded");
     }
     else
     {
-        debug_printf("queue: Adding %d uplinks for polling", uplink_count);
+        debug_printf("queue: Adding %d uplinks for polling", global->uplink_count);
     }
 
-    /* Add each uplink as a poll target */
-    for (i = 1; i <= uplink_count; i++)
+    /* Add each uplink as a poll target by array index */
+    for (i = 0; i < global->uplink_count; i++)
     {
-        regs.r[0] = 4;  /* FTN_CONFIG_REASON_GET_UPLINK */
-        regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        Q_UPLINK_CFG *uplink = &global->uplinks[i];
+        FTN_ADDR uplink_addr;
+        QUEUE_NODE *node;
+
+        /* Skip uplinks without host configured */
+        if (uplink->host[0] == '\0')
         {
-            /* FTN_UPLINK_CONFIG structure */
-            typedef struct
-            {
-                int id;
-                char address[64];
-                char network[64];
-                char host[64];
-                int port;
-                char password[32];
-                char groups[64];
-            } UPLINK_CFG;
+            debug_printf("queue: Uplink %d has no host, skipping", uplink->id);
+            continue;
+        }
 
-            UPLINK_CFG *uplink = (UPLINK_CFG *)regs.r[0];
-            FTN_ADDR uplink_addr;
-            QUEUE_NODE *node;
+        /* Parse the uplink address */
+        if (!ftn_string_to_addr(uplink->address, &uplink_addr))
+        {
+            debug_printf("queue: Failed to parse uplink address: %s", uplink->address);
+            continue;
+        }
 
-            /* Skip uplinks without host configured */
-            if (uplink->host[0] == '\0')
-            {
-                debug_printf("queue: Uplink %d has no host, skipping", i);
-                continue;
-            }
-
-            /* Parse the uplink address */
-            if (!ftn_string_to_addr(uplink->address, &uplink_addr))
-            {
-                debug_printf("queue: Failed to parse uplink address: %s", uplink->address);
-                continue;
-            }
-
-            /* Check if this node is already in the queue */
-            node = queue_find_node(&uplink_addr);
+        /* Check if this node is already in the queue */
+        node = queue_find_node(&uplink_addr);
+        if (node == NULL)
+        {
+            /* Add new node for this uplink */
+            node = queue_add_node(&uplink_addr);
             if (node == NULL)
             {
-                /* Add new node for this uplink */
-                node = queue_add_node(&uplink_addr);
-                if (node == NULL)
-                {
-                    debug_printf("queue: Failed to add uplink node");
-                    continue;
-                }
+                debug_printf("queue: Failed to add uplink node");
+                continue;
             }
-
-            /* Update/set hostname and port */
-            strncpy(node->hostname, uplink->host, sizeof(node->hostname) - 1);
-            node->hostname[sizeof(node->hostname) - 1] = '\0';
-            node->port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
-            node->is_uplink = 1;  /* Mark this node as a configured uplink */
-
-            debug_printf("queue: Added uplink %d:%d/%d.%d -> %s:%d",
-                         uplink_addr.zone, uplink_addr.net, uplink_addr.node, uplink_addr.point,
-                         node->hostname, node->port);
         }
+
+        /* Update/set hostname and port */
+        strncpy(node->hostname, uplink->host, sizeof(node->hostname) - 1);
+        node->hostname[sizeof(node->hostname) - 1] = '\0';
+        node->port = (uplink->port > 0) ? uplink->port : BINKP_DEFAULT_PORT;
+        node->is_uplink = 1;  /* Mark this node as a configured uplink */
+
+        debug_printf("queue: Added uplink %d:%d/%d.%d -> %s:%d",
+                     uplink_addr.zone, uplink_addr.net, uplink_addr.node, uplink_addr.point,
+                     node->hostname, node->port);
     }
 }
 
