@@ -395,7 +395,7 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
                 printf("  Inbound          : %s\n", cfg->inbound[0] ? cfg->inbound : "(not set)");
                 printf("  Outbound         : %s\n", cfg->outbound[0] ? cfg->outbound : "(not set)");
                 printf("  Netmail          : %s\n", cfg->netmail[0] ? cfg->netmail : "(not set)");
-                printf("  Bad Mail         : %s\n", cfg->badmail[0] ? cfg->badmail : "(not set)");
+                printf("  FREQ             : %s\n", cfg->freqpath[0] ? cfg->freqpath : "(not set)");
                 puts("");
 
                 printf("Packet Settings:\n");

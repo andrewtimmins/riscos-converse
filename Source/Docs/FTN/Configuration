@@ -49,12 +49,15 @@ Directory Paths
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
-badmail             <Converse$Dir>.FTN.Bad
 
   inbound   - Where incoming packets are stored after successful transfer
+              Each zone has subdirectories:
+                <zone>/         - Files awaiting processing
+                <zone>/Bad/     - Files that failed processing (CRC error, unknown area)
+                <zone>/Processed/ - Successfully imported files
+                <zone>/Temp/    - Partial transfers in progress
   outbound  - BSO outbound directory for mail to send
   netmail   - Netmail storage area
-  badmail   - Packets that failed processing
 
 These directories are created automatically if they don't exist.
 
@@ -348,7 +351,6 @@ flags               CM,XA
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
-badmail             <Converse$Dir>.FTN.Bad
 
 max_packet_size     32768
 tossinterval        300

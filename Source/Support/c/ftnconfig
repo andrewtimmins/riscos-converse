@@ -28,8 +28,6 @@ static void ftnconfig_set_defaults(void)
     snprintf(ftn_config.inbound, sizeof(ftn_config.inbound), "<Converse$Dir>.FTN.Inbound");
     snprintf(ftn_config.outbound, sizeof(ftn_config.outbound), "<Converse$Dir>.FTN.Outbound");
     snprintf(ftn_config.netmail, sizeof(ftn_config.netmail), "<Converse$Dir>.FTN.Netmail");
-    snprintf(ftn_config.badmail, sizeof(ftn_config.badmail), "<Converse$Dir>.FTN.Bad");
-    snprintf(ftn_config.ticpath, sizeof(ftn_config.ticpath), "<Converse$Dir>.FTN.Tic");
 
     ftn_config.max_packet_size = 32768;
     ftn_config.listen_port = 24554;
@@ -176,22 +174,8 @@ void ftnconfig_swi_handler(_kernel_swi_regs *r)
                     }
                     break;
 
-                case FTN_GLOBAL_FIELD_BADMAIL:
-                    if (value != NULL)
-                    {
-                        snprintf(ftn_config.badmail, sizeof(ftn_config.badmail), "%s", value);
-                    }
-                    break;
-
                 case FTN_GLOBAL_FIELD_MAX_PACKET:
                     ftn_config.max_packet_size = (value != NULL) ? atol(value) : 32768;
-                    break;
-
-                case FTN_GLOBAL_FIELD_TICPATH:
-                    if (value != NULL)
-                    {
-                        snprintf(ftn_config.ticpath, sizeof(ftn_config.ticpath), "%s", value);
-                    }
                     break;
 
                 case FTN_GLOBAL_FIELD_LISTENPORT:

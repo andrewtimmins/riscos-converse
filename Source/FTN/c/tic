@@ -190,6 +190,86 @@ static int tic_strcasecmp(const char *s1, const char *s2)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* File Move Operations                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Move a file to a new location using OS_FSControl 25 (rename).
+ * Returns 1 on success, 0 on failure.
+ */
+static int tic_move_file(const char *src, const char *dest)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 25;  /* Rename object */
+    regs.r[1] = (int)src;
+    regs.r[2] = (int)dest;
+
+    if (_kernel_swi(0x29, &regs, &regs) != NULL)  /* OS_FSControl */
+    {
+        debug_printf("tic: Failed to move %s to %s", src, dest);
+        return 0;
+    }
+
+    debug_printf("tic: Moved %s to %s", src, dest);
+    return 1;
+}
+
+/*
+ * Move TIC file and its associated data file to Processed folder.
+ * zone_path: Base zone directory (e.g., "<Converse$Dir>.FTN.Inbound.002")
+ * tic_name: Name of the TIC file
+ * file_name: Name of the data file
+ */
+static void tic_move_to_processed(const char *zone_path, const char *tic_name, const char *file_name)
+{
+    char src_tic[TIC_MAX_PATH];
+    char src_file[TIC_MAX_PATH];
+    char dest_tic[TIC_MAX_PATH];
+    char dest_file[TIC_MAX_PATH];
+
+    snprintf(src_tic, sizeof(src_tic), "%s.%s", zone_path, tic_name);
+    snprintf(src_file, sizeof(src_file), "%s.%s", zone_path, file_name);
+    snprintf(dest_tic, sizeof(dest_tic), "%s.Processed.%s", zone_path, tic_name);
+    snprintf(dest_file, sizeof(dest_file), "%s.Processed.%s", zone_path, file_name);
+
+    tic_move_file(src_tic, dest_tic);
+    tic_move_file(src_file, dest_file);
+
+    ftnlog_printf("TIC moved to Processed: %s, %s", tic_name, file_name);
+}
+
+/*
+ * Move TIC file and its associated data file to Bad folder.
+ * zone_path: Base zone directory (e.g., "<Converse$Dir>.FTN.Inbound.002")
+ * tic_name: Name of the TIC file
+ * file_name: Name of the data file (may be NULL if file doesn't exist)
+ */
+static void tic_move_to_bad(const char *zone_path, const char *tic_name, const char *file_name)
+{
+    char src_tic[TIC_MAX_PATH];
+    char dest_tic[TIC_MAX_PATH];
+
+    snprintf(src_tic, sizeof(src_tic), "%s.%s", zone_path, tic_name);
+    snprintf(dest_tic, sizeof(dest_tic), "%s.Bad.%s", zone_path, tic_name);
+
+    tic_move_file(src_tic, dest_tic);
+
+    if (file_name != NULL && file_name[0] != '\0')
+    {
+        char src_file[TIC_MAX_PATH];
+        char dest_file[TIC_MAX_PATH];
+
+        snprintf(src_file, sizeof(src_file), "%s.%s", zone_path, file_name);
+        snprintf(dest_file, sizeof(dest_file), "%s.Bad.%s", zone_path, file_name);
+
+        tic_move_file(src_file, dest_file);
+    }
+
+    ftnlog_printf("TIC moved to Bad: %s", tic_name);
+}
+
+/* ******************************************************************************************************************************************************** */
 /* TIC File Parsing                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
@@ -698,21 +778,35 @@ static void tic_process_zone_directory(const char *zone_path, int zone, void *ct
         {
             /* Found a TIC file */
             TIC_FILE tic;
-            char *name = buffer + 20;  /* Filename starts at offset 20 */
+            char *tic_name = buffer + 20;  /* Filename starts at offset 20 */
+            int result;
 
-            snprintf(tic_path, sizeof(tic_path), "%s.%s", zone_path, name);
+            snprintf(tic_path, sizeof(tic_path), "%s.%s", zone_path, tic_name);
 
             if (tic_parse_file(tic_path, &tic))
             {
                 snprintf(file_path, sizeof(file_path), "%s.%s", zone_path, tic.filename);
 
-                if (tic_process_single(tic_path, file_path))
+                result = tic_process_single(tic_path, file_path);
+                
+                if (result)
                 {
+                    /* Success - move to Processed folder */
                     scan->count++;
-                    /* TODO: Move processed files to processed folder */
+                    tic_move_to_processed(zone_path, tic_name, tic.filename);
+                }
+                else
+                {
+                    /* Failure - move to Bad folder */
+                    tic_move_to_bad(zone_path, tic_name, tic.filename);
                 }
 
                 tic_free(&tic);
+            }
+            else
+            {
+                /* Parse failed - move just the TIC file to Bad */
+                tic_move_to_bad(zone_path, tic_name, NULL);
             }
         }
     } while (context != -1 && regs.r[3] > 0);

@@ -595,8 +595,6 @@ void mailer_load_config(void)
             char inbound[256];
             char outbound[256];
             char netmail[256];
-            char badmail[256];
-            char ticpath[256];
             char freqpath[256];
             char freqexec[256];
             long max_packet_size;
@@ -622,11 +620,6 @@ void mailer_load_config(void)
         strncpy(mailer.inbound_path, cfg->inbound, sizeof(mailer.inbound_path) - 1);
         strncpy(mailer.outbound_path, cfg->outbound, sizeof(mailer.outbound_path) - 1);
         strncpy(mailer.netmail_path, cfg->netmail, sizeof(mailer.netmail_path) - 1);
-        strncpy(mailer.badmail_path, cfg->badmail, sizeof(mailer.badmail_path) - 1);
-        if (cfg->ticpath[0] != '\0')
-        {
-            strncpy(mailer.tic_path, cfg->ticpath, sizeof(mailer.tic_path) - 1);
-        }
         if (cfg->freqpath[0] != '\0')
         {
             strncpy(mailer.freq_path, cfg->freqpath, sizeof(mailer.freq_path) - 1);
@@ -659,8 +652,6 @@ void mailer_load_config(void)
         debug_printf("mailer: Inbound: %s", mailer.inbound_path);
         debug_printf("mailer: Outbound: %s", mailer.outbound_path);
         debug_printf("mailer: Netmail: %s", mailer.netmail_path);
-        debug_printf("mailer: Badmail: %s", mailer.badmail_path);
-        debug_printf("mailer: TIC path: %s", mailer.tic_path);
         debug_printf("mailer: FREQ path: %s", mailer.freq_path);
         debug_printf("mailer: FREQ exec: %s", mailer.freq_exec);
         debug_printf("mailer: Intervals: scan=%d, toss=%d, poll=%d",
@@ -715,16 +706,11 @@ void mailer_load_config(void)
         strcpy(mailer.inbound_path, "<Converse$Dir>.FTN.Inbound");
         strcpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound");
         strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
-        strcpy(mailer.badmail_path, "<Converse$Dir>.FTN.Bad");
     }
 
     if (mailer.netmail_path[0] == '\0')
     {
         strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
-    }
-    if (mailer.badmail_path[0] == '\0')
-    {
-        strcpy(mailer.badmail_path, "<Converse$Dir>.FTN.Bad");
     }
 
 }
@@ -1574,9 +1560,7 @@ static void mailer_create_directories(void)
     /* Create main FTN directories (zone-specific subdirs created in loop below) */
     ensure_directory_exists(mailer.inbound_path);
     ensure_directory_exists(mailer.outbound_path);
-    ensure_directory_exists(mailer.tic_path);
     ensure_directory_exists(mailer.netmail_path);
-    ensure_directory_exists(mailer.badmail_path);
 
     /* Collect zones we should provision (always include zone 2) */
     mailer_add_zone(zones, &zone_count, 2);
@@ -1624,12 +1608,8 @@ static void mailer_create_directories(void)
     }
 
     /* Log other shared directories */
-    debug_printf("mailer:   TIC: %s %s", mailer.tic_path,
-                 path_exists(mailer.tic_path) == 2 ? "(OK)" : "(FAILED)");
     debug_printf("mailer:   Netmail: %s %s", mailer.netmail_path,
                  path_exists(mailer.netmail_path) == 2 ? "(OK)" : "(FAILED)");
-    debug_printf("mailer:   Badmail: %s %s", mailer.badmail_path,
-                 path_exists(mailer.badmail_path) == 2 ? "(OK)" : "(FAILED)");
 }
 
 void mailer_initialise(void)
@@ -1645,7 +1625,6 @@ void mailer_initialise(void)
     mailer.toss_interval = 0;   /* Disabled by default */
     mailer.poll_interval = 0;   /* Disabled by default */
     mailer.retry_delay = 300;
-    strcpy(mailer.tic_path, "<Converse$Dir>.FTN.Tic");
     mailer.start_time = time(NULL);
     mailer.last_auto_toss = mailer.start_time;
     mailer.last_auto_poll = mailer.start_time;
@@ -1658,7 +1637,9 @@ void mailer_initialise(void)
     tic_initialise();
     mailer_load_config();
     mailer_create_directories();
-    tic_set_inbound_path(mailer.tic_path);
+    
+    /* Set TIC inbound path to main inbound (TIC files arrive with other files) */
+    tic_set_inbound_path(mailer.inbound_path);
 }
 
 void mailer_finalise(void)

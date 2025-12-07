@@ -288,7 +288,6 @@ void tosser_initialise(void)
         char inbound[256];
         char outbound[256];
         char netmail[256];
-        char badmail[256];
         /* ... more fields follow but we only need inbound */
     } FTN_CFG;
     

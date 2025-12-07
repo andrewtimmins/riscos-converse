@@ -1024,94 +1024,80 @@ void load_ftn_config(void)
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
-                else if (strcmp(key, "badmail") == 0 && value != NULL)
-                {
-                    regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 9; /* FTN_GLOBAL_FIELD_BADMAIL */
-                    regs.r[2] = (int)value;
-                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
-                }
                 else if (strcmp(key, "max_packet_size") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 10; /* FTN_GLOBAL_FIELD_MAX_PACKET */
-                    regs.r[2] = (int)value;
-                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
-                }
-                else if (strcmp(key, "ticpath") == 0 && value != NULL)
-                {
-                    regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 11; /* FTN_GLOBAL_FIELD_TICPATH */
+                    regs.r[1] = 9; /* FTN_GLOBAL_FIELD_MAX_PACKET */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "listenport") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 12; /* FTN_GLOBAL_FIELD_LISTENPORT */
+                    regs.r[1] = 10; /* FTN_GLOBAL_FIELD_LISTENPORT */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "maxsessions") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 13; /* FTN_GLOBAL_FIELD_MAXSESSIONS */
+                    regs.r[1] = 11; /* FTN_GLOBAL_FIELD_MAXSESSIONS */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "connecttimeout") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 14; /* FTN_GLOBAL_FIELD_CONNECTTIMEOUT */
+                    regs.r[1] = 12; /* FTN_GLOBAL_FIELD_CONNECTTIMEOUT */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "sessiontimeout") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 15; /* FTN_GLOBAL_FIELD_SESSIONTIMEOUT */
+                    regs.r[1] = 13; /* FTN_GLOBAL_FIELD_SESSIONTIMEOUT */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "scaninterval") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 16; /* FTN_GLOBAL_FIELD_SCANINTERVAL */
+                    regs.r[1] = 14; /* FTN_GLOBAL_FIELD_SCANINTERVAL */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "tossinterval") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 17; /* FTN_GLOBAL_FIELD_TOSSINTERVAL */
+                    regs.r[1] = 15; /* FTN_GLOBAL_FIELD_TOSSINTERVAL */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "pollinterval") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 18; /* FTN_GLOBAL_FIELD_POLLINTERVAL */
+                    regs.r[1] = 16; /* FTN_GLOBAL_FIELD_POLLINTERVAL */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "retrydelay") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 19; /* FTN_GLOBAL_FIELD_RETRYDELAY */
+                    regs.r[1] = 17; /* FTN_GLOBAL_FIELD_RETRYDELAY */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "freqpath") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 20; /* FTN_GLOBAL_FIELD_FREQPATH */
+                    regs.r[1] = 18; /* FTN_GLOBAL_FIELD_FREQPATH */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
                 else if (strcmp(key, "freqexec") == 0 && value != NULL)
                 {
                     regs.r[0] = FTN_REASON_SET_GLOBAL;
-                    regs.r[1] = 21; /* FTN_GLOBAL_FIELD_FREQEXEC */
+                    regs.r[1] = 19; /* FTN_GLOBAL_FIELD_FREQEXEC */
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }

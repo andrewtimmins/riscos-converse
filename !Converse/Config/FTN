@@ -14,8 +14,6 @@ flags               CM,TCP,BINKP
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
-badmail             <Converse$Dir>.FTN.Bad
-ticpath             <Converse$Dir>.FTN.Tic
 
 ; FREQ (File Request) settings
 ; freqpath is the directory where requestable files are stored

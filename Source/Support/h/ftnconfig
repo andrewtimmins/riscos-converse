@@ -60,8 +60,6 @@ typedef struct
     char inbound[FTN_CONFIG_PATH_LEN];          /* inbound directory */
     char outbound[FTN_CONFIG_PATH_LEN];         /* outbound directory */
     char netmail[FTN_CONFIG_PATH_LEN];          /* netmail directory */
-    char badmail[FTN_CONFIG_PATH_LEN];          /* bad mail directory */
-    char ticpath[FTN_CONFIG_PATH_LEN];          /* TIC staging directory */
     char freqpath[FTN_CONFIG_PATH_LEN];         /* FREQ files directory */
     char freqexec[FTN_CONFIG_PATH_LEN];         /* External FREQ processor command */
 
@@ -112,19 +110,17 @@ typedef enum
     FTN_GLOBAL_FIELD_INBOUND = 6,
     FTN_GLOBAL_FIELD_OUTBOUND = 7,
     FTN_GLOBAL_FIELD_NETMAIL = 8,
-    FTN_GLOBAL_FIELD_BADMAIL = 9,
-    FTN_GLOBAL_FIELD_MAX_PACKET = 10,
-    FTN_GLOBAL_FIELD_TICPATH = 11,
-    FTN_GLOBAL_FIELD_LISTENPORT = 12,
-    FTN_GLOBAL_FIELD_MAXSESSIONS = 13,
-    FTN_GLOBAL_FIELD_CONNECTTIMEOUT = 14,
-    FTN_GLOBAL_FIELD_SESSIONTIMEOUT = 15,
-    FTN_GLOBAL_FIELD_SCANINTERVAL = 16,
-    FTN_GLOBAL_FIELD_TOSSINTERVAL = 17,
-    FTN_GLOBAL_FIELD_POLLINTERVAL = 18,
-    FTN_GLOBAL_FIELD_RETRYDELAY = 19,
-    FTN_GLOBAL_FIELD_FREQPATH = 20,
-    FTN_GLOBAL_FIELD_FREQEXEC = 21
+    FTN_GLOBAL_FIELD_MAX_PACKET = 9,
+    FTN_GLOBAL_FIELD_LISTENPORT = 10,
+    FTN_GLOBAL_FIELD_MAXSESSIONS = 11,
+    FTN_GLOBAL_FIELD_CONNECTTIMEOUT = 12,
+    FTN_GLOBAL_FIELD_SESSIONTIMEOUT = 13,
+    FTN_GLOBAL_FIELD_SCANINTERVAL = 14,
+    FTN_GLOBAL_FIELD_TOSSINTERVAL = 15,
+    FTN_GLOBAL_FIELD_POLLINTERVAL = 16,
+    FTN_GLOBAL_FIELD_RETRYDELAY = 17,
+    FTN_GLOBAL_FIELD_FREQPATH = 18,
+    FTN_GLOBAL_FIELD_FREQEXEC = 19
 } FTN_GLOBAL_FIELD;
 
 /* Initialisation and finalisation */
