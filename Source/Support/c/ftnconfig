@@ -226,6 +226,20 @@ void ftnconfig_swi_handler(_kernel_swi_regs *r)
                     ftn_config.retry_delay = (value != NULL) ? atoi(value) : 300;
                     break;
 
+                case FTN_GLOBAL_FIELD_FREQPATH:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.freqpath, sizeof(ftn_config.freqpath), "%s", value);
+                    }
+                    break;
+
+                case FTN_GLOBAL_FIELD_FREQEXEC:
+                    if (value != NULL)
+                    {
+                        snprintf(ftn_config.freqexec, sizeof(ftn_config.freqexec), "%s", value);
+                    }
+                    break;
+
                 default:
                     break;
             }

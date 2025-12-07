@@ -19,6 +19,7 @@
 #include "md5.h"
 #include "crypt.h"
 #include "compress.h"
+#include "freq.h"
 
 /* ******************************************************************************************************************************************************** */
 /* C90 Compatibility - strtok_r implementation                                                                                                              */
@@ -1111,6 +1112,41 @@ void binkp_handle_get(MAILER_SESSION *session, const char *data)
     if (sscanf(data, "%127s %ld %ld %ld", filename, &size, &mtime, &offset) < 4)
     {
         debug_printf("binkp: M_GET parse failed");
+        return;
+    }
+    
+    /* Check if this is a FREQ (file request) - size=0 and time=0 indicate FREQ */
+    if (size == 0 && mtime == 0)
+    {
+        FREQ_STATUS status;
+        
+        debug_printf("binkp: FREQ request for: %s", filename);
+        
+        status = freq_process_request(session, filename);
+        
+        switch (status)
+        {
+            case FREQ_STATUS_OK:
+                debug_printf("binkp: FREQ processed successfully");
+                break;
+                
+            case FREQ_STATUS_NOT_FOUND:
+                debug_printf("binkp: FREQ file not found: %s", filename);
+                /* Send M_SKIP to indicate file not available */
+                binkp_send_skip(session, filename, 0, 0);
+                break;
+                
+            case FREQ_STATUS_ACCESS_DENIED:
+                debug_printf("binkp: FREQ access denied: %s", filename);
+                binkp_send_skip(session, filename, 0, 0);
+                break;
+                
+            case FREQ_STATUS_ERROR:
+            default:
+                debug_printf("binkp: FREQ error for: %s", filename);
+                binkp_send_skip(session, filename, 0, 0);
+                break;
+        }
         return;
     }
     

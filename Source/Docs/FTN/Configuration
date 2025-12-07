@@ -59,6 +59,35 @@ badmail             <Converse$Dir>.FTN.Bad
 These directories are created automatically if they don't exist.
 
 
+File Requests (FREQ)
+--------------------
+The mailer supports FTN file requests. Remote nodes can request files from
+your system during a BinkP session by sending M_GET commands with size=0.
+
+freqpath            <Converse$Dir>.FTN.Freq
+freqexec            
+
+  freqpath  - Directory containing files available for FREQ requests
+  freqexec  - Optional external FREQ processor command (not yet implemented)
+
+When a remote node requests a file, the mailer searches the freqpath directory
+for matching files. Wildcards (* and ?) are supported in request filenames.
+
+If freqpath is not configured, FREQ requests are denied.
+
+Example:
+  freqpath    <Converse$Dir>.FTN.Freq
+
+To make a file available for FREQ, simply copy it to the freqpath directory.
+Remote nodes can then request it by filename during a BinkP session.
+
+Creating File Requests:
+  To request a file from another node, use the FREQ window in the FTN mailer
+  (accessible via the Commands menu). This creates a .REQ file in the outbound
+  directory for the target address. When connecting to that node, the mailer
+  sends M_GET commands for each requested file.
+
+
 Packet Settings
 ---------------
 
@@ -324,6 +353,9 @@ badmail             <Converse$Dir>.FTN.Bad
 max_packet_size     32768
 tossinterval        300
 pollinterval        3600
+
+; File request (FREQ) configuration
+freqpath            <Converse$Dir>.FTN.Freq
 
 ; My FidoNet node address
 address 1

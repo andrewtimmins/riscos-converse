@@ -1,0 +1,77 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - FREQ (File Request) Processing Header                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FREQ_H
+#define FREQ_H
+
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/* Maximum queued files for a single FREQ response */
+#define FREQ_MAX_RESPONSE_FILES     32
+
+/* FREQ status */
+typedef enum
+{
+    FREQ_STATUS_OK = 0,             /* File found and queued for sending */
+    FREQ_STATUS_NOT_FOUND,          /* File not found */
+    FREQ_STATUS_ACCESS_DENIED,      /* File exists but access denied */
+    FREQ_STATUS_ERROR               /* General error */
+} FREQ_STATUS;
+
+/* ******************************************************************************************************************************************************** */
+/* FREQ Response Entry                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    char path[MAILER_PATH_SIZE];    /* Full path to file */
+    char name[64];                  /* Display name */
+    long size;                      /* File size */
+    time_t mtime;                   /* Modification time */
+    int delete_after;               /* Delete after sending (=response) */
+} FREQ_RESPONSE_FILE;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Process a file request from a remote node.
+ * Called when we receive M_GET with size=0/time=0 (file request mode).
+ *
+ * session     - Current mailer session
+ * filename    - Requested filename (may contain wildcards)
+ *
+ * Returns: FREQ_STATUS indicating result
+ *
+ * If successful, adds the file(s) to the session's send queue and will
+ * send M_FILE for each found file.
+ */
+FREQ_STATUS freq_process_request(MAILER_SESSION *session, const char *filename);
+
+/*
+ * Look up a file in the FREQ directory.
+ * Returns 1 if found and fills in response, 0 if not found.
+ */
+int freq_lookup_file(const char *filename, FREQ_RESPONSE_FILE *response);
+
+/*
+ * Look up a file with wildcards, returning multiple matches.
+ * Returns number of matches (0 if none).
+ */
+int freq_lookup_wildcard(const char *pattern, 
+                         FREQ_RESPONSE_FILE *responses, 
+                         int max_responses);
+
+/*
+ * Queue a file for sending in response to a FREQ.
+ * This adds the file to the session's pending send list.
+ */
+int freq_queue_file(MAILER_SESSION *session, const FREQ_RESPONSE_FILE *file);
+
+#endif

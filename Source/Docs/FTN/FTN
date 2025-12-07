@@ -39,6 +39,7 @@ The FTN mailer consists of several components:
   scanner.c  - Outbound message scanning and routing
   packer.c   - Outbound packet creation
   tic.c      - TIC file processing for file distribution
+  freq.c     - FREQ (File Request) handling
   crypt.c    - Session encryption (Roger Schlafly algorithm)
   compress.c - Compression stubs (for future zlib/bzip2 support)
   timer.c    - Timer utilities for polling
@@ -314,6 +315,33 @@ zlib/bzip2 libraries for RISC OS. The framework is in place:
 
 When compression is negotiated, the compress.c stubs log a message
 indicating compression is not available and pass data through unchanged.
+
+
+File Requests (FREQ)
+--------------------
+The mailer supports FTN file requests in both directions.
+
+Requesting Files (Outbound FREQ):
+  Use the FREQ window (Commands menu) to request files from remote nodes.
+  This creates a .REQ file in the BSO outbound directory. When connecting
+  to that node, the mailer reads the .REQ file and sends M_GET commands
+  with size=0, time=0 (the FREQ convention) for each filename.
+
+  REQ file format: One filename per line (wildcards allowed in some mailers)
+
+Responding to Requests (Inbound FREQ):
+  When a remote node sends M_GET with size=0 and time=0, it's a file request.
+  The mailer searches the configured freqpath directory for matching files.
+  
+  - If found, the file is queued for immediate send (M_FILE response)
+  - If not found, M_SKIP is sent to indicate unavailability
+  - Wildcard patterns (* and ?) are supported in the requested filename
+
+Configuration:
+  freqpath    <Converse$Dir>.FTN.Freq
+  freqexec    (not yet implemented - for external FREQ processor)
+
+If freqpath is not configured, all FREQ requests are denied.
 
 
 Version Information

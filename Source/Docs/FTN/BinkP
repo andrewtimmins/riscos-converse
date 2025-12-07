@@ -209,10 +209,53 @@ seek to the specified offset and continue transmission from there.
 This is used for:
 * Resume after interrupted transfer
 * NR mode acknowledgement with offset
+* File Requests (FREQ) when size=0 and time=0
 
 Example:
   M_GET 00010002.PKT 1234 1732713600 512
   M_GET 00010002.PKT 1234 1732713600 0    (request from start)
+  M_GET NODELIST.* 0 0 0                  (FREQ with wildcard)
+
+
+FREQ (File Requests)
+--------------------
+FREQ allows a node to request files from a remote system during a
+BinkP session. This uses M_GET with special parameters.
+
+Format: M_GET <filename> 0 0 0
+
+When size=0 and time=0, the M_GET is treated as a file request rather
+than a resume request. The remote system searches its FREQ directory
+for matching files and sends them.
+
+Wildcards:
+  * (asterisk) - Match any sequence of characters
+  ? (question) - Match any single character
+
+Examples:
+  M_GET NODELIST.Z?? 0 0 0    (Request current nodelist diff)
+  M_GET *.ZIP 0 0 0           (Request all ZIP files)
+  M_GET MYFILE.LHA 0 0 0      (Request specific file)
+
+Response:
+  - If found: Remote sends M_FILE followed by file data
+  - If not found: Remote sends M_SKIP
+
+Creating FREQ requests:
+  The sending system creates a .REQ file in the BSO outbound directory
+  for the target address. This file contains one filename per line.
+  When connecting, the mailer reads this file and sends M_GET for each.
+
+Handling incoming FREQ:
+  When M_GET is received with size=0 and time=0:
+  1. Search configured freqpath directory for matching files
+  2. If wildcard, enumerate all matching files
+  3. For each match, queue file for immediate send
+  4. If no match, send M_SKIP
+
+Configuration:
+  freqpath    <Converse$Dir>.FTN.Freq
+  freqexec    (optional external processor - not yet implemented)
 
 
 M_SKIP - Skip File

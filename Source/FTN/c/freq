@@ -1,0 +1,388 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - FREQ (File Request) Processing Implementation                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "freq.h"
+#include "binkp.h"
+#include "debug.h"
+#include "ftnlog.h"
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Simple wildcard match for ? and *.
+ * Returns 1 if pattern matches str, 0 otherwise.
+ */
+static int freq_wildcard_match(const char *pattern, const char *str)
+{
+    while (*pattern && *str)
+    {
+        if (*pattern == '*')
+        {
+            /* Skip consecutive asterisks */
+            while (*pattern == '*') pattern++;
+            if (*pattern == '\0') return 1;  /* Trailing * matches everything */
+            
+            /* Try to match rest of pattern at each position */
+            while (*str)
+            {
+                if (freq_wildcard_match(pattern, str))
+                {
+                    return 1;
+                }
+                str++;
+            }
+            return 0;
+        }
+        else if (*pattern == '?' || tolower((unsigned char)*pattern) == tolower((unsigned char)*str))
+        {
+            pattern++;
+            str++;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    
+    /* Skip trailing asterisks in pattern */
+    while (*pattern == '*') pattern++;
+    
+    return (*pattern == '\0' && *str == '\0');
+}
+
+/*
+ * Get file info using OS_File 17.
+ * Returns 1 if file exists and is a file (not directory), 0 otherwise.
+ * Fills in size and load/exec addresses (for mtime).
+ */
+static int freq_get_file_info(const char *path, long *size, unsigned int *load, unsigned int *exec)
+{
+    _kernel_swi_regs regs;
+    
+    regs.r[0] = 17;  /* Read catalogue info, no path */
+    regs.r[1] = (int)path;
+    
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    
+    if (regs.r[0] != 1)  /* Not a file */
+    {
+        return 0;
+    }
+    
+    if (size != NULL) *size = regs.r[4];
+    if (load != NULL) *load = (unsigned int)regs.r[2];
+    if (exec != NULL) *exec = (unsigned int)regs.r[3];
+    
+    return 1;
+}
+
+/*
+ * Convert RISC OS date stamp (5 bytes packed in load/exec) to Unix time_t.
+ */
+static time_t freq_riscos_to_time(unsigned int load, unsigned int exec)
+{
+    /* Check if it's a date-stamped file (load addr has 0xFFFxxx pattern) */
+    if ((load & 0xFFF00000) != 0xFFF00000)
+    {
+        return 0;  /* Not date-stamped */
+    }
+    
+    /* RISC OS centiseconds since 1900-01-01 00:00:00 */
+    /* The date is stored in the bottom 12 bits of load and all 32 bits of exec */
+    unsigned long long cs;
+    unsigned long high12 = load & 0xFF;
+    
+    cs = ((unsigned long long)high12 << 32) | (unsigned long long)exec;
+    
+    /* Convert to seconds since 1970-01-01 (Unix epoch) */
+    /* RISC OS epoch is 1900-01-01, Unix is 1970-01-01 */
+    /* Difference is 2208988800 seconds (70 years) */
+    time_t unix_time = (time_t)((cs / 100) - 2208988800UL);
+    
+    return unix_time;
+}
+
+/*
+ * Enumerate files in a directory matching a pattern.
+ * callback is called for each matching file.
+ */
+typedef void (*FREQ_DIR_CALLBACK)(const char *path, const char *leafname, 
+                                   long size, time_t mtime, void *ctx);
+
+static int freq_enumerate_directory(const char *dir, const char *pattern,
+                                    FREQ_DIR_CALLBACK callback, void *ctx)
+{
+    _kernel_swi_regs regs;
+    char buffer[512];
+    int context = 0;
+    int count = 0;
+    
+    do {
+        regs.r[0] = 9;  /* Read directory entries with info */
+        regs.r[1] = (int)dir;
+        regs.r[2] = (int)buffer;
+        regs.r[3] = 1;  /* Number of objects to read */
+        regs.r[4] = context;
+        regs.r[5] = sizeof(buffer);
+        regs.r[6] = 0;  /* No wildcard - we do our own matching */
+        
+        if (_kernel_swi(OS_GBPB, &regs, &regs) != NULL)
+        {
+            break;
+        }
+        
+        if (regs.r[3] > 0)
+        {
+            /* Buffer format: load, exec, length, attrs, type, name */
+            unsigned int *p = (unsigned int *)buffer;
+            unsigned int load = p[0];
+            unsigned int exec = p[1];
+            long size = (long)p[2];
+            /* p[3] = attrs, p[4] = type */
+            char *name = (char *)&p[5];
+            
+            /* Check if it's a file (not directory) */
+            if ((p[4] == 1) && freq_wildcard_match(pattern, name))
+            {
+                char fullpath[MAILER_PATH_SIZE];
+                time_t mtime = freq_riscos_to_time(load, exec);
+                
+                snprintf(fullpath, sizeof(fullpath), "%s.%s", dir, name);
+                callback(fullpath, name, size, mtime, ctx);
+                count++;
+            }
+        }
+        
+        context = regs.r[4];
+    } while (context != -1);
+    
+    return count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FREQ Lookup                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+int freq_lookup_file(const char *filename, FREQ_RESPONSE_FILE *response)
+{
+    char fullpath[MAILER_PATH_SIZE];
+    long size;
+    unsigned int load, exec;
+    
+    if (filename == NULL || response == NULL)
+    {
+        return 0;
+    }
+    
+    /* Check if FREQ path is configured */
+    if (mailer.freq_path[0] == '\0')
+    {
+        debug_printf("freq: No FREQ path configured");
+        return 0;
+    }
+    
+    /* Build full path */
+    snprintf(fullpath, sizeof(fullpath), "%s.%s", mailer.freq_path, filename);
+    
+    debug_printf("freq: Looking up file: %s", fullpath);
+    
+    if (!freq_get_file_info(fullpath, &size, &load, &exec))
+    {
+        debug_printf("freq: File not found: %s", fullpath);
+        return 0;
+    }
+    
+    /* Fill in response */
+    strncpy(response->path, fullpath, sizeof(response->path) - 1);
+    response->path[sizeof(response->path) - 1] = '\0';
+    
+    strncpy(response->name, filename, sizeof(response->name) - 1);
+    response->name[sizeof(response->name) - 1] = '\0';
+    
+    response->size = size;
+    response->mtime = freq_riscos_to_time(load, exec);
+    response->delete_after = 0;
+    
+    debug_printf("freq: Found file: %s (size=%ld)", response->name, response->size);
+    
+    return 1;
+}
+
+/* Context for wildcard enumeration callback */
+typedef struct
+{
+    FREQ_RESPONSE_FILE *responses;
+    int max_responses;
+    int count;
+} FREQ_ENUM_CTX;
+
+static void freq_enum_callback(const char *path, const char *leafname,
+                               long size, time_t mtime, void *ctx)
+{
+    FREQ_ENUM_CTX *ectx = (FREQ_ENUM_CTX *)ctx;
+    FREQ_RESPONSE_FILE *resp;
+    
+    if (ectx->count >= ectx->max_responses)
+    {
+        return;
+    }
+    
+    resp = &ectx->responses[ectx->count];
+    
+    strncpy(resp->path, path, sizeof(resp->path) - 1);
+    resp->path[sizeof(resp->path) - 1] = '\0';
+    
+    strncpy(resp->name, leafname, sizeof(resp->name) - 1);
+    resp->name[sizeof(resp->name) - 1] = '\0';
+    
+    resp->size = size;
+    resp->mtime = mtime;
+    resp->delete_after = 0;
+    
+    ectx->count++;
+}
+
+int freq_lookup_wildcard(const char *pattern,
+                         FREQ_RESPONSE_FILE *responses,
+                         int max_responses)
+{
+    FREQ_ENUM_CTX ctx;
+    
+    if (pattern == NULL || responses == NULL || max_responses <= 0)
+    {
+        return 0;
+    }
+    
+    if (mailer.freq_path[0] == '\0')
+    {
+        debug_printf("freq: No FREQ path configured");
+        return 0;
+    }
+    
+    ctx.responses = responses;
+    ctx.max_responses = max_responses;
+    ctx.count = 0;
+    
+    debug_printf("freq: Wildcard lookup: %s in %s", pattern, mailer.freq_path);
+    
+    freq_enumerate_directory(mailer.freq_path, pattern, freq_enum_callback, &ctx);
+    
+    debug_printf("freq: Found %d files matching pattern", ctx.count);
+    
+    return ctx.count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FREQ Queue Management                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+int freq_queue_file(MAILER_SESSION *session, const FREQ_RESPONSE_FILE *file)
+{
+    if (session == NULL || file == NULL)
+    {
+        return 0;
+    }
+    
+    /* Start sending the file immediately */
+    debug_printf("freq: Queuing file for send: %s", file->path);
+    ftnlog_printf("FREQ response: %s (%ld bytes)", file->name, file->size);
+    
+    binkp_start_send_file(session, file->path);
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* FREQ Request Processing                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+FREQ_STATUS freq_process_request(MAILER_SESSION *session, const char *filename)
+{
+    FREQ_RESPONSE_FILE response;
+    int has_wildcard = 0;
+    const char *p;
+    
+    if (session == NULL || filename == NULL || filename[0] == '\0')
+    {
+        return FREQ_STATUS_ERROR;
+    }
+    
+    debug_printf("freq: Processing request for: %s", filename);
+    ftnlog_printf("FREQ request: %s from %d:%d/%d.%d",
+                  filename,
+                  session->remote_addr.zone,
+                  session->remote_addr.net,
+                  session->remote_addr.node,
+                  session->remote_addr.point);
+    
+    /* Check if FREQ is enabled */
+    if (mailer.freq_path[0] == '\0')
+    {
+        debug_printf("freq: FREQ disabled (no freqpath configured)");
+        ftnlog_printf("FREQ denied: %s (FREQ disabled)", filename);
+        return FREQ_STATUS_ACCESS_DENIED;
+    }
+    
+    /* Check for wildcards */
+    for (p = filename; *p != '\0'; p++)
+    {
+        if (*p == '*' || *p == '?')
+        {
+            has_wildcard = 1;
+            break;
+        }
+    }
+    
+    if (has_wildcard)
+    {
+        /* Wildcard request - find multiple files */
+        FREQ_RESPONSE_FILE responses[FREQ_MAX_RESPONSE_FILES];
+        int count, i;
+        
+        count = freq_lookup_wildcard(filename, responses, FREQ_MAX_RESPONSE_FILES);
+        
+        if (count == 0)
+        {
+            debug_printf("freq: No files match pattern: %s", filename);
+            ftnlog_printf("FREQ not found: %s", filename);
+            return FREQ_STATUS_NOT_FOUND;
+        }
+        
+        /* Queue all matching files */
+        for (i = 0; i < count; i++)
+        {
+            freq_queue_file(session, &responses[i]);
+        }
+        
+        return FREQ_STATUS_OK;
+    }
+    else
+    {
+        /* Exact filename request */
+        if (!freq_lookup_file(filename, &response))
+        {
+            debug_printf("freq: File not found: %s", filename);
+            ftnlog_printf("FREQ not found: %s", filename);
+            return FREQ_STATUS_NOT_FOUND;
+        }
+        
+        freq_queue_file(session, &response);
+        return FREQ_STATUS_OK;
+    }
+}

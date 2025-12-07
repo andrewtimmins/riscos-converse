@@ -1282,6 +1282,7 @@ The FTN Mailer (`FTN/`) implements FidoNet Technology Network (FTN) mail exchang
 - **Packer** (`FTN/c/packer`): Outbound packet creation
 - **Queue** (`FTN/c/queue`): Outbound file queue management
 - **TIC** (`FTN/c/tic`): TIC file processing for file distribution
+- **FREQ** (`FTN/c/freq`): File request processing
 
 ### Echomail Group Filtering
 Areas can be assigned to groups (e.g., "A", "B", "C") and uplinks specify which groups they carry. When scanning outbound echomail, messages are only routed to uplinks whose groups overlap with the area's groups.
@@ -1376,6 +1377,37 @@ int tic_process_inbound(void);
 int tic_store_file(const TIC_FILE *tic, const char *file_path);
 int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
 unsigned long tic_calculate_crc32(const char *file_path);
+```
+
+### File Requests (FREQ)
+The mailer supports FTN file requests in both directions.
+
+**Outbound FREQ (Requesting Files):**
+- Use the FREQ window (Commands menu) to request files from remote nodes
+- Creates a `.req` file in BSO outbound directory for the target address
+- Queue scanning detects `.req` files as `QUEUE_FILE_REQ` type
+- When connecting, `binkp_process_req_file()` reads the REQ file and sends M_GET with size=0, time=0
+
+**Inbound FREQ (Responding to Requests):**
+- Remote sends M_GET with size=0 and time=0 (FREQ convention)
+- `binkp_handle_get()` detects this and calls `freq_process_request()`
+- Searches configured `freqpath` directory for matching files
+- Supports wildcards (* and ?) in filenames
+- If found: queues file for send via `binkp_start_send_file()`
+- If not found: sends M_SKIP to indicate unavailability
+
+**Configuration:**
+```
+freqpath    <Converse$Dir>.FTN.Freq
+freqexec    (reserved for external processor)
+```
+
+**FREQ Functions:**
+```c
+FREQ_STATUS freq_process_request(MAILER_SESSION *session, const char *filename);
+int freq_lookup_file(const char *filename, FREQ_RESPONSE_FILE *response);
+int freq_lookup_wildcard(const char *pattern, FREQ_RESPONSE_FILE *responses, int max);
+int freq_queue_file(MAILER_SESSION *session, const FREQ_RESPONSE_FILE *file);
 ```
 
 ### Automatic Toss and Poll Intervals

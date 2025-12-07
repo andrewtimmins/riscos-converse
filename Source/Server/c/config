@@ -1101,6 +1101,20 @@ void load_ftn_config(void)
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
+                else if (strcmp(key, "freqpath") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 20; /* FTN_GLOBAL_FIELD_FREQPATH */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
+                else if (strcmp(key, "freqexec") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 21; /* FTN_GLOBAL_FIELD_FREQEXEC */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                }
                 else if (strcmp(key, "address") == 0 && value != NULL)
                 {
                     /* Start address block */

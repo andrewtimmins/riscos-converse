@@ -4,7 +4,7 @@
 
 ; System information for mailer
 sysop               Andy Timmins
-system              Converse BBS
+system              The Yellow Toaster BBS
 location            Halesowen, West Midlands, UK
 phone               -Unpublished-
 speed               115200
@@ -16,6 +16,11 @@ outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
 badmail             <Converse$Dir>.FTN.Bad
 ticpath             <Converse$Dir>.FTN.Tic
+
+; FREQ (File Request) settings
+; freqpath is the directory where requestable files are stored
+; Remote nodes can request files from this directory during BinkP sessions
+freqpath            <Converse$Dir>.FTN.Freq
 
 ; Interval settings (in seconds)
 scaninterval        60
@@ -46,7 +51,7 @@ address 1
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -57,7 +62,7 @@ address 2
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -68,7 +73,7 @@ address 3
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -79,7 +84,7 @@ address 4
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -90,7 +95,7 @@ address 5
     node            9
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 
@@ -101,7 +106,7 @@ address 6
     node            8
     point           0
     type            5d
-    packet_password 
+    packet_password
     areafix_password
 endaddress
 

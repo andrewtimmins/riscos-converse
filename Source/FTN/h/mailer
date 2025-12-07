@@ -205,6 +205,8 @@ typedef struct
     char netmail_path[MAILER_PATH_SIZE];
     char badmail_path[MAILER_PATH_SIZE];
     char tic_path[MAILER_PATH_SIZE];
+    char freq_path[MAILER_PATH_SIZE];           /* FREQ files directory */
+    char freq_exec[MAILER_PATH_SIZE];           /* External FREQ processor */
 
     /* Our addresses */
     FTN_ADDR our_addrs[8];

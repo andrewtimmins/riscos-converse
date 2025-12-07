@@ -62,6 +62,8 @@ typedef struct
     char netmail[FTN_CONFIG_PATH_LEN];          /* netmail directory */
     char badmail[FTN_CONFIG_PATH_LEN];          /* bad mail directory */
     char ticpath[FTN_CONFIG_PATH_LEN];          /* TIC staging directory */
+    char freqpath[FTN_CONFIG_PATH_LEN];         /* FREQ files directory */
+    char freqexec[FTN_CONFIG_PATH_LEN];         /* External FREQ processor command */
 
     /* Packet settings */
     long max_packet_size;                       /* maximum packet size */
@@ -120,7 +122,9 @@ typedef enum
     FTN_GLOBAL_FIELD_SCANINTERVAL = 16,
     FTN_GLOBAL_FIELD_TOSSINTERVAL = 17,
     FTN_GLOBAL_FIELD_POLLINTERVAL = 18,
-    FTN_GLOBAL_FIELD_RETRYDELAY = 19
+    FTN_GLOBAL_FIELD_RETRYDELAY = 19,
+    FTN_GLOBAL_FIELD_FREQPATH = 20,
+    FTN_GLOBAL_FIELD_FREQEXEC = 21
 } FTN_GLOBAL_FIELD;
 
 /* Initialisation and finalisation */

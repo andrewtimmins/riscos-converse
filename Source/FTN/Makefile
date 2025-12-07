@@ -1,7 +1,7 @@
 # Make file for FTN Mailer
 
 COMPONENT 	= FTN
-OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress
+OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -142,6 +142,8 @@ o.binkp:	C:Desk.h.Wimp
 o.binkp:	h.md5
 o.binkp:	h.crypt
 o.binkp:	h.compress
+o.binkp:	h.freq
+o.binkp:	h.mailer
 o.queue:	c.queue
 o.queue:	C:h.kernel
 o.queue:	C:h.swis
@@ -218,3 +220,17 @@ o.crypt:	h.crypt
 o.compress:	c.compress
 o.compress:	h.compress
 o.compress:	h.debug
+o.freq:	c.freq
+o.freq:	C:h.kernel
+o.freq:	C:h.swis
+o.freq:	h.freq
+o.freq:	h.mailer
+o.freq:	C:Desk.h.Wimp
+o.freq:	C:Desk.h.Core
+o.freq:	C:h.kernel
+o.freq:	h.binkp
+o.freq:	h.mailer
+o.freq:	h.debug
+o.freq:	h.ftnlog
+o.freq:	C:Desk.h.Wimp
+o.freq:	h.mailer
