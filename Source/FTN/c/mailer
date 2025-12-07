@@ -53,6 +53,7 @@
 #include "timer.h"
 #include "debug.h"
 #include "ftnlog.h"
+#include "crypt.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variables                                                                                                                                         */
@@ -983,6 +984,14 @@ static void process_session_rx(MAILER_SESSION *session)
 
         if (bytes > 0)
         {
+            /* Decrypt incoming data if encryption is active */
+            if (session->crypt_flag & BINKP_CRYPT_ACTIVE)
+            {
+                binkp_decrypt_buf(&session->rx_buffer[session->rx_length],
+                                  bytes,
+                                  session->crypt_keys_in);
+            }
+
             session->rx_length += bytes;
             /* Continue reading - there may be more data */
         }
@@ -1043,6 +1052,8 @@ static void process_session_tx(MAILER_SESSION *session)
     struct timeval tv;
     int select_result;
     int bytes;
+    int to_send;
+    unsigned char send_buf[1024];
 
     if (session->tx_length <= session->tx_offset)
     {
@@ -1066,10 +1077,27 @@ static void process_session_tx(MAILER_SESSION *session)
         return;
     }
 
-    /* Socket is ready - send data */
-    bytes = socketwrite(session->socket,
-                        &session->tx_buffer[session->tx_offset],
-                        session->tx_length - session->tx_offset);
+    /* Prepare data to send - limit to buffer size */
+    to_send = session->tx_length - session->tx_offset;
+    if (to_send > (int)sizeof(send_buf))
+    {
+        to_send = (int)sizeof(send_buf);
+    }
+
+    /* Copy and optionally encrypt */
+    if (session->crypt_flag & BINKP_CRYPT_ACTIVE)
+    {
+        /* Copy to temp buffer and encrypt */
+        memcpy(send_buf, &session->tx_buffer[session->tx_offset], to_send);
+        binkp_encrypt_buf(send_buf, to_send, session->crypt_keys_out);
+        bytes = socketwrite(session->socket, send_buf, to_send);
+    }
+    else
+    {
+        /* Send directly without encryption */
+        bytes = socketwrite(session->socket,
+                            &session->tx_buffer[session->tx_offset], to_send);
+    }
 
     if (bytes > 0)
     {

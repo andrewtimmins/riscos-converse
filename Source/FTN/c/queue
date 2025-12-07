@@ -771,6 +771,34 @@ int queue_count_files_for_zone(int zone)
     return count;
 }
 
+/*
+ * Count total files and bytes pending for a specific address.
+ * Returns file count, stores total bytes in *total_bytes.
+ */
+int queue_count_files_for_address(const FTN_ADDR *addr, long *total_bytes)
+{
+    QUEUE_NODE *node;
+    
+    if (total_bytes != NULL)
+    {
+        *total_bytes = 0;
+    }
+    
+    /* Find the node for this address */
+    node = queue_find_node_by_any_address(addr);
+    if (node == NULL)
+    {
+        return 0;
+    }
+    
+    if (total_bytes != NULL)
+    {
+        *total_bytes = node->total_size;
+    }
+    
+    return node->file_count;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* FLO File Parsing                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */

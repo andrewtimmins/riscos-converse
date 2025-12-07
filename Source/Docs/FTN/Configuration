@@ -67,6 +67,25 @@ max_packet_size     32768
   max_packet_size - Maximum size for outbound packets in bytes (default 32KB)
 
 
+Automatic Toss and Poll
+-----------------------
+The mailer can automatically toss inbound packets and poll uplinks on
+configurable intervals.
+
+tossinterval        300
+pollinterval        3600
+
+  tossinterval  - Seconds between automatic toss runs (0 = disabled)
+  pollinterval  - Seconds between automatic uplink polls (0 = disabled)
+
+Example:
+  tossinterval    300     ; Toss every 5 minutes
+  pollinterval    3600    ; Poll uplinks every hour
+
+The intervals are checked during null poll events. Setting either to 0
+disables that automatic operation (manual only via menu).
+
+
 Network Addresses
 -----------------
 You can define up to 8 network addresses. Each address represents your node
@@ -125,26 +144,47 @@ system that will forward mail for a particular network.
 
 uplink <id>
     address         <ftn_address>
+    host            <hostname_or_ip>
+    port            <port_number>
     network         <network_name>
     password        <session_password>
     groups          <area_groups>
+    alias           <alternate_address>
 enduplink
 
 Example - FidoNet uplink:
 
 uplink 1
     address         2:2500/0.0
+    host            hub.fidonet.example.org
+    port            24554
     network         Fidonet
     password        SecretPassword123
     groups          A,B,C
+    alias           2:2500/1.0
+    alias           2:2500/2.0
 enduplink
 
 Fields:
   id        - Unique identifier (1-8)
-  address   - FTN address of your uplink hub
+  address   - Primary FTN address of your uplink hub
+  host      - Hostname or IP address for outbound connections
+  port      - TCP port (default 24554)
   network   - Network this uplink serves
-  password  - BinkP session password (must match hub's configuration)
-  groups    - Echo area groups you receive (A-Z, as configured by your hub)
+  password  - BinkP session password (used for authentication and encryption)
+  groups    - Echo area groups to route to this uplink (A-Z, comma-separated)
+  alias     - Alternate addresses for this uplink (multiple allowed)
+
+Uplink Aliases:
+  FTN hubs often have multiple addresses (AKAs). When a hub connects or
+  reports a different address than configured, aliases help match it.
+  The mailer checks both the primary address and all aliases when
+  looking for files to send during a session.
+
+Group Filtering:
+  When scanning outbound echomail, messages are only routed to uplinks
+  whose groups overlap with the message area's groups. Empty groups on
+  either side means "match all".
 
 
 Multiple Networks
@@ -175,6 +215,8 @@ endaddress
 ; FidoNet uplink
 uplink 1
     address         2:2500/0.0
+    host            fido-hub.example.org
+    port            24554
     network         Fidonet
     password        FidoPassword
     groups          A,B
@@ -183,6 +225,8 @@ enduplink
 ; Private network hub
 uplink 2
     address         99:1/0.0
+    host            private-hub.local
+    port            24554
     network         MyNetwork
     password        PrivatePassword
     groups          A
@@ -251,9 +295,12 @@ Troubleshooting
 
 Security Notes
 --------------
-* Session passwords are transmitted in cleartext (or CRAM-MD5 if supported)
+* CRAM-MD5 authentication is used when supported by the remote system
+* Session encryption (CRYPT) is automatically enabled when both sides
+  support it and a password is configured - uses the session password
 * Store your configuration file with appropriate permissions
 * Consider using unique passwords for each uplink
+* Encryption uses Roger Schlafly's algorithm (same as BinkD)
 
 
 Complete Example Configuration
@@ -275,6 +322,8 @@ netmail             <Converse$Dir>.FTN.Netmail
 badmail             <Converse$Dir>.FTN.Bad
 
 max_packet_size     32768
+tossinterval        300
+pollinterval        3600
 
 ; My FidoNet node address
 address 1
@@ -291,9 +340,12 @@ endaddress
 ; My FidoNet hub
 uplink 1
     address         2:2500/0.0
+    host            fido-hub.example.org
+    port            24554
     network         Fidonet
     password        HubSessionPwd
     groups          A,B,C,D
+    alias           2:2500/1.0
 enduplink
 
 ; End of configuration

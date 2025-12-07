@@ -47,12 +47,30 @@ typedef enum
 #define BINKP_OPT_NDA               "NDA"       /* No dupes asymmetric */
 #define BINKP_OPT_MB                "MB"        /* Multiple batch */
 #define BINKP_OPT_EXTCMD            "EXTCMD"    /* Extended commands */
+#define BINKP_OPT_GZ                "GZ"        /* GZip compression */
+#define BINKP_OPT_BZ2               "BZ2"       /* BZip2 compression */
+#define BINKP_OPT_CRYPT             "CRYPT"     /* Encryption */
 
 /* NR/ND mode flags (bitfield) */
 #define BINKP_WE_NR                 0x01        /* We requested NR mode */
 #define BINKP_THEY_NR               0x02        /* They requested NR mode */
 #define BINKP_WE_ND                 0x01        /* We requested ND mode */
 #define BINKP_THEY_ND               0x02        /* They requested ND mode */
+
+/* Compression type */
+#define BINKP_COMPRESS_NONE         0
+#define BINKP_COMPRESS_GZ           1           /* GZip/deflate */
+#define BINKP_COMPRESS_BZ2          2           /* BZip2 */
+
+/* Encryption flags */
+#define BINKP_CRYPT_NONE            0
+#define BINKP_CRYPT_WE_WANT         0x01        /* We want encryption */
+#define BINKP_CRYPT_THEY_WANT       0x02        /* They want encryption */
+#define BINKP_CRYPT_ACTIVE          0x04        /* Encryption is active */
+
+/* Shorthand aliases for crypt flags */
+#define BINKP_CRYPT_WE              BINKP_CRYPT_WE_WANT
+#define BINKP_CRYPT_THEY            BINKP_CRYPT_THEY_WANT
 
 /* ******************************************************************************************************************************************************** */
 /* BinkP Frame Structure                                                                                                                                    */
@@ -134,6 +152,29 @@ void binkp_process_session(MAILER_SESSION *session);
 void binkp_check_for_files(MAILER_SESSION *session);
 void binkp_try_session_restart(MAILER_SESSION *session);
 int binkp_is_file_received(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
+
+/* Compression */
+void binkp_compress_init(MAILER_SESSION *session, int type);
+void binkp_compress_deinit(MAILER_SESSION *session);
+int binkp_compress_data(MAILER_SESSION *session, unsigned char *dst, int *dst_len,
+                        const unsigned char *src, int src_len, int finish);
+void binkp_decompress_init(MAILER_SESSION *session, int type);
+void binkp_decompress_deinit(MAILER_SESSION *session);
+int binkp_decompress_data(MAILER_SESSION *session, unsigned char *dst, int *dst_len,
+                          const unsigned char *src, int src_len);
+
+/* Encryption */
+void binkp_init_session_encryption(MAILER_SESSION *session);
+void binkp_crypt_init(MAILER_SESSION *session, const char *password);
+void binkp_encrypt_buf(unsigned char *buf, int len, unsigned long keys[3]);
+void binkp_decrypt_buf(unsigned char *buf, int len, unsigned long keys[3]);
+
+/* TRF info */
+void binkp_send_trf(MAILER_SESSION *session);
+void binkp_calculate_pending(MAILER_SESSION *session);
+
+/* M_SKIP during receive */
+void binkp_skip_current_file(MAILER_SESSION *session);
 
 /* ******************************************************************************************************************************************************** */
 /* Function Prototypes - Authentication                                                                                                                     */

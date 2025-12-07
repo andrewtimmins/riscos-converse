@@ -154,6 +154,28 @@ typedef struct
     /* ND mode received files tracking (to prevent duplicates) */
     char nd_received_files[32][MAILER_PATH_SIZE];  /* Track received filenames */
     int nd_received_count;
+
+    /* Compression support */
+    int z_can_send;                 /* Compression types we can send (bitmask) */
+    int z_can_recv;                 /* Compression types we can receive (bitmask) */
+    int z_send_type;                /* Current outbound compression type */
+    int z_recv_type;                /* Current inbound compression type */
+    unsigned char z_send_buf[4096]; /* Compression output buffer */
+    int z_send_len;                 /* Bytes in compression buffer */
+    unsigned char z_recv_buf[4096]; /* Decompression input buffer */
+    int z_recv_len;                 /* Bytes in decompression buffer */
+
+    /* Encryption support */
+    int crypt_flag;                 /* Encryption state flags */
+    unsigned long crypt_keys_in[3]; /* Decryption keys */
+    unsigned long crypt_keys_out[3];/* Encryption keys */
+
+    /* EXTCMD mode */
+    int extcmd;                     /* Remote supports extended commands */
+
+    /* TRF info (pending mail/files) */
+    long trf_mail_bytes;            /* Pending mail bytes to send */
+    long trf_file_bytes;            /* Pending file bytes to send */
 } MAILER_SESSION;
 
 /* ******************************************************************************************************************************************************** */

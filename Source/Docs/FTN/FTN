@@ -10,12 +10,20 @@ inbound and outbound connections.
 
 Features
 --------
-* BinkP/1.0 protocol implementation
+* BinkP/1.1 protocol implementation
+* CRAM-MD5 authentication
+* NR mode (Non-Reliable) for streaming transfers
+* ND mode (No Dupes) to prevent duplicate file reception
+* Session restart (multiple batches per connection)
+* M_GET resume support for interrupted transfers
+* Encryption (Roger Schlafly algorithm, password-based)
+* TRF traffic info exchange
 * Multiple simultaneous sessions (up to 4)
 * BSO (Binkley-Style Outbound) directory structure
 * Automatic inbound mail tossing
 * Multiple network addresses (up to 8)
-* Multiple uplink definitions
+* Multiple uplink definitions with aliases
+* Echomail group filtering for selective routing
 * Scrolling connection log window
 * Integration with Converse Server via Wimp messages
 
@@ -28,6 +36,11 @@ The FTN mailer consists of several components:
   binkp.c    - BinkP protocol implementation
   queue.c    - Outbound queue management (BSO structure)
   tosser.c   - Inbound packet processing
+  scanner.c  - Outbound message scanning and routing
+  packer.c   - Outbound packet creation
+  tic.c      - TIC file processing for file distribution
+  crypt.c    - Session encryption (Roger Schlafly algorithm)
+  compress.c - Compression stubs (for future zlib/bzip2 support)
   timer.c    - Timer utilities for polling
 
 The mailer communicates with other Converse modules:
@@ -38,13 +51,14 @@ The mailer communicates with other Converse modules:
 BinkP Protocol
 --------------
 BinkP is a TCP/IP protocol for FTN mail transfer. Default port is 24554.
+This implementation supports BinkP/1.1 with extensions.
 
 Frame Structure:
   Bytes 0-1: Length (big-endian), high bit indicates command (1) or data (0)
   Bytes 2+:  Payload (command byte + arguments, or raw file data)
 
 Commands:
-  M_NUL (0)  - Information exchange (SYS, ZYZ, LOC, NDL, TIME, VER, etc.)
+  M_NUL (0)  - Information exchange (SYS, ZYZ, LOC, NDL, TIME, VER, TRF, etc.)
   M_ADR (1)  - Present FTN addresses
   M_PWD (2)  - Send password (or CRAM-MD5 response)
   M_FILE (3) - File header (name size time offset)
@@ -53,8 +67,27 @@ Commands:
   M_GOT (6)  - File received successfully
   M_ERR (7)  - Fatal error, session ends
   M_BSY (8)  - System busy, try later
-  M_GET (9)  - Request file (resume support)
-  M_SKIP (10)- Skip file
+  M_GET (9)  - Request file at offset (resume support)
+  M_SKIP (10)- Skip file (receiver can abort reception)
+
+Session Options (sent in M_NUL OPT):
+  NR     - Non-Reliable mode (streaming without per-block ACKs)
+  ND     - No Dupes mode (track received files to prevent duplicates)
+  NDA    - Asymmetric ND (only one side needs ND support)
+  CRYPT  - Encryption supported (enabled after M_OK exchange)
+  GZ     - GZip compression supported (stub - not yet implemented)
+  BZ2    - BZip2 compression supported (stub - not yet implemented)
+  EXTCMD - Extended command parameters supported
+
+M_NUL Keywords:
+  SYS    - System name
+  ZYZ    - Sysop name
+  LOC    - Location
+  NDL    - Node flags
+  TIME   - Local time
+  VER    - Software version (name/version binkp/1.1)
+  TRF    - Traffic info (pending mail bytes, pending file bytes)
+  OPT    - Session options (NR ND NDA CRYPT GZ BZ2 EXTCMD)
 
 
 Session Flow
@@ -81,7 +114,59 @@ Outbound (calling) session:
   7. Receive M_OK or M_ERR
   8. Exchange files
   9. Exchange M_EOB
-  10. Close connection
+  10. Close connection (or restart for another batch)
+
+
+BinkP 1.1 Extensions
+--------------------
+
+NR Mode (Non-Reliable):
+  In NR mode, the sender streams file data without waiting for M_GOT after
+  each file. Files are sent with offset -1 in M_FILE to indicate NR mode.
+  The receiver tracks received files and sends M_GOT after each completes.
+  This improves throughput over high-latency links.
+
+ND Mode (No Dupes):
+  ND mode prevents duplicate file reception across session restarts.
+  Each side tracks which files have been received during the connection.
+  If the same filename is offered again (e.g., after session restart),
+  M_GOT is sent immediately without re-receiving the file.
+
+Session Restart:
+  After both sides exchange M_EOB, the session can restart for another
+  batch instead of disconnecting. This allows:
+  - Receiving files that arrived during the session
+  - Sending files queued during the session
+  - Multiple rounds of transfer on a single TCP connection
+  The batch number is incremented each restart.
+
+M_GET Resume:
+  When a file transfer is interrupted, the receiver can send M_GET with
+  the offset where transfer should resume. The sender seeks to that
+  position and continues sending from there. This avoids retransmitting
+  already-received data.
+
+M_SKIP During Receive:
+  The receiver can abort reception of a file in progress by sending
+  M_SKIP. This is useful if disk space runs low or if the file is
+  determined to be unwanted mid-transfer.
+
+Encryption:
+  Session encryption uses Roger Schlafly's algorithm with CRC32-based
+  key derivation. Both sides must have the same password configured.
+  Encryption is negotiated via the CRYPT option and activated after
+  successful M_OK exchange. All subsequent frames are encrypted.
+
+TRF Info:
+  Traffic information is exchanged during handshake via M_NUL TRF.
+  Format: "TRF <mail_bytes> <file_bytes>"
+  This allows each side to know how much data the other has pending,
+  useful for estimating transfer time.
+
+Buggy NR Workaround:
+  Some older BinkP implementations have buggy NR mode. The mailer
+  detects these based on version strings and falls back to reliable
+  mode when necessary.
 
 
 BSO Directory Structure
@@ -122,17 +207,25 @@ to the main inbound directory on successful completion.
 
 Session State Machine
 ---------------------
-  IDLE        - No active session
-  CONNECTING  - TCP connect in progress (outbound)
-  WAIT_NUL    - Waiting for M_NUL options
-  WAIT_ADR    - Waiting for M_ADR
-  WAIT_PWD    - Waiting for M_PWD (inbound)
-  WAIT_OK     - Waiting for M_OK (outbound)
-  AUTHENTICATED - Password accepted, ready for transfer
-  TRANSFER    - Exchanging files
-  WAIT_EOB    - Waiting for end of batch
-  CLOSING     - Session ending normally
-  ERROR       - Session ended due to error
+  IDLE          - No active session
+  CONNECTING    - TCP connect in progress (outbound)
+  WAIT_NUL      - Waiting for M_NUL options
+  WAIT_ADR      - Waiting for M_ADR
+  WAIT_PWD      - Waiting for M_PWD (inbound)
+  WAIT_OK       - Waiting for M_OK (outbound)
+  AUTHENTICATED - Password accepted, encryption activated if negotiated
+  TRANSFER      - Exchanging files
+  WAIT_EOB      - Waiting for end of batch
+  CLOSING       - Session ending normally
+  ERROR         - Session ended due to error
+
+Session flags track additional state:
+  nr_mode       - NR mode negotiated (bitmask: 1=we want, 2=they want)
+  nd_mode       - ND mode negotiated (bitmask: 1=we want, 2=they want)
+  crypt_flag    - Encryption state (1=we want, 2=they want, 4=active)
+  batch_number  - Current batch number (increments on session restart)
+  local_eob     - We have sent M_EOB
+  remote_eob    - Remote has sent M_EOB
 
 
 Wimp Integration
@@ -179,10 +272,57 @@ Log entries include:
 * Session start/end with statistics
 * Authentication results
 * File transfers
+* Encryption status
+* NR/ND mode negotiation
 * Errors
+
+
+Encryption Implementation
+-------------------------
+The mailer uses Roger Schlafly's encryption algorithm, compatible with
+BinkD and other FTN mailers. Key features:
+
+Algorithm:
+  - Uses a CRC32 lookup table for key derivation
+  - Maintains three 32-bit keys that evolve with each byte
+  - Symmetric encryption (same algorithm for encrypt/decrypt)
+
+Key Initialization:
+  - Keys are derived from the session password
+  - Each character of the password updates all three keys
+  - Initial key values: 0x12345678, 0x23456789, 0x34567890
+
+Operation:
+  - For each byte, a keystream byte is derived from the keys
+  - The byte is XORed with the keystream
+  - The original (plaintext for encrypt, ciphertext for decrypt)
+    byte is used to update the keys for the next byte
+
+Activation:
+  - Both sides must advertise CRYPT in their OPT
+  - Encryption activates immediately after M_OK exchange
+  - All subsequent frames are encrypted
+  - Separate key states are maintained for TX and RX
+
+
+Compression (Stub)
+------------------
+Compression support (GZ/BZ2) is stubbed out pending availability of
+zlib/bzip2 libraries for RISC OS. The framework is in place:
+  - GZ (type 1) - GZip/deflate compression
+  - BZ2 (type 2) - BZip2 compression
+
+When compression is negotiated, the compress.c stubs log a message
+indicating compression is not available and pass data through unchanged.
 
 
 Version Information
 -------------------
-Current Version: 0.01
+Current Version: 0.02
 Task Name: "Converse FTN"
+Protocol: BinkP/1.1
+
+Compatibility:
+  - BinkD (tested)
+  - Other BinkP/1.1 compliant mailers
+  - Falls back gracefully with BinkP/1.0 systems

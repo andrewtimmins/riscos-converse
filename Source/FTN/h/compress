@@ -1,0 +1,50 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - BinkP Compression Header                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef COMPRESS_H
+#define COMPRESS_H
+
+/* Compression types */
+#define COMPRESS_TYPE_NONE  0
+#define COMPRESS_TYPE_GZ    1   /* GZip/deflate */
+#define COMPRESS_TYPE_BZ2   2   /* BZip2 */
+
+/* ******************************************************************************************************************************************************** */
+/* Simple RLE Compression (Always Available)                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/* RLE compression - lightweight fallback */
+int compress_rle(unsigned char *dst, int *dst_len, 
+                 const unsigned char *src, int src_len);
+int decompress_rle(unsigned char *dst, int *dst_len,
+                   const unsigned char *src, int src_len);
+
+/* ******************************************************************************************************************************************************** */
+/* Generic Compression Interface                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/* Initialize compression context */
+int compress_init(int type, void **ctx);
+
+/* Compress data. Returns 0 on success, 1 on stream end, -1 on error */
+int compress_data(int type, void *ctx, unsigned char *dst, int *dst_len,
+                  const unsigned char *src, int src_len, int finish);
+
+/* Cleanup compression context */
+void compress_deinit(int type, void *ctx);
+
+/* Initialize decompression context */
+int decompress_init(int type, void **ctx);
+
+/* Decompress data. Returns 0 on success, 1 on stream end, -1 on error */
+int decompress_data(int type, void *ctx, unsigned char *dst, int *dst_len,
+                    const unsigned char *src, int src_len);
+
+/* Cleanup decompression context */
+void decompress_deinit(int type, void *ctx);
+
+/* Check if compression type is available */
+int compress_available(int type);
+
+#endif /* COMPRESS_H */

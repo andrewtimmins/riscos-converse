@@ -106,6 +106,7 @@ void queue_mark_file_sent(QUEUE_NODE *node, const char *path);
 QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node);
 QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out);
 int queue_count_files_for_zone(int zone);
+int queue_count_files_for_address(const FTN_ADDR *addr, long *total_bytes);
 
 /* Polling */
 QUEUE_NODE *queue_get_next_poll_node(void);

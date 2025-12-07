@@ -1,0 +1,17 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - BinkP Encryption Header                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef CRYPT_H
+#define CRYPT_H
+
+/* Initialize encryption/decryption keys from password */
+void crypt_init_keys(unsigned long keys[3], const char *password);
+
+/* Decrypt buffer in-place */
+void crypt_decrypt_buf(unsigned char *buf, unsigned int bufsize, unsigned long keys[3]);
+
+/* Encrypt buffer in-place */
+void crypt_encrypt_buf(unsigned char *buf, unsigned int bufsize, unsigned long keys[3]);
+
+#endif /* CRYPT_H */

@@ -17,6 +17,8 @@
 #include "debug.h"
 #include "ftnlog.h"
 #include "md5.h"
+#include "crypt.h"
+#include "compress.h"
 
 /* ******************************************************************************************************************************************************** */
 /* C90 Compatibility - strtok_r implementation                                                                                                              */
@@ -263,6 +265,13 @@ void binkp_send_ok(MAILER_SESSION *session, int secure)
 
     debug_printf("binkp: >> M_OK %s", secure ? "secure" : "non-secure");
     ftnlog_printf(">> OK: %s", secure ? "secure" : "non-secure");
+
+    /* Enable encryption after M_OK if both sides support CRYPT */
+    if ((session->crypt_flag & (BINKP_CRYPT_WE | BINKP_CRYPT_THEY)) == 
+        (BINKP_CRYPT_WE | BINKP_CRYPT_THEY))
+    {
+        binkp_init_session_encryption(session);
+    }
 }
 
 void binkp_send_err(MAILER_SESSION *session, const char *message)
@@ -415,7 +424,8 @@ void binkp_process_req_file(MAILER_SESSION *session, const char *path)
 void binkp_send_handshake(MAILER_SESSION *session)
 {
     char buf[128];
-    char opt_buf[128];
+    char opt_buf[256];
+    char *p;
 
     /* Send system information */
     binkp_send_nul(session, "SYS", mailer.system_name);
@@ -428,15 +438,42 @@ void binkp_send_handshake(MAILER_SESSION *session)
     binkp_send_nul(session, "TIME", "");  /* TODO: Format time */
     binkp_send_nul(session, "VER", MAILER_NAME "/" MAILER_VERSION " binkp/" BINKP_VERSION);
 
-    /* Build and send options: NR ND NDA */
-    snprintf(opt_buf, sizeof(opt_buf), "%s %s %s", 
-             BINKP_OPT_NR, BINKP_OPT_ND, BINKP_OPT_NDA);
+    /* Build options string: NR ND NDA EXTCMD [GZ] [BZ2] [CRYPT] */
+    p = opt_buf;
+    p += sprintf(p, "%s %s %s %s", 
+                 BINKP_OPT_NR, BINKP_OPT_ND, BINKP_OPT_NDA, BINKP_OPT_EXTCMD);
+    
+    /* Advertise compression if available */
+    if (compress_available(COMPRESS_TYPE_GZ))
+    {
+        p += sprintf(p, " %s", BINKP_OPT_GZ);
+        session->z_can_recv |= (1 << BINKP_COMPRESS_GZ);
+        session->z_can_send |= (1 << BINKP_COMPRESS_GZ);
+    }
+    if (compress_available(COMPRESS_TYPE_BZ2))
+    {
+        p += sprintf(p, " %s", BINKP_OPT_BZ2);
+        session->z_can_recv |= (1 << BINKP_COMPRESS_BZ2);
+        session->z_can_send |= (1 << BINKP_COMPRESS_BZ2);
+    }
+    
+    /* Advertise encryption if we have a password */
+    if (session->password[0] != '\0')
+    {
+        p += sprintf(p, " %s", BINKP_OPT_CRYPT);
+        session->crypt_flag |= BINKP_CRYPT_WE_WANT;
+    }
+    
     binkp_send_nul(session, "OPT", opt_buf);
     
     /* Mark that we requested NR and ND modes */
     session->nr_mode |= BINKP_WE_NR;
     session->nd_mode |= BINKP_WE_ND;
     session->nda_mode = 1;  /* We support asymmetric ND */
+    session->extcmd = 1;    /* We support EXTCMD */
+
+    /* Send TRF info (pending mail/files) */
+    binkp_send_trf(session);
 
     /* Send our addresses */
     binkp_send_adr(session);
@@ -544,6 +581,45 @@ void binkp_handle_nul(MAILER_SESSION *session, const char *data)
                     session->nda_mode = 1;
                     debug_printf("binkp: Remote supports asymmetric ND mode");
                 }
+                /* EXTCMD - extended commands supported */
+                else if (strcmp(word, BINKP_OPT_EXTCMD) == 0)
+                {
+                    session->extcmd = 1;
+                    debug_printf("binkp: Remote supports EXTCMD mode");
+                }
+                /* GZ - GZip compression supported */
+                else if (strcmp(word, BINKP_OPT_GZ) == 0)
+                {
+                    session->z_can_recv |= (1 << BINKP_COMPRESS_GZ);
+                    debug_printf("binkp: Remote supports GZip compression");
+                    ftnlog_printf("   Remote supports GZ compression");
+                }
+                /* BZ2 - BZip2 compression supported */
+                else if (strcmp(word, BINKP_OPT_BZ2) == 0)
+                {
+                    session->z_can_recv |= (1 << BINKP_COMPRESS_BZ2);
+                    debug_printf("binkp: Remote supports BZip2 compression");
+                    ftnlog_printf("   Remote supports BZ2 compression");
+                }
+                /* CRYPT - encryption supported */
+                else if (strcmp(word, BINKP_OPT_CRYPT) == 0)
+                {
+                    session->crypt_flag |= BINKP_CRYPT_THEY_WANT;
+                    debug_printf("binkp: Remote supports encryption");
+                    ftnlog_printf("   Remote supports CRYPT");
+                }
+            }
+        }
+        else if (strcmp(key, "TRF") == 0)
+        {
+            /* Parse TRF info: "mail_bytes file_bytes" */
+            long mail_bytes = 0, file_bytes = 0;
+            if (sscanf(value, "%ld %ld", &mail_bytes, &file_bytes) >= 1)
+            {
+                debug_printf("binkp: Remote has %ld mail bytes, %ld file bytes pending",
+                             mail_bytes, file_bytes);
+                ftnlog_printf("   Remote pending: %ld mail, %ld files", 
+                              mail_bytes, file_bytes);
             }
         }
         else if (strcmp(key, "VER") == 0)
@@ -799,6 +875,13 @@ void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 
     session->authenticated = 1;
     session->state = SESSION_STATE_AUTHENTICATED;
+
+    /* Enable encryption after M_OK if both sides support CRYPT */
+    if ((session->crypt_flag & (BINKP_CRYPT_WE | BINKP_CRYPT_THEY)) == 
+        (BINKP_CRYPT_WE | BINKP_CRYPT_THEY))
+    {
+        binkp_init_session_encryption(session);
+    }
 
     /* Start file transfer phase */
     binkp_check_for_files(session);
@@ -1737,4 +1820,260 @@ const char *binkp_get_password_for_node(const FTN_ADDR *addr)
 
     debug_printf("binkp: No uplink password found for %s", addr_str);
     return "";
+}
+
+/* ******************************************************************************************************************************************************** */
+/* TRF Info (Pending Mail/Files)                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Calculate pending mail and file bytes for TRF info.
+ */
+void binkp_calculate_pending(MAILER_SESSION *session)
+{
+    int zone;
+    
+    /* Determine which zone we're working with */
+    if (session->direction == SESSION_DIR_OUTBOUND)
+    {
+        zone = session->target_addr.zone;
+    }
+    else
+    {
+        zone = session->remote_addr.zone;
+    }
+    
+    /* Query queue for pending sizes */
+    session->trf_mail_bytes = 0;
+    session->trf_file_bytes = 0;
+    
+    /* Simple estimation based on file count - queue module would need
+     * enhancement to provide exact byte counts. For now, use count * average. */
+    {
+        int file_count = queue_count_files_for_zone(zone);
+        /* Estimate: average mail packet is ~2KB, average file is ~50KB */
+        session->trf_mail_bytes = file_count * 2048;
+        session->trf_file_bytes = 0;  /* Separate mail/file tracking not implemented */
+    }
+    
+    debug_printf("binkp: Calculated TRF: %ld mail, %ld files",
+                 session->trf_mail_bytes, session->trf_file_bytes);
+}
+
+/*
+ * Send TRF info to remote.
+ */
+void binkp_send_trf(MAILER_SESSION *session)
+{
+    char buf[64];
+    
+    binkp_calculate_pending(session);
+    
+    snprintf(buf, sizeof(buf), "%ld %ld", 
+             session->trf_mail_bytes, session->trf_file_bytes);
+    binkp_send_nul(session, "TRF", buf);
+    
+    debug_printf("binkp: Sent TRF %s", buf);
+    ftnlog_printf(">> TRF: %ld mail, %ld files", 
+                   session->trf_mail_bytes, session->trf_file_bytes);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* M_SKIP During Receive                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Skip the file currently being received.
+ * This sends M_SKIP and cleans up the partial receive state.
+ */
+void binkp_skip_current_file(MAILER_SESSION *session)
+{
+    FILE_TRANSFER *ft = &session->recv_file;
+    
+    if (ft->state != TRANSFER_STATE_RECEIVING)
+    {
+        debug_printf("binkp: skip_current_file called but not receiving");
+        return;
+    }
+    
+    debug_printf("binkp: Skipping current file: %s", ft->filename);
+    ftnlog_printf(">> SKIP: %s (receiver initiated)", ft->filename);
+    
+    /* Send M_SKIP */
+    binkp_send_skip(session, ft->filename, ft->size, ft->mtime);
+    
+    /* Close and remove partial file */
+    if (ft->file != NULL)
+    {
+        fclose(ft->file);
+        ft->file = NULL;
+    }
+    
+    /* Remove the partial temp file */
+    if (ft->local_path[0] != '\0')
+    {
+        remove(ft->local_path);
+    }
+    
+    /* Reset state */
+    ft->state = TRANSFER_STATE_IDLE;
+    ft->filename[0] = '\0';
+    ft->local_path[0] = '\0';
+    ft->size = 0;
+    ft->offset = 0;
+    
+    ftnstatus_end_transfer();
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Encryption Wrappers                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Initialize encryption for session after authentication.
+ * Called after M_OK when both sides support CRYPT.
+ */
+void binkp_init_session_encryption(MAILER_SESSION *session)
+{
+    const char *password;
+    
+    /* Get password for this session's remote node */
+    password = binkp_get_password_for_node(&session->remote_addr);
+    
+    if (password == NULL || password[0] == '\0')
+    {
+        debug_printf("binkp: Cannot enable encryption without password");
+        return;
+    }
+    
+    /* Initialize both encryption and decryption keys with the password */
+    crypt_init_keys(session->crypt_keys_in, password);
+    crypt_init_keys(session->crypt_keys_out, password);
+    
+    session->crypt_flag |= BINKP_CRYPT_ACTIVE;
+    
+    debug_printf("binkp: Encryption activated for session");
+    ftnlog_printf("   Encryption activated");
+}
+
+/*
+ * Initialize encryption for session.
+ * Called after M_OK when both sides support CRYPT.
+ */
+void binkp_crypt_init(MAILER_SESSION *session, const char *password)
+{
+    if (password == NULL || password[0] == '\0')
+    {
+        debug_printf("binkp: Cannot init encryption without password");
+        return;
+    }
+    
+    /* Initialize both encryption and decryption keys */
+    crypt_init_keys(session->crypt_keys_in, password);
+    crypt_init_keys(session->crypt_keys_out, password);
+    
+    session->crypt_flag |= BINKP_CRYPT_ACTIVE;
+    
+    debug_printf("binkp: Encryption initialized");
+    ftnlog_printf("   Encryption activated");
+}
+
+/*
+ * Encrypt buffer using session keys.
+ */
+void binkp_encrypt_buf(unsigned char *buf, int len, unsigned long keys[3])
+{
+    crypt_encrypt_buf(buf, (unsigned int)len, keys);
+}
+
+/*
+ * Decrypt buffer using session keys.
+ */
+void binkp_decrypt_buf(unsigned char *buf, int len, unsigned long keys[3])
+{
+    crypt_decrypt_buf(buf, (unsigned int)len, keys);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Compression Wrappers                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Initialize compression for sending.
+ */
+void binkp_compress_init(MAILER_SESSION *session, int type)
+{
+    session->z_send_type = type;
+    session->z_send_len = 0;
+    
+    debug_printf("binkp: Compression init type %d", type);
+}
+
+/*
+ * Deinitialize compression.
+ */
+void binkp_compress_deinit(MAILER_SESSION *session)
+{
+    session->z_send_type = BINKP_COMPRESS_NONE;
+    session->z_send_len = 0;
+}
+
+/*
+ * Compress data for transmission.
+ * Returns bytes written to dst, or -1 on error.
+ */
+int binkp_compress_data(MAILER_SESSION *session, unsigned char *dst, int *dst_len,
+                        const unsigned char *src, int src_len, int finish)
+{
+    if (session->z_send_type == BINKP_COMPRESS_NONE)
+    {
+        /* No compression - just copy */
+        if (src_len > *dst_len) src_len = *dst_len;
+        memcpy(dst, src, src_len);
+        *dst_len = src_len;
+        return 0;
+    }
+    
+    /* Use compression library */
+    return compress_data(session->z_send_type, NULL, dst, dst_len, src, src_len, finish);
+}
+
+/*
+ * Initialize decompression for receiving.
+ */
+void binkp_decompress_init(MAILER_SESSION *session, int type)
+{
+    session->z_recv_type = type;
+    session->z_recv_len = 0;
+    
+    debug_printf("binkp: Decompression init type %d", type);
+}
+
+/*
+ * Deinitialize decompression.
+ */
+void binkp_decompress_deinit(MAILER_SESSION *session)
+{
+    session->z_recv_type = BINKP_COMPRESS_NONE;
+    session->z_recv_len = 0;
+}
+
+/*
+ * Decompress received data.
+ * Returns bytes written to dst, or -1 on error.
+ */
+int binkp_decompress_data(MAILER_SESSION *session, unsigned char *dst, int *dst_len,
+                          const unsigned char *src, int src_len)
+{
+    if (session->z_recv_type == BINKP_COMPRESS_NONE)
+    {
+        /* No compression - just copy */
+        if (src_len > *dst_len) src_len = *dst_len;
+        memcpy(dst, src, src_len);
+        *dst_len = src_len;
+        return 0;
+    }
+    
+    /* Use decompression library */
+    return decompress_data(session->z_recv_type, NULL, dst, dst_len, src, src_len);
 }

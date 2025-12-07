@@ -1,0 +1,311 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - BinkP Compression Implementation                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+/*
+ * Compression support for BinkP protocol.
+ * 
+ * Note: Full GZip/BZip2 compression requires external libraries (zlib, bzip2)
+ * which are not standard on RISC OS. This implementation provides:
+ * 
+ * 1. Protocol negotiation (OPT GZ/BZ2) - advertise compression capability
+ * 2. A simple RLE-based compression as a lightweight alternative
+ * 3. Stubs for zlib/bzip2 if the libraries are available
+ *
+ * For full compression support, port zlib to RISC OS or use ZLib module.
+ */
+
+#include <string.h>
+#include "compress.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Simple RLE Compression (Fallback)                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Simple Run-Length Encoding compression.
+ * Format: For runs of 4+ identical bytes: <ESCAPE> <COUNT> <BYTE>
+ * Where ESCAPE = 0xFF, COUNT = run length - 4 (0-251), max run = 255
+ */
+
+#define RLE_ESCAPE 0xFF
+#define RLE_MIN_RUN 4
+
+int compress_rle(unsigned char *dst, int *dst_len, 
+                 const unsigned char *src, int src_len)
+{
+    int i = 0, o = 0;
+    int max_out = *dst_len;
+    
+    while (i < src_len && o < max_out - 3)
+    {
+        unsigned char c = src[i];
+        int run = 1;
+        
+        /* Count run length */
+        while (i + run < src_len && src[i + run] == c && run < 255)
+        {
+            run++;
+        }
+        
+        if (run >= RLE_MIN_RUN)
+        {
+            /* Encode as RLE */
+            if (o + 3 > max_out) break;
+            dst[o++] = RLE_ESCAPE;
+            dst[o++] = (unsigned char)(run - RLE_MIN_RUN);
+            dst[o++] = c;
+            i += run;
+        }
+        else
+        {
+            /* Copy literal */
+            if (c == RLE_ESCAPE)
+            {
+                /* Escape the escape byte: output as RLE with run=0 */
+                if (o + 3 > max_out) break;
+                dst[o++] = RLE_ESCAPE;
+                dst[o++] = 0;
+                dst[o++] = c;
+            }
+            else
+            {
+                dst[o++] = c;
+            }
+            i++;
+        }
+    }
+    
+    *dst_len = o;
+    return (i == src_len) ? 0 : -1;  /* 0 = success, -1 = buffer too small */
+}
+
+int decompress_rle(unsigned char *dst, int *dst_len,
+                   const unsigned char *src, int src_len)
+{
+    int i = 0, o = 0;
+    int max_out = *dst_len;
+    
+    while (i < src_len && o < max_out)
+    {
+        if (src[i] == RLE_ESCAPE && i + 2 < src_len)
+        {
+            int run = (int)src[i + 1] + RLE_MIN_RUN;
+            unsigned char c = src[i + 2];
+            
+            if (o + run > max_out)
+            {
+                run = max_out - o;
+            }
+            
+            memset(dst + o, c, run);
+            o += run;
+            i += 3;
+        }
+        else
+        {
+            dst[o++] = src[i++];
+        }
+    }
+    
+    *dst_len = o;
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* GZip Compression Stubs                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * These are stubs for zlib compression. If zlib is available on the system
+ * (e.g., via a SharedCLibrary module or static linking), these can be
+ * replaced with real zlib calls.
+ *
+ * For now, they return error codes indicating compression is not available.
+ */
+
+int compress_gz_init(void **ctx)
+{
+    /* zlib not available - return error */
+    debug_printf("compress: GZip compression not available");
+    *ctx = NULL;
+    return -1;
+}
+
+int compress_gz(void *ctx, unsigned char *dst, int *dst_len,
+                const unsigned char *src, int src_len, int finish)
+{
+    (void)ctx; (void)dst; (void)dst_len; (void)src; (void)src_len; (void)finish;
+    return -1;
+}
+
+void compress_gz_deinit(void *ctx)
+{
+    (void)ctx;
+}
+
+int decompress_gz_init(void **ctx)
+{
+    debug_printf("compress: GZip decompression not available");
+    *ctx = NULL;
+    return -1;
+}
+
+int decompress_gz(void *ctx, unsigned char *dst, int *dst_len,
+                  const unsigned char *src, int src_len)
+{
+    (void)ctx; (void)dst; (void)dst_len; (void)src; (void)src_len;
+    return -1;
+}
+
+void decompress_gz_deinit(void *ctx)
+{
+    (void)ctx;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* BZip2 Compression Stubs                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+int compress_bz2_init(void **ctx)
+{
+    debug_printf("compress: BZip2 compression not available");
+    *ctx = NULL;
+    return -1;
+}
+
+int compress_bz2(void *ctx, unsigned char *dst, int *dst_len,
+                 const unsigned char *src, int src_len, int finish)
+{
+    (void)ctx; (void)dst; (void)dst_len; (void)src; (void)src_len; (void)finish;
+    return -1;
+}
+
+void compress_bz2_deinit(void *ctx)
+{
+    (void)ctx;
+}
+
+int decompress_bz2_init(void **ctx)
+{
+    debug_printf("compress: BZip2 decompression not available");
+    *ctx = NULL;
+    return -1;
+}
+
+int decompress_bz2(void *ctx, unsigned char *dst, int *dst_len,
+                   const unsigned char *src, int src_len)
+{
+    (void)ctx; (void)dst; (void)dst_len; (void)src; (void)src_len;
+    return -1;
+}
+
+void decompress_bz2_deinit(void *ctx)
+{
+    (void)ctx;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Generic Compression Interface                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int compress_init(int type, void **ctx)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            return compress_gz_init(ctx);
+        case COMPRESS_TYPE_BZ2:
+            return compress_bz2_init(ctx);
+        default:
+            *ctx = NULL;
+            return -1;
+    }
+}
+
+int compress_data(int type, void *ctx, unsigned char *dst, int *dst_len,
+                  const unsigned char *src, int src_len, int finish)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            return compress_gz(ctx, dst, dst_len, src, src_len, finish);
+        case COMPRESS_TYPE_BZ2:
+            return compress_bz2(ctx, dst, dst_len, src, src_len, finish);
+        default:
+            return -1;
+    }
+}
+
+void compress_deinit(int type, void *ctx)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            compress_gz_deinit(ctx);
+            break;
+        case COMPRESS_TYPE_BZ2:
+            compress_bz2_deinit(ctx);
+            break;
+    }
+}
+
+int decompress_init(int type, void **ctx)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            return decompress_gz_init(ctx);
+        case COMPRESS_TYPE_BZ2:
+            return decompress_bz2_init(ctx);
+        default:
+            *ctx = NULL;
+            return -1;
+    }
+}
+
+int decompress_data(int type, void *ctx, unsigned char *dst, int *dst_len,
+                    const unsigned char *src, int src_len)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            return decompress_gz(ctx, dst, dst_len, src, src_len);
+        case COMPRESS_TYPE_BZ2:
+            return decompress_bz2(ctx, dst, dst_len, src, src_len);
+        default:
+            return -1;
+    }
+}
+
+void decompress_deinit(int type, void *ctx)
+{
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+            decompress_gz_deinit(ctx);
+            break;
+        case COMPRESS_TYPE_BZ2:
+            decompress_bz2_deinit(ctx);
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Compression Availability Check                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int compress_available(int type)
+{
+    /* Currently, only RLE is available (built-in).
+     * GZ and BZ2 require external libraries.
+     * Return 0 to indicate not available, allowing protocol to fall back. */
+    switch (type)
+    {
+        case COMPRESS_TYPE_GZ:
+        case COMPRESS_TYPE_BZ2:
+            return 0;  /* Not available without external libs */
+        default:
+            return 0;
+    }
+}
