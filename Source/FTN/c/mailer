@@ -1331,6 +1331,14 @@ void mailer_poll_all_uplinks(void)
     int i;
     int poll_count = 0;
 
+    /* Re-entry guard: prevent recursive calls during Wimp_Poll dispatch */
+    if (mailer.polling_in_progress)
+    {
+        debug_printf("mailer: Poll already in progress, ignoring re-entry");
+        return;
+    }
+    mailer.polling_in_progress = 1;
+
     debug_printf("mailer: Polling all uplinks... node_count=%d", outbound_queue.node_count);
     ftnlog_printf("Found %d nodes in queue", outbound_queue.node_count);
 
@@ -1396,6 +1404,8 @@ void mailer_poll_all_uplinks(void)
 
     debug_printf("mailer: Poll complete, connected to %d nodes", poll_count);
     ftnlog_printf("Poll complete: %d nodes", poll_count);
+
+    mailer.polling_in_progress = 0;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1847,15 +1857,16 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     }
 
     /* Automatic poll: connect to uplinks and exchange mail */
-    if (mailer.poll_interval > 0 && mailer.active_sessions == 0)
+    if (mailer.poll_interval > 0 && mailer.active_sessions == 0 && !mailer.polling_in_progress)
     {
         if (now - mailer.last_auto_poll >= mailer.poll_interval)
         {
             debug_printf("mailer: Auto-poll triggered");
             ftnlog_printf("Auto-poll: connecting to uplinks...");
+            /* Update timestamp BEFORE calling poll to prevent re-entry */
+            mailer.last_auto_poll = now;
             queue_scan_outbound();
             mailer_poll_all_uplinks();
-            mailer.last_auto_poll = now;
         }
     }
 
@@ -2030,6 +2041,9 @@ int main(int argc, char *argv[])
     /* Poll all uplinks on startup */
     ftnlog_printf("Startup poll...");
     mailer_poll_all_uplinks();
+
+    /* Update last_auto_poll to prevent immediate auto-poll after startup */
+    mailer.last_auto_poll = time(NULL);
 
     /* Main loop */
     while (wimp.quit == Desk_bool_FALSE)

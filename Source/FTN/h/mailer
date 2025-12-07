@@ -195,6 +195,7 @@ typedef struct
     int toss_interval;                   /* seconds - auto-toss inbound (0=disabled) */
     int poll_interval;                   /* seconds - auto-poll uplinks (0=disabled) */
     int retry_delay;                     /* seconds */
+    int polling_in_progress;             /* re-entry guard for poll loop */
 
     /* Automatic scheduling timestamps */
     time_t last_auto_toss;
