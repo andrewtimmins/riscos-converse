@@ -374,10 +374,12 @@ static int script_host_get_user_id(void *context);
 static const script_user_stats *script_host_get_user_stats(void *context);
 static const script_user_flags *script_host_get_user_flags(void *context);
 static void script_host_start_chat_pager(void *context, const char *reason);
+static void script_host_update_lastscan(void *context, time_t new_lastscan);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
 static void perform_session_disconnect(line_task_state *state);
 static void send_user_message(int line_id, const char *real_name);
+static void save_user_stats(line_task_state *state);
 static void poll_idle(void);
 /* Sysop chat functions */
 static void chat_reset_state(line_task_state *state);
@@ -580,6 +582,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_user_stats = script_host_get_user_stats;
         host.get_user_flags = script_host_get_user_flags;
         host.start_chat_pager = script_host_start_chat_pager;
+        host.update_lastscan = script_host_update_lastscan;
         script_initialise(&state->script, &host);
     }
 
@@ -766,6 +769,20 @@ static void perform_session_disconnect(line_task_state *state)
         }
     }
     
+    /* Update todaytime (minutes used this session) before clearing user state */
+    if (state->user_id > 0 && state->connect_time > 0)
+    {
+        time_t now = time(NULL);
+        int session_minutes = (int)((now - state->connect_time) / 60);
+        if (session_minutes > 0)
+        {
+            state->user_stats.todaytime += session_minutes;
+            save_user_stats(state);
+            debug_printf("Session ended: added %d minutes to todaytime (total=%d)", 
+                session_minutes, state->user_stats.todaytime);
+        }
+    }
+    
     state->session_active = 0;
     state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
     state->connect_time = 0;  /* Clear connection time */
@@ -798,6 +815,13 @@ static void perform_session_disconnect(line_task_state *state)
     
     /* Reset user display in Server status window */
     send_user_message(state->line_id, NULL);
+    
+    /* Clear and redraw the ANSI terminal */
+    if (state->terminal != NULL)
+    {
+        ansiterm_clear(state->terminal);
+        ansiterm_invalidate(state->terminal);
+    }
     
     /* Update maininfo pane to show cleared state */
     maininfo_update(state);
@@ -985,9 +1009,20 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
             /* Transfer completed - notify script engine */
             if (state->xfer_session.result == XFER_RESULT_OK)
             {
+                /* Calculate KB transferred (round up) */
+                int kb_transferred = (int)((state->xfer_session.bytes_transferred + 1023) / 1024);
+                
                 /* Check if this was a receive (upload) transfer */
                 if (state->xfer_session.direction == TRANSFER_DIR_RECEIVE)
                 {
+                    /* Update user stats for upload */
+                    if (state->user_id > 0)
+                    {
+                        state->user_stats.uploads++;
+                        state->user_stats.uploadskb += kb_transferred;
+                        save_user_stats(state);
+                    }
+                    
                     /* Register the uploaded file in the filebase */
                     const char *fb_str = script_get_variable(&state->script, "_upload_filebase");
                     const char *area_str = script_get_variable(&state->script, "_upload_area");
@@ -1031,6 +1066,14 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
                 }
                 else
                 {
+                    /* Update user stats for download */
+                    if (state->user_id > 0)
+                    {
+                        state->user_stats.downloads++;
+                        state->user_stats.downloadskb += kb_transferred;
+                        save_user_stats(state);
+                    }
+                    
                     pipes_output_write_string(state->line_id, 
                         "\r\n\033[1;32mTransfer complete!\033[0m\r\n");
                 }
@@ -2778,9 +2821,9 @@ static void script_host_force_disconnect(void *context)
         return;
     }
 
-    /* Reset user display in Server status window */
-    send_user_message(state->line_id, NULL);
+    pipes_output_write_string(state->line_id, "\r\n[Disconnecting...]\r\n");
 
+    /* Notify Server to close the socket connection */
     memset(&message, 0, sizeof(message));
     message.header.size = 32;
     message.header.action = (Desk_message_action)LINE_CONTROL_MESSAGE;
@@ -2788,7 +2831,8 @@ static void script_host_force_disconnect(void *context)
     message.data.words[1] = LINE_CONTROL_REASON_LOGOFF;
     Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
 
-    pipes_output_write_string(state->line_id, "\r\n[Disconnecting...]\r\n");
+    /* Perform local session cleanup (clears user state, terminal, maininfo) */
+    perform_session_disconnect(state);
 }
 
 static void script_host_report_activity(void *context, const char *text)
@@ -3270,6 +3314,11 @@ static int script_host_authenticate_user(void *context, const char *username, co
         
         /* Update maininfo pane with logged-in user info */
         maininfo_update(state);
+        
+        /* Update user stats: set lastlogon to now and increment calls */
+        state->user_stats.lastlogon = time(NULL);
+        state->user_stats.calls++;
+        save_user_stats(state);
         
         snprintf(log_msg, sizeof(log_msg), "User '%s' logged in (id=%d, level=%d%s)", username, user_id, access_level, is_sysop ? ", sysop" : "");
         log_line_event(state->line_id, log_msg);
@@ -4232,6 +4281,9 @@ static void maininfo_clear(void)
     Desk_Icon_Deselect(maininfo_window_handle, MAININFO_INVISIBLE);
 }
 
+/* Height of window scroll bar furniture in OS units */
+#define MAININFO_SCROLLBAR_HEIGHT 40
+
 static void maininfo_update_position(void)
 {
     Desk_window_state main_state;
@@ -4263,11 +4315,11 @@ static void maininfo_update_position(void)
         pane_height = 160;  /* Default pane height */
     }
 
-    /* Position pane at bottom of main window */
+    /* Position pane at bottom of main window, below the scroll bar furniture */
     open.window = maininfo_window_handle;
     open.screenrect.min.x = main_state.openblock.screenrect.min.x;
     open.screenrect.max.x = main_state.openblock.screenrect.max.x;
-    open.screenrect.max.y = main_state.openblock.screenrect.min.y;  /* Top of pane = bottom of main */
+    open.screenrect.max.y = main_state.openblock.screenrect.min.y - MAININFO_SCROLLBAR_HEIGHT;  /* Below scroll bar */
     open.screenrect.min.y = open.screenrect.max.y - pane_height;
     open.scroll.x = 0;
     open.scroll.y = 0;
@@ -4749,6 +4801,20 @@ static void script_host_start_chat_pager(void *context, const char *reason)
     chat_start_pager(state, reason);
 }
 
+static void script_host_update_lastscan(void *context, time_t new_lastscan)
+{
+    line_task_state *state = (line_task_state *)context;
+    
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    /* Update the local cached copy so subsequent saves include the new value */
+    state->user_stats.lastscan = new_lastscan;
+    debug_printf("script_host_update_lastscan: updated to %ld", (long)new_lastscan);
+}
+
 static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref)
 {
     line_task_state *state = (line_task_state *)ref;
@@ -4903,6 +4969,56 @@ static void log_line_event(int line_id, const char *message)
     regs.r[1] = line_id;
     regs.r[2] = (int)message;
     _kernel_swi(SWI_CONVERSE_FILER_LOGGING, &regs, &regs);
+}
+
+/* Save user statistics to the Filer module.
+ * Call this after modifying state->user_stats to persist changes.
+ */
+static void save_user_stats(line_task_state *state)
+{
+    _kernel_swi_regs regs;
+    
+    /* Structure to pass to Filer - must match USER_STATS layout */
+    struct {
+        time_t lastlogon;
+        time_t lastscan;
+        int calls;
+        int todaytime;
+        int uploadskb;
+        int downloadskb;
+        int uploads;
+        int downloads;
+    } stats_block;
+    
+    if (state == NULL || state->user_id <= 0)
+    {
+        return;
+    }
+    
+    /* Copy current stats to block */
+    stats_block.lastlogon = state->user_stats.lastlogon;
+    stats_block.lastscan = state->user_stats.lastscan;
+    stats_block.calls = state->user_stats.calls;
+    stats_block.todaytime = state->user_stats.todaytime;
+    stats_block.uploadskb = state->user_stats.uploadskb;
+    stats_block.downloadskb = state->user_stats.downloadskb;
+    stats_block.uploads = state->user_stats.uploads;
+    stats_block.downloads = state->user_stats.downloads;
+    
+    /* SWI Filer_Userdb with UPDATE_STATS command (reason 6) */
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = 6;  /* FILER_USERDB_CMD_UPDATE_STATS */
+    regs.r[1] = state->user_id;
+    regs.r[2] = (int)&stats_block;
+    
+    if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) == NULL && regs.r[0] == 1)
+    {
+        debug_printf("save_user_stats: Updated stats for user %d", state->user_id);
+    }
+    else
+    {
+        debug_printf("save_user_stats: Failed to update stats for user %d", state->user_id);
+    }
 }
 
 /* ========================================================================

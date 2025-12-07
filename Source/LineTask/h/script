@@ -74,6 +74,8 @@ typedef struct script_host
     const script_user_stats *(*get_user_stats)(void *context);
     /* Get user flags */
     const script_user_flags *(*get_user_flags)(void *context);
+    /* Update lastscan timestamp - called after LOGINSCAN completes */
+    void (*update_lastscan)(void *context, time_t new_lastscan);
 } script_host;
 
 typedef enum

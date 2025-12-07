@@ -4,8 +4,9 @@
     label main_menu
     cls
     fgbg 7 0
+    doing `Main Menu...`
 
-    type `<Converse$Dir>.BBS.Menu.Main`
+    type `<Converse$Dir>.BBS.Menus.Main`
 
     print `\r\nEnter choice: `
     prompt choice char echo

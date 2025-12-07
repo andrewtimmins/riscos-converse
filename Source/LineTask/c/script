@@ -3881,8 +3881,10 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 } LOGINSCAN_USER_STATS;
 
                 LOGINSCAN_USER_STATS updated_stats;
+                time_t now = time(NULL);
+                
                 updated_stats.lastlogon = user_stats->lastlogon;
-                updated_stats.lastscan = time(NULL);  /* Update to current time */
+                updated_stats.lastscan = now;  /* Update to current time */
                 updated_stats.calls = user_stats->calls;
                 updated_stats.todaytime = user_stats->todaytime;
                 updated_stats.uploadskb = user_stats->uploadskb;
@@ -3894,6 +3896,12 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 regs.r[1] = user_id;
                 regs.r[2] = (int)&updated_stats;
                 _kernel_swi(0x5AA41, &regs, &regs);  /* SWI_FILER_USERDB */
+                
+                /* Also update the host's local copy so subsequent saves include the new value */
+                if (state->host.update_lastscan != NULL)
+                {
+                    state->host.update_lastscan(state->host.context, now);
+                }
             }
         }
         break;

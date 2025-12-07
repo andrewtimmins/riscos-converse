@@ -10,9 +10,9 @@
         script  `<Converse$Dir>.BBS.Register`
     end if
 
-    doing `Today in history...`
     oscli `Filer_Run <Converse$Dir>.BBS.Utils.!Today`
     sleep 500
+    doing `Today in history...`
     type `<Converse$Dir>.BBS.Today`
 
     cls
@@ -20,6 +20,11 @@
     loginscan
     anykey
 
+    doing `Seeing who's online...`
     call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126`
+    fgbg 7 0
+    cls
+
     script `<Converse$Dir>.BBS.MainMenu`
+
 }
