@@ -1,6 +1,6 @@
 # Server Messages
 server.ibmt: Converse
-server.ibm: >Info,>System Info,User Editor,Quit
+server.ibm: >Info,>System Info,User Editor,Upload File,Quit
 server.mmt:Misc
 server.mm:Reload
 server.swmt: Converse
