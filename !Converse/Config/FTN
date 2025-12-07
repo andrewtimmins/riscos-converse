@@ -4,7 +4,7 @@
 
 ; System information for mailer
 sysop               Andy Timmins
-system              The Yellow Toaster BBS
+system              Converse BBS
 location            Halesowen, West Midlands, UK
 phone               -Unpublished-
 speed               115200
@@ -51,7 +51,7 @@ address 1
     node            9
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 
@@ -62,7 +62,7 @@ address 2
     node            9
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 
@@ -73,7 +73,7 @@ address 3
     node            9
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 
@@ -84,7 +84,7 @@ address 4
     node            9
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 
@@ -95,7 +95,7 @@ address 5
     node            9
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 
@@ -106,7 +106,7 @@ address 6
     node            8
     point           0
     type            5d
-    packet_password
+    packet_password 
     areafix_password
 endaddress
 

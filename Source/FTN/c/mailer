@@ -420,9 +420,10 @@ static void ftnstatus_open_idle(void)
 /*
  * Create a .REQ file for file request.
  * The file is created in the outbound directory for the target FTN address.
+ * Password is optional - if provided, it's written as "filename !password" per FTN standard.
  * Returns 1 on success, 0 on failure.
  */
-static int ftnfreq_create_request(const char *filename, const char *address)
+static int ftnfreq_create_request(const char *filename, const char *address, const char *password)
 {
     FTN_ADDR dest_addr;
     char req_path[MAILER_PATH_SIZE];
@@ -452,8 +453,15 @@ static int ftnfreq_create_request(const char *filename, const char *address)
         return 0;
     }
     
-    /* Write the filename to request (one per line) */
-    fprintf(fp, "%s\n", filename);
+    /* Write the filename to request, with optional password (FTN format: "filename !password") */
+    if (password != NULL && password[0] != '\0')
+    {
+        fprintf(fp, "%s !%s\n", filename, password);
+    }
+    else
+    {
+        fprintf(fp, "%s\n", filename);
+    }
     fclose(fp);
     
     /* Set filetype to text (0xFFF) */
@@ -489,6 +497,7 @@ static Desk_bool ftnfreq_handle_click(Desk_event_pollblock *event, void *ref)
     {
         char filename[128];
         char address[64];
+        char password[64];
         char *ptr;
         
         /* Get text from writable icons using GetTextPtr for indirected icons */
@@ -514,15 +523,29 @@ static Desk_bool ftnfreq_handle_click(Desk_event_pollblock *event, void *ref)
             address[0] = '\0';
         }
         
+        /* Get optional password */
+        ptr = Desk_Icon_GetTextPtr(ftnfreq_window, FTNFREQ_PASSWORD);
+        if (ptr != NULL)
+        {
+            strncpy(password, ptr, sizeof(password) - 1);
+            password[sizeof(password) - 1] = '\0';
+        }
+        else
+        {
+            password[0] = '\0';
+        }
+        
         debug_printf("ftnfreq: FILENAME icon %d = '%s'", FTNFREQ_FILENAME, filename);
         debug_printf("ftnfreq: FROMADDRESS icon %d = '%s'", FTNFREQ_FROMADDRESS, address);
+        debug_printf("ftnfreq: PASSWORD icon %d = '%s'", FTNFREQ_PASSWORD, password[0] ? "(set)" : "(empty)");
         
         if (filename[0] != '\0' && address[0] != '\0')
         {
-            if (ftnfreq_create_request(filename, address))
+            if (ftnfreq_create_request(filename, address, password))
             {
                 /* Clear the filename field on success */
                 Desk_Icon_SetText(ftnfreq_window, FTNFREQ_FILENAME, "");
+                Desk_Icon_SetText(ftnfreq_window, FTNFREQ_PASSWORD, "");
                 
                 /* Close window */
                 Desk_Window_Hide(ftnfreq_window);

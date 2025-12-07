@@ -370,14 +370,27 @@ void binkp_send_get(MAILER_SESSION *session, const char *filename, long size, lo
 }
 
 /* Send M_GET for a file request (FREQ) - uses 0 0 0 for size/time/offset */
-void binkp_send_get_freq(MAILER_SESSION *session, const char *filename)
+/* If password is provided, sends as "filename !password" per FTN FREQ convention */
+void binkp_send_get_freq(MAILER_SESSION *session, const char *filename, const char *password)
 {
-    binkp_send_get(session, filename, 0, 0, 0);
-    mailer_log("Requesting file: %s", filename);
+    char freq_arg[384];
+    
+    if (password != NULL && password[0] != '\0')
+    {
+        snprintf(freq_arg, sizeof(freq_arg), "%s !%s", filename, password);
+        binkp_send_get(session, freq_arg, 0, 0, 0);
+        mailer_log("Requesting file: %s (with password)", filename);
+    }
+    else
+    {
+        binkp_send_get(session, filename, 0, 0, 0);
+        mailer_log("Requesting file: %s", filename);
+    }
 }
 
 /*
  * Process a .REQ file and send M_GET commands for each requested file.
+ * REQ file format: one line per request, optionally "filename !password"
  */
 void binkp_process_req_file(MAILER_SESSION *session, const char *path)
 {
@@ -397,6 +410,8 @@ void binkp_process_req_file(MAILER_SESSION *session, const char *path)
     {
         char *p = line;
         char *nl;
+        char *password = NULL;
+        char *bang;
 
         /* Remove trailing newline/carriage return */
         nl = strchr(p, '\n');
@@ -411,8 +426,23 @@ void binkp_process_req_file(MAILER_SESSION *session, const char *path)
             continue;
         }
 
+        /* Check for password marker (!password) */
+        bang = strstr(p, " !");
+        if (bang != NULL)
+        {
+            *bang = '\0';           /* Terminate filename */
+            password = bang + 2;    /* Skip " !" to get password */
+            
+            /* Trim trailing spaces from filename */
+            while (bang > p && *(bang - 1) == ' ')
+            {
+                bang--;
+                *bang = '\0';
+            }
+        }
+
         /* Send M_GET for this filename (file request) */
-        binkp_send_get_freq(session, p);
+        binkp_send_get_freq(session, p, password);
     }
 
     fclose(f);

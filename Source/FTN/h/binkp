@@ -134,7 +134,7 @@ void binkp_send_file(MAILER_SESSION *session, const char *filename, long size, t
 void binkp_send_got(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
 void binkp_send_skip(MAILER_SESSION *session, const char *filename, long size, time_t mtime);
 void binkp_send_get(MAILER_SESSION *session, const char *filename, long size, long mtime, long offset);
-void binkp_send_get_freq(MAILER_SESSION *session, const char *filename);
+void binkp_send_get_freq(MAILER_SESSION *session, const char *filename, const char *password);
 
 /* File transfer */
 void binkp_start_send_file(MAILER_SESSION *session, const char *path);

@@ -327,7 +327,13 @@ Requesting Files (Outbound FREQ):
   to that node, the mailer reads the .REQ file and sends M_GET commands
   with size=0, time=0 (the FREQ convention) for each filename.
 
-  REQ file format: One filename per line (wildcards allowed in some mailers)
+  REQ file format: One entry per line
+    filename              Request without password
+    filename !password    Request with password protection
+
+  The FREQ window provides fields for filename, target address, and an
+  optional password. If a password is specified, it's included in the
+  M_GET command sent to the remote system.
 
 Responding to Requests (Inbound FREQ):
   When a remote node sends M_GET with size=0 and time=0, it's a file request.
