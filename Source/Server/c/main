@@ -689,6 +689,70 @@ static int support_get_transfer_active(int line_id)
 	return regs.r[0];
 }
 
+static int support_get_line_connected(int line_id)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_GET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_CONNECTED;
+	if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) != NULL)
+	{
+		return 0;
+	}
+	return regs.r[0];
+}
+
+static time_t support_get_line_connect_time(int line_id)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_GET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_CONNECT_TIME;
+	if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) != NULL)
+	{
+		return 0;
+	}
+	return (time_t)regs.r[0];
+}
+
+static void update_local_connection_timer(int line_id)
+{
+	time_t connect_time;
+	time_t now;
+	int elapsed;
+	int hours, minutes, seconds;
+	char tmp[16];
+
+	/* Only update if timer has fired */
+	if (!timer_action(line_configuration[line_id].timer))
+	{
+		return;
+	}
+
+	connect_time = support_get_line_connect_time(line_id);
+	if (connect_time <= 0)
+	{
+		return;
+	}
+
+	now = time(NULL);
+	elapsed = (int)(now - connect_time);
+	if (elapsed < 0) elapsed = 0;
+
+	hours = elapsed / 3600;
+	minutes = (elapsed % 3600) / 60;
+	seconds = elapsed % 60;
+	sprintf(tmp, "%02d:%02d:%02d", hours, minutes, seconds);
+
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+		tmp);
+
+	line_configuration[line_id].timer = timer_set(100);
+}
+
 /* *********************************************************************************************************************************************************************************** */
 /* *********************************************************************************************************************************************************************************** */
 /* Status Window Functions                                                                                                                                                             */
@@ -951,13 +1015,31 @@ Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
 
 	while (socket_poll < line_configurations)
 	{
-		if (line_configuration[socket_poll].socket != 0 )
+		if (line_configuration[socket_poll].socket != 0)
 		{
 			check_socket(socket_poll, line_configuration[socket_poll].socket);
-			if (line_configuration[socket_poll].resolved<3)
+			if (line_configuration[socket_poll].resolved < 3)
 			{
-        		resolve_address(socket_poll);
+				resolve_address(socket_poll);
 			}
+		}
+		else if (support_get_line_connected(socket_poll))
+		{
+			/* Local connection (no socket) - update timer from Support module */
+			if (line_configuration[socket_poll].timer == 0)
+			{
+				/* Start timer for newly detected local connection */
+				line_configuration[socket_poll].timer = timer_set(100);
+			}
+			update_local_connection_timer(socket_poll);
+		}
+		else if (line_configuration[socket_poll].timer != 0)
+		{
+			/* Connection ended - clear timer and reset display */
+			line_configuration[socket_poll].timer = 0;
+			Desk_Icon_SetText(main_window,
+				main_window_icon_index(socket_poll, MAIN_WINDOW_COLUMN_TIMER),
+				"00:00:00");
 		}
 
 		socket_poll++;
@@ -1242,7 +1324,7 @@ int create_line_icons(void)
 		icons->activity_text[sizeof(user_activity) - 1] = '\0';
 		strncpy(icons->hostname_text, "-----", MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1);
 		icons->hostname_text[MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1] = '\0';
-		strcpy(icons->timer_text, "00:00");
+		strcpy(icons->timer_text, "00:00:00");
 		icons->action_text[0] = '\0';
 		icons->view_text[0] = '\0';
 		icons->logon_text[0] = '\0';
@@ -1615,10 +1697,14 @@ void check_socket(int line_id, int socket)
 	if(timer_action(line_configuration[line_id].timer)) /* update timer */
 	{
 		int d;
+		int hours, minutes, seconds;
 		char tmp[16]={0};
 
 		d=(clock()-line_configuration[line_id].connectedtime)/100;  // seconds
-		sprintf(tmp,"%d:%02d",d/60,d%60);
+		hours = d / 3600;
+		minutes = (d % 3600) / 60;
+		seconds = d % 60;
+		sprintf(tmp, "%02d:%02d:%02d", hours, minutes, seconds);
 
 		Desk_Icon_SetText(main_window,
 			main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
@@ -1905,7 +1991,7 @@ static void close_line_connection(int line_id)
 		user_activity);
 	Desk_Icon_SetText(main_window,
 		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
-		"00:00");
+		"00:00:00");
 
 	Desk_Event_PollIdle();
 }
@@ -2528,7 +2614,7 @@ int main(void) {
 	/* Fallback if Messages file tokens are missing */
 	if (waiting_user[0] == '\0')
 	{
-		strcpy(waiting_user, "Waiting...");
+		strcpy(waiting_user, "(Not logged in)");
 	}
 	if (user_activity[0] == '\0')
 	{

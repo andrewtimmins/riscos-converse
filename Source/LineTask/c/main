@@ -242,6 +242,9 @@ typedef struct
     script_user_stats user_stats;
     /* User flags (from USER_FLAGS in USER_RECORD) */
     script_user_flags user_flags;
+    /* Connection/session state for maininfo pane */
+    time_t connect_time;                /* Unix timestamp when session started */
+    char current_activity[128];         /* Current activity text from DOING command */
     /* Sysop chat state */
     Desk_bool chat_paging;              /* Pager window is open */
     Desk_bool chat_active;              /* Chat session is active */
@@ -264,6 +267,7 @@ typedef struct
 
 static line_task_state task_state;
 static Desk_window_handle main_window_handle;
+static Desk_window_handle maininfo_window_handle;
 static Desk_window_handle chatpager_window_handle;
 static Desk_window_handle chat_window_handle;
 static Desk_window_handle userchat_window_handle;
@@ -290,6 +294,11 @@ static void update_main_window_title(line_task_state *state);
 static void wait_for_pipe_space(void);
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_open_event(Desk_event_pollblock *event, void *ref);
+static void maininfo_initialise(void);
+static void maininfo_shutdown(void);
+static void maininfo_update_position(void);
+static void maininfo_update(line_task_state *state);
+static void maininfo_clear(void);
 static void menu_handle_user_byte(line_task_state *state, unsigned char byte);
 static void botstopper_start(line_task_state *state);
 static void botstopper_process(line_task_state *state);
@@ -390,6 +399,7 @@ static void chat_update_user_timer(line_task_state *state, const char *time_text
 static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_key(Desk_event_pollblock *event, void *ref);
+static Desk_bool handle_maininfo_click(Desk_event_pollblock *event, void *ref);
 static void chatpane_init(chat_pane_view *pane);
 static void chatpane_set_window(chat_pane_view *pane, Desk_window_handle window);
 static void chatpane_clear(chat_pane_view *pane);
@@ -481,6 +491,9 @@ int main(int argc, char **argv)
     Desk_Event_Claim(Desk_event_CLICK, chatpager_window_handle, Desk_event_ANY, handle_chatpager_click, &task_state);
     Desk_Event_Claim(Desk_event_CLICK, chat_window_handle, Desk_event_ANY, handle_chat_click, &task_state);
     Desk_Event_Claim(Desk_event_KEY, chat_window_handle, Desk_event_ANY, handle_chat_key, &task_state);
+    
+    /* Register click handler for maininfo pane */
+    Desk_Event_Claim(Desk_event_CLICK, maininfo_window_handle, Desk_event_ANY, handle_maininfo_click, &task_state);
     
     notify_server_ready(&task_state);
 
@@ -603,6 +616,7 @@ static void initialise_resources(void)
     Desk_Template_UseOutlineFonts();
     Desk_Template_LoadFile("Templates");
     main_window_handle = Desk_Window_Create("main", NULL);
+    maininfo_window_handle = Desk_Window_Create("maininfo", Desk_template_TITLEMIN);
     chatpager_window_handle = Desk_Window_Create("chatpager", NULL);
     chat_window_handle = Desk_Window_Create("chat", NULL);
     userchat_window_handle = Desk_Window_Create("userchat", NULL);
@@ -642,14 +656,19 @@ static void initialise_resources(void)
         task_state.terminal->window = main_window_handle;
     }
 
+    /* Initialise the maininfo pane */
+    maininfo_initialise();
+
     update_main_window_title(&task_state);
 }
 
 static void shutdown_resources(void)
 {
     terminal_finalise(&task_state);
+    maininfo_shutdown();
     Desk_Template_ClearAll();
     main_window_handle = 0;
+    maininfo_window_handle = 0;
     chatpager_window_handle = 0;
     chat_window_handle = 0;
     userchat_window_handle = 0;
@@ -698,6 +717,8 @@ static void show_main_window(void)
                     
                     task_state.local_mode = 1;
                     task_state.session_active = 1;
+                    task_state.connect_time = time(NULL);  /* Store connect time locally */
+                    task_state.current_activity[0] = '\0'; /* Clear activity text */
                     
                     /* Update Support module state */
                     regs.r[0] = LINE_REASON_SET;
@@ -715,7 +736,7 @@ static void show_main_window(void)
                     regs.r[0] = LINE_REASON_SET;
                     regs.r[1] = task_state.line_id;
                     regs.r[2] = LINE_FIELD_CONNECT_TIME;
-                    regs.r[3] = (int)time(NULL);
+                    regs.r[3] = (int)task_state.connect_time;
                     _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
                     
                     pipes_send_welcome(&task_state);
@@ -724,6 +745,10 @@ static void show_main_window(void)
             }
             ansiterm_invalidate(task_state.terminal);
         }
+
+        /* Show and update the maininfo pane */
+        maininfo_update(&task_state);
+        maininfo_update_position();
     }
 }
 
@@ -743,6 +768,8 @@ static void perform_session_disconnect(line_task_state *state)
     
     state->session_active = 0;
     state->botstopper_state = BOTSTOPPER_STATE_INACTIVE;
+    state->connect_time = 0;  /* Clear connection time */
+    state->current_activity[0] = '\0';  /* Clear activity text */
     
     if (state->door_active != Desk_bool_FALSE || state->door_launch_pending != Desk_bool_FALSE)
     {
@@ -771,6 +798,9 @@ static void perform_session_disconnect(line_task_state *state)
     
     /* Reset user display in Server status window */
     send_user_message(state->line_id, NULL);
+    
+    /* Update maininfo pane to show cleared state */
+    maininfo_update(state);
     
     log_line_event(state->line_id, "Session disconnected");
     script_stop_session(state);
@@ -828,6 +858,12 @@ static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
                 /* Also send Wimp message to Server to update UI immediately */
                 script_host_report_activity(&task_state, "");
             }
+
+            /* Also hide the maininfo pane */
+            if (maininfo_window_handle != 0)
+            {
+                Desk_Window_Hide(maininfo_window_handle);
+            }
         }
         Desk_Window_Hide(event->data.openblock.window);
     }
@@ -842,6 +878,12 @@ static Desk_bool handle_open_event(Desk_event_pollblock *event, void *ref)
     if (event != NULL && event->data.openblock.window == chat_window_handle)
     {
         chat_update_panes(&task_state);
+    }
+
+    /* Update maininfo pane position when main window moves */
+    if (event != NULL && event->data.openblock.window == main_window_handle)
+    {
+        maininfo_update_position();
     }
 
     return Desk_bool_TRUE;
@@ -907,17 +949,32 @@ static void door_reset_state(line_task_state *state)
 static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
 {
     line_task_state *state = (line_task_state *)ref;
-    static clock_t last_blink_time = 0;
-    clock_t now;
+    static unsigned int last_blink_time = 0;
+    static unsigned int last_maininfo_time = 0;
+    _kernel_swi_regs regs;
+    unsigned int now;
     Desk_UNUSED(event);
 
-    /* Handle terminal blink */
-    now = clock();
+    /* Get current monotonic time in centiseconds */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    now = (unsigned int)regs.r[0];
+
+    /* Handle terminal blink every 0.5 seconds */
     if (now - last_blink_time >= 50) /* 50cs = 0.5s */
     {
         if (state->terminal)
             ansiterm_blink(state->terminal);
         last_blink_time = now;
+    }
+
+    /* Update maininfo pane time display every second */
+    if (now - last_maininfo_time >= 100) /* 100cs = 1s */
+    {
+        if (state->session_active && maininfo_window_handle != 0)
+        {
+            maininfo_update(state);
+        }
+        last_maininfo_time = now;
     }
 
     /* Poll file transfer if active - do this FIRST to consume raw bytes */
@@ -1178,8 +1235,11 @@ static void handle_server_stream(line_task_state *state, const char *buffer, int
         if (state->control_code == PIPE_CONTROL_CONNECT)
         {
             state->session_active = 1;
+            state->connect_time = time(NULL);  /* Record connection time */
+            state->current_activity[0] = '\0'; /* Clear activity text */
             log_line_event(state->line_id, "Session connected");
             pipes_send_welcome(state);
+            maininfo_update(state);  /* Update maininfo pane */
             
             /* Check if botstopper is enabled globally */
             if (config_get_botstopper_enabled())
@@ -2749,6 +2809,10 @@ static void script_host_report_activity(void *context, const char *text)
         text = "";
     }
 
+    /* Store activity locally for maininfo pane */
+    strncpy(state->current_activity, text, sizeof(state->current_activity) - 1);
+    state->current_activity[sizeof(state->current_activity) - 1] = '\0';
+
     strncpy(payload, text, sizeof(payload) - 1);
     payload[sizeof(payload) - 1] = '\0';
     payload_len = strlen(payload);
@@ -2762,6 +2826,9 @@ static void script_host_report_activity(void *context, const char *text)
     message.header.size = 24 + (int)padded_len;
 
     Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
+
+    /* Update maininfo pane */
+    maininfo_update(state);
 
     if (payload_len > 0)
     {
@@ -3200,6 +3267,9 @@ static int script_host_authenticate_user(void *context, const char *username, co
         
         /* Send user name to Server to update status window */
         send_user_message(state->line_id, realname);
+        
+        /* Update maininfo pane with logged-in user info */
+        maininfo_update(state);
         
         snprintf(log_msg, sizeof(log_msg), "User '%s' logged in (id=%d, level=%d%s)", username, user_id, access_level, is_sysop ? ", sysop" : "");
         log_line_event(state->line_id, log_msg);
@@ -4121,6 +4191,192 @@ static void chat_hide_panes(void)
     }
 }
 
+/* ******************************************************************************************************************************************************** */
+/* Maininfo Pane Functions                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+static void maininfo_initialise(void)
+{
+    /* Window already created in initialise_resources */
+    maininfo_clear();
+}
+
+static void maininfo_shutdown(void)
+{
+    if (maininfo_window_handle != 0)
+    {
+        Desk_Window_Delete(maininfo_window_handle);
+        maininfo_window_handle = 0;
+    }
+}
+
+static void maininfo_clear(void)
+{
+    if (maininfo_window_handle == 0)
+    {
+        return;
+    }
+
+    /* Clear text fields */
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_LINE, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERNAME, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERID, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_DOING, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_KEYS, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_TIME, "");
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_TOTALCALLS, "");
+
+    /* Clear radio buttons */
+    Desk_Icon_Deselect(maininfo_window_handle, MAININFO_SYSOP);
+    Desk_Icon_Deselect(maininfo_window_handle, MAININFO_REGISTERED);
+    Desk_Icon_Deselect(maininfo_window_handle, MAININFO_INVISIBLE);
+}
+
+static void maininfo_update_position(void)
+{
+    Desk_window_state main_state;
+    Desk_window_state pane_state;
+    Desk_window_openblock open;
+    int pane_width;
+    int pane_height;
+
+    if (maininfo_window_handle == 0 || main_window_handle == 0)
+    {
+        return;
+    }
+
+    /* Get current states */
+    Desk_Wimp_GetWindowState(main_window_handle, &main_state);
+    Desk_Wimp_GetWindowState(maininfo_window_handle, &pane_state);
+
+    /* Calculate pane dimensions */
+    pane_width = pane_state.openblock.screenrect.max.x - pane_state.openblock.screenrect.min.x;
+    pane_height = pane_state.openblock.screenrect.max.y - pane_state.openblock.screenrect.min.y;
+
+    /* If pane has no size yet, use main window width */
+    if (pane_width <= 0)
+    {
+        pane_width = main_state.openblock.screenrect.max.x - main_state.openblock.screenrect.min.x;
+    }
+    if (pane_height <= 0)
+    {
+        pane_height = 160;  /* Default pane height */
+    }
+
+    /* Position pane at bottom of main window */
+    open.window = maininfo_window_handle;
+    open.screenrect.min.x = main_state.openblock.screenrect.min.x;
+    open.screenrect.max.x = main_state.openblock.screenrect.max.x;
+    open.screenrect.max.y = main_state.openblock.screenrect.min.y;  /* Top of pane = bottom of main */
+    open.screenrect.min.y = open.screenrect.max.y - pane_height;
+    open.scroll.x = 0;
+    open.scroll.y = 0;
+    open.behind = main_state.openblock.behind;
+
+    Desk_Wimp_OpenWindow(&open);
+}
+
+static void maininfo_update(line_task_state *state)
+{
+    char buffer[64];
+    time_t now;
+    int elapsed;
+    int hours, minutes, seconds;
+
+    if (maininfo_window_handle == 0 || state == NULL)
+    {
+        return;
+    }
+
+    /* Line number */
+    snprintf(buffer, sizeof(buffer), "%d", state->line_id);
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_LINE, buffer);
+
+    /* Username */
+    if (state->user_id > 0)
+    {
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERNAME, state->user_realname[0] ? state->user_realname : "(Unknown)");
+    }
+    else
+    {
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERNAME, "(Not logged in)");
+    }
+
+    /* User ID */
+    if (state->user_id > 0)
+    {
+        snprintf(buffer, sizeof(buffer), "%d", state->user_id);
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERID, buffer);
+    }
+    else
+    {
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_USERID, "");
+    }
+
+    /* Activity (DOING) */
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_DOING, state->current_activity);
+
+    /* Keys */
+    Desk_Icon_SetText(maininfo_window_handle, MAININFO_KEYS, state->user_keys);
+
+    /* Connect time (elapsed session time) */
+    if (state->session_active && state->connect_time > 0)
+    {
+        now = time(NULL);
+        elapsed = (int)(now - state->connect_time);
+        hours = elapsed / 3600;
+        minutes = (elapsed % 3600) / 60;
+        seconds = elapsed % 60;
+        snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", hours, minutes, seconds);
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_TIME, buffer);
+    }
+    else
+    {
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_TIME, "");
+    }
+
+    /* Sysop radio */
+    if (state->user_sysop)
+    {
+        Desk_Icon_Select(maininfo_window_handle, MAININFO_SYSOP);
+    }
+    else
+    {
+        Desk_Icon_Deselect(maininfo_window_handle, MAININFO_SYSOP);
+    }
+
+    /* Registered radio - user is registered if logged in */
+    if (state->user_id > 0)
+    {
+        Desk_Icon_Select(maininfo_window_handle, MAININFO_REGISTERED);
+    }
+    else
+    {
+        Desk_Icon_Deselect(maininfo_window_handle, MAININFO_REGISTERED);
+    }
+
+    /* Invisible radio - check user flag */
+    if (state->user_flags.invisible)
+    {
+        Desk_Icon_Select(maininfo_window_handle, MAININFO_INVISIBLE);
+    }
+    else
+    {
+        Desk_Icon_Deselect(maininfo_window_handle, MAININFO_INVISIBLE);
+    }
+
+    /* Total calls from user stats */
+    if (state->user_id > 0)
+    {
+        snprintf(buffer, sizeof(buffer), "%d", state->user_stats.calls);
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_TOTALCALLS, buffer);
+    }
+    else
+    {
+        Desk_Icon_SetText(maininfo_window_handle, MAININFO_TOTALCALLS, "");
+    }
+}
+
 static void chat_start_pager(line_task_state *state, const char *reason)
 {
     clock_t now;
@@ -4543,6 +4799,41 @@ static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref)
     if (icon == CHAT_SAVECHAT)
     {
         /* TODO: Implement save chat log */
+        return Desk_bool_TRUE;
+    }
+    
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_maininfo_click(Desk_event_pollblock *event, void *ref)
+{
+    line_task_state *state = (line_task_state *)ref;
+    int icon;
+    
+    if (event == NULL || state == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+    
+    icon = event->data.mouse.icon;
+    
+    if (icon == MAININFO_DISCONNECT)
+    {
+        /* Disconnect the current user */
+        if (state->session_active)
+        {
+            perform_session_disconnect(state);
+        }
+        return Desk_bool_TRUE;
+    }
+    
+    if (icon == MAININFO_CHAT)
+    {
+        /* Start chat with the user (if logged in) */
+        if (state->user_id > 0 && !state->chat_active)
+        {
+            chat_start_pager(state, "Sysop initiated chat");
+        }
         return Desk_bool_TRUE;
     }
     
