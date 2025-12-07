@@ -173,6 +173,7 @@
         int accesslevel;                /* minimum access level required */
         char keys[MAX_KEYS];            /* access keys required */
         char name[MAX_NAME];            /* the name of the area */
+        char tag[MAX_NAME];             /* FTN file echo tag (e.g., RISCOS_SOFT) */
     } FILEBASE_AREA_RECORD;
 
     typedef struct

@@ -11,6 +11,7 @@
 #define FILEBASE_CONFIG_MAX_BASES       32
 #define FILEBASE_CONFIG_MAX_AREAS       64
 #define FILEBASE_CONFIG_NAME_LEN        64
+#define FILEBASE_CONFIG_TAG_LEN         64
 #define FILEBASE_CONFIG_KEYS_LEN        128
 #define FILEBASE_CONFIG_PATH_LEN        256
 
@@ -28,6 +29,7 @@ typedef struct
 {
     int id;                                     /* area ID within filebase */
     char name[FILEBASE_CONFIG_NAME_LEN];        /* area name */
+    char tag[FILEBASE_CONFIG_TAG_LEN];          /* FTN file echo tag (e.g., RISCOS_SOFT) */
     int accesslevel;                            /* access level override (-1 = inherit) */
     char keys[FILEBASE_CONFIG_KEYS_LEN];        /* access keys override */
     char path[FILEBASE_CONFIG_PATH_LEN];        /* custom path (for CD-ROM areas) */

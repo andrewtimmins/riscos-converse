@@ -1,6 +1,10 @@
 ;
 ; Filebase Configuration
 ;
+; The optional 'tag' field specifies an FTN file echo tag for TIC file
+; distribution. When a TIC file is received with a matching area tag,
+; the file is automatically imported into that area.
+;
 
 filebase 1
     name            Main
@@ -11,24 +15,28 @@ filebase 1
     ; === GENERAL & INFORMATION ===
     area 1
         name        New User Files
+        tag         NEWUSER_FILES
         accesslevel 0
         keys
     endarea
 
     area 2
         name        General Files
+        tag         GENERAL_FILES
         accesslevel 10
         keys
     endarea
 
     area 3
         name        Text Files & Documents
+        tag         TEXT_DOCS
         accesslevel 10
         keys
     endarea
 
     area 4
         name        Technical Specs & Manuals
+        tag         TECH_SPECS
         accesslevel 10
         keys
     endarea
@@ -36,24 +44,28 @@ filebase 1
     ; === APPLICATIONS ===
     area 5
         name        Applications
+        tag         APPS
         accesslevel 10
         keys
     endarea
 
     area 6
         name        Desktop Enhancements
+        tag         DESKTOP
         accesslevel 10
         keys
     endarea
 
     area 7
         name        Utilities
+        tag         UTILS
         accesslevel 10
         keys
     endarea
 
     area 8
         name        Educational Software
+        tag         EDUCATION
         accesslevel 10
         keys
     endarea
@@ -61,18 +73,21 @@ filebase 1
     ; === GAMES & ENTERTAINMENT ===
     area 9
         name        Games
+        tag         GAMES
         accesslevel 10
         keys
     endarea
 
     area 10
         name        Game Cheats & Trainers
+        tag         GAME_CHEATS
         accesslevel 10
         keys
     endarea
 
     area 11
         name        Demos
+        tag         DEMOS
         accesslevel 10
         keys
     endarea
@@ -80,36 +95,42 @@ filebase 1
     ; === GRAPHICS & MULTIMEDIA ===
     area 12
         name        Graphics & Images
+        tag         GRAPHICS
         accesslevel 10
         keys
     endarea
 
     area 13
         name        Fonts
+        tag         FONTS
         accesslevel 10
         keys
     endarea
 
     area 14
         name        Sprites & Icons
+        tag         SPRITES
         accesslevel 10
         keys
     endarea
 
     area 15
         name        Sound & Music Files
+        tag         SOUND
         accesslevel 10
         keys
     endarea
 
     area 16
         name        Trackers & Music Players
+        tag         TRACKERS
         accesslevel 10
         keys
     endarea
 
     area 17
         name        Fractals & Mathematical Art
+        tag         FRACTALS
         accesslevel 10
         keys
     endarea
@@ -117,30 +138,35 @@ filebase 1
     ; === COMMUNICATIONS & NETWORKING ===
     area 18
         name        Communications Software
+        tag         COMMS
         accesslevel 10
         keys
     endarea
 
     area 19
         name        BBS Software & Doors
+        tag         BBS_SOFT
         accesslevel 10
         keys
     endarea
 
     area 20
         name        FTN & Networking Utils
+        tag         FTN_UTILS
         accesslevel 10
         keys
     endarea
 
     area 21
         name        Internet & Web Tools
+        tag         INTERNET
         accesslevel 10
         keys
     endarea
 
     area 22
         name        Email & Messaging
+        tag         EMAIL
         accesslevel 10
         keys
     endarea
@@ -148,30 +174,35 @@ filebase 1
     ; === PROGRAMMING & DEVELOPMENT ===
     area 23
         name        Programming Tools
+        tag         PROG_TOOLS
         accesslevel 10
         keys
     endarea
 
     area 24
         name        Source Code - C
+        tag         SRC_C
         accesslevel 10
         keys
     endarea
 
     area 25
         name        Source Code - BASIC
+        tag         SRC_BASIC
         accesslevel 10
         keys
     endarea
 
     area 26
         name        Source Code - Other
+        tag         SRC_OTHER
         accesslevel 10
         keys
     endarea
 
     area 27
         name        Libraries & Modules
+        tag         LIBS
         accesslevel 10
         keys
     endarea
@@ -179,24 +210,28 @@ filebase 1
     ; === SYSTEM & ADMINISTRATION ===
     area 28
         name        System Utilities
+        tag         SYSUTILS
         accesslevel 10
         keys
     endarea
 
     area 29
         name        Archive & Compression
+        tag         ARCHIVE
         accesslevel 10
         keys
     endarea
 
     area 30
         name        Security & Encryption
+        tag         SECURITY
         accesslevel 10
         keys
     endarea
 
     area 31
         name        PGP & Public Keys
+        tag         PGP_KEYS
         accesslevel 10
         keys
     endarea
@@ -204,30 +239,41 @@ filebase 1
     ; === FUN & MISCELLANEOUS ===
     area 32
         name        Humour & Jokes
+        tag         HUMOUR
         accesslevel 10
         keys
     endarea
 
     area 33
         name        Miscellaneous
+        tag         MISC
+        accesslevel 10
+        keys
+    endarea
+
+    ; === FIDONET ===
+    area 34
+        name        Zone 2 Nodelist (Daily)
+        tag         Z2DAILY
         accesslevel 10
         keys
     endarea
 
     ; === USERS/SYSOP/PRIVATE ===#
-    area 34
-        name        User Uploads
-        accesslevel 10
-        keys
-    endarea
-
     area 35
-        name        User to User Transfers
+        name        User Uploads
+        tag         UPLOADS
         accesslevel 10
         keys
     endarea
 
     area 36
+        name        User to User Transfers
+        accesslevel 10
+        keys
+    endarea
+
+    area 37
         name        Uploads to SysOp
         accesslevel 500
         keys

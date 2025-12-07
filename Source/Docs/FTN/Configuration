@@ -91,6 +91,66 @@ Creating File Requests:
   sends M_GET commands for each requested file.
 
 
+TIC File Distribution
+---------------------
+The mailer supports TIC file distribution for FTN file echo networks. TIC files
+accompany file transfers and contain metadata (filename, description, CRC, etc.)
+and distribution tracking (SEENBY, PATH).
+
+Inbound TIC Processing:
+  When TIC files are received (during toss or manual import), the mailer:
+  1. Parses the TIC file metadata
+  2. Verifies the file CRC if specified
+  3. Matches the area tag to a filebase area
+  4. Imports the file into the matched filebase area
+  5. Moves the TIC and file to Processed/ or Bad/ as appropriate
+
+  Files that fail processing (CRC mismatch, unknown area) are moved to Bad/.
+  Successfully imported files are moved to Processed/.
+
+Filebase Area Tags:
+  To receive TIC files into a filebase area, configure the area's 'tag' field
+  to match the FTN file echo tag:
+
+  filebase 1
+      name            Main Files
+      area 1
+          name        RISC OS Software
+          tag         RISCOS_SOFT
+      endarea
+      area 2
+          name        General Files
+          tag         GENERAL_FILES
+      endarea
+  endfilebase
+
+  When a TIC file is received with area "RISCOS_SOFT", it will be automatically
+  imported into filebase 1, area 1.
+
+Outbound TIC (Hatching):
+  To distribute a file from your filebase to downlinks, use the hatch
+  functionality (not yet implemented in CLI). This creates:
+  1. A TIC file with file metadata and your address in SEENBY/PATH
+  2. Queues both the file and TIC for sending to configured downlinks
+
+  Files are sent to uplinks whose groups match the area's groups.
+
+TIC File Format (for reference):
+  File        myfile.lha
+  Area        RISCOS_SOFT
+  Desc        A useful RISC OS application
+  Size        12345
+  CRC         12345678
+  Date        1234567890
+  Origin      2:2500/1.0
+  From        2:2500/0.0
+  To          2:2500/622.0
+  Seenby      2:2500/0.0
+  Seenby      2:2500/1.0
+  Path        2:2500/1.0
+  Pw          AreaPassword
+
+
 Packet Settings
 ---------------
 

@@ -91,6 +91,7 @@ typedef struct
     int accesslevel;
     char keys[MAX_KEYS];
     char name[MAX_NAME];
+    char tag[MAX_NAME];             /* FTN file echo tag */
 } FILEBASE_AREA_RECORD;
 
 /* Support module messagebase area config - must match Support/h/msgbaseconfig */
@@ -119,6 +120,31 @@ typedef struct
     int area_count;
     SUPPORT_MSGBASE_AREA_CONFIG areas[SUPPORT_MAX_AREAS];
 } SUPPORT_MSGBASE_CONFIG;
+
+/* Support module filebase area config - must match Support/h/filebaseconfig */
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    char tag[MAX_NAME];
+    int accesslevel;
+    char keys[MAX_KEYS];
+    char path[MAX_PATH];
+} SUPPORT_FILEBASE_AREA_CONFIG;
+
+/* Support module filebase config - must match Support/h/filebaseconfig */
+typedef struct
+{
+    int id;
+    char name[MAX_NAME];
+    int type;
+    int accesslevel;
+    char keys[MAX_KEYS];
+    int readonly;
+    char path[MAX_PATH];
+    int area_count;
+    SUPPORT_FILEBASE_AREA_CONFIG areas[SUPPORT_MAX_AREAS];
+} SUPPORT_FILEBASE_CONFIG;
 
 /* Config parser state */
 typedef enum
@@ -155,6 +181,7 @@ static int filer_update_filebase(int id, FILEBASE_RECORD *record);
 static int filer_store_filebase_area(int base_id, FILEBASE_AREA_RECORD *area);
 static void support_push_msgbase_global(void);
 static void support_push_msgbase(MSGBASE_RECORD *base, MSGBASE_AREA_RECORD *areas, int area_count);
+static void support_push_filebase(FILEBASE_RECORD *base, FILEBASE_AREA_RECORD *areas, int area_count);
 static void support_push_filebase_global(void);
 
 /* ******************************************************************************************************************************************************** */
@@ -469,6 +496,46 @@ static void support_push_filebase_global(void)
     snprintf(buf, sizeof(buf), "%ld", filebase_max_upload_size);
     regs.r[2] = (int)buf;
     _kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs);
+}
+
+static void support_push_filebase(FILEBASE_RECORD *base, FILEBASE_AREA_RECORD *areas, int area_count)
+{
+    _kernel_swi_regs regs;
+    static SUPPORT_FILEBASE_CONFIG config; /* static to persist across call */
+    int i;
+
+    if (base == NULL)
+    {
+        return;
+    }
+
+    /* Build the config structure from parsed data */
+    memset(&config, 0, sizeof(config));
+    config.id = base->id;
+    strncpy(config.name, base->name, sizeof(config.name) - 1);
+    config.type = base->type;
+    config.accesslevel = base->accesslevel;
+    strncpy(config.keys, base->keys, sizeof(config.keys) - 1);
+
+    /* Copy area information */
+    config.area_count = (area_count <= SUPPORT_MAX_AREAS) ? area_count : SUPPORT_MAX_AREAS;
+    for (i = 0; i < config.area_count; i++)
+    {
+        config.areas[i].id = areas[i].id;
+        strncpy(config.areas[i].name, areas[i].name, sizeof(config.areas[i].name) - 1);
+        strncpy(config.areas[i].tag, areas[i].tag, sizeof(config.areas[i].tag) - 1);
+        config.areas[i].accesslevel = -1; /* inherit from base */
+        config.areas[i].keys[0] = '\0';   /* no override */
+    }
+
+    /* Push to Support module */
+    regs.r[0] = SUPPORT_CMD_SET_BASE;
+    regs.r[1] = base->id;
+    regs.r[2] = (int)&config;
+    _kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs);
+
+    debug_printf("config: Pushed filebase %d to Support module (%d areas)",
+                 base->id, config.area_count);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -796,6 +863,9 @@ static void parse_filebase_file(FILE *file)
                                                  pending_areas[i].id, base_id);
                                 }
                             }
+                            
+                            /* Push to Support module for TIC area matching */
+                            support_push_filebase(&current_base, pending_areas, pending_area_count);
                         }
                     }
                     pending_area_count = 0;
@@ -837,13 +907,19 @@ static void parse_filebase_file(FILE *file)
                         pending_area_count < MAX_PENDING_AREAS)
                     {
                         pending_areas[pending_area_count++] = current_area;
-                        debug_printf("config: Queued area %d: %s", current_area.id, current_area.name);
+                        debug_printf("config: Queued area %d: %s (tag=%s)", 
+                                     current_area.id, current_area.name, 
+                                     current_area.tag[0] ? current_area.tag : "(none)");
                     }
                     state = PARSE_STATE_FILEBASE;
                 }
                 else if (strcmp(key, "name") == 0 && value != NULL)
                 {
                     strncpy(current_area.name, value, sizeof(current_area.name) - 1);
+                }
+                else if (strcmp(key, "tag") == 0 && value != NULL)
+                {
+                    strncpy(current_area.tag, value, sizeof(current_area.tag) - 1);
                 }
                 else if (strcmp(key, "accesslevel") == 0 && value != NULL)
                 {

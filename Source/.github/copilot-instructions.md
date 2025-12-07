@@ -1338,14 +1338,48 @@ Netmail addressed to nodes other than our configured addresses is marked as tran
 Points are handled by routing to the boss node (point=0).
 
 ### TIC File Processing
-TIC files accompany files in FTN file distribution networks. The TIC module:
+TIC files accompany files in FTN file distribution networks. The TIC module provides
+full support for inbound and outbound file echo distribution.
 
-**Inbound processing:**
-1. Scans inbound directory for `*.tic` files
+**Directory Structure:**
+```
+<Converse$Dir>.FTN/
+├── Inbound/
+│   └── <zone>/
+│       ├── Bad/            ← Failed TIC imports (CRC error, unknown area)
+│       ├── Processed/      ← Successfully imported files
+│       └── Temp/           ← Partial receives
+└── Outbound/<zone>/        ← Outbound TIC and attached files
+```
+
+**Inbound Processing:**
+1. Scans zone inbound directories for `*.tic` files
 2. Parses TIC metadata (filename, area, size, CRC, origin, etc.)
 3. Verifies file CRC-32 if specified
-4. Matches area tag to filebase area
+4. Matches area tag to filebase area (using `tag` field in area config)
 5. Stores file via Filer SWI
+6. Moves TIC and file to `Processed/` on success, `Bad/` on failure
+
+**Filebase Area Tags:**
+To receive TIC files, configure filebase areas with matching FTN file echo tags:
+```
+filebase 1
+    name    Main Files
+    area 1
+        name    RISC OS Software
+        tag     RISCOS_SOFT
+    endarea
+endfilebase
+```
+The `tag` field is matched case-insensitively against the TIC file's Area field.
+
+**Outbound TIC Creation:**
+The `tic_create_for_file()` function creates TIC files for outbound distribution:
+1. Gets file info from Filer (name, description, size)
+2. Calculates CRC-32 of the file
+3. Populates TIC structure with origin, SEENBY, PATH
+4. Writes TIC file to outbound zone directory
+5. Queues both file and TIC for sending to destination
 
 **TIC file format:**
 ```
@@ -1373,9 +1407,14 @@ int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *pass
 ### TIC Functions
 ```c
 int tic_parse_file(const char *tic_path, TIC_FILE *tic);
+void tic_free(TIC_FILE *tic);
 int tic_process_inbound(void);
+int tic_process_single(const char *tic_path, const char *file_path);
 int tic_store_file(const TIC_FILE *tic, const char *file_path);
 int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
+int tic_create_for_file(int filebase_id, int file_id, const char *area_tag,
+                        const FTN_ADDR *dest, const char *password);
+int tic_write_file(const TIC_FILE *tic, const char *tic_path);
 unsigned long tic_calculate_crc32(const char *file_path);
 ```
 

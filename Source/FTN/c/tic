@@ -127,6 +127,27 @@ void tic_finalise(void)
     /* Nothing to clean up */
 }
 
+/* Convert DOS/FTN filename to RISC OS format by removing dots */
+static void tic_filename_to_riscos(const char *src, char *dest, size_t dest_size)
+{
+    size_t i, j;
+
+    if (src == NULL || dest == NULL || dest_size == 0)
+    {
+        return;
+    }
+
+    j = 0;
+    for (i = 0; src[i] != '\0' && j < dest_size - 1; i++)
+    {
+        if (src[i] != '.')
+        {
+            dest[j++] = src[i];
+        }
+    }
+    dest[j] = '\0';
+}
+
 void tic_set_inbound_path(const char *path)
 {
     if (path != NULL && path[0] != '\0')
@@ -406,10 +427,10 @@ void tic_free(TIC_FILE *tic)
 int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id)
 {
     _kernel_swi_regs regs;
-    int base_count, area_count;
-    int b, a;
+    int base_count;
+    int b;
 
-    /* Area config structure from Support module */
+    /* Global config structure from Support module */
     typedef struct
     {
         int id;
@@ -417,9 +438,9 @@ int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id
         char tag[64];
         int accesslevel;
         char keys[128];
+        char path[256];
     } AREA_CFG;
 
-    /* Base config structure from Support module */
     typedef struct
     {
         int id;
@@ -427,56 +448,67 @@ int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id
         int type;
         int accesslevel;
         char keys[128];
+        int readonly;
+        char path[256];
         int area_count;
-        /* areas follow... */
+        AREA_CFG areas[64];
     } BASE_CFG;
+
+    typedef struct
+    {
+        int default_accesslevel;
+        char storage_root[256];
+        long max_upload_size;
+        int base_count;
+        BASE_CFG bases[32];
+    } GLOBAL_CFG;
 
     if (area_tag == NULL || filebase_id == NULL || filebase_area_id == NULL)
     {
         return 0;
     }
 
-    /* Get base count */
-    regs.r[0] = FILEBASE_CONFIG_COUNT_BASES;
-    if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL)
+    /* Get global config pointer */
+    regs.r[0] = 0;  /* FILEBASE_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
     {
+        debug_printf("tic: Cannot get filebase global config");
         return 0;
     }
-    base_count = regs.r[0];
 
-    /* Search all bases for matching area tag */
-    for (b = 1; b <= base_count; b++)
     {
-        regs.r[0] = FILEBASE_CONFIG_COUNT_AREAS;
-        regs.r[1] = b;
-        if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL)
+        GLOBAL_CFG *global = (GLOBAL_CFG *)regs.r[0];
+        base_count = global->base_count;
+
+        debug_printf("tic: Searching %d filebases for area tag '%s'", base_count, area_tag);
+
+        /* Search all bases for matching area tag */
+        for (b = 0; b < base_count; b++)
         {
-            continue;
-        }
-        area_count = regs.r[0];
+            BASE_CFG *base = &global->bases[b];
+            int a;
 
-        for (a = 1; a <= area_count; a++)
-        {
-            AREA_CFG *area;
+            debug_printf("tic: Filebase %d '%s' has %d areas", 
+                         base->id, base->name, base->area_count);
 
-            regs.r[0] = FILEBASE_CONFIG_GET_AREA;
-            regs.r[1] = b;
-            regs.r[2] = a;
-            if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+            for (a = 0; a < base->area_count; a++)
             {
-                continue;
-            }
+                AREA_CFG *area = &base->areas[a];
 
-            area = (AREA_CFG *)regs.r[0];
+                if (area->tag[0] != '\0')
+                {
+                    debug_printf("tic: Checking area %d tag '%s'", area->id, area->tag);
+                }
 
-            /* Compare tags case-insensitively */
-            if (tic_strcasecmp(area->tag, area_tag) == 0)
-            {
-                *filebase_id = b;
-                *filebase_area_id = a;
-                debug_printf("tic: Matched area %s to filebase %d area %d",
-                             area_tag, b, a);
-                return 1;
+                /* Compare tags case-insensitively */
+                if (area->tag[0] != '\0' && tic_strcasecmp(area->tag, area_tag) == 0)
+                {
+                    *filebase_id = base->id;
+                    *filebase_area_id = area->id;
+                    debug_printf("tic: Matched area %s to filebase %d area %d",
+                                 area_tag, base->id, area->id);
+                    return 1;
+                }
             }
         }
     }
@@ -681,19 +713,172 @@ int tic_write_file(const TIC_FILE *tic, const char *tic_path)
     return 1;
 }
 
+/* Filer FILE_RECORD structure - must match Filer/h/structs */
+typedef struct
+{
+    int id;
+    int filebaseid;
+    int filebaseareaid;
+    int deleted;
+    int accesslevel;
+    char keys[128];
+    char name[64];
+    int uploadedby;
+    int uploaddate;
+    char description[256];
+    long filesize;
+    int downloads;
+} TIC_FILE_RECORD;
+
+#define FILEBASE_CMD_FILE_INFO      11
+#define FILEBASE_CMD_DOWNLOAD_BLOCK 5
+
 int tic_create_for_file(int filebase_id, int file_id, const char *area_tag,
                         const FTN_ADDR *dest, const char *password)
 {
-    /* TODO: Implement - needs to read file info from Filer and create TIC */
-    /* This would be called when scanning for files to forward */
+    _kernel_swi_regs regs;
+    TIC_FILE_RECORD *file_rec;
+    TIC_FILE tic;
+    char tic_path[TIC_MAX_PATH];
+    char file_path[TIC_MAX_PATH];
+    int zone;
     
-    (void)filebase_id;
-    (void)file_id;
-    (void)area_tag;
-    (void)dest;
-    (void)password;
+    if (area_tag == NULL || dest == NULL)
+    {
+        return 0;
+    }
     
-    return 0;
+    /* Get file info from Filer */
+    regs.r[0] = FILEBASE_CMD_FILE_INFO;
+    regs.r[1] = filebase_id;
+    regs.r[2] = file_id;
+    
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
+    {
+        debug_printf("tic: Cannot get file info for filebase %d file %d", 
+                     filebase_id, file_id);
+        return 0;
+    }
+    
+    file_rec = (TIC_FILE_RECORD *)regs.r[0];
+    
+    /* Check file not deleted */
+    if (file_rec->deleted)
+    {
+        debug_printf("tic: File %d in filebase %d is deleted", file_id, filebase_id);
+        return 0;
+    }
+    
+    /* Build the filesystem path to the file */
+    {
+        int group = (file_id - 1) / 60;
+        if (file_rec->filebaseareaid > 0)
+        {
+            snprintf(file_path, sizeof(file_path),
+                     "<Converse$Dir>.FileBases.%d.Files.A%d.G%02d.%d",
+                     filebase_id, file_rec->filebaseareaid, group, file_id);
+        }
+        else
+        {
+            snprintf(file_path, sizeof(file_path),
+                     "<Converse$Dir>.FileBases.%d.Files.G%02d.%d",
+                     filebase_id, group, file_id);
+        }
+    }
+    
+    /* Initialise TIC structure */
+    memset(&tic, 0, sizeof(tic));
+    
+    strncpy(tic.filename, file_rec->name, sizeof(tic.filename) - 1);
+    strncpy(tic.area, area_tag, sizeof(tic.area) - 1);
+    strncpy(tic.desc, file_rec->description, sizeof(tic.desc) - 1);
+    tic.size = file_rec->filesize;
+    tic.date = (time_t)file_rec->uploaddate;
+    
+    /* Calculate CRC-32 of the file */
+    tic.crc = tic_calculate_crc32(file_path);
+    
+    /* Set origin from our primary address */
+    if (mailer.our_addr_count > 0)
+    {
+        tic.origin = mailer.our_addrs[0];
+        tic.from = mailer.our_addrs[0];
+    }
+    
+    /* Set destination */
+    tic.to = *dest;
+    
+    /* Add ourselves to SEENBY */
+    if (mailer.our_addr_count > 0 && tic.seenby_count < TIC_MAX_SEENBY)
+    {
+        tic.seenby[tic.seenby_count++] = mailer.our_addrs[0];
+    }
+    
+    /* Add ourselves to PATH */
+    if (mailer.our_addr_count > 0 && tic.path_count < TIC_MAX_SEENBY)
+    {
+        tic.path[tic.path_count++] = mailer.our_addrs[0];
+    }
+    
+    /* Set password if provided */
+    if (password != NULL && password[0] != '\0')
+    {
+        strncpy(tic.password, password, sizeof(tic.password) - 1);
+    }
+    
+    tic.valid = 1;
+    
+    /* Build TIC filename - use file ID and random component */
+    zone = dest->zone > 0 ? dest->zone : 2;
+    snprintf(tic_path, sizeof(tic_path),
+             "<Converse$Dir>.FTN.Outbound.%d.%08X.tic",
+             zone, (unsigned int)(file_id * 65536 + (rand() & 0xFFFF)));
+    
+    /* Write TIC file */
+    if (!tic_write_file(&tic, tic_path))
+    {
+        debug_printf("tic: Failed to write TIC file %s", tic_path);
+        return 0;
+    }
+    
+    /* Get or create queue node for destination */
+    {
+        QUEUE_NODE *node = queue_find_node(dest);
+        if (node == NULL)
+        {
+            node = queue_add_node(dest);
+        }
+        if (node == NULL)
+        {
+            debug_printf("tic: Cannot create queue node for destination");
+            return 0;
+        }
+        
+        /* Queue the associated file for sending */
+        if (!queue_add_file(node, file_path, QUEUE_FILE_ATTACH, QUEUE_FLAVOUR_NORMAL))
+        {
+            debug_printf("tic: Failed to queue file %s", file_path);
+            return 0;
+        }
+        
+        /* Queue the TIC file itself */
+        if (!queue_add_file(node, tic_path, QUEUE_FILE_ATTACH, QUEUE_FLAVOUR_NORMAL))
+        {
+            debug_printf("tic: Failed to queue TIC file %s", tic_path);
+            return 0;
+        }
+    }
+    
+    debug_printf("tic: Created TIC for %s to %d:%d/%d.%d",
+                 file_rec->name, dest->zone, dest->net, dest->node, dest->point);
+    
+    ftnlog_printf("Created TIC: %s -> %s (%d:%d/%d.%d)",
+                  file_rec->name, area_tag, 
+                  dest->zone, dest->net, dest->node, dest->point);
+    
+    tic_stats.tics_created++;
+    tic_stats.files_forwarded++;
+    return 1;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -749,43 +934,55 @@ typedef struct
 static void tic_process_zone_directory(const char *zone_path, int zone, void *ctx)
 {
     _kernel_swi_regs regs;
-    char buffer[256];
     char tic_path[TIC_MAX_PATH];
     char file_path[TIC_MAX_PATH];
+    char name_buffer[256];  /* Buffer for filename - must be word aligned */
     int context = 0;
     TIC_INBOUND_CONTEXT *scan = (TIC_INBOUND_CONTEXT *)ctx;
+
+    /* Ensure buffer is word-aligned */
+    char *buffer = (char *)(((unsigned int)name_buffer + 3) & ~3);
 
     debug_printf("tic: Processing inbound TIC zone %d from %s", zone, zone_path);
 
     do
     {
-        regs.r[0] = 12;  /* OS_GBPB reason 12: read directory entries with info */
+        regs.r[0] = 9;  /* OS_GBPB reason 9: read directory names only */
         regs.r[1] = (int)zone_path;
         regs.r[2] = (int)buffer;
         regs.r[3] = 1;
         regs.r[4] = context;
-        regs.r[5] = sizeof(buffer);
+        regs.r[5] = 252;  /* Buffer size (256 - 4 for alignment) */
         regs.r[6] = (int)"*tic";  /* Match *tic files */
 
         if (_kernel_swi(0x0C, &regs, &regs) != NULL)
         {
+            debug_printf("tic: OS_GBPB 9 failed for %s", zone_path);
             break;
         }
 
         context = regs.r[4];
+        debug_printf("tic: OS_GBPB returned r3=%d r4=%d", regs.r[3], context);
 
         if (regs.r[3] > 0)
         {
             /* Found a TIC file */
             TIC_FILE tic;
-            char *tic_name = buffer + 20;  /* Filename starts at offset 20 */
+            char *tic_name = buffer;  /* For reason 9, name is at start of buffer */
             int result;
 
+            debug_printf("tic: Found TIC file: '%s'", tic_name);
+
             snprintf(tic_path, sizeof(tic_path), "%s.%s", zone_path, tic_name);
+            debug_printf("tic: Full TIC path: '%s'", tic_path);
 
             if (tic_parse_file(tic_path, &tic))
             {
-                snprintf(file_path, sizeof(file_path), "%s.%s", zone_path, tic.filename);
+                char riscos_filename[TIC_MAX_FILENAME];
+                tic_filename_to_riscos(tic.filename, riscos_filename, sizeof(riscos_filename));
+                snprintf(file_path, sizeof(file_path), "%s.%s", zone_path, riscos_filename);
+
+                debug_printf("tic: Looking for file %s (original: %s)", file_path, tic.filename);
 
                 result = tic_process_single(tic_path, file_path);
                 
