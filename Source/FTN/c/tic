@@ -14,6 +14,7 @@
 #include "tic.h"
 #include "mailer.h"
 #include "queue.h"
+#include "echofix.h"
 #include "debug.h"
 #include "ftnlog.h"
 
@@ -879,6 +880,108 @@ int tic_create_for_file(int filebase_id, int file_id, const char *area_tag,
     tic_stats.tics_created++;
     tic_stats.files_forwarded++;
     return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Forwarding to Subscribers                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/* SWI definitions for downlink access */
+#define SWI_SUPPORT_FTN             0x5AA86
+#define FTN_CONFIG_GET_DOWNLINK     8
+#define FTN_CONFIG_COUNT_DOWNLINKS  10
+
+/* Downlink config structure (must match Support module) */
+typedef struct
+{
+    int id;
+    char address[64];
+    char name[64];
+    char password[32];
+    char areafix_password[32];
+    char filefix_password[32];
+    char allowed_groups[64];
+    char allowed_echoes[256];
+    char allowed_files[256];
+    int max_echoes;
+    int max_files;
+} TIC_DOWNLINK_CFG;
+
+int tic_forward_to_subscribers(int filebase_id, int file_id, const char *area_tag)
+{
+    FTN_ADDR subscribers[32];
+    int subscriber_count;
+    int i;
+    int forwarded = 0;
+
+    if (area_tag == NULL || area_tag[0] == '\0')
+    {
+        debug_printf("tic_forward_to_subscribers: No area tag specified");
+        return 0;
+    }
+
+    /* Get all FileFix subscribers for this area */
+    subscriber_count = echofix_get_subscribers(ECHOFIX_TYPE_FILEFIX, area_tag,
+                                                subscribers, 32);
+
+    if (subscriber_count == 0)
+    {
+        debug_printf("tic: No subscribers for fileecho %s", area_tag);
+        return 0;
+    }
+
+    debug_printf("tic: Forwarding file %d to %d subscribers for %s",
+                 file_id, subscriber_count, area_tag);
+
+    /* Create TIC for each subscriber */
+    for (i = 0; i < subscriber_count; i++)
+    {
+        _kernel_swi_regs regs;
+        char password[32] = "";
+        int count;
+        int d;
+
+        /* Find the password for this downlink */
+        regs.r[0] = FTN_CONFIG_COUNT_DOWNLINKS;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL)
+        {
+            count = regs.r[0];
+            
+            for (d = 0; d < count; d++)
+            {
+                regs.r[0] = FTN_CONFIG_GET_DOWNLINK;
+                regs.r[1] = d + 1;
+                if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+                {
+                    TIC_DOWNLINK_CFG *dl = (TIC_DOWNLINK_CFG *)regs.r[0];
+                    FTN_ADDR dl_addr;
+                    
+                    if (ftn_string_to_addr(dl->address, &dl_addr))
+                    {
+                        if (ftn_addr_match(&subscribers[i], &dl_addr))
+                        {
+                            strncpy(password, dl->filefix_password, sizeof(password) - 1);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (tic_create_for_file(filebase_id, file_id, area_tag, 
+                                &subscribers[i], password))
+        {
+            forwarded++;
+        }
+    }
+
+    if (forwarded > 0)
+    {
+        ftnlog_printf("Forwarded file to %d/%d subscribers for %s",
+                      forwarded, subscriber_count, area_tag);
+    }
+
+    return forwarded;
 }
 
 /* ******************************************************************************************************************************************************** */

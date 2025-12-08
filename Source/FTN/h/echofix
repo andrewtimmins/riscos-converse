@@ -1,0 +1,233 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - EchoFix (AreaFix/FileFix) Header                                                                                                            */
+/* Handles subscription management for echomail and fileecho areas                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef ECHOFIX_H
+#define ECHOFIX_H
+
+#include <time.h>
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define ECHOFIX_MAX_DOWNLINKS       32
+#define ECHOFIX_MAX_SUBSCRIPTIONS   128
+#define ECHOFIX_MAX_COMMANDS        64
+#define ECHOFIX_PASSWORD_LEN        32
+#define ECHOFIX_AREA_TAG_LEN        64
+#define ECHOFIX_NAME_LEN            64
+#define ECHOFIX_GROUPS_LEN          64
+#define ECHOFIX_AREAS_LEN           256
+#define ECHOFIX_RESPONSE_SIZE       8192
+
+/* Recipient name variants */
+#define ECHOFIX_AREAFIX_NAMES       "areafix", "areamgr", "arealink"
+#define ECHOFIX_FILEFIX_NAMES       "filefix", "filemgr", "filelink", "allfix", "raid", "tick"
+
+/* ******************************************************************************************************************************************************** */
+/* Types                                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/* Request type */
+typedef enum
+{
+    ECHOFIX_TYPE_NONE = 0,
+    ECHOFIX_TYPE_AREAFIX = 1,       /* Echomail areas */
+    ECHOFIX_TYPE_FILEFIX = 2        /* Fileecho/TIC areas */
+} ECHOFIX_TYPE;
+
+/* Command action */
+typedef enum
+{
+    ECHOFIX_ACTION_SUBSCRIBE = 1,   /* +AREA */
+    ECHOFIX_ACTION_UNSUBSCRIBE = -1,/* -AREA */
+    ECHOFIX_ACTION_QUERY = 0        /* Just query status */
+} ECHOFIX_ACTION;
+
+/* Downlink configuration (from FTN config) */
+typedef struct
+{
+    int id;                                     /* Downlink ID */
+    FTN_ADDR addr;                              /* Downlink's FTN address */
+    char name[ECHOFIX_NAME_LEN];                /* Descriptive name */
+    char password[ECHOFIX_PASSWORD_LEN];        /* BinkP session password */
+    char areafix_password[ECHOFIX_PASSWORD_LEN];/* AreaFix password */
+    char filefix_password[ECHOFIX_PASSWORD_LEN];/* FileFix password */
+    char allowed_groups[ECHOFIX_GROUPS_LEN];    /* Allowed groups (e.g., "A,B,C") */
+    char allowed_echoes[ECHOFIX_AREAS_LEN];     /* Specific allowed echo areas */
+    char allowed_files[ECHOFIX_AREAS_LEN];      /* Specific allowed file areas */
+    int max_echoes;                             /* Max echo subscriptions (0=unlimited) */
+    int max_files;                              /* Max fileecho subscriptions (0=unlimited) */
+    int active;                                 /* Account active flag */
+    int paused;                                 /* Feed paused flag */
+} ECHOFIX_DOWNLINK_CONFIG;
+
+/* Subscription record (dynamic, stored in database) */
+typedef struct
+{
+    FTN_ADDR addr;                              /* Downlink's address */
+    char area_tag[ECHOFIX_AREA_TAG_LEN];        /* Area tag subscribed to */
+    ECHOFIX_TYPE type;                          /* Echo or File */
+    time_t subscribed;                          /* When subscribed */
+    int active;                                 /* Subscription active */
+} ECHOFIX_SUBSCRIPTION;
+
+/* Parsed command from request */
+typedef struct
+{
+    ECHOFIX_ACTION action;                      /* Subscribe/unsubscribe/query */
+    char area[ECHOFIX_AREA_TAG_LEN];            /* Area tag */
+} ECHOFIX_COMMAND;
+
+/* Parsed request from netmail */
+typedef struct
+{
+    ECHOFIX_TYPE type;                          /* AreaFix or FileFix */
+    FTN_ADDR from_addr;                         /* Requester address */
+    char from_name[36];                         /* Requester name */
+    char password[ECHOFIX_PASSWORD_LEN];        /* Password from subject */
+    
+    /* Commands parsed from body */
+    ECHOFIX_COMMAND commands[ECHOFIX_MAX_COMMANDS];
+    int command_count;
+    
+    /* Special commands */
+    int want_list;                              /* %LIST requested */
+    int want_query;                             /* %QUERY requested */
+    int want_help;                              /* %HELP requested */
+    int want_pause;                             /* %PAUSE requested */
+    int want_resume;                            /* %RESUME requested */
+    int want_unlinked;                          /* %UNLINKED - areas not subscribed */
+    int rescan_days;                            /* %RESCAN days (0=none) */
+    char rescan_area[ECHOFIX_AREA_TAG_LEN];     /* Area for rescan */
+} ECHOFIX_REQUEST;
+
+/* Response being built */
+typedef struct
+{
+    ECHOFIX_TYPE type;
+    FTN_ADDR to_addr;
+    char to_name[36];
+    char subject[72];
+    char body[ECHOFIX_RESPONSE_SIZE];
+    int body_len;
+} ECHOFIX_RESPONSE;
+
+/* Statistics */
+typedef struct
+{
+    int requests_received;
+    int requests_processed;
+    int requests_failed;
+    int subscriptions_added;
+    int subscriptions_removed;
+    int responses_sent;
+} ECHOFIX_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void echofix_initialise(void);
+void echofix_finalise(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Detection and Parsing                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/* Check if recipient name is an AreaFix/FileFix variant */
+ECHOFIX_TYPE echofix_detect_recipient(const char *to_name);
+
+/* Parse request from netmail body */
+int echofix_parse_request(const char *to_name, const char *from_name,
+                          const FTN_ADDR *from_addr, const char *subject,
+                          const char *body, int body_len,
+                          ECHOFIX_REQUEST *req);
+
+/* ******************************************************************************************************************************************************** */
+/* Request Processing                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+/* Process a parsed request and build response */
+int echofix_process_request(const ECHOFIX_REQUEST *req, ECHOFIX_RESPONSE *resp);
+
+/* Queue response netmail for sending */
+int echofix_send_response(const ECHOFIX_RESPONSE *resp);
+
+/* High-level message processor - parses, processes, and sends response */
+/* Called by tosser when AreaFix/FileFix netmail is detected */
+int echofix_process_message(const FTN_ADDR *from_addr, ECHOFIX_TYPE type,
+                            const char *subject, const char *body);
+
+/* ******************************************************************************************************************************************************** */
+/* Downlink Configuration                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/* Find downlink config by address */
+ECHOFIX_DOWNLINK_CONFIG *echofix_find_downlink(const FTN_ADDR *addr);
+
+/* Add/update downlink config (called by config parser) */
+int echofix_set_downlink(const ECHOFIX_DOWNLINK_CONFIG *config);
+
+/* Get downlink count */
+int echofix_get_downlink_count(void);
+
+/* Get downlink by index */
+ECHOFIX_DOWNLINK_CONFIG *echofix_get_downlink_by_index(int index);
+
+/* ******************************************************************************************************************************************************** */
+/* Subscription Management                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/* Check if downlink is subscribed to an area */
+int echofix_is_subscribed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag);
+
+/* Add subscription */
+int echofix_add_subscription(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag);
+
+/* Remove subscription */
+int echofix_remove_subscription(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag);
+
+/* Get all subscribers to an area (for scanner/TIC) */
+int echofix_get_subscribers(ECHOFIX_TYPE type, const char *area_tag, 
+                            FTN_ADDR *addrs, int max_addrs);
+
+/* Get all subscriptions for a downlink */
+int echofix_get_subscriptions(const FTN_ADDR *addr, ECHOFIX_TYPE type,
+                              char (*areas)[ECHOFIX_AREA_TAG_LEN], int max_areas);
+
+/* Pause/resume a downlink's feed */
+int echofix_set_paused(const FTN_ADDR *addr, int paused);
+
+/* ******************************************************************************************************************************************************** */
+/* Area Availability                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Check if downlink is allowed to subscribe to an area */
+int echofix_is_area_allowed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag);
+
+/* Get list of available areas for a downlink */
+int echofix_get_available_areas(const FTN_ADDR *addr, ECHOFIX_TYPE type,
+                                char (*areas)[ECHOFIX_AREA_TAG_LEN], int max_areas);
+
+/* ******************************************************************************************************************************************************** */
+/* Persistence                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+/* Load subscriptions from disk */
+int echofix_load_subscriptions(void);
+
+/* Save subscriptions to disk */
+int echofix_save_subscriptions(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+const ECHOFIX_STATS *echofix_get_stats(void);
+void echofix_reset_stats(void);
+
+#endif /* ECHOFIX_H */

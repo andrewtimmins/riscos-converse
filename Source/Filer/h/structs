@@ -227,6 +227,16 @@
 
     #define MAX_FROMTO                  36
 
+    /* Message routing flags (bit flags) */
+    #define MSG_FLAG_PRIVATE            0x0001  /* Private message */
+    #define MSG_FLAG_CRASH              0x0002  /* Crash priority (send immediately) */
+    #define MSG_FLAG_HOLD               0x0004  /* Hold for pickup only */
+    #define MSG_FLAG_DIRECT             0x0008  /* Direct delivery, no routing */
+    #define MSG_FLAG_IMMEDIATE          0x0010  /* Immediate priority (highest) */
+    #define MSG_FLAG_KILLSENT           0x0020  /* Delete after sending */
+    #define MSG_FLAG_FILE_ATTACH        0x0040  /* Has file attachment */
+    #define MSG_FLAG_FILE_REQUEST       0x0080  /* File request */
+
     typedef struct
     {
         int id;                         /* the id of the message */
@@ -249,6 +259,7 @@
         char fromname[MAX_FROMTO];      /* FTN sender name */
         char toname[MAX_FROMTO];        /* FTN recipient name */
         int exported;                   /* 0=not exported, 1=exported to outbound */
+        unsigned short flags;           /* Message routing flags (MSG_FLAG_*) */
     } MESSAGE_RECORD;
 
 #endif

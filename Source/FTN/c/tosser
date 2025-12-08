@@ -15,6 +15,7 @@
 #include "tosser.h"
 #include "mailer.h"
 #include "queue.h"
+#include "echofix.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
@@ -1152,6 +1153,35 @@ int tosser_process_packet(const char *path)
                 debug_printf("tosser: Transit netmail for %d:%d/%d.%d",
                              msg.dest_addr.zone, msg.dest_addr.net,
                              msg.dest_addr.node, msg.dest_addr.point);
+            }
+            else
+            {
+                /* Message is for us - check if it's an EchoFix request */
+                ECHOFIX_TYPE echofix_type = echofix_detect_recipient(msg.to);
+                if (echofix_type != ECHOFIX_TYPE_NONE)
+                {
+                    /* Process as EchoFix request */
+                    debug_printf("tosser: EchoFix %s request from %d:%d/%d.%d",
+                                 (echofix_type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix",
+                                 msg.orig_addr.zone, msg.orig_addr.net,
+                                 msg.orig_addr.node, msg.orig_addr.point);
+                    
+                    if (echofix_process_message(&msg.orig_addr, echofix_type,
+                                                 msg.subject, msg.body))
+                    {
+                        tosser_stats.messages_tossed++;
+                        msg.tossed = 1;
+                    }
+                    else
+                    {
+                        tosser_stats.messages_bad++;
+                        msg.bad = 1;
+                    }
+                    
+                    /* Skip normal storage for EchoFix messages */
+                    tosser_free_message(&msg);
+                    continue;
+                }
             }
             
             /* Store all netmail in base 1 (FTN messagebase) */

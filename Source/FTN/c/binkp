@@ -41,6 +41,8 @@ typedef struct
     char host[B_FTN_NAME_LEN];
     int port;
     char password[B_FTN_PASSWORD_LEN];
+    char areafix_password[B_FTN_PASSWORD_LEN];
+    char filefix_password[B_FTN_PASSWORD_LEN];
     char groups[B_FTN_GROUPS_LEN];
     int alias_count;
     char aliases[B_FTN_MAX_ALIASES][B_FTN_NAME_LEN];
@@ -52,8 +54,6 @@ typedef struct
     char network[B_FTN_NAME_LEN];
     int zone, net, node, point;
     char type[8];
-    char packet_password[B_FTN_PASSWORD_LEN];
-    char areafix_password[B_FTN_PASSWORD_LEN];
 } B_ADDRESS_CFG;
 
 typedef struct
@@ -519,7 +519,6 @@ void binkp_send_handshake(MAILER_SESSION *session)
 {
     char buf[128];
     char opt_buf[256];
-    char *p;
 
     /* Send system information */
     binkp_send_nul(session, "SYS", mailer.system_name);
@@ -529,33 +528,44 @@ void binkp_send_handshake(MAILER_SESSION *session)
     snprintf(buf, sizeof(buf), "%d", mailer.speed);
     binkp_send_nul(session, "NDL", buf);
 
-    binkp_send_nul(session, "TIME", "");  /* TODO: Format time */
+    /* Format TIME as "Day Mon DD HH:MM:SS YYYY TZ" (FTN standard) */
+    {
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+        char time_buf[64];
+        strftime(time_buf, sizeof(time_buf), "%a %b %d %H:%M:%S %Y UTC", tm_info);
+        binkp_send_nul(session, "TIME", time_buf);
+    }
     binkp_send_nul(session, "VER", MAILER_NAME "/" MAILER_VERSION " binkp/" BINKP_VERSION);
 
     /* Build options string: NR ND NDA EXTCMD [GZ] [BZ2] [CRYPT] */
-    p = opt_buf;
-    p += sprintf(p, "%s %s %s %s", 
-                 BINKP_OPT_NR, BINKP_OPT_ND, BINKP_OPT_NDA, BINKP_OPT_EXTCMD);
-    
-    /* Advertise compression if available */
-    if (compress_available(COMPRESS_TYPE_GZ))
     {
-        p += sprintf(p, " %s", BINKP_OPT_GZ);
-        session->z_can_recv |= (1 << BINKP_COMPRESS_GZ);
-        session->z_can_send |= (1 << BINKP_COMPRESS_GZ);
-    }
-    if (compress_available(COMPRESS_TYPE_BZ2))
-    {
-        p += sprintf(p, " %s", BINKP_OPT_BZ2);
-        session->z_can_recv |= (1 << BINKP_COMPRESS_BZ2);
-        session->z_can_send |= (1 << BINKP_COMPRESS_BZ2);
-    }
-    
-    /* Advertise encryption if we have a password */
-    if (session->password[0] != '\0')
-    {
-        p += sprintf(p, " %s", BINKP_OPT_CRYPT);
-        session->crypt_flag |= BINKP_CRYPT_WE_WANT;
+        size_t opt_len = 0;
+        size_t opt_size = sizeof(opt_buf);
+        
+        opt_len += snprintf(opt_buf + opt_len, opt_size - opt_len, "%s %s %s %s", 
+                           BINKP_OPT_NR, BINKP_OPT_ND, BINKP_OPT_NDA, BINKP_OPT_EXTCMD);
+        
+        /* Advertise compression if available */
+        if (compress_available(COMPRESS_TYPE_GZ) && opt_len < opt_size)
+        {
+            opt_len += snprintf(opt_buf + opt_len, opt_size - opt_len, " %s", BINKP_OPT_GZ);
+            session->z_can_recv |= (1 << BINKP_COMPRESS_GZ);
+            session->z_can_send |= (1 << BINKP_COMPRESS_GZ);
+        }
+        if (compress_available(COMPRESS_TYPE_BZ2) && opt_len < opt_size)
+        {
+            opt_len += snprintf(opt_buf + opt_len, opt_size - opt_len, " %s", BINKP_OPT_BZ2);
+            session->z_can_recv |= (1 << BINKP_COMPRESS_BZ2);
+            session->z_can_send |= (1 << BINKP_COMPRESS_BZ2);
+        }
+        
+        /* Advertise encryption if we have a password */
+        if (session->password[0] != '\0' && opt_len < opt_size)
+        {
+            opt_len += snprintf(opt_buf + opt_len, opt_size - opt_len, " %s", BINKP_OPT_CRYPT);
+            session->crypt_flag |= BINKP_CRYPT_WE_WANT;
+        }
     }
     
     binkp_send_nul(session, "OPT", opt_buf);
@@ -1904,7 +1914,11 @@ const char *binkp_get_password_for_node(const FTN_ADDR *addr)
                 char host[64];
                 int port;
                 char password[32];
+                char areafix_password[32];
+                char filefix_password[32];
                 char groups[64];
+                int alias_count;
+                char aliases[8][64];
             } UPLINK_CFG;
 
             UPLINK_CFG *uplink = (UPLINK_CFG *)r2.r[0];
@@ -1924,7 +1938,52 @@ const char *binkp_get_password_for_node(const FTN_ADDR *addr)
         }
     }
 
-    debug_printf("binkp: No uplink password found for %s", addr_str);
+    debug_printf("binkp: No uplink password found for %s, checking downlinks", addr_str);
+
+    /* Search through downlinks */
+    regs.r[0] = 10;  /* FTN_CONFIG_REASON_COUNT_DOWNLINKS */
+    if (_kernel_swi(0x5AA86, &regs, &regs) == NULL)
+    {
+        int downlink_count = regs.r[0];
+        
+        for (i = 1; i <= downlink_count; i++)
+        {
+            _kernel_swi_regs r2;
+            
+            r2.r[0] = 8;  /* FTN_CONFIG_REASON_GET_DOWNLINK */
+            r2.r[1] = i;
+            if (_kernel_swi(0x5AA86, &r2, &r2) == NULL && r2.r[0] != 0)
+            {
+                /* Downlink config structure - must match FTN_DOWNLINK_CONFIG */
+                typedef struct
+                {
+                    int id;
+                    char address[64];
+                    char name[64];
+                    char sess_password[32];
+                    char areafix_password[32];
+                    char filefix_password[32];
+                } DOWNLINK_CFG;
+                
+                DOWNLINK_CFG *downlink = (DOWNLINK_CFG *)r2.r[0];
+                FTN_ADDR downlink_addr;
+                
+                /* Parse downlink address and compare */
+                if (ftn_string_to_addr(downlink->address, &downlink_addr))
+                {
+                    if (ftn_addr_match(addr, &downlink_addr))
+                    {
+                        debug_printf("binkp: Found password for downlink %d (%s)", i, downlink->address);
+                        strncpy(password, downlink->sess_password, sizeof(password) - 1);
+                        password[sizeof(password) - 1] = '\0';
+                        return password;
+                    }
+                }
+            }
+        }
+    }
+
+    debug_printf("binkp: No password found for %s", addr_str);
     return "";
 }
 

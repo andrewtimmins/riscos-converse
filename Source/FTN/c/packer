@@ -260,11 +260,35 @@ static int packer_write_header(PACKER_CONTEXT *ctx)
 /* Packet Creation                                                                                                                                          */
 /* ******************************************************************************************************************************************************** */
 
-PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *dest_addr, const char *password)
+/*
+ * Get BSO flavour extension suffix for packet files.
+ * RISC OS style - no dot, suffix appended directly.
+ * 
+ * Normal:    out -> pkt (default)
+ * Hold:      hut -> hpkt
+ * Direct:    dut -> dpkt  
+ * Crash:     cut -> cpkt
+ * Immediate: iut -> ipkt
+ */
+static const char *packer_get_flavour_prefix(PACKER_FLAVOUR flavour)
+{
+    switch (flavour)
+    {
+        case PACKER_FLAVOUR_HOLD:      return "h";
+        case PACKER_FLAVOUR_DIRECT:    return "d";
+        case PACKER_FLAVOUR_CRASH:     return "c";
+        case PACKER_FLAVOUR_IMMEDIATE: return "i";
+        default:                       return "";
+    }
+}
+
+PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *dest_addr, 
+                                      const char *password, PACKER_FLAVOUR flavour)
 {
     PACKER_CONTEXT *ctx;
     char filename[64];
     unsigned long pkt_time;
+    const char *prefix;
 
     if (our_addr == NULL || dest_addr == NULL)
     {
@@ -286,15 +310,17 @@ PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *d
         strncpy(ctx->password, password, sizeof(ctx->password) - 1);
     }
 
-    /* Generate unique packet filename based on time */
+    /* Generate unique packet filename based on time with flavour prefix */
+    /* Format: <timestamp><prefix>pkt (e.g., 12345678pkt, 12345678cpkt for crash) */
     pkt_time = (unsigned long)time(NULL);
-    snprintf(filename, sizeof(filename), "%08lxpkt", pkt_time & 0xFFFFFFFF);
+    prefix = packer_get_flavour_prefix(flavour);
+    snprintf(filename, sizeof(filename), "%08lx%spkt", pkt_time & 0xFFFFFFFF, prefix);
 
     /* Ensure outbound directories exist and build full path using BSO helper */
     queue_ensure_outbound_directories(dest_addr);
     queue_format_outbound_name(ctx->path, sizeof(ctx->path), dest_addr, "out");
     
-    /* Actually we want a .pkt file, replace the extension */
+    /* Replace 'out' extension with our packet filename */
     {
         size_t len = strlen(ctx->path);
         if (len >= 3)
@@ -305,7 +331,12 @@ PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *d
         strncat(ctx->path, filename, sizeof(ctx->path) - strlen(ctx->path) - 1);
     }
 
-    debug_printf("packer: Creating packet %s", ctx->path);
+    debug_printf("packer: Creating %s packet %s", 
+                 flavour == PACKER_FLAVOUR_NORMAL ? "normal" :
+                 flavour == PACKER_FLAVOUR_HOLD ? "hold" :
+                 flavour == PACKER_FLAVOUR_CRASH ? "crash" :
+                 flavour == PACKER_FLAVOUR_DIRECT ? "direct" : "immediate",
+                 ctx->path);
 
     /* Open packet file */
     ctx->file = fopen(ctx->path, "wb");
@@ -366,7 +397,7 @@ void packer_format_datetime(time_t t, char *buffer, size_t size)
 /* Message Attribute Helpers                                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
-unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash)
+unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash, int is_hold)
 {
     unsigned short attr = MSG_LOCAL;
 
@@ -377,6 +408,10 @@ unsigned short packer_get_message_attributes(int is_echomail, int is_private, in
     if (is_crash)
     {
         attr |= MSG_CRASH;
+    }
+    if (is_hold)
+    {
+        attr |= MSG_HOLD;
     }
     if (!is_echomail)
     {
@@ -841,7 +876,7 @@ int packer_pack_message_from_filer(PACKER_CONTEXT *ctx, int base_id, int message
     }
 
     /* Set attributes */
-    msg.attribute = packer_get_message_attributes(is_echomail, 0, 0);
+    msg.attribute = packer_get_message_attributes(is_echomail, 0, 0, 0);
 
     /* Area tag for echomail */
     if (is_echomail && area_tag != NULL)

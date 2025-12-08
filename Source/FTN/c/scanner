@@ -15,6 +15,7 @@
 #include "scanner.h"
 #include "packer.h"
 #include "mailer.h"
+#include "echofix.h"
 #include "debug.h"
 #include "ftnlog.h"
 
@@ -315,6 +316,72 @@ int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Get Message Flags                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Message flag constants (must match Filer/h/structs MSG_FLAG_*) */
+#define SCAN_MSG_FLAG_PRIVATE       0x0001
+#define SCAN_MSG_FLAG_CRASH         0x0002
+#define SCAN_MSG_FLAG_HOLD          0x0004
+#define SCAN_MSG_FLAG_DIRECT        0x0008
+#define SCAN_MSG_FLAG_IMMEDIATE     0x0010
+
+int scanner_get_message_flags(int base_id, int message_id, unsigned short *flags_out)
+{
+    _kernel_swi_regs regs;
+
+    if (flags_out == NULL)
+    {
+        return 0;
+    }
+
+    *flags_out = 0;
+
+    regs.r[0] = MSGBASE_CMD_MESSAGE_INFO;
+    regs.r[1] = base_id;
+    regs.r[2] = message_id;
+
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    /* MESSAGE_RECORD.flags is at the end of the structure */
+    /* After exported(4) comes flags(2) */
+    /* Offset: see structs.h - exported is near end, flags follows it */
+    /* Calculate: ~660 bytes before exported, then flags at offset + 664 */
+    {
+        unsigned char *record = (unsigned char *)regs.r[0];
+        /* exported is at offset 660, flags at offset 664 */
+        *flags_out = *((unsigned short *)(record + 664));
+    }
+
+    return 1;
+}
+
+SCANNER_FLAVOUR scanner_flags_to_flavour(unsigned short flags)
+{
+    /* Priority order: Immediate > Crash > Direct > Hold > Normal */
+    if (flags & SCAN_MSG_FLAG_IMMEDIATE)
+    {
+        return SCANNER_FLAVOUR_IMMEDIATE;
+    }
+    if (flags & SCAN_MSG_FLAG_CRASH)
+    {
+        return SCANNER_FLAVOUR_CRASH;
+    }
+    if (flags & SCAN_MSG_FLAG_DIRECT)
+    {
+        return SCANNER_FLAVOUR_DIRECT;
+    }
+    if (flags & SCAN_MSG_FLAG_HOLD)
+    {
+        return SCANNER_FLAVOUR_HOLD;
+    }
+    return SCANNER_FLAVOUR_NORMAL;
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Uplink Lookup                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
@@ -327,6 +394,8 @@ typedef struct
     char host[FTN_NAME_LEN];
     int port;
     char password[FTN_PASSWORD_LEN];
+    char areafix_password[FTN_PASSWORD_LEN];
+    char filefix_password[FTN_PASSWORD_LEN];
     char groups[FTN_GROUPS_LEN];
     int alias_count;
     char aliases[FTN_MAX_ALIASES][FTN_NAME_LEN];
@@ -338,8 +407,6 @@ typedef struct
     char network[FTN_NAME_LEN];
     int zone, net, node, point;
     char type[8];
-    char packet_password[FTN_PASSWORD_LEN];
-    char areafix_password[FTN_PASSWORD_LEN];
 } SCAN_ADDRESS_CFG;
 
 typedef struct
@@ -369,6 +436,26 @@ typedef struct
     int uplink_count;
     SCAN_UPLINK_CFG uplinks[FTN_MAX_UPLINKS];
 } SCAN_FTN_GLOBAL_CFG;
+
+/* Downlink config structure (must match Support module) */
+typedef struct
+{
+    int id;
+    char address[FTN_NAME_LEN];
+    char name[FTN_NAME_LEN];
+    char password[FTN_PASSWORD_LEN];
+    char areafix_password[FTN_PASSWORD_LEN];
+    char filefix_password[FTN_PASSWORD_LEN];
+    char allowed_groups[FTN_GROUPS_LEN];
+    char allowed_echoes[256];
+    char allowed_files[256];
+    int max_echoes;
+    int max_files;
+} SCAN_DOWNLINK_CFG;
+
+/* SWI reason codes for downlinks */
+#define FTN_CONFIG_GET_DOWNLINK      8
+#define FTN_CONFIG_COUNT_DOWNLINKS  10
 
 int scanner_find_uplink_by_address(const FTN_ADDR *addr, char *password_out, size_t pw_size)
 {
@@ -476,6 +563,61 @@ int scanner_find_uplink_for_zone(int zone, FTN_ADDR *uplink_out, char *password_
             password_out[pw_size - 1] = '\0';
         }
         return 1;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Downlink Lookup                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int scanner_find_downlink_by_address(const FTN_ADDR *addr, char *password_out, size_t pw_size)
+{
+    _kernel_swi_regs regs;
+    int count;
+    int i;
+
+    if (addr == NULL)
+    {
+        return 0;
+    }
+
+    /* Get downlink count */
+    regs.r[0] = FTN_CONFIG_COUNT_DOWNLINKS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    count = regs.r[0];
+
+    /* Search downlinks */
+    for (i = 0; i < count; i++)
+    {
+        regs.r[0] = FTN_CONFIG_GET_DOWNLINK;
+        regs.r[1] = i + 1;  /* 1-based ID */
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+
+        {
+            SCAN_DOWNLINK_CFG *dl = (SCAN_DOWNLINK_CFG *)regs.r[0];
+            FTN_ADDR dl_addr;
+
+            if (dl->id > 0 && ftn_string_to_addr(dl->address, &dl_addr))
+            {
+                if (ftn_addr_match(addr, &dl_addr))
+                {
+                    if (password_out != NULL && pw_size > 0)
+                    {
+                        strncpy(password_out, dl->password, pw_size - 1);
+                        password_out[pw_size - 1] = '\0';
+                    }
+                    return 1;
+                }
+            }
+        }
     }
 
     return 0;
@@ -664,6 +806,13 @@ static int scanner_add_message_to_batch(SCANNER_UPLINK_BATCH *batch, const SCANN
     batch->messages[batch->message_count] = *msg;
     batch->message_count++;
 
+    /* Track highest priority flavour in batch */
+    /* Priority: IMMEDIATE > CRASH > DIRECT > HOLD > NORMAL */
+    if (msg->flavour > batch->max_flavour)
+    {
+        batch->max_flavour = msg->flavour;
+    }
+
     return 1;
 }
 
@@ -676,6 +825,7 @@ int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
     PACKER_CONTEXT *ctx;
     int i;
     int packed = 0;
+    PACKER_FLAVOUR packer_flavour;
 
     if (batch == NULL || batch->message_count == 0)
     {
@@ -689,8 +839,18 @@ int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
         return 0;
     }
 
-    /* Create packet */
-    ctx = packer_create_packet(&mailer.our_addrs[0], &batch->uplink_addr, batch->password);
+    /* Convert scanner flavour to packer flavour */
+    switch (batch->max_flavour)
+    {
+        case SCANNER_FLAVOUR_HOLD:      packer_flavour = PACKER_FLAVOUR_HOLD; break;
+        case SCANNER_FLAVOUR_DIRECT:    packer_flavour = PACKER_FLAVOUR_DIRECT; break;
+        case SCANNER_FLAVOUR_CRASH:     packer_flavour = PACKER_FLAVOUR_CRASH; break;
+        case SCANNER_FLAVOUR_IMMEDIATE: packer_flavour = PACKER_FLAVOUR_IMMEDIATE; break;
+        default:                        packer_flavour = PACKER_FLAVOUR_NORMAL; break;
+    }
+
+    /* Create packet with appropriate flavour */
+    ctx = packer_create_packet(&mailer.our_addrs[0], &batch->uplink_addr, batch->password, packer_flavour);
     if (ctx == NULL)
     {
         debug_printf("scanner: Failed to create packet for uplink");
@@ -873,6 +1033,7 @@ int scanner_scan_outbound(void)
                 SCANNER_MESSAGE scan_msg;
                 FTN_ADDR uplink_addr;
                 char password[32] = "";
+                unsigned short msg_flags = 0;
 
                 memset(&scan_msg, 0, sizeof(scan_msg));
                 scan_msg.base_id = real_base_id;
@@ -881,6 +1042,18 @@ int scanner_scan_outbound(void)
                 scan_msg.areatype = area->areatype;
                 scan_msg.akause = area->akause;
                 strncpy(scan_msg.echotag, area->tag, sizeof(scan_msg.echotag) - 1);
+
+                /* Get message flags and determine flavour */
+                if (scanner_get_message_flags(real_base_id, message_ids[m], &msg_flags))
+                {
+                    scan_msg.flags = msg_flags;
+                    scan_msg.flavour = scanner_flags_to_flavour(msg_flags);
+                }
+                else
+                {
+                    scan_msg.flags = 0;
+                    scan_msg.flavour = SCANNER_FLAVOUR_NORMAL;
+                }
 
                 if (area->areatype == SCANNER_AREATYPE_ECHO)
                 {
@@ -901,6 +1074,29 @@ int scanner_scan_outbound(void)
                         if (batch != NULL)
                         {
                             scanner_add_message_to_batch(batch, &scan_msg);
+                        }
+                    }
+
+                    /* Also send to subscribed downlinks */
+                    {
+                        FTN_ADDR downlinks[32];
+                        int downlink_count;
+                        int d;
+
+                        downlink_count = echofix_get_subscribers(ECHOFIX_TYPE_AREAFIX, area->tag,
+                                                                  downlinks, 32);
+
+                        for (d = 0; d < downlink_count; d++)
+                        {
+                            SCANNER_UPLINK_BATCH *batch;
+
+                            scanner_find_downlink_by_address(&downlinks[d], password, sizeof(password));
+                            batch = scanner_get_or_create_batch(&downlinks[d], password);
+
+                            if (batch != NULL)
+                            {
+                                scanner_add_message_to_batch(batch, &scan_msg);
+                            }
                         }
                     }
                 }

@@ -10,11 +10,13 @@
 /* Maximum limits */
 #define FTN_CONFIG_MAX_ADDRESSES        8
 #define FTN_CONFIG_MAX_UPLINKS          16
+#define FTN_CONFIG_MAX_DOWNLINKS        32
 #define FTN_CONFIG_MAX_ALIASES          8
 #define FTN_CONFIG_NAME_LEN             64
 #define FTN_CONFIG_PATH_LEN             256
 #define FTN_CONFIG_PASSWORD_LEN         32
 #define FTN_CONFIG_GROUPS_LEN           64
+#define FTN_CONFIG_AREAS_LEN            256
 #define FTN_CONFIG_FLAGS_LEN            64
 
 /* FTN address configuration */
@@ -27,8 +29,6 @@ typedef struct
     int node;                                   /* node number */
     int point;                                  /* point number */
     char type[8];                               /* address type (4d, 5d) */
-    char packet_password[FTN_CONFIG_PASSWORD_LEN];    /* packet password */
-    char areafix_password[FTN_CONFIG_PASSWORD_LEN];   /* areafix password */
 } FTN_ADDRESS_CONFIG;
 
 /* FTN uplink configuration */
@@ -40,10 +40,28 @@ typedef struct
     char host[FTN_CONFIG_NAME_LEN];             /* hostname or IP address */
     int port;                                   /* port number (default 24554) */
     char password[FTN_CONFIG_PASSWORD_LEN];     /* session password */
+    char areafix_password[FTN_CONFIG_PASSWORD_LEN];   /* password for AreaFix requests */
+    char filefix_password[FTN_CONFIG_PASSWORD_LEN];   /* password for FileFix requests */
     char groups[FTN_CONFIG_GROUPS_LEN];         /* groups we receive from this uplink */
     int alias_count;                            /* number of aliases */
     char aliases[FTN_CONFIG_MAX_ALIASES][FTN_CONFIG_NAME_LEN];  /* AKA addresses */
 } FTN_UPLINK_CONFIG;
+
+/* FTN downlink configuration - points/nodes we feed */
+typedef struct
+{
+    int id;                                     /* downlink ID (1-based) */
+    char address[FTN_CONFIG_NAME_LEN];          /* downlink address string */
+    char name[FTN_CONFIG_NAME_LEN];             /* descriptive name */
+    char password[FTN_CONFIG_PASSWORD_LEN];           /* BinkP session password */
+    char areafix_password[FTN_CONFIG_PASSWORD_LEN];   /* password for AreaFix requests */
+    char filefix_password[FTN_CONFIG_PASSWORD_LEN];   /* password for FileFix requests */
+    char allowed_groups[FTN_CONFIG_GROUPS_LEN];       /* groups they can subscribe to */
+    char allowed_echoes[FTN_CONFIG_AREAS_LEN];        /* specific areas they can access */
+    char allowed_files[FTN_CONFIG_AREAS_LEN];         /* specific file areas they can access */
+    int max_echoes;                             /* max echomail areas allowed (0=unlimited) */
+    int max_files;                              /* max file areas allowed (0=unlimited) */
+} FTN_DOWNLINK_CONFIG;
 
 /* Global FTN settings */
 typedef struct
@@ -83,6 +101,10 @@ typedef struct
     /* Uplinks */
     int uplink_count;                           /* number of uplinks */
     FTN_UPLINK_CONFIG uplinks[FTN_CONFIG_MAX_UPLINKS];
+
+    /* Downlinks */
+    int downlink_count;                         /* number of downlinks */
+    FTN_DOWNLINK_CONFIG downlinks[FTN_CONFIG_MAX_DOWNLINKS];
 } FTN_GLOBAL_CONFIG;
 
 /* SWI reason codes for ConverseBBS_FTNConfig (0x5AA86) */
@@ -95,7 +117,10 @@ typedef enum
     FTN_CONFIG_REASON_GET_UPLINK = 4,           /* R1=uplink_id -> R0=FTN_UPLINK_CONFIG ptr */
     FTN_CONFIG_REASON_SET_UPLINK = 5,           /* R1=uplink_id, R2=FTN_UPLINK_CONFIG ptr */
     FTN_CONFIG_REASON_COUNT_ADDRESSES = 6,      /* -> R0=count */
-    FTN_CONFIG_REASON_COUNT_UPLINKS = 7         /* -> R0=count */
+    FTN_CONFIG_REASON_COUNT_UPLINKS = 7,        /* -> R0=count */
+    FTN_CONFIG_REASON_GET_DOWNLINK = 8,         /* R1=downlink_id -> R0=FTN_DOWNLINK_CONFIG ptr */
+    FTN_CONFIG_REASON_SET_DOWNLINK = 9,         /* R1=downlink_id, R2=FTN_DOWNLINK_CONFIG ptr */
+    FTN_CONFIG_REASON_COUNT_DOWNLINKS = 10      /* -> R0=count */
 } FTN_CONFIG_REASON;
 
 /* Global config fields for SET_GLOBAL */
@@ -134,5 +159,6 @@ void ftnconfig_swi_handler(_kernel_swi_regs *r);
 const FTN_GLOBAL_CONFIG *ftnconfig_get(void);
 const FTN_ADDRESS_CONFIG *ftnconfig_get_address(int addr_id);
 const FTN_UPLINK_CONFIG *ftnconfig_get_uplink(int uplink_id);
+const FTN_DOWNLINK_CONFIG *ftnconfig_get_downlink(int downlink_id);
 
 #endif

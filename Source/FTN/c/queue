@@ -41,6 +41,8 @@ typedef struct
     char host[Q_FTN_NAME_LEN];
     int port;
     char password[Q_FTN_PASSWORD_LEN];
+    char areafix_password[Q_FTN_PASSWORD_LEN];
+    char filefix_password[Q_FTN_PASSWORD_LEN];
     char groups[Q_FTN_GROUPS_LEN];
     int alias_count;
     char aliases[Q_FTN_MAX_ALIASES][Q_FTN_NAME_LEN];
@@ -52,8 +54,6 @@ typedef struct
     char network[Q_FTN_NAME_LEN];
     int zone, net, node, point;
     char type[8];
-    char packet_password[Q_FTN_PASSWORD_LEN];
-    char areafix_password[Q_FTN_PASSWORD_LEN];
 } Q_ADDRESS_CFG;
 
 typedef struct

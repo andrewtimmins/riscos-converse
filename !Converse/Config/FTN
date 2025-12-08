@@ -49,8 +49,6 @@ address 1
     node            9
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 address 2
@@ -60,8 +58,6 @@ address 2
     node            9
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 address 3
@@ -71,8 +67,6 @@ address 3
     node            9
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 address 4
@@ -82,8 +76,6 @@ address 4
     node            9
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 address 5
@@ -93,8 +85,6 @@ address 5
     node            9
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 address 6
@@ -104,13 +94,14 @@ address 6
     node            8
     point           0
     type            5d
-    packet_password
-    areafix_password
 endaddress
 
 ; ----------------------------------------------------------------------------
 ; Uplinks
 ; Define routing and hub connections for each network
+; password = BinkP session password
+; areafix_password = password to send AreaFix requests to this uplink
+; filefix_password = password to send FileFix requests to this uplink
 ; ----------------------------------------------------------------------------
 
 uplink 1
@@ -119,6 +110,8 @@ uplink 1
     host            applewoodbbs.linkpc.net
     port            24554
     password        sQwHveWd1Zt4n
+    areafix_password
+    filefix_password
     groups          A,B,C
     alias           2:250/1.0
     alias           2:25/0.0
@@ -131,6 +124,8 @@ uplink 2
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
+    areafix_password
+    filefix_password
     groups          A,B,C
 enduplink
 
@@ -140,6 +135,8 @@ uplink 3
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
+    areafix_password
+    filefix_password
     groups          A,B,C
 enduplink
 
@@ -149,6 +146,8 @@ uplink 4
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
+    areafix_password
+    filefix_password
     groups          A,B,C
 enduplink
 
@@ -158,6 +157,8 @@ uplink 5
     host            otherhub.abad1dea.to
     port            24554
     password        PKYEGB7A
+    areafix_password
+    filefix_password
     groups          A,B,C
 enduplink
 
@@ -167,5 +168,56 @@ uplink 6
     host            bbs.zeusdev.co.uk
     port            24554
     password        IRM76TQL
+    areafix_password
+    filefix_password
     groups          A,B,C
 enduplink
+
+; ----------------------------------------------------------------------------
+; Downlinks
+; Points or nodes that we feed echomail/fileecho to
+; These can use AreaFix/FileFix to manage their subscriptions
+; password = BinkP session password (for when they connect to us)
+; areafix_password = password they use for AreaFix requests
+; filefix_password = password they use for FileFix requests
+; ----------------------------------------------------------------------------
+
+; Example point on Fidonet
+downlink 1
+    address             2:250/9.1
+    name                Johns Point
+    password            JohnSession1
+    areafix_password    Point1AreaPW
+    filefix_password    Point1FilePW
+    allowed_groups      A,B
+    allowed_echoes      RETROCOMPUTING,RISCOS*,BBS_*
+    allowed_files       RISCOS_SOFT,RETROCOMP
+    max_echoes          50
+    max_files           10
+enddownlink
+
+; Example point on CNet
+downlink 2
+    address             64:500/9.1
+    name                Bobs Point
+    password            BobSession2
+    areafix_password    BobAreaPW
+    filefix_password    BobFilePW
+    allowed_groups      A,B,C
+    max_echoes          0
+    max_files           0
+enddownlink
+
+; Example downlink node (another BBS we feed)
+downlink 3
+    address             2:250/99.0
+    name                Downlink BBS
+    password            DownlinkSess
+    areafix_password    DownlinkPW
+    filefix_password    DownlinkFilePW
+    allowed_groups      A,B,C
+    allowed_echoes      *
+    allowed_files       *
+    max_echoes          0
+    max_files           0
+enddownlink

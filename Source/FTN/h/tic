@@ -91,6 +91,9 @@ int tic_create_for_file(int filebase_id, int file_id, const char *area_tag,
                         const FTN_ADDR *dest, const char *password);
 int tic_write_file(const TIC_FILE *tic, const char *tic_path);
 
+/* Forwarding */
+int tic_forward_to_subscribers(int filebase_id, int file_id, const char *area_tag);
+
 /* Area matching */
 int tic_match_area(const char *area_tag, int *filebase_id, int *filebase_area_id);
 

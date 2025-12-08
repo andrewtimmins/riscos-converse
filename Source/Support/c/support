@@ -422,6 +422,17 @@ _kernel_oserror *module_command_handler(const char *arg_string, int argc, int cm
                            uplink->port,
                            uplink->groups[0] ? uplink->groups : "(none)");
                 }
+                puts("");
+
+                printf("Downlinks (%d):\n", cfg->downlink_count);
+                for (i = 0; i < cfg->downlink_count; i++)
+                {
+                    const FTN_DOWNLINK_CONFIG *downlink = &cfg->downlinks[i];
+                    printf("  %d. %s \"%s\" groups=%s\n",
+                           downlink->id, downlink->address,
+                           downlink->name[0] ? downlink->name : "(unnamed)",
+                           downlink->allowed_groups[0] ? downlink->allowed_groups : "(all)");
+                }
             }
             else
             {

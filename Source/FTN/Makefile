@@ -1,7 +1,7 @@
 # Make file for FTN Mailer
 
 COMPONENT 	= FTN
-OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq
+OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq echofix
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -120,6 +120,8 @@ o.mailer:	h.mailer
 o.mailer:	h.packer
 o.mailer:	h.tic
 o.mailer:	h.mailer
+o.mailer:	h.echofix
+o.mailer:	h.mailer
 o.mailer:	h.timer
 o.mailer:	h.debug
 o.mailer:	h.ftnlog
@@ -167,6 +169,8 @@ o.tosser:	C:h.kernel
 o.tosser:	h.mailer
 o.tosser:	h.queue
 o.tosser:	h.mailer
+o.tosser:	h.echofix
+o.tosser:	h.mailer
 o.tosser:	h.debug
 o.scanner:	c.scanner
 o.scanner:	C:h.kernel
@@ -179,6 +183,8 @@ o.scanner:	C:h.kernel
 o.scanner:	h.packer
 o.scanner:	h.mailer
 o.scanner:	h.packer
+o.scanner:	h.mailer
+o.scanner:	h.echofix
 o.scanner:	h.mailer
 o.scanner:	h.debug
 o.scanner:	h.ftnlog
@@ -212,6 +218,8 @@ o.tic:	C:h.kernel
 o.tic:	h.mailer
 o.tic:	h.queue
 o.tic:	h.mailer
+o.tic:	h.echofix
+o.tic:	h.mailer
 o.tic:	h.debug
 o.tic:	h.ftnlog
 o.tic:	C:Desk.h.Wimp
@@ -234,3 +242,19 @@ o.freq:	h.debug
 o.freq:	h.ftnlog
 o.freq:	C:Desk.h.Wimp
 o.freq:	h.mailer
+o.echofix:	c.echofix
+o.echofix:	C:h.kernel
+o.echofix:	C:h.swis
+o.echofix:	h.echofix
+o.echofix:	h.mailer
+o.echofix:	C:Desk.h.Wimp
+o.echofix:	C:Desk.h.Core
+o.echofix:	C:h.kernel
+o.echofix:	h.mailer
+o.echofix:	h.packer
+o.echofix:	h.mailer
+o.echofix:	h.queue
+o.echofix:	h.mailer
+o.echofix:	h.debug
+o.echofix:	h.ftnlog
+o.echofix:	C:Desk.h.Wimp

@@ -90,6 +90,16 @@ typedef struct
     long bytes_written;                 /* Total bytes in packets */
 } PACKER_STATS;
 
+/* Packet flavours (for BSO placement) */
+typedef enum
+{
+    PACKER_FLAVOUR_NORMAL = 0,
+    PACKER_FLAVOUR_HOLD,
+    PACKER_FLAVOUR_DIRECT,
+    PACKER_FLAVOUR_CRASH,
+    PACKER_FLAVOUR_IMMEDIATE
+} PACKER_FLAVOUR;
+
 /* ******************************************************************************************************************************************************** */
 /* Function Prototypes                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
@@ -99,7 +109,8 @@ void packer_initialise(void);
 void packer_finalise(void);
 
 /* Packet lifecycle */
-PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *dest_addr, const char *password);
+PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *dest_addr, 
+                                      const char *password, PACKER_FLAVOUR flavour);
 int packer_write_message(PACKER_CONTEXT *ctx, const PACKER_MESSAGE *msg);
 int packer_close_packet(PACKER_CONTEXT *ctx);
 void packer_abort_packet(PACKER_CONTEXT *ctx);
@@ -122,7 +133,7 @@ void packer_format_intl(char *buffer, size_t size, const FTN_ADDR *dest, const F
 
 /* Utility */
 void packer_format_datetime(time_t t, char *buffer, size_t size);
-unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash);
+unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash, int is_hold);
 
 /* Statistics */
 void packer_get_stats(PACKER_STATS *stats);

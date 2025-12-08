@@ -50,6 +50,7 @@
 #include "scanner.h"
 #include "packer.h"
 #include "tic.h"
+#include "echofix.h"
 #include "timer.h"
 #include "debug.h"
 #include "ftnlog.h"
@@ -664,15 +665,13 @@ void mailer_load_config(void)
             regs.r[1] = i + 1;
             if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
             {
-                /* FTN_ADDRESS_CONFIG structure */
+                /* FTN_ADDRESS_CONFIG structure (must match Support module) */
                 typedef struct
                 {
                     int id;
                     char network[64];
                     int zone, net, node, point;
                     char type[8];
-                    char packet_password[32];
-                    char areafix_password[32];
                 } FTN_ADDRESS_CONFIG;
 
                 FTN_ADDRESS_CONFIG *addr_cfg = (FTN_ADDRESS_CONFIG *)regs.r[0];
@@ -699,18 +698,25 @@ void mailer_load_config(void)
         debug_printf("mailer: Failed to get FTN config from Support module");
 
         /* Set defaults */
-        strcpy(mailer.system_name, "Converse BBS");
-        strcpy(mailer.sysop, "Sysop");
-        strcpy(mailer.location, "Unknown");
+        strncpy(mailer.system_name, "Converse BBS", sizeof(mailer.system_name) - 1);
+        mailer.system_name[sizeof(mailer.system_name) - 1] = '\0';
+        strncpy(mailer.sysop, "Sysop", sizeof(mailer.sysop) - 1);
+        mailer.sysop[sizeof(mailer.sysop) - 1] = '\0';
+        strncpy(mailer.location, "Unknown", sizeof(mailer.location) - 1);
+        mailer.location[sizeof(mailer.location) - 1] = '\0';
         mailer.speed = 115200;
-        strcpy(mailer.inbound_path, "<Converse$Dir>.FTN.Inbound");
-        strcpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound");
-        strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
+        strncpy(mailer.inbound_path, "<Converse$Dir>.FTN.Inbound", sizeof(mailer.inbound_path) - 1);
+        mailer.inbound_path[sizeof(mailer.inbound_path) - 1] = '\0';
+        strncpy(mailer.outbound_path, "<Converse$Dir>.FTN.Outbound", sizeof(mailer.outbound_path) - 1);
+        mailer.outbound_path[sizeof(mailer.outbound_path) - 1] = '\0';
+        strncpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail", sizeof(mailer.netmail_path) - 1);
+        mailer.netmail_path[sizeof(mailer.netmail_path) - 1] = '\0';
     }
 
     if (mailer.netmail_path[0] == '\0')
     {
-        strcpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail");
+        strncpy(mailer.netmail_path, "<Converse$Dir>.FTN.Netmail", sizeof(mailer.netmail_path) - 1);
+        mailer.netmail_path[sizeof(mailer.netmail_path) - 1] = '\0';
     }
 
 }
@@ -1635,6 +1641,7 @@ void mailer_initialise(void)
     scanner_initialise();
     packer_initialise();
     tic_initialise();
+    echofix_initialise();
     mailer_load_config();
     mailer_create_directories();
     
@@ -1657,6 +1664,7 @@ void mailer_finalise(void)
 
     mailer_destroy_listener();
     tic_finalise();
+    echofix_finalise();
     packer_finalise();
     scanner_finalise();
     tosser_finalise();

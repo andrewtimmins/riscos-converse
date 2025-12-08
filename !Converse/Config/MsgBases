@@ -13,6 +13,8 @@ storage_root        <Converse$Dir>.MsgBases
 
 ; Default origins - if more than one is present then randomly chosen
 origin `The Yellow Toaster BBS`
+origin `Your friendly neighbourhood BBS`
+origin `Retro computing since 2024`
 
 ; Include individual messagebase definitions
 include <Converse$Dir>.Config.MsgBase_1

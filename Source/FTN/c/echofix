@@ -1,0 +1,1376 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - EchoFix (AreaFix/FileFix) Implementation                                                                                                    */
+/* Handles subscription management for echomail and fileecho areas                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "echofix.h"
+#include "mailer.h"
+#include "packer.h"
+#include "queue.h"
+#include "debug.h"
+#include "ftnlog.h"
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Numbers                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_SUPPORT_FTN             0x5AA86
+#define SWI_SUPPORT_MSGBASE         0x5AA84
+#define SWI_SUPPORT_FILEBASE        0x5AA85
+#define SWI_FILER_MESSAGEBASE       0x5AA42
+
+/* ******************************************************************************************************************************************************** */
+/* Module State                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static ECHOFIX_DOWNLINK_CONFIG downlinks[ECHOFIX_MAX_DOWNLINKS];
+static int downlink_count = 0;
+
+static ECHOFIX_SUBSCRIPTION subscriptions[ECHOFIX_MAX_DOWNLINKS * ECHOFIX_MAX_SUBSCRIPTIONS];
+static int subscription_count = 0;
+
+static ECHOFIX_STATS echofix_stats;
+
+static char subscriptions_path[256] = "<Converse$Dir>.Config.FTNLinks";
+
+/* ******************************************************************************************************************************************************** */
+/* Helper Functions                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int str_casecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+static int str_ncasecmp(const char *s1, const char *s2, size_t n)
+{
+    while (n > 0 && *s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2) return c1 - c2;
+        s1++;
+        s2++;
+        n--;
+    }
+    if (n == 0) return 0;
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+static void str_trim(char *s)
+{
+    char *start = s;
+    char *end;
+    
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (start != s) memmove(s, start, strlen(start) + 1);
+    
+    end = s + strlen(s);
+    while (end > s && isspace((unsigned char)*(end - 1))) end--;
+    *end = '\0';
+}
+
+static void str_upper(char *s)
+{
+    while (*s)
+    {
+        *s = toupper((unsigned char)*s);
+        s++;
+    }
+}
+
+static int addr_equal(const FTN_ADDR *a, const FTN_ADDR *b)
+{
+    return a->zone == b->zone && a->net == b->net && 
+           a->node == b->node && a->point == b->point;
+}
+
+static void addr_to_string(const FTN_ADDR *addr, char *buf, int buflen)
+{
+    if (addr->point == 0)
+    {
+        snprintf(buf, buflen, "%d:%d/%d", addr->zone, addr->net, addr->node);
+    }
+    else
+    {
+        snprintf(buf, buflen, "%d:%d/%d.%d", addr->zone, addr->net, addr->node, addr->point);
+    }
+}
+
+/* Check if a group list contains a specific group */
+static int groups_contain(const char *groups, char group)
+{
+    const char *p = groups;
+    
+    if (groups == NULL || groups[0] == '\0')
+    {
+        return 1;  /* Empty groups = allow all */
+    }
+    
+    group = toupper((unsigned char)group);
+    
+    while (*p)
+    {
+        if (toupper((unsigned char)*p) == group)
+        {
+            return 1;
+        }
+        p++;
+    }
+    
+    return 0;
+}
+
+/* Check if two group strings have any overlap */
+static int groups_overlap(const char *groups1, const char *groups2)
+{
+    const char *p;
+    
+    /* Empty on either side = match all */
+    if (groups1 == NULL || groups1[0] == '\0') return 1;
+    if (groups2 == NULL || groups2[0] == '\0') return 1;
+    
+    for (p = groups1; *p; p++)
+    {
+        if (isalpha((unsigned char)*p) && groups_contain(groups2, *p))
+        {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+/* Load downlinks from Support module FTN config */
+static void echofix_load_downlinks(void)
+{
+    _kernel_swi_regs regs;
+    int count, i;
+    
+    /* Get downlink count from Support module */
+    regs.r[0] = 10;  /* FTN_CONFIG_REASON_COUNT_DOWNLINKS */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL)
+    {
+        debug_printf("echofix: Failed to get downlink count");
+        return;
+    }
+    count = regs.r[0];
+    if (count > ECHOFIX_MAX_DOWNLINKS)
+    {
+        count = ECHOFIX_MAX_DOWNLINKS;
+    }
+    
+    debug_printf("echofix: Loading %d downlinks from Support module", count);
+    
+    for (i = 1; i <= count; i++)
+    {
+        typedef struct
+        {
+            int id;
+            char address[64];
+            char name[64];
+            char password[32];
+            char areafix_password[32];
+            char filefix_password[32];
+            char allowed_groups[64];
+            char allowed_echoes[256];
+            char allowed_files[256];
+            int max_echoes;
+            int max_files;
+        } SUPPORT_DOWNLINK_CONFIG;
+        
+        SUPPORT_DOWNLINK_CONFIG *src;
+        ECHOFIX_DOWNLINK_CONFIG *dst;
+        
+        /* Get downlink from Support module */
+        regs.r[0] = 8;  /* FTN_CONFIG_REASON_GET_DOWNLINK */
+        regs.r[1] = i;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            continue;
+        }
+        
+        src = (SUPPORT_DOWNLINK_CONFIG *)regs.r[0];
+        dst = &downlinks[downlink_count];
+        
+        dst->id = src->id;
+        ftn_string_to_addr(src->address, &dst->addr);
+        snprintf(dst->name, sizeof(dst->name), "%s", src->name);
+        snprintf(dst->password, sizeof(dst->password), "%s", src->password);
+        snprintf(dst->areafix_password, sizeof(dst->areafix_password), "%s", src->areafix_password);
+        snprintf(dst->filefix_password, sizeof(dst->filefix_password), "%s", src->filefix_password);
+        snprintf(dst->allowed_groups, sizeof(dst->allowed_groups), "%s", src->allowed_groups);
+        snprintf(dst->allowed_echoes, sizeof(dst->allowed_echoes), "%s", src->allowed_echoes);
+        snprintf(dst->allowed_files, sizeof(dst->allowed_files), "%s", src->allowed_files);
+        dst->max_echoes = src->max_echoes;
+        dst->max_files = src->max_files;
+        dst->active = 1;
+        dst->paused = 0;
+        
+        downlink_count++;
+        
+        debug_printf("echofix: Loaded downlink %d: %s (%s)", 
+                     dst->id, src->address, dst->name);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void echofix_initialise(void)
+{
+    memset(downlinks, 0, sizeof(downlinks));
+    downlink_count = 0;
+    
+    memset(subscriptions, 0, sizeof(subscriptions));
+    subscription_count = 0;
+    
+    memset(&echofix_stats, 0, sizeof(echofix_stats));
+    
+    /* Load downlinks from Support module config */
+    echofix_load_downlinks();
+    
+    /* Load subscriptions from disk */
+    echofix_load_subscriptions();
+    
+    debug_printf("echofix: Initialised (%d downlinks, %d subscriptions)",
+                 downlink_count, subscription_count);
+}
+
+void echofix_finalise(void)
+{
+    /* Save subscriptions to disk */
+    echofix_save_subscriptions();
+    
+    debug_printf("echofix: Finalised");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Detection                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+ECHOFIX_TYPE echofix_detect_recipient(const char *to_name)
+{
+    if (to_name == NULL || to_name[0] == '\0')
+    {
+        return ECHOFIX_TYPE_NONE;
+    }
+    
+    /* AreaFix variants */
+    if (str_casecmp(to_name, "areafix") == 0 ||
+        str_casecmp(to_name, "areamgr") == 0 ||
+        str_casecmp(to_name, "arealink") == 0)
+    {
+        return ECHOFIX_TYPE_AREAFIX;
+    }
+    
+    /* FileFix variants */
+    if (str_casecmp(to_name, "filefix") == 0 ||
+        str_casecmp(to_name, "filemgr") == 0 ||
+        str_casecmp(to_name, "filelink") == 0 ||
+        str_casecmp(to_name, "allfix") == 0 ||
+        str_casecmp(to_name, "raid") == 0 ||
+        str_casecmp(to_name, "tick") == 0)
+    {
+        return ECHOFIX_TYPE_FILEFIX;
+    }
+    
+    return ECHOFIX_TYPE_NONE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Request Parsing                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+int echofix_parse_request(const char *to_name, const char *from_name,
+                          const FTN_ADDR *from_addr, const char *subject,
+                          const char *body, int body_len,
+                          ECHOFIX_REQUEST *req)
+{
+    const char *p;
+    const char *end;
+    char line[256];
+    int line_len;
+    
+    if (req == NULL) return 0;
+    
+    memset(req, 0, sizeof(ECHOFIX_REQUEST));
+    
+    /* Detect type */
+    req->type = echofix_detect_recipient(to_name);
+    if (req->type == ECHOFIX_TYPE_NONE)
+    {
+        return 0;
+    }
+    
+    /* Copy from address and name */
+    req->from_addr = *from_addr;
+    if (from_name != NULL)
+    {
+        strncpy(req->from_name, from_name, sizeof(req->from_name) - 1);
+    }
+    
+    /* Password from subject line */
+    if (subject != NULL)
+    {
+        strncpy(req->password, subject, sizeof(req->password) - 1);
+        str_trim(req->password);
+    }
+    
+    /* Parse body for commands */
+    p = body;
+    end = body + body_len;
+    
+    while (p < end && req->command_count < ECHOFIX_MAX_COMMANDS)
+    {
+        /* Extract line */
+        line_len = 0;
+        while (p < end && *p != '\r' && *p != '\n' && *p != '\0' && line_len < sizeof(line) - 1)
+        {
+            line[line_len++] = *p++;
+        }
+        line[line_len] = '\0';
+        
+        /* Skip line terminator */
+        while (p < end && (*p == '\r' || *p == '\n' || *p == '\0')) p++;
+        
+        /* Skip empty lines and tearlines */
+        str_trim(line);
+        if (line[0] == '\0') continue;
+        if (strncmp(line, "---", 3) == 0) break;  /* Stop at tearline */
+        if (line[0] == '\001') continue;  /* Skip kludge lines */
+        
+        /* Parse command */
+        if (line[0] == '%')
+        {
+            /* Special command */
+            if (str_ncasecmp(line + 1, "LIST", 4) == 0)
+            {
+                req->want_list = 1;
+            }
+            else if (str_ncasecmp(line + 1, "QUERY", 5) == 0)
+            {
+                req->want_query = 1;
+            }
+            else if (str_ncasecmp(line + 1, "HELP", 4) == 0)
+            {
+                req->want_help = 1;
+            }
+            else if (str_ncasecmp(line + 1, "PAUSE", 5) == 0)
+            {
+                req->want_pause = 1;
+            }
+            else if (str_ncasecmp(line + 1, "RESUME", 6) == 0)
+            {
+                req->want_resume = 1;
+            }
+            else if (str_ncasecmp(line + 1, "UNLINKED", 8) == 0)
+            {
+                req->want_unlinked = 1;
+            }
+            else if (str_ncasecmp(line + 1, "RESCAN", 6) == 0)
+            {
+                /* %RESCAN [area] [days] */
+                char *args = line + 7;
+                while (*args && isspace((unsigned char)*args)) args++;
+                
+                if (*args)
+                {
+                    char *space = strchr(args, ' ');
+                    if (space)
+                    {
+                        *space = '\0';
+                        strncpy(req->rescan_area, args, sizeof(req->rescan_area) - 1);
+                        str_upper(req->rescan_area);
+                        req->rescan_days = atoi(space + 1);
+                    }
+                    else
+                    {
+                        strncpy(req->rescan_area, args, sizeof(req->rescan_area) - 1);
+                        str_upper(req->rescan_area);
+                        req->rescan_days = 30;  /* Default 30 days */
+                    }
+                }
+                else
+                {
+                    req->rescan_days = 30;  /* Rescan all, 30 days */
+                }
+            }
+        }
+        else if (line[0] == '+')
+        {
+            /* Subscribe */
+            req->commands[req->command_count].action = ECHOFIX_ACTION_SUBSCRIBE;
+            strncpy(req->commands[req->command_count].area, line + 1, 
+                    sizeof(req->commands[req->command_count].area) - 1);
+            str_trim(req->commands[req->command_count].area);
+            str_upper(req->commands[req->command_count].area);
+            req->command_count++;
+        }
+        else if (line[0] == '-')
+        {
+            /* Unsubscribe */
+            req->commands[req->command_count].action = ECHOFIX_ACTION_UNSUBSCRIBE;
+            strncpy(req->commands[req->command_count].area, line + 1,
+                    sizeof(req->commands[req->command_count].area) - 1);
+            str_trim(req->commands[req->command_count].area);
+            str_upper(req->commands[req->command_count].area);
+            req->command_count++;
+        }
+        /* Ignore other lines (comments, etc.) */
+    }
+    
+    echofix_stats.requests_received++;
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Downlink Configuration                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+ECHOFIX_DOWNLINK_CONFIG *echofix_find_downlink(const FTN_ADDR *addr)
+{
+    int i;
+    
+    if (addr == NULL) return NULL;
+    
+    for (i = 0; i < downlink_count; i++)
+    {
+        if (addr_equal(&downlinks[i].addr, addr))
+        {
+            return &downlinks[i];
+        }
+    }
+    
+    return NULL;
+}
+
+int echofix_set_downlink(const ECHOFIX_DOWNLINK_CONFIG *config)
+{
+    ECHOFIX_DOWNLINK_CONFIG *existing;
+    
+    if (config == NULL) return 0;
+    
+    existing = echofix_find_downlink(&config->addr);
+    if (existing != NULL)
+    {
+        /* Update existing */
+        memcpy(existing, config, sizeof(ECHOFIX_DOWNLINK_CONFIG));
+        return 1;
+    }
+    
+    /* Add new */
+    if (downlink_count >= ECHOFIX_MAX_DOWNLINKS)
+    {
+        debug_printf("echofix: Maximum downlinks reached");
+        return 0;
+    }
+    
+    memcpy(&downlinks[downlink_count], config, sizeof(ECHOFIX_DOWNLINK_CONFIG));
+    downlinks[downlink_count].id = downlink_count + 1;
+    downlink_count++;
+    
+    debug_printf("echofix: Added downlink %d:%d/%d.%d",
+                 config->addr.zone, config->addr.net, 
+                 config->addr.node, config->addr.point);
+    
+    return 1;
+}
+
+int echofix_get_downlink_count(void)
+{
+    return downlink_count;
+}
+
+ECHOFIX_DOWNLINK_CONFIG *echofix_get_downlink_by_index(int index)
+{
+    if (index < 0 || index >= downlink_count)
+    {
+        return NULL;
+    }
+    return &downlinks[index];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Subscription Management                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+int echofix_is_subscribed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag)
+{
+    int i;
+    
+    if (addr == NULL || area_tag == NULL) return 0;
+    
+    for (i = 0; i < subscription_count; i++)
+    {
+        if (subscriptions[i].active &&
+            subscriptions[i].type == type &&
+            addr_equal(&subscriptions[i].addr, addr) &&
+            str_casecmp(subscriptions[i].area_tag, area_tag) == 0)
+        {
+            return 1;
+        }
+    }
+    
+    return 0;
+}
+
+int echofix_add_subscription(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag)
+{
+    int i;
+    ECHOFIX_SUBSCRIPTION *sub;
+    
+    if (addr == NULL || area_tag == NULL) return 0;
+    
+    /* Check if already subscribed */
+    if (echofix_is_subscribed(addr, type, area_tag))
+    {
+        return 1;  /* Already subscribed, success */
+    }
+    
+    /* Find free slot or reuse inactive */
+    sub = NULL;
+    for (i = 0; i < subscription_count; i++)
+    {
+        if (!subscriptions[i].active)
+        {
+            sub = &subscriptions[i];
+            break;
+        }
+    }
+    
+    if (sub == NULL)
+    {
+        if (subscription_count >= ECHOFIX_MAX_DOWNLINKS * ECHOFIX_MAX_SUBSCRIPTIONS)
+        {
+            debug_printf("echofix: Maximum subscriptions reached");
+            return 0;
+        }
+        sub = &subscriptions[subscription_count++];
+    }
+    
+    /* Add subscription */
+    sub->addr = *addr;
+    strncpy(sub->area_tag, area_tag, sizeof(sub->area_tag) - 1);
+    sub->area_tag[sizeof(sub->area_tag) - 1] = '\0';
+    str_upper(sub->area_tag);
+    sub->type = type;
+    sub->subscribed = time(NULL);
+    sub->active = 1;
+    
+    echofix_stats.subscriptions_added++;
+    
+    debug_printf("echofix: Added subscription %d:%d/%d.%d -> %s",
+                 addr->zone, addr->net, addr->node, addr->point, area_tag);
+    
+    return 1;
+}
+
+int echofix_remove_subscription(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag)
+{
+    int i;
+    
+    if (addr == NULL || area_tag == NULL) return 0;
+    
+    for (i = 0; i < subscription_count; i++)
+    {
+        if (subscriptions[i].active &&
+            subscriptions[i].type == type &&
+            addr_equal(&subscriptions[i].addr, addr) &&
+            str_casecmp(subscriptions[i].area_tag, area_tag) == 0)
+        {
+            subscriptions[i].active = 0;
+            echofix_stats.subscriptions_removed++;
+            
+            debug_printf("echofix: Removed subscription %d:%d/%d.%d -> %s",
+                         addr->zone, addr->net, addr->node, addr->point, area_tag);
+            
+            return 1;
+        }
+    }
+    
+    return 0;  /* Not found */
+}
+
+int echofix_get_subscribers(ECHOFIX_TYPE type, const char *area_tag,
+                            FTN_ADDR *addrs, int max_addrs)
+{
+    int i;
+    int count = 0;
+    
+    if (area_tag == NULL || addrs == NULL || max_addrs <= 0) return 0;
+    
+    for (i = 0; i < subscription_count && count < max_addrs; i++)
+    {
+        if (subscriptions[i].active &&
+            subscriptions[i].type == type &&
+            str_casecmp(subscriptions[i].area_tag, area_tag) == 0)
+        {
+            /* Check if downlink is not paused */
+            ECHOFIX_DOWNLINK_CONFIG *dl = echofix_find_downlink(&subscriptions[i].addr);
+            if (dl == NULL || !dl->paused)
+            {
+                addrs[count++] = subscriptions[i].addr;
+            }
+        }
+    }
+    
+    return count;
+}
+
+int echofix_get_subscriptions(const FTN_ADDR *addr, ECHOFIX_TYPE type,
+                              char (*areas)[ECHOFIX_AREA_TAG_LEN], int max_areas)
+{
+    int i;
+    int count = 0;
+    
+    if (addr == NULL || areas == NULL || max_areas <= 0) return 0;
+    
+    for (i = 0; i < subscription_count && count < max_areas; i++)
+    {
+        if (subscriptions[i].active &&
+            subscriptions[i].type == type &&
+            addr_equal(&subscriptions[i].addr, addr))
+        {
+            strncpy(areas[count], subscriptions[i].area_tag, ECHOFIX_AREA_TAG_LEN - 1);
+            areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
+            count++;
+        }
+    }
+    
+    return count;
+}
+
+int echofix_set_paused(const FTN_ADDR *addr, int paused)
+{
+    ECHOFIX_DOWNLINK_CONFIG *dl = echofix_find_downlink(addr);
+    
+    if (dl == NULL) return 0;
+    
+    dl->paused = paused ? 1 : 0;
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Area Availability                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Structure for area info lookup - matches Support module layout */
+typedef struct
+{
+    int id;
+    char name[64];
+    char tag[64];
+    int areatype;
+    int daystokeep;
+    int akause;
+    int accesslevel;
+    char keys[128];
+    char groups[64];
+} ECHOFIX_AREA_INFO;
+
+typedef struct
+{
+    int id;
+    char name[64];
+    int type;
+    int accesslevel;
+    char keys[128];
+    int area_count;
+    ECHOFIX_AREA_INFO areas[64];
+} ECHOFIX_BASE_INFO;
+
+typedef struct
+{
+    int default_retention;
+    int default_accesslevel;
+    char storage_root[256];
+    int base_count;
+    ECHOFIX_BASE_INFO bases[32];
+} ECHOFIX_GLOBAL_CONFIG;
+
+int echofix_is_area_allowed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag)
+{
+    ECHOFIX_DOWNLINK_CONFIG *dl;
+    _kernel_swi_regs regs;
+    ECHOFIX_GLOBAL_CONFIG *cfg;
+    int swi_num;
+    int b, a;
+    
+    if (addr == NULL || area_tag == NULL) return 0;
+    
+    dl = echofix_find_downlink(addr);
+    if (dl == NULL)
+    {
+        return 0;  /* Unknown downlink */
+    }
+    
+    if (!dl->active)
+    {
+        return 0;  /* Inactive account */
+    }
+    
+    /* Get global config for area lookup */
+    swi_num = (type == ECHOFIX_TYPE_AREAFIX) ? SWI_SUPPORT_MSGBASE : SWI_SUPPORT_FILEBASE;
+    
+    regs.r[0] = 0;  /* GET_GLOBAL */
+    if (_kernel_swi(swi_num, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+    
+    cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
+    
+    /* Find the area and check if downlink's groups allow access */
+    for (b = 0; b < cfg->base_count; b++)
+    {
+        for (a = 0; a < cfg->bases[b].area_count; a++)
+        {
+            ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
+            
+            /* Check area type matches (ECHO=1 for echomail, FILE=5 for fileecho) */
+            int expected_type = (type == ECHOFIX_TYPE_AREAFIX) ? 1 : 5;
+            
+            if (area->areatype == expected_type &&
+                str_casecmp(area->tag, area_tag) == 0)
+            {
+                /* Found the area - check groups */
+                if (groups_overlap(dl->allowed_groups, area->groups))
+                {
+                    return 1;
+                }
+                return 0;  /* Area exists but not allowed for this downlink */
+            }
+        }
+    }
+    
+    return 0;  /* Area not found */
+}
+
+int echofix_get_available_areas(const FTN_ADDR *addr, ECHOFIX_TYPE type,
+                                char (*areas)[ECHOFIX_AREA_TAG_LEN], int max_areas)
+{
+    ECHOFIX_DOWNLINK_CONFIG *dl;
+    _kernel_swi_regs regs;
+    ECHOFIX_GLOBAL_CONFIG *cfg;
+    int swi_num;
+    int count = 0;
+    int b, a;
+    
+    if (addr == NULL || areas == NULL || max_areas <= 0) return 0;
+    
+    dl = echofix_find_downlink(addr);
+    if (dl == NULL) return 0;
+    
+    /* Get global config */
+    swi_num = (type == ECHOFIX_TYPE_AREAFIX) ? SWI_SUPPORT_MSGBASE : SWI_SUPPORT_FILEBASE;
+    
+    regs.r[0] = 0;  /* GET_GLOBAL */
+    if (_kernel_swi(swi_num, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+    
+    cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
+    
+    /* Iterate areas and check access */
+    for (b = 0; b < cfg->base_count && count < max_areas; b++)
+    {
+        for (a = 0; a < cfg->bases[b].area_count && count < max_areas; a++)
+        {
+            ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
+            int expected_type = (type == ECHOFIX_TYPE_AREAFIX) ? 1 : 5;
+            
+            if (area->areatype == expected_type &&
+                area->tag[0] != '\0' &&
+                groups_overlap(dl->allowed_groups, area->groups))
+            {
+                strncpy(areas[count], area->tag, ECHOFIX_AREA_TAG_LEN - 1);
+                areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
+                count++;
+            }
+        }
+    }
+    
+    return count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Response Building                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static void response_add(ECHOFIX_RESPONSE *resp, const char *fmt, ...)
+{
+    va_list args;
+    int space;
+    
+    space = ECHOFIX_RESPONSE_SIZE - resp->body_len - 1;
+    if (space <= 0) return;
+    
+    va_start(args, fmt);
+    resp->body_len += vsnprintf(resp->body + resp->body_len, space, fmt, args);
+    va_end(args);
+}
+
+static void response_add_help(ECHOFIX_RESPONSE *resp, ECHOFIX_TYPE type)
+{
+    const char *type_name = (type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix";
+    const char *area_name = (type == ECHOFIX_TYPE_AREAFIX) ? "echo" : "fileecho";
+    
+    response_add(resp, "%s Help\r\n", type_name);
+    response_add(resp, "============\r\n\r\n");
+    response_add(resp, "Commands:\r\n");
+    response_add(resp, "  +AREA       Subscribe to %s area\r\n", area_name);
+    response_add(resp, "  -AREA       Unsubscribe from %s area\r\n", area_name);
+    response_add(resp, "  %%LIST       List all available areas\r\n");
+    response_add(resp, "  %%QUERY      List your current subscriptions\r\n");
+    response_add(resp, "  %%UNLINKED   List areas you're not subscribed to\r\n");
+    response_add(resp, "  %%PAUSE      Pause your feed\r\n");
+    response_add(resp, "  %%RESUME     Resume your feed\r\n");
+    response_add(resp, "  %%HELP       This help message\r\n");
+    response_add(resp, "\r\n");
+    response_add(resp, "Put your password in the subject line.\r\n");
+    response_add(resp, "Multiple commands can be on separate lines.\r\n");
+}
+
+static void response_add_list(ECHOFIX_RESPONSE *resp, const FTN_ADDR *addr, ECHOFIX_TYPE type)
+{
+    char areas[256][ECHOFIX_AREA_TAG_LEN];
+    int count;
+    int i;
+    
+    count = echofix_get_available_areas(addr, type, areas, 256);
+    
+    response_add(resp, "Available Areas (%d)\r\n", count);
+    response_add(resp, "==================\r\n");
+    
+    for (i = 0; i < count; i++)
+    {
+        int subscribed = echofix_is_subscribed(addr, type, areas[i]);
+        response_add(resp, "  %c %s\r\n", subscribed ? '*' : ' ', areas[i]);
+    }
+    
+    response_add(resp, "\r\n* = currently subscribed\r\n");
+}
+
+static void response_add_query(ECHOFIX_RESPONSE *resp, const FTN_ADDR *addr, ECHOFIX_TYPE type)
+{
+    char areas[ECHOFIX_MAX_SUBSCRIPTIONS][ECHOFIX_AREA_TAG_LEN];
+    int count;
+    int i;
+    
+    count = echofix_get_subscriptions(addr, type, areas, ECHOFIX_MAX_SUBSCRIPTIONS);
+    
+    response_add(resp, "Your Subscriptions (%d)\r\n", count);
+    response_add(resp, "======================\r\n");
+    
+    if (count == 0)
+    {
+        response_add(resp, "  (none)\r\n");
+    }
+    else
+    {
+        for (i = 0; i < count; i++)
+        {
+            response_add(resp, "  %s\r\n", areas[i]);
+        }
+    }
+}
+
+static void response_add_unlinked(ECHOFIX_RESPONSE *resp, const FTN_ADDR *addr, ECHOFIX_TYPE type)
+{
+    char areas[256][ECHOFIX_AREA_TAG_LEN];
+    int count;
+    int i;
+    int unlinked = 0;
+    
+    count = echofix_get_available_areas(addr, type, areas, 256);
+    
+    response_add(resp, "Unlinked Areas\r\n");
+    response_add(resp, "==============\r\n");
+    
+    for (i = 0; i < count; i++)
+    {
+        if (!echofix_is_subscribed(addr, type, areas[i]))
+        {
+            response_add(resp, "  %s\r\n", areas[i]);
+            unlinked++;
+        }
+    }
+    
+    if (unlinked == 0)
+    {
+        response_add(resp, "  (you are subscribed to all available areas)\r\n");
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Request Processing                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+int echofix_process_request(const ECHOFIX_REQUEST *req, ECHOFIX_RESPONSE *resp)
+{
+    ECHOFIX_DOWNLINK_CONFIG *dl;
+    char addr_str[32];
+    const char *type_name;
+    int i;
+    int errors = 0;
+    
+    if (req == NULL || resp == NULL) return 0;
+    
+    memset(resp, 0, sizeof(ECHOFIX_RESPONSE));
+    
+    resp->type = req->type;
+    resp->to_addr = req->from_addr;
+    strncpy(resp->to_name, req->from_name, sizeof(resp->to_name) - 1);
+    
+    type_name = (req->type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix";
+    addr_to_string(&req->from_addr, addr_str, sizeof(addr_str));
+    
+    snprintf(resp->subject, sizeof(resp->subject), "%s Response", type_name);
+    
+    /* Find downlink */
+    dl = echofix_find_downlink(&req->from_addr);
+    if (dl == NULL)
+    {
+        response_add(resp, "Error: Unknown system %s\r\n", addr_str);
+        response_add(resp, "Please contact the sysop to set up an account.\r\n");
+        ftnlog_printf("EchoFix: Unknown system %s", addr_str);
+        echofix_stats.requests_failed++;
+        return 0;
+    }
+    
+    /* Check password */
+    {
+        const char *expected_pw = (req->type == ECHOFIX_TYPE_AREAFIX) 
+                                  ? dl->areafix_password 
+                                  : dl->filefix_password;
+        
+        if (expected_pw[0] != '\0' && str_casecmp(req->password, expected_pw) != 0)
+        {
+            response_add(resp, "Error: Invalid password\r\n");
+            ftnlog_printf("EchoFix: Invalid password from %s", addr_str);
+            echofix_stats.requests_failed++;
+            return 0;
+        }
+    }
+    
+    /* Check if account is active */
+    if (!dl->active)
+    {
+        response_add(resp, "Error: Account is inactive\r\n");
+        response_add(resp, "Please contact the sysop.\r\n");
+        echofix_stats.requests_failed++;
+        return 0;
+    }
+    
+    /* Build response header */
+    response_add(resp, "%s Response for %s\r\n", type_name, addr_str);
+    response_add(resp, "Generated: %s\r\n", __DATE__);
+    response_add(resp, "\r\n");
+    
+    /* Process special commands first */
+    if (req->want_help)
+    {
+        response_add_help(resp, req->type);
+        response_add(resp, "\r\n");
+    }
+    
+    if (req->want_list)
+    {
+        response_add_list(resp, &req->from_addr, req->type);
+        response_add(resp, "\r\n");
+    }
+    
+    if (req->want_query)
+    {
+        response_add_query(resp, &req->from_addr, req->type);
+        response_add(resp, "\r\n");
+    }
+    
+    if (req->want_unlinked)
+    {
+        response_add_unlinked(resp, &req->from_addr, req->type);
+        response_add(resp, "\r\n");
+    }
+    
+    if (req->want_pause)
+    {
+        if (echofix_set_paused(&req->from_addr, 1))
+        {
+            response_add(resp, "Feed PAUSED\r\n\r\n");
+            ftnlog_printf("EchoFix: %s paused feed", addr_str);
+        }
+    }
+    
+    if (req->want_resume)
+    {
+        if (echofix_set_paused(&req->from_addr, 0))
+        {
+            response_add(resp, "Feed RESUMED\r\n\r\n");
+            ftnlog_printf("EchoFix: %s resumed feed", addr_str);
+        }
+    }
+    
+    /* Process subscribe/unsubscribe commands */
+    if (req->command_count > 0)
+    {
+        response_add(resp, "Command Results\r\n");
+        response_add(resp, "===============\r\n");
+        
+        for (i = 0; i < req->command_count; i++)
+        {
+            const ECHOFIX_COMMAND *cmd = &req->commands[i];
+            
+            if (cmd->action == ECHOFIX_ACTION_SUBSCRIBE)
+            {
+                /* Check if allowed */
+                if (!echofix_is_area_allowed(&req->from_addr, req->type, cmd->area))
+                {
+                    response_add(resp, "  %s: NOT AVAILABLE\r\n", cmd->area);
+                    errors++;
+                }
+                else if (echofix_is_subscribed(&req->from_addr, req->type, cmd->area))
+                {
+                    response_add(resp, "  %s: Already linked\r\n", cmd->area);
+                }
+                else if (echofix_add_subscription(&req->from_addr, req->type, cmd->area))
+                {
+                    response_add(resp, "  %s: LINKED\r\n", cmd->area);
+                    ftnlog_printf("EchoFix: %s +%s", addr_str, cmd->area);
+                }
+                else
+                {
+                    response_add(resp, "  %s: ERROR\r\n", cmd->area);
+                    errors++;
+                }
+            }
+            else if (cmd->action == ECHOFIX_ACTION_UNSUBSCRIBE)
+            {
+                if (!echofix_is_subscribed(&req->from_addr, req->type, cmd->area))
+                {
+                    response_add(resp, "  %s: Not linked\r\n", cmd->area);
+                }
+                else if (echofix_remove_subscription(&req->from_addr, req->type, cmd->area))
+                {
+                    response_add(resp, "  %s: UNLINKED\r\n", cmd->area);
+                    ftnlog_printf("EchoFix: %s -%s", addr_str, cmd->area);
+                }
+                else
+                {
+                    response_add(resp, "  %s: ERROR\r\n", cmd->area);
+                    errors++;
+                }
+            }
+        }
+        
+        response_add(resp, "\r\n");
+    }
+    
+    /* Save subscriptions after changes */
+    if (req->command_count > 0 || req->want_pause || req->want_resume)
+    {
+        echofix_save_subscriptions();
+    }
+    
+    echofix_stats.requests_processed++;
+    
+    return (errors == 0) ? 1 : 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Response Sending                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int echofix_send_response(const ECHOFIX_RESPONSE *resp)
+{
+    _kernel_swi_regs regs;
+    const char *type_name;
+    
+    /* Structure matching MESSAGE_RECORD for storing */
+    typedef struct
+    {
+        int id;
+        int messagebaseid;
+        int messagebaseareaid;
+        int type;
+        int deleted;
+        int accesslevel;
+        char keys[128];
+        char subject[256];
+        int sentby;
+        int receivedby;
+        struct { char domain[100]; int zone, net, node, point; } orgaddr;
+        struct { char domain[100]; int zone, net, node, point; } dstaddr;
+        time_t imported;
+        time_t sent;
+        time_t read;
+        int timesread;
+        long bodysize;
+        char fromname[36];
+        char toname[36];
+        int exported;
+    } MSG_REC;
+    
+    MSG_REC record;
+    int msg_id;
+    
+    if (resp == NULL || resp->body_len == 0) return 0;
+    
+    type_name = (resp->type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix";
+    
+    /* Build message record */
+    memset(&record, 0, sizeof(record));
+    record.messagebaseid = 1;  /* FTN messagebase */
+    record.messagebaseareaid = 0;  /* Netmail area (area 0 or configured netmail area) */
+    record.type = 2;  /* Netmail type */
+    record.sent = time(NULL);
+    record.bodysize = resp->body_len;
+    record.exported = 0;  /* Needs to be exported */
+    
+    strncpy(record.subject, resp->subject, sizeof(record.subject) - 1);
+    strncpy(record.fromname, type_name, sizeof(record.fromname) - 1);
+    strncpy(record.toname, resp->to_name, sizeof(record.toname) - 1);
+    
+    /* Set origin to our primary address */
+    if (mailer.our_addr_count > 0)
+    {
+        record.orgaddr.zone = mailer.our_addrs[0].zone;
+        record.orgaddr.net = mailer.our_addrs[0].net;
+        record.orgaddr.node = mailer.our_addrs[0].node;
+        record.orgaddr.point = mailer.our_addrs[0].point;
+    }
+    
+    /* Set destination */
+    record.dstaddr.zone = resp->to_addr.zone;
+    record.dstaddr.net = resp->to_addr.net;
+    record.dstaddr.node = resp->to_addr.node;
+    record.dstaddr.point = resp->to_addr.point;
+    
+    /* Store message via Filer */
+    regs.r[0] = 3;  /* MSGBASE_CMD_BEGIN_UPLOAD */
+    regs.r[1] = 1;  /* Base ID */
+    regs.r[2] = (int)&record;
+    
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+    {
+        debug_printf("echofix: Failed to create response message");
+        return 0;
+    }
+    
+    msg_id = regs.r[0];
+    
+    /* Upload body */
+    regs.r[0] = 4;  /* MSGBASE_CMD_UPLOAD_BLOCK */
+    regs.r[1] = 1;  /* Base ID */
+    regs.r[2] = msg_id;
+    regs.r[3] = (int)resp->body;
+    regs.r[4] = resp->body_len;
+    
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+    {
+        debug_printf("echofix: Failed to upload response body");
+        return 0;
+    }
+    
+    echofix_stats.responses_sent++;
+    
+    ftnlog_printf("EchoFix: Sent response to %d:%d/%d.%d",
+                  resp->to_addr.zone, resp->to_addr.net,
+                  resp->to_addr.node, resp->to_addr.point);
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* High-Level Message Processor                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+int echofix_process_message(const FTN_ADDR *from_addr, ECHOFIX_TYPE type,
+                            const char *subject, const char *body)
+{
+    ECHOFIX_REQUEST request;
+    ECHOFIX_RESPONSE response;
+    const char *to_name;
+    int body_len;
+    
+    if (from_addr == NULL || body == NULL)
+    {
+        debug_printf("echofix_process_message: NULL parameters");
+        return 0;
+    }
+    
+    /* Initialize structures */
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    
+    /* Determine recipient name from type */
+    to_name = (type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix";
+    body_len = (int)strlen(body);
+    
+    /* Parse the message body into request commands */
+    if (!echofix_parse_request(to_name, "", from_addr, subject, body, body_len, &request))
+    {
+        debug_printf("echofix_process_message: Failed to parse request from %d:%d/%d.%d",
+                     from_addr->zone, from_addr->net, from_addr->node, from_addr->point);
+        return 0;
+    }
+    
+    /* Process the request and build response */
+    if (!echofix_process_request(&request, &response))
+    {
+        debug_printf("echofix_process_message: Failed to process request");
+        return 0;
+    }
+    
+    /* Send the response if there is one */
+    if (response.body_len > 0)
+    {
+        if (!echofix_send_response(&response))
+        {
+            debug_printf("echofix_process_message: Failed to send response");
+            return 0;
+        }
+    }
+    
+    ftnlog_printf("EchoFix: Processed %s request from %d:%d/%d.%d",
+                  (type == ECHOFIX_TYPE_AREAFIX) ? "AreaFix" : "FileFix",
+                  from_addr->zone, from_addr->net, from_addr->node, from_addr->point);
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Persistence                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define ECHOFIX_FILE_MAGIC      0x46584345  /* "ECXF" */
+#define ECHOFIX_FILE_VERSION    1
+
+typedef struct
+{
+    unsigned int magic;
+    unsigned int version;
+    int subscription_count;
+} ECHOFIX_FILE_HEADER;
+
+int echofix_load_subscriptions(void)
+{
+    FILE *f;
+    ECHOFIX_FILE_HEADER header;
+    int i;
+    
+    f = fopen(subscriptions_path, "rb");
+    if (f == NULL)
+    {
+        debug_printf("echofix: No subscriptions file, starting fresh");
+        return 0;
+    }
+    
+    if (fread(&header, sizeof(header), 1, f) != 1)
+    {
+        fclose(f);
+        return 0;
+    }
+    
+    if (header.magic != ECHOFIX_FILE_MAGIC || header.version != ECHOFIX_FILE_VERSION)
+    {
+        debug_printf("echofix: Invalid subscriptions file format");
+        fclose(f);
+        return 0;
+    }
+    
+    subscription_count = 0;
+    for (i = 0; i < header.subscription_count && i < ECHOFIX_MAX_DOWNLINKS * ECHOFIX_MAX_SUBSCRIPTIONS; i++)
+    {
+        if (fread(&subscriptions[subscription_count], sizeof(ECHOFIX_SUBSCRIPTION), 1, f) == 1)
+        {
+            subscription_count++;
+        }
+    }
+    
+    fclose(f);
+    
+    debug_printf("echofix: Loaded %d subscriptions", subscription_count);
+    
+    return subscription_count;
+}
+
+int echofix_save_subscriptions(void)
+{
+    FILE *f;
+    ECHOFIX_FILE_HEADER header;
+    int i;
+    int active_count = 0;
+    
+    f = fopen(subscriptions_path, "wb");
+    if (f == NULL)
+    {
+        debug_printf("echofix: Failed to create subscriptions file");
+        return 0;
+    }
+    
+    /* Count active subscriptions */
+    for (i = 0; i < subscription_count; i++)
+    {
+        if (subscriptions[i].active)
+        {
+            active_count++;
+        }
+    }
+    
+    header.magic = ECHOFIX_FILE_MAGIC;
+    header.version = ECHOFIX_FILE_VERSION;
+    header.subscription_count = active_count;
+    
+    fwrite(&header, sizeof(header), 1, f);
+    
+    /* Write only active subscriptions */
+    for (i = 0; i < subscription_count; i++)
+    {
+        if (subscriptions[i].active)
+        {
+            fwrite(&subscriptions[i], sizeof(ECHOFIX_SUBSCRIPTION), 1, f);
+        }
+    }
+    
+    fclose(f);
+    
+    debug_printf("echofix: Saved %d subscriptions", active_count);
+    
+    return active_count;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Statistics                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+const ECHOFIX_STATS *echofix_get_stats(void)
+{
+    return &echofix_stats;
+}
+
+void echofix_reset_stats(void)
+{
+    memset(&echofix_stats, 0, sizeof(echofix_stats));
+}

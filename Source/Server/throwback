@@ -1,0 +1,58 @@
+do mkdir -p o
+do mkdir -p od
+do mkdir -p oz
+do mkdir -p aof
+do mkdir -p linked
+Touch o._dirs
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.main c.main
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.main", line 692: Warning: implicit narrowing cast: <argument 1 to 'timer_action'>
+"c.main", line 698: Warning: odd unsigned comparison with 0: '<='
+"c.main", line 808: Warning: implicit narrowing cast: <argument 1 to 'timer_action'>
+"c.main", line 1198: Warning: unused earlier static declaration of 'free_line_icon_buffers'
+"c.main", line 1665: Warning: implicit narrowing cast: <argument 1 to 'timer_action'>
+c.main: 5 warnings, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.upload c.upload
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.upload", line 73: Warning: unused earlier static declaration of 'upload_create_window'
+c.upload: 1 warning, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.timer c.timer
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.timer", line 11: Warning: extern 'timer_monotonic_time' not declared in header
+"c.timer", line 15: Warning: extern 'timer_set' not declared in header
+"c.timer", line 19: Warning: extern 'timer_action' not declared in header
+"c.timer", line 20: Warning: lower precision in wider context: '-'
+c.timer: 4 warnings, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.debug c.debug
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.debug", line 11: Warning: repeated definition of #define macro DEBUG_MAX_LINE_LENGTH
+c.debug: 1 warning, 0 errors, 0 serious errors
+cc -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan -c -depend !Depend -throwback   -ff -fah  -o o.config c.config
+Norcroft RISC OS Arm C vsn 5.92 [22 Feb 2024]
+"c.config", line 178: Warning: unused earlier static declaration of 'parse_key_value'
+"c.config", line 235: Warning: unused earlier static declaration of 'process_include'
+"c.config", line 263: Warning: unused earlier static declaration of 'filer_msgbase_exists'
+"c.config", line 278: Warning: unused earlier static declaration of 'filer_filebase_exists'
+"c.config", line 293: Warning: unused earlier static declaration of 'filer_create_msgbase'
+"c.config", line 308: Warning: unused earlier static declaration of 'filer_update_msgbase'
+"c.config", line 324: Warning: unused earlier static declaration of 'filer_store_msgbase_area'
+"c.config", line 340: Warning: unused earlier static declaration of 'filer_create_filebase'
+"c.config", line 355: Warning: unused earlier static declaration of 'filer_update_filebase'
+"c.config", line 371: Warning: unused earlier static declaration of 'filer_store_filebase_area'
+"c.config", line 391: Warning: unused earlier static declaration of 'support_push_msgbase_global'
+"c.config", line 418: Warning: unused earlier static declaration of 'support_push_msgbase'
+"c.config", line 462: Warning: unused earlier static declaration of 'support_push_filebase_global'
+"c.config", line 488: Warning: unused earlier static declaration of 'support_push_filebase'
+"c.config", line 536: Warning: unused earlier static declaration of 'parse_msgbase_file'
+"c.config", line 759: Warning: unused earlier static declaration of 'parse_filebase_file'
+"c.config", line 1218: Serious error: 'FTN_DOWNLINK_RECORD' has no 'active' field
+"c.config", line 1420: Warning: implicit narrowing cast: '='
+"c.config", line 1425: Warning: implicit narrowing cast: '='
+"c.config", line 1435: Warning: lower precision in wider context: '<<'
+"c.config", line 1435: Warning: implicit narrowing cast: '='
+"c.config", line 1441: Warning: implicit narrowing cast: '='
+c.config: 21 warnings, 0 errors, 1 serious error
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+

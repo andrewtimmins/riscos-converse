@@ -234,7 +234,19 @@ typedef struct {
     FTN_ADDRESS orgaddr, dstaddr;
     time_t imported, sent, read;
     int timesread; long bodysize;
+    int exported;
+    unsigned short flags; /* MSG_FLAG_* routing flags */
 } MESSAGE_RECORD;
+
+/* Message routing flags (bit flags) */
+#define MSG_FLAG_PRIVATE    0x0001  /* Private message */
+#define MSG_FLAG_CRASH      0x0002  /* Crash priority (send immediately) */
+#define MSG_FLAG_HOLD       0x0004  /* Hold for pickup only */
+#define MSG_FLAG_DIRECT     0x0008  /* Direct delivery, no routing */
+#define MSG_FLAG_IMMEDIATE  0x0010  /* Immediate priority (highest) */
+#define MSG_FLAG_KILLSENT   0x0020  /* Delete after sending */
+#define MSG_FLAG_FILE_ATTACH 0x0040 /* Has file attachment */
+#define MSG_FLAG_FILE_REQUEST 0x0080 /* File request */
 ```
 
 ### User Authentication
@@ -1283,6 +1295,7 @@ The FTN Mailer (`FTN/`) implements FidoNet Technology Network (FTN) mail exchang
 - **Queue** (`FTN/c/queue`): Outbound file queue management
 - **TIC** (`FTN/c/tic`): TIC file processing for file distribution
 - **FREQ** (`FTN/c/freq`): File request processing
+- **EchoFix** (`FTN/c/echofix`): AreaFix/FileFix subscription management
 
 ### Echomail Group Filtering
 Areas can be assigned to groups (e.g., "A", "B", "C") and uplinks specify which groups they carry. When scanning outbound echomail, messages are only routed to uplinks whose groups overlap with the area's groups.
@@ -1436,7 +1449,24 @@ int scanner_get_area_info(int base_id, int area_id, char *tag, int *areatype, in
 int scanner_get_area_info_full(int base_id, int area_id, char *tag, int *areatype, int *akause, char *groups);
 int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks);
 int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
+int scanner_get_message_flags(int base_id, int message_id, unsigned short *flags_out);
+SCANNER_FLAVOUR scanner_flags_to_flavour(unsigned short flags);
 ```
+
+### Message Priority/Flavour
+Messages can have priority flags that determine packet placement in BSO:
+
+| Flag | Flavour | BSO Extension | Priority | Description |
+|------|---------|---------------|----------|-------------|
+| (none) | NORMAL | `out`, `pkt` | Lowest | Send during scheduled poll |
+| MSG_FLAG_HOLD | HOLD | `hut`, `hpkt` | Low | Hold for remote pickup only |
+| MSG_FLAG_DIRECT | DIRECT | `dut`, `dpkt` | Medium | Direct delivery, no hub routing |
+| MSG_FLAG_CRASH | CRASH | `cut`, `cpkt` | High | Send immediately |
+| MSG_FLAG_IMMEDIATE | IMMEDIATE | `iut`, `ipkt` | Highest | Interrupt current session |
+
+**RISC OS Note**: File extensions are appended without dots (e.g., `00fa0001pkt`, `00fa0001cpkt` for crash priority).
+
+**Packet Naming**: `<timestamp><prefix>pkt` where prefix is empty for normal, `c` for crash, `h` for hold, etc.
 
 ### TIC Functions
 ```c
@@ -1504,6 +1534,109 @@ pollinterval    3600    ; Seconds between automatic uplink polls (0 = disabled)
 |-------|-------|------|-------------|
 | toss_interval | 8 | int | Seconds between auto-toss (0=disabled) |
 | poll_interval | 9 | int | Seconds between auto-poll (0=disabled) |
+
+### Downlinks and EchoFix
+
+#### Overview
+Downlinks are points or nodes that we feed echomail/fileecho to. The EchoFix module (`FTN/c/echofix`) handles AreaFix and FileFix requests from downlinks, allowing them to subscribe/unsubscribe from areas.
+
+#### Downlink Configuration
+```
+; In FTN config
+downlink 1
+    address         2:250/1.1
+    name            Johns Point
+    areafix_password    Point1PW
+    filefix_password    Point1FilePW
+    allowed_groups      A,B
+    allowed_echoes      RETROCOMPUTING,RISCOS*
+    allowed_files       RISCOS_SOFT
+    max_echoes          50
+    max_files           10
+enddownlink
+```
+
+#### Configuration Fields
+| Field | Description |
+|-------|-------------|
+| address | Downlink's FTN address (zone:net/node.point) |
+| name | Descriptive name for logging |
+| areafix_password | Password for AreaFix requests |
+| filefix_password | Password for FileFix requests |
+| allowed_groups | Group letters they can subscribe to (A,B,C) |
+| allowed_echoes | Specific echo area tags (wildcards supported) |
+| allowed_files | Specific fileecho area tags (wildcards supported) |
+| max_echoes | Maximum echo subscriptions (0=unlimited) |
+| max_files | Maximum fileecho subscriptions (0=unlimited) |
+
+#### EchoFix Request Processing
+When a netmail arrives addressed to AreaFix/FileFix/AreaMgr/etc.:
+1. Tosser calls `echofix_detect_recipient()` to identify request type
+2. If detected, tosser calls `echofix_process_message()` instead of storing
+3. EchoFix parses the password and commands from message body
+4. Password is validated against downlink configuration
+5. Commands are processed (+AREA, -AREA, %LIST, %QUERY, %HELP, etc.)
+6. Response netmail is generated and queued for sending
+
+#### Supported Commands
+| Command | Description |
+|---------|-------------|
+| +AREA_TAG | Subscribe to area |
+| -AREA_TAG | Unsubscribe from area |
+| AREA_TAG | Toggle subscription |
+| %LIST | List available areas |
+| %QUERY | List current subscriptions |
+| %HELP | Show help text |
+| %PAUSE | Pause feed (keep subscriptions) |
+| %RESUME | Resume paused feed |
+
+#### Subscription Storage
+Subscriptions are stored in `<Converse$Dir>.Config.FTNLinks` as a binary file of `ECHOFIX_SUBSCRIPTION` records.
+
+#### EchoFix Functions
+```c
+/* Initialization */
+void echofix_initialise(void);
+void echofix_finalise(void);
+
+/* Detection and processing */
+ECHOFIX_TYPE echofix_detect_recipient(const char *to_name);
+int echofix_process_message(const FTN_ADDR *from, ECHOFIX_TYPE type,
+                            const char *subject, const char *body);
+
+/* Subscription management */
+int echofix_add_subscription(const FTN_ADDR *addr, const char *area_tag, ECHOFIX_TYPE type);
+int echofix_remove_subscription(const FTN_ADDR *addr, const char *area_tag, ECHOFIX_TYPE type);
+int echofix_is_subscribed(const FTN_ADDR *addr, const char *area_tag, ECHOFIX_TYPE type);
+
+/* Subscriber queries (for scanner/TIC routing) */
+int echofix_get_subscribers(ECHOFIX_TYPE type, const char *area_tag,
+                            FTN_ADDR *addrs, int max_addrs);
+
+/* Downlink queries */
+ECHOFIX_DOWNLINK_CONFIG *echofix_find_downlink(const FTN_ADDR *addr);
+int echofix_downlink_has_access(const ECHOFIX_DOWNLINK_CONFIG *dl, 
+                                 const char *area_tag, ECHOFIX_TYPE type);
+```
+
+#### Echomail Routing to Downlinks
+The scanner (`FTN/c/scanner`) automatically routes echomail to subscribed downlinks:
+1. When scanning unexported echomail, calls `echofix_get_subscribers(ECHOFIX_TYPE_AREAFIX, area_tag, ...)`
+2. Creates packets for each subscribed downlink
+3. Uses `scanner_find_downlink_by_address()` to lookup downlink session passwords
+
+#### TIC/Fileecho Routing to Downlinks
+The TIC module (`FTN/c/tic`) forwards files to subscribed downlinks:
+1. Call `tic_forward_to_subscribers(filebase_id, file_id, area_tag)` after storing a new file
+2. Queries `echofix_get_subscribers(ECHOFIX_TYPE_FILEFIX, area_tag, ...)`
+3. Creates TIC files for each subscriber and queues for sending
+
+#### Support Module SWI (0x5AA86) Downlink Reasons
+| Reason | Value | Description |
+|--------|-------|-------------|
+| GET_DOWNLINK | 8 | R1=id → R0=FTN_DOWNLINK_CONFIG ptr |
+| SET_DOWNLINK | 9 | R1=id, R2=config ptr |
+| COUNT_DOWNLINKS | 10 | → R0=count |
 
 ## Server Status Window
 
