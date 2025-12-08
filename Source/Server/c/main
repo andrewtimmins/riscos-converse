@@ -1606,12 +1606,17 @@ void check_listener(void)
          }
       	}
 
-		while (socket_poll < line_configurations && line_configuration[socket_poll].socket != 0)
+		/* Find a free line - check both socket AND local connection state */
+		while (socket_poll < line_configurations && 
+		       (line_configuration[socket_poll].socket != 0 || support_get_line_connected(socket_poll)))
 		{
 			socket_poll++;
 		}
 
-		if (line_configuration[socket_poll].socket == 0)
+		/* Only accept if we found a truly free line */
+		if (socket_poll < line_configurations && 
+		    line_configuration[socket_poll].socket == 0 && 
+		    !support_get_line_connected(socket_poll))
 		{
 			int nonblock = 1;
 

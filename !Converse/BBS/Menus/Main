@@ -1,12 +1,24 @@
-{type `<Converse$Dir>.BBS.ANSI.Header`}
-{fgbg 7 0}
- [{fg 5 }P{fg 7}]ublic/Private messages       [{fg 3 }F{fg 7}]iles and filelists
+{fgbg 7 0,cls}{fg 4}ÛÛÛ{bg 4} ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ{fg 6}Û{bg 6}         ÛÛÛÛÛ{bg 7} {fg 4}Time Left: {fg 1}00:00{cll}
+{fg 4}ÛÛÛ{bg 4} ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ{fg 6}Û{fgbg 7 6}You are here:{fg 6}Û{fg 7}Û{fgbg 4 7}File Area: {fg 1}New Users{cll}
+{fg 4}ÛÛ{fgbg 3 4}T H E  Y E L L O W  T O A S T E R{fg 4}ÛÛ{fg 6}ÛÛ{bg 6} {fg 4}Main Menu{fg 6}ÛÛÛ{fg 7}Û{fgbg 4 7}Message Area: {fg 1}General{cll}
+{fg 4}ÛÛ{bg 4} {fg 7}the midlands premier acorn bbs!{fg 4}ÛÛÛ{fg 6}ÛÛÛÛÛÛÛÛÛÛÛÛÛÛÛ{bg 7} {fg 4}Access Level: {fg 1}999 [S]{cll}
+{fg 4}Û{bg 4}                                ÛÛÛÛ{fg 3}Û{bg 3}               {fg 4}You are a REGISTERED user.{fgbg 3 7}Û
+{bg 0}  {fg 4}ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                                               {bg 4} {fg 7}BBS Functions {bg 0} 
+  {fg 6}[{fg 3}P{fg 6}] {fg 7}Public Messaging  {fg 6}[{fg 3}F{fg 6}] {fg 7}File Areas       {fg 6}[{fg 3}G{fg 6}] {fg 7}Online Games
+  {fg 6}[{fg 3}B{fg 6}] {fg 7}Bulletins         {fg 6}[{fg 3}U{fg 6}] {fg 7}User Utilities   {fg 6}[{fg 3}l{fg 6}] {fg 7}Features
 
- [{fg 3 }Y{fg 7}]our user account (Q'nairre)  [{fg 1 }C{fg 7}] Page the sysop
+  {fg 4}ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                                               {bg 4} {fg 7}Mail Features {bg 0} 
+  {fg 6}[{fg 3}R{fg 6}] {fg 7}Read Mail         {fg 6}[{fg 3}W{fg 6}] {fg 7}Write Mail       {fg 6}[{fg 3}M{fg 6}] {fg 7}Mail Sysop
+  {fg 6}[{fg 3}S{fg 6}] {fg 7}Send Netmail      {fg 6}[{fg 3}E{fg 6}] {fg 7}Read Email       {fg 6}[{fg 3}W{fg 6}] {fg 7}Write Email
+  {fg 6}[{fg 3}D{fg 6}] {fg 7}Download Mail
+  {fg 4}ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                                               {bg 4}  {fg 7}Other Users  {bg 0} 
+  {fg 6}[{fg 3}L{fg 6}] {fg 7}Last 20 Users     {fg 6}[{fg 3}C{fg 6}] {fg 7}Chat to Users    {fg 6}[{fg 3}O{fg 6}] {fg 7}Online Users
+  {fg 6}[{fg 3}S{fg 6}] {fg 7}Chat to Sysop
+  {fg 4}ÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄÄ
+                                                               {bg 4} {fg 7}Miscellaneous {bg 0} 
+  {fg 6}[{fg 3}H{fg 6}] {fg 7}Help & Support    {fg 6}[{fg 3}G{fg 6}] {fg 7}Goodbye/Logoff   {fg 6}[{fg 3}Q{fg 6}] {fg 7}Quick Exit
 
- [{fg 6 }A{fg 7}]reas / News / Info           [{fg 5 }D{fg 7}]oors / Leisure / Utils
-
- [{fg 2 }O{fg 7}]nline users                  [{fg 3 }U{fg 7}]serlist/search
-
- [{fg 1 }R{fg 7}]SDFS     [{fg 6 }T{fg 7}]rilink updates   [{fg 2 }G{fg 7}]oodbye (Logoff)
-{type `<Converse$Dir>.BBS.ANSI.Footer`}
+{bg 4}  Main Menu {bg 7} {fg 4}Enter Command or press * to redraw {bg 0} 

@@ -8,10 +8,30 @@
 
     type `<Converse$Dir>.BBS.Menus.Main`
 
-    print `\r\nEnter choice: `
+    pos 49 23
     prompt choice char echo
+    if choice == `O`|| choice==`o`  goto snooper_door
+    if choice == `Q`|| choice==`q`  goto quick_exit
+    if choice == `S`|| choice==`s`  goto sysop_chat
+    if choice == `C`|| choice==`c`  goto user_chat
+    goto main_menu
 
-    label end_session
+    label user_chat
+    call arcbbsdoor 10 `<Converse$Dir>.BBS.Doors.ARCbbs.!Parlez -door 126`
+    fgbg 7 0
+    goto main_menu
+
+    label snooper_door
+    call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126`
+    fgbg 7 0
+    goto main_menu
+
+    label sysop_chat
+    sysopchat
+    cls
+    goto main_menu
+
+    label quick_exit
     logoff
     return
 }
