@@ -14,6 +14,7 @@ flags               CM,TCP,BINKP
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
+nodelists           <Converse$Dir>.FTN.Nodelists
 
 ; FREQ (File Request) settings
 ; freqpath is the directory where requestable files are stored
@@ -110,8 +111,8 @@ uplink 1
     host            applewoodbbs.linkpc.net
     port            24554
     password        sQwHveWd1Zt4n
-    areafix_password
-    filefix_password
+    areafix_password sQwHveWd1Zt14n
+    filefix_password sQwHveWd1Zt14n
     groups          A,B,C
     alias           2:250/1.0
     alias           2:25/0.0

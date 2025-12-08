@@ -1,0 +1,57 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Nodelist Upload Window Handler                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef FTNUPLOAD_H
+#define FTNUPLOAD_H
+
+#include "C:Desk.Wimp.h"
+#include "C:Desk.Event.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Initialise the upload window handler.
+ * 
+ * window:        The ftnupload window handle (from Desk_Window_Create)
+ * status_win:    The ftnstatus window for progress display
+ * progress_icon: Icon handle for progress bar in status window
+ * text_icon:     Icon handle for status text in status window
+ */
+void ftnupload_initialise(Desk_window_handle window, Desk_window_handle status_win,
+                          Desk_icon_handle progress_icon, Desk_icon_handle text_icon);
+
+/* ******************************************************************************************************************************************************** */
+/* Window Control                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/* Open the upload window positioned at bottom-right */
+void ftnupload_open_window(void);
+
+/* Get the window handle */
+Desk_window_handle ftnupload_get_window(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Network Selection                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Select previous/next network */
+void ftnupload_select_previous_network(void);
+void ftnupload_select_next_network(void);
+
+/* Get currently selected network index */
+int ftnupload_get_current_network(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Event Handlers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/* Handle click events in the upload window */
+Desk_bool ftnupload_handle_click(Desk_event_pollblock *event, void *ref);
+
+/* Handle DataLoad message (drag and drop) */
+Desk_bool ftnupload_handle_dataload(Desk_event_pollblock *event, void *ref);
+
+#endif

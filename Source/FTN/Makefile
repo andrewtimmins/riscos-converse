@@ -1,7 +1,7 @@
 # Make file for FTN Mailer
 
 COMPONENT 	= FTN
-OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq echofix
+OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq echofix nodelist ftnupload
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -122,6 +122,11 @@ o.mailer:	h.tic
 o.mailer:	h.mailer
 o.mailer:	h.echofix
 o.mailer:	h.mailer
+o.mailer:	h.nodelist
+o.mailer:	h.mailer
+o.mailer:	h.ftnupload
+o.mailer:	C:Desk.h.Wimp
+o.mailer:	C:Desk.h.Event
 o.mailer:	h.timer
 o.mailer:	h.debug
 o.mailer:	h.ftnlog
@@ -258,3 +263,52 @@ o.echofix:	h.mailer
 o.echofix:	h.debug
 o.echofix:	h.ftnlog
 o.echofix:	C:Desk.h.Wimp
+o.nodelist:	c.nodelist
+o.nodelist:	C:h.kernel
+o.nodelist:	C:h.swis
+o.nodelist:	h.nodelist
+o.nodelist:	h.mailer
+o.nodelist:	C:Desk.h.Wimp
+o.nodelist:	C:Desk.h.Core
+o.nodelist:	C:h.kernel
+o.nodelist:	h.mailer
+o.nodelist:	h.debug
+o.nodelist:	h.ftnlog
+o.nodelist:	C:Desk.h.Wimp
+o.ftnupload:	c.ftnupload
+o.ftnupload:	C:h.kernel
+o.ftnupload:	C:h.swis
+o.ftnupload:	C:Desk.h.Core
+o.ftnupload:	C:h.kernel
+o.ftnupload:	C:Desk.h.Event
+o.ftnupload:	C:Desk.h.Wimp
+o.ftnupload:	C:Desk.h.EventMsg
+o.ftnupload:	C:Desk.h.File
+o.ftnupload:	C:Desk.h.SWI
+o.ftnupload:	C:Desk.h.Error2
+o.ftnupload:	C:Desk.h.Error
+o.ftnupload:	C:Desk.h.JumpRaw
+o.ftnupload:	C:Desk.h.Debug
+o.ftnupload:	C:Desk.h.Icon
+o.ftnupload:	C:Desk.h.DragASpr
+o.ftnupload:	C:Desk.h.Menu
+o.ftnupload:	C:Desk.h.Window
+o.ftnupload:	C:Desk.h.WimpSWIs
+o.ftnupload:	C:Desk.h.Pointer
+o.ftnupload:	C:Desk.h.Coord
+o.ftnupload:	C:Desk.h.Core
+o.ftnupload:	C:Desk.h.WimpSWIs
+o.ftnupload:	C:Desk.h.Msgs
+o.ftnupload:	C:Desk.h.DragASpr
+o.ftnupload:	C:Desk.h.Screen
+o.ftnupload:	h.ftnupload
+o.ftnupload:	C:Desk.h.Wimp
+o.ftnupload:	C:Desk.h.Event
+o.ftnupload:	h.nodelist
+o.ftnupload:	h.mailer
+o.ftnupload:	C:Desk.h.Wimp
+o.ftnupload:	h.iconnames
+o.ftnupload:	h.mailer
+o.ftnupload:	h.debug
+o.ftnupload:	h.ftnlog
+o.ftnupload:	C:Desk.h.Wimp

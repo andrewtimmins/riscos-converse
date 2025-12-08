@@ -1208,6 +1208,14 @@ void load_ftn_config(void)
                     regs.r[2] = (int)value;
                     _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
                 }
+                else if (strcmp(key, "nodelists") == 0 && value != NULL)
+                {
+                    regs.r[0] = FTN_REASON_SET_GLOBAL;
+                    regs.r[1] = 20; /* FTN_GLOBAL_FIELD_NODELISTS */
+                    regs.r[2] = (int)value;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: FTN nodelists path: %s", value);
+                }
                 else if (strcmp(key, "address") == 0 && value != NULL)
                 {
                     /* Start address block */

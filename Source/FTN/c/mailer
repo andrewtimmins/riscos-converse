@@ -51,6 +51,8 @@
 #include "packer.h"
 #include "tic.h"
 #include "echofix.h"
+#include "nodelist.h"
+#include "ftnupload.h"
 #include "timer.h"
 #include "debug.h"
 #include "ftnlog.h"
@@ -66,6 +68,7 @@ Desk_window_handle proginfo_window;
 Desk_window_handle ftnstatus_window;
 Desk_window_handle ftnlog_window;
 Desk_window_handle ftnfreq_window;
+Desk_window_handle ftnupload_window;
 Desk_menu_ptr mail_menu;
 Desk_menu_ptr commands_menu;
 
@@ -89,7 +92,8 @@ enum
 /* Commands submenu entries */
 enum
 {
-    COMMANDS_MENU_FREQ = 0
+    COMMANDS_MENU_FREQ = 0,
+    COMMANDS_MENU_NODELIST
 };
 
 /* ******************************************************************************************************************************************************** */
@@ -1642,6 +1646,7 @@ void mailer_initialise(void)
     packer_initialise();
     tic_initialise();
     echofix_initialise();
+    nodelist_initialise();
     mailer_load_config();
     mailer_create_directories();
     
@@ -1663,6 +1668,7 @@ void mailer_finalise(void)
     }
 
     mailer_destroy_listener();
+    nodelist_finalise();
     tic_finalise();
     echofix_finalise();
     packer_finalise();
@@ -1848,6 +1854,11 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
                     Desk_Icon_SetCaret(ftnfreq_window, FTNFREQ_FILENAME);
                 }
                 break;
+
+            case COMMANDS_MENU_NODELIST:
+                /* Open nodelist upload window */
+                ftnupload_open_window();
+                break;
         }
     }
 
@@ -1979,7 +1990,7 @@ static void create_iconbar_menu(void)
 
     /* Create main iconbar menu */
     lookup_menu_string("ftn.ibmt", iconbar_menu_title, sizeof(iconbar_menu_title), "Mailer");
-    lookup_menu_string("ftn.ibm", iconbar_menu, sizeof(iconbar_menu), "Info,Mail,Commands,Quit");
+    lookup_menu_string("ftn.ibm", iconbar_menu, sizeof(iconbar_menu), "Info,Mail,Misc,Quit");
     wimp.iconbar_menu_handle = Desk_Menu_New(iconbar_menu_title, iconbar_menu);
 
     /* Create Mail submenu */
@@ -1988,8 +1999,8 @@ static void create_iconbar_menu(void)
     mail_menu = Desk_Menu_New(mail_menu_title, mail_menu_items);
 
     /* Create Commands submenu */
-    lookup_menu_string("ftn.cmdmt", commands_menu_title, sizeof(commands_menu_title), "Commands");
-    lookup_menu_string("ftn.cmdm", commands_menu_items, sizeof(commands_menu_items), "FREQ...");
+    lookup_menu_string("ftn.cmdmt", commands_menu_title, sizeof(commands_menu_title), "Misc");
+    lookup_menu_string("ftn.cmdm", commands_menu_items, sizeof(commands_menu_items), "FREQ...,Nodelist...");
     commands_menu = Desk_Menu_New(commands_menu_title, commands_menu_items);
 
     /* Attach Mail submenu to Mail item if both menus were created */
@@ -2050,9 +2061,14 @@ int main(int argc, char *argv[])
     ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
     ftnlog_window = Desk_Window_Create("ftnlog", Desk_template_TITLEMIN);
     ftnfreq_window = Desk_Window_Create("ftnfreq", Desk_template_TITLEMIN);
+    ftnupload_window = Desk_Window_Create("ftnupload", Desk_template_TITLEMIN);
 
     /* Initialise ftnlog module */
     ftnlog_initialise(ftnlog_window);
+
+    /* Initialise ftnupload module with status window for progress */
+    ftnupload_initialise(ftnupload_window, ftnstatus_window,
+                         FTNSTATUS_PROGRESSCOUNTER, FTNSTATUS_STATUS);
 
     /* Attach proginfo dialog as submenu of the Info entry */
     if (wimp.iconbar_menu_handle != NULL && proginfo_window != NULL)
@@ -2066,6 +2082,8 @@ int main(int argc, char *argv[])
                      wimp_handle_iconbar_click, NULL);
     Desk_Event_Claim(Desk_event_CLICK, ftnfreq_window, Desk_event_ANY,
                      ftnfreq_handle_click, NULL);
+    Desk_Event_Claim(Desk_event_CLICK, ftnupload_window, Desk_event_ANY,
+                     ftnupload_handle_click, NULL);
     Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_iconbar_menu_choice, NULL);
     Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY,
@@ -2078,6 +2096,10 @@ int main(int argc, char *argv[])
     /* Register for shutdown broadcast from Server */
     Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_BROADCAST, Desk_event_ANY,
                         wimp_handle_broadcast_message, NULL);
+
+    /* Register for DataLoad messages (drag and drop) */
+    Desk_EventMsg_Claim(Desk_message_DATALOAD, Desk_event_ANY,
+                        ftnupload_handle_dataload, NULL);
 
     /* Initialise mailer */
     mailer_initialise();

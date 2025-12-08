@@ -1,0 +1,239 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Nodelist Processing                                                                                                                         */
+/* Handles nodelist compilation, lookup, and routing                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef NODELIST_H
+#define NODELIST_H
+
+#include <time.h>
+#include "mailer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define NODELIST_MAX_NETWORKS       8       /* Maximum networks we support */
+#define NODELIST_CACHE_SIZE         64      /* LRU cache entries per network */
+#define NODELIST_INDEX_MAGIC        "NIDX"  /* Magic bytes for index file */
+#define NODELIST_INDEX_VERSION      1       /* Current index format version */
+
+/* Node status values (from nodelist keywords) */
+typedef enum
+{
+    NODE_STATUS_NORMAL = 0,                 /* Regular node (comma or empty) */
+    NODE_STATUS_ZONE,                       /* Zone coordinator */
+    NODE_STATUS_REGION,                     /* Region coordinator */
+    NODE_STATUS_HOST,                       /* Net host */
+    NODE_STATUS_HUB,                        /* Routing hub */
+    NODE_STATUS_PVT,                        /* Private (unlisted) */
+    NODE_STATUS_HOLD,                       /* On hold */
+    NODE_STATUS_DOWN                        /* System down */
+} NODELIST_STATUS;
+
+/* Node capability flags */
+#define NODE_FLAG_CM            0x0001      /* Continuous Mail (24/7) */
+#define NODE_FLAG_MO            0x0002      /* Mail Only */
+#define NODE_FLAG_LO            0x0004      /* Listed Only */
+#define NODE_FLAG_BINKP         0x0008      /* Has IBN flag (BinkP capable) */
+#define NODE_FLAG_TELNET        0x0010      /* Has ITN flag (Telnet) */
+#define NODE_FLAG_CRASH         0x0020      /* Accepts crash mail */
+#define NODE_FLAG_DIRECT        0x0040      /* Direct connect ok */
+#define NODE_FLAG_HOLD          0x0080      /* Hold for pickup */
+
+/* Routing result codes */
+typedef enum
+{
+    NODELIST_ROUTE_DIRECT = 0,              /* Can connect directly */
+    NODELIST_ROUTE_VIA_HUB,                 /* Route via hub */
+    NODELIST_ROUTE_VIA_HOST,                /* Route via net host */
+    NODELIST_ROUTE_VIA_UPLINK,              /* Route via configured uplink */
+    NODELIST_ROUTE_UNKNOWN,                 /* Node not in nodelist */
+    NODELIST_ROUTE_UNAVAILABLE              /* Node is down/hold */
+} NODELIST_ROUTE_RESULT;
+
+/* ******************************************************************************************************************************************************** */
+/* Data Structures                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+/* Network info derived from FTN config addresses */
+typedef struct
+{
+    int id;                                 /* Index (0, 1, 2...) */
+    int active;                             /* Network exists in config */
+    char name[64];                          /* Network name from config */
+    int default_zone;                       /* Primary zone for this network */
+} NODELIST_NETWORK;
+
+/* Single node entry in compiled index (124 bytes) */
+typedef struct
+{
+    unsigned short zone;                    /* Zone number */
+    unsigned short net;                     /* Net number */
+    unsigned short node;                    /* Node number */
+    unsigned short point;                   /* Point number (usually 0) */
+    unsigned char status;                   /* NODELIST_STATUS */
+    unsigned char flags;                    /* NODE_FLAG_* */
+    unsigned short hub;                     /* Hub node for routing (0 = net host) */
+    unsigned short port;                    /* BinkP port (0 = default 24554) */
+    char name[40];                          /* System name */
+    char sysop[24];                         /* Sysop name */
+    char hostname[48];                      /* From IBN/INA flag */
+} NODELIST_ENTRY;
+
+/* Index file header (64 bytes) */
+typedef struct
+{
+    char magic[4];                          /* "NIDX" */
+    unsigned short version;                 /* Format version */
+    unsigned short flags;                   /* Reserved */
+    int entry_count;                        /* Number of node entries */
+    int zone_count;                         /* Number of zones */
+    time_t compiled;                        /* Compilation timestamp */
+    time_t source_date;                     /* Nodelist date (from day number) */
+    char network[32];                       /* Network name */
+    char reserved[12];                      /* Future use */
+} NODELIST_INDEX_HEADER;
+
+/* Cache entry for on-demand lookup */
+typedef struct
+{
+    FTN_ADDR addr;                          /* Cached address */
+    NODELIST_ENTRY entry;                   /* Cached node data */
+    time_t last_access;                     /* For LRU eviction */
+    int valid;                              /* Entry is populated */
+} NODELIST_CACHE_ENTRY;
+
+/* Per-network context */
+typedef struct
+{
+    int network_id;                         /* Network index */
+    int loaded;                             /* Index is open/usable */
+    FILE *index_file;                       /* Open file handle */
+    NODELIST_INDEX_HEADER header;           /* Cached header */
+    NODELIST_CACHE_ENTRY cache[NODELIST_CACHE_SIZE];
+    int cache_hits;                         /* Statistics */
+    int cache_misses;
+} NODELIST_CONTEXT;
+
+/* Compilation statistics */
+typedef struct
+{
+    int lines_processed;                    /* Lines read from nodelist */
+    int nodes_parsed;                       /* Valid node entries */
+    int zones_found;                        /* Distinct zones */
+    int errors;                             /* Parse errors */
+    time_t elapsed;                         /* Time taken */
+} NODELIST_COMPILE_STATS;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Initialisation                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+void nodelist_initialise(void);
+void nodelist_finalise(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Network Enumeration                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/* Get networks from FTN config */
+int nodelist_get_configured_networks(NODELIST_NETWORK *networks, int max);
+int nodelist_get_network_count(void);
+const char *nodelist_get_network_name(int network_id);
+
+/* Check if network has compiled index */
+int nodelist_network_has_index(int network_id);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Compilation                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/* Import and compile a nodelist file */
+int nodelist_import_and_compile(int network_id, const char *source_path,
+                                 NODELIST_COMPILE_STATS *stats);
+
+/* Compile existing Nodelist file in network directory */
+int nodelist_compile(int network_id, NODELIST_COMPILE_STATS *stats);
+
+/* Parse a single nodelist line */
+int nodelist_parse_line(const char *line, NODELIST_ENTRY *entry,
+                        int *current_zone, int *current_net, int *current_hub);
+
+/* Parse node flags string (CM,IBN:host,...) */
+void nodelist_parse_flags(const char *flags, NODELIST_ENTRY *entry);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Index Loading                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Load/unload network index */
+int nodelist_load_index(int network_id);
+void nodelist_unload_index(int network_id);
+int nodelist_is_loaded(int network_id);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Lookup                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+/* Lookup node in specific network (uses cache) */
+NODELIST_ENTRY *nodelist_lookup(int network_id, const FTN_ADDR *addr);
+
+/* Lookup node across all networks (returns first match) */
+NODELIST_ENTRY *nodelist_lookup_any(const FTN_ADDR *addr, int *found_network);
+
+/* Get hostname for node (convenience wrapper) */
+int nodelist_get_hostname(int network_id, const FTN_ADDR *addr,
+                          char *hostname, size_t size, int *port);
+
+/* Check node status */
+int nodelist_is_online(int network_id, const FTN_ADDR *addr);
+int nodelist_supports_binkp(int network_id, const FTN_ADDR *addr);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Routing                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/* Find routing path to destination */
+NODELIST_ROUTE_RESULT nodelist_find_route(int network_id, const FTN_ADDR *dest,
+                                           FTN_ADDR *route_via);
+
+/* Find hub for a node */
+NODELIST_ENTRY *nodelist_find_hub(int network_id, int zone, int net, int hub_node);
+
+/* Find net host */
+NODELIST_ENTRY *nodelist_find_host(int network_id, int zone, int net);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Path Helpers                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+/* Get base nodelists path from config */
+int nodelist_get_base_path(char *buffer, size_t size);
+
+/* Format path to network directory */
+void nodelist_format_network_path(char *buffer, size_t size, int network_id);
+
+/* Format path to network's index file */
+void nodelist_format_index_path(char *buffer, size_t size, int network_id);
+
+/* Format path to network's raw nodelist file */
+void nodelist_format_nodelist_path(char *buffer, size_t size, int network_id);
+
+/* Ensure network directory exists */
+void nodelist_ensure_directory(int network_id);
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes - Statistics                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/* Get cache statistics */
+void nodelist_get_cache_stats(int network_id, int *hits, int *misses);
+
+/* Clear cache */
+void nodelist_clear_cache(int network_id);
+
+/* Set progress callback for compilation */
+void nodelist_set_progress_callback(void (*callback)(int percent, const char *status));
+
+#endif

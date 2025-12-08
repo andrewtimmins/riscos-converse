@@ -1638,6 +1638,136 @@ The TIC module (`FTN/c/tic`) forwards files to subscribed downlinks:
 | SET_DOWNLINK | 9 | R1=id, R2=config ptr |
 | COUNT_DOWNLINKS | 10 | → R0=count |
 
+### Nodelist Processing
+
+#### Overview
+The nodelist module (`FTN/c/nodelist`) provides FTS-0005 nodelist parsing, compilation, and on-demand lookup for routing and hostname discovery. Networks are derived from the configured FTN addresses.
+
+**Source Files:**
+- `FTN/c/nodelist` - Parsing, compilation, caching, lookup
+- `FTN/h/nodelist` - Data structures and prototypes
+- `FTN/c/ftnupload` - Drag-and-drop import window
+
+#### Directory Structure
+```
+<Converse$Dir>.FTN.Nodelists/
+├── 0/                      ← Network 0 (first network from config)
+│   ├── Nodelist            ← Raw nodelist file (text)
+│   ├── NodeIDX             ← Compiled binary index
+│   └── Diffs/              ← Nodediff files (future)
+├── 1/                      ← Network 1 (second network)
+│   └── ...
+└── ...
+```
+
+#### Configuration
+Set the nodelists path in FTN config:
+```
+nodelists   <Converse$Dir>.FTN.Nodelists
+```
+
+The path defaults to `<Converse$Dir>.FTN.Nodelists` if not specified.
+
+#### Usage
+1. Open the Commands menu on the FTN Mailer iconbar icon
+2. Select "Nodelist..."
+3. Use the up/down arrows to select the target network
+4. Drag a nodelist file onto the drop zone
+5. Click "Upload" to compile
+
+Compilation progress is shown in the FTN status window.
+
+#### Data Structures
+
+**Node Entry (124 bytes):**
+```c
+typedef struct {
+    unsigned short zone, net, node, point;
+    unsigned char status;           /* NODELIST_STATUS enum */
+    unsigned char flags;            /* NODE_FLAG_* bits */
+    unsigned short hub;             /* Hub node for routing */
+    unsigned short port;            /* BinkP port (0=24554) */
+    char name[40];                  /* System name */
+    char sysop[24];                 /* Sysop name */
+    char hostname[48];              /* From IBN/INA flag */
+} NODELIST_ENTRY;
+```
+
+**Node Status Values:**
+| Status | Value | Nodelist Keyword |
+|--------|-------|------------------|
+| NODE_STATUS_NORMAL | 0 | (comma/empty) |
+| NODE_STATUS_ZONE | 1 | Zone |
+| NODE_STATUS_REGION | 2 | Region |
+| NODE_STATUS_HOST | 3 | Host |
+| NODE_STATUS_HUB | 4 | Hub |
+| NODE_STATUS_PVT | 5 | Pvt |
+| NODE_STATUS_HOLD | 6 | Hold |
+| NODE_STATUS_DOWN | 7 | Down |
+
+**Node Flags:**
+| Flag | Bit | Source |
+|------|-----|--------|
+| NODE_FLAG_CM | 0x0001 | CM flag (24/7) |
+| NODE_FLAG_MO | 0x0002 | MO flag |
+| NODE_FLAG_LO | 0x0004 | LO flag |
+| NODE_FLAG_BINKP | 0x0008 | IBN flag |
+| NODE_FLAG_TELNET | 0x0010 | ITN flag |
+
+#### Key Functions
+```c
+/* Initialisation */
+void nodelist_initialise(void);
+void nodelist_finalise(void);
+
+/* Network enumeration (from FTN config addresses) */
+int nodelist_get_configured_networks(NODELIST_NETWORK *networks, int max);
+int nodelist_get_network_count(void);
+const char *nodelist_get_network_name(int network_id);
+int nodelist_network_has_index(int network_id);
+
+/* Compilation */
+int nodelist_import_and_compile(int network_id, const char *source_path,
+                                 NODELIST_COMPILE_STATS *stats);
+int nodelist_compile(int network_id, NODELIST_COMPILE_STATS *stats);
+
+/* Lookup (on-demand with 64-entry LRU cache) */
+NODELIST_ENTRY *nodelist_lookup(int network_id, const FTN_ADDR *addr);
+NODELIST_ENTRY *nodelist_lookup_any(const FTN_ADDR *addr, int *found_network);
+int nodelist_get_hostname(int network_id, const FTN_ADDR *addr,
+                          char *hostname, size_t size, int *port);
+
+/* Routing */
+NODELIST_ROUTE_RESULT nodelist_find_route(int network_id, const FTN_ADDR *dest,
+                                           FTN_ADDR *route_via);
+NODELIST_ENTRY *nodelist_find_hub(int network_id, int zone, int net, int hub_node);
+NODELIST_ENTRY *nodelist_find_host(int network_id, int zone, int net);
+
+/* Path helpers */
+int nodelist_get_base_path(char *buffer, size_t size);
+void nodelist_format_network_path(char *buffer, size_t size, int network_id);
+void nodelist_format_index_path(char *buffer, size_t size, int network_id);
+```
+
+#### IBN Flag Parsing
+The nodelist parser extracts hostname and port from the IBN (Internet BinkP Node) flag:
+- `IBN` - Node supports BinkP but no hostname specified
+- `IBN:hostname.example.com` - BinkP with hostname
+- `IBN:hostname.example.com:24555` - BinkP with hostname and non-default port
+
+The hostname is stored in `NODELIST_ENTRY.hostname` and port (if specified) in `NODELIST_ENTRY.port`. Default port is 24554.
+
+#### Cache Behaviour
+- 64 entries per network, LRU eviction
+- Cache is cleared when index is reloaded
+- Cache hits/misses tracked for debugging: `nodelist_get_cache_stats()`
+
+#### Integration with Queue/Scanner
+The queue and scanner modules can use nodelist lookups to:
+1. Find hostnames for nodes without configured uplinks
+2. Determine routing paths (direct, via hub, via host)
+3. Check if a node is online (not Hold/Down)
+
 ## Server Status Window
 
 ### Overview

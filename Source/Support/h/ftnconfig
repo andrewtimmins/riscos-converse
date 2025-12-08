@@ -78,6 +78,7 @@ typedef struct
     char inbound[FTN_CONFIG_PATH_LEN];          /* inbound directory */
     char outbound[FTN_CONFIG_PATH_LEN];         /* outbound directory */
     char netmail[FTN_CONFIG_PATH_LEN];          /* netmail directory */
+    char nodelists[FTN_CONFIG_PATH_LEN];        /* nodelists directory */
     char freqpath[FTN_CONFIG_PATH_LEN];         /* FREQ files directory */
     char freqexec[FTN_CONFIG_PATH_LEN];         /* External FREQ processor command */
 
@@ -145,7 +146,8 @@ typedef enum
     FTN_GLOBAL_FIELD_POLLINTERVAL = 16,
     FTN_GLOBAL_FIELD_RETRYDELAY = 17,
     FTN_GLOBAL_FIELD_FREQPATH = 18,
-    FTN_GLOBAL_FIELD_FREQEXEC = 19
+    FTN_GLOBAL_FIELD_FREQEXEC = 19,
+    FTN_GLOBAL_FIELD_NODELISTS = 20
 } FTN_GLOBAL_FIELD;
 
 /* Initialisation and finalisation */

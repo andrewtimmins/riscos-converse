@@ -1,0 +1,432 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Nodelist Upload Window Handler                                                                                                              */
+/* Handles drag-and-drop import and compilation of FTN nodelists                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.File.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Window.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.DragASpr.h"
+#include "C:Desk.Screen.h"
+
+#include "ftnupload.h"
+#include "nodelist.h"
+#include "iconnames.h"
+#include "mailer.h"
+#include "debug.h"
+#include "ftnlog.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Window handle (set by mailer.c)                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_window_handle ftnupload_window = 0;
+static int current_network_index = 0;
+static int network_count = 0;
+static NODELIST_NETWORK networks[NODELIST_MAX_NETWORKS];
+static char pending_file_path[256];
+static long pending_file_size = 0;
+
+/* Status window reference (set by caller) */
+static Desk_window_handle status_window = 0;
+static Desk_icon_handle status_progress_icon = 0;
+static Desk_icon_handle status_text_icon = 0;
+
+/* ******************************************************************************************************************************************************** */
+/* Forward Declarations                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnupload_update_network_display(void);
+static void ftnupload_clear_file_display(void);
+static void ftnupload_update_file_display(const char *filename, long size);
+static void ftnupload_progress_callback(int percent, const char *status);
+static int ftnupload_get_file_size(const char *path);
+static void ftnupload_do_compile(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void ftnupload_initialise(Desk_window_handle window, Desk_window_handle status_win,
+                          Desk_icon_handle progress_icon, Desk_icon_handle text_icon)
+{
+    ftnupload_window = window;
+    status_window = status_win;
+    status_progress_icon = progress_icon;
+    status_text_icon = text_icon;
+
+    /* Load networks from config */
+    network_count = nodelist_get_configured_networks(networks, NODELIST_MAX_NETWORKS);
+    current_network_index = 0;
+
+    pending_file_path[0] = '\0';
+    pending_file_size = 0;
+
+    debug_printf("ftnupload: Initialised with %d networks", network_count);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Window Opening                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void ftnupload_open_window(void)
+{
+    Desk_window_state state;
+    int screen_width, win_width, win_height;
+
+    if (ftnupload_window == 0)
+    {
+        debug_printf("ftnupload: Window not initialised");
+        return;
+    }
+
+    /* Refresh network list */
+    network_count = nodelist_get_configured_networks(networks, NODELIST_MAX_NETWORKS);
+    if (current_network_index >= network_count)
+    {
+        current_network_index = 0;
+    }
+
+    /* Clear any pending file */
+    ftnupload_clear_file_display();
+
+    /* Update network display */
+    ftnupload_update_network_display();
+
+    /* Get screen and window size */
+    screen_width = Desk_screen_size.x;
+    Desk_Wimp_GetWindowState(ftnupload_window, &state);
+    win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+    win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+
+    /* Position centered on screen */
+    state.openblock.screenrect.min.x = (screen_width - win_width) / 2;
+    state.openblock.screenrect.max.x = state.openblock.screenrect.min.x + win_width;
+    state.openblock.screenrect.min.y = (Desk_screen_size.y - win_height) / 2;
+    state.openblock.screenrect.max.y = state.openblock.screenrect.min.y + win_height;
+    state.openblock.behind = -1;  /* Open at front */
+
+    Desk_Wimp_OpenWindow(&state.openblock);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Network Selection                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnupload_update_network_display(void)
+{
+    char number_str[16];
+
+    if (network_count == 0)
+    {
+        Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NETWORKNUMBER, "0");
+        Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NETWORKNAME, "No networks");
+        return;
+    }
+
+    snprintf(number_str, sizeof(number_str), "%d", current_network_index);
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NETWORKNUMBER, number_str);
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NETWORKNAME, (char *)networks[current_network_index].name);
+}
+
+void ftnupload_select_previous_network(void)
+{
+    if (network_count > 0)
+    {
+        current_network_index = (current_network_index - 1 + network_count) % network_count;
+        ftnupload_update_network_display();
+    }
+}
+
+void ftnupload_select_next_network(void)
+{
+    if (network_count > 0)
+    {
+        current_network_index = (current_network_index + 1) % network_count;
+        ftnupload_update_network_display();
+    }
+}
+
+int ftnupload_get_current_network(void)
+{
+    return current_network_index;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File Display                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnupload_clear_file_display(void)
+{
+    pending_file_path[0] = '\0';
+    pending_file_size = 0;
+
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NAMETEXT, "");
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_SIZETOTAL, "");
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_TYPETEXT, "");
+}
+
+static void ftnupload_update_file_display(const char *filename, long size)
+{
+    char size_str[32];
+    const char *leafname;
+
+    /* Get leaf name */
+    leafname = strrchr(filename, '.');
+    if (leafname == NULL)
+    {
+        leafname = filename;
+    }
+    else
+    {
+        leafname++;
+    }
+
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_NAMETEXT, (char *)leafname);
+
+    /* Format size */
+    if (size >= 1024 * 1024)
+    {
+        snprintf(size_str, sizeof(size_str), "%.1f MB", (double)size / (1024.0 * 1024.0));
+    }
+    else if (size >= 1024)
+    {
+        snprintf(size_str, sizeof(size_str), "%.1f KB", (double)size / 1024.0);
+    }
+    else
+    {
+        snprintf(size_str, sizeof(size_str), "%ld bytes", size);
+    }
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_SIZETOTAL, size_str);
+
+    /* Set type to "Nodelist" */
+    Desk_Icon_SetText(ftnupload_window, FTNUPLOAD_TYPETEXT, "Nodelist");
+}
+
+static int ftnupload_get_file_size(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 17;  /* Read catalogue info */
+    regs.r[1] = (int)path;
+
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    if (regs.r[0] != 1)
+    {
+        return 0;  /* Not a file */
+    }
+
+    return regs.r[4];  /* File length */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Drag and Drop Handling                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+Desk_bool ftnupload_handle_dataload(Desk_event_pollblock *event, void *ref)
+{
+    char *filename;
+    long size;
+
+    Desk_UNUSED(ref);
+
+    if (event->data.message.header.yourref == 0)
+    {
+        /* Not a reply - new data load */
+    }
+
+    /* Check if it's for our window */
+    if (event->data.message.data.dataload.window != ftnupload_window)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    filename = event->data.message.data.dataload.filename;
+    size = ftnupload_get_file_size(filename);
+
+    debug_printf("ftnupload: DataLoad received: %s (%ld bytes)", filename, size);
+
+    if (size > 0)
+    {
+        strncpy(pending_file_path, filename, sizeof(pending_file_path) - 1);
+        pending_file_path[sizeof(pending_file_path) - 1] = '\0';
+        pending_file_size = size;
+
+        ftnupload_update_file_display(filename, size);
+
+        /* Acknowledge the message */
+        event->data.message.header.action = Desk_message_DATALOADACK;
+        event->data.message.header.yourref = event->data.message.header.myref;
+        Desk_Wimp_SendMessage(Desk_event_SEND, &event->data.message,
+                              event->data.message.header.sender, 0);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Click Handler                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+Desk_bool ftnupload_handle_click(Desk_event_pollblock *event, void *ref)
+{
+    Desk_icon_handle icon;
+
+    Desk_UNUSED(ref);
+
+    if (event->data.mouse.window != ftnupload_window)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    icon = event->data.mouse.icon;
+
+    switch (icon)
+    {
+        case FTNUPLOAD_NETWORKNUMBERDOWN:
+            ftnupload_select_previous_network();
+            return Desk_bool_TRUE;
+
+        case FTNUPLOAD_NETWORKNUMBERUP:
+            ftnupload_select_next_network();
+            return Desk_bool_TRUE;
+
+        case FTNUPLOAD_UPLOAD:
+            ftnupload_do_compile();
+            return Desk_bool_TRUE;
+
+        case FTNUPLOAD_CANCEL:
+            Desk_Window_Hide(ftnupload_window);
+            return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Compilation                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+static void ftnupload_progress_callback(int percent, const char *status)
+{
+    if (status_window != 0 && status_text_icon != 0)
+    {
+        Desk_Icon_SetText(status_window, status_text_icon, (char *)status);
+    }
+
+    /* Update progress bar if we have the reference */
+    if (status_window != 0 && status_progress_icon != 0)
+    {
+        Desk_icon_block icon;
+        Desk_icon_createblock createblock;
+        Desk_icon_handle new_icon;
+        int min_width = 20;
+        int max_width = 776;
+        int width;
+
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+
+        width = min_width + ((max_width - min_width) * percent) / 100;
+
+        Desk_Wimp_GetIconState(status_window, status_progress_icon, &icon);
+        icon.workarearect.max.x = icon.workarearect.min.x + width;
+        Desk_Wimp_SetIconState(status_window, status_progress_icon, 0, 0);
+        Desk_Wimp_DeleteIcon(status_window, status_progress_icon);
+
+        createblock.window = status_window;
+        createblock.icondata = icon;
+        Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    }
+
+    /* Process events to update display */
+    {
+        Desk_event_pollblock poll_event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &poll_event, NULL);
+    }
+}
+
+static void ftnupload_do_compile(void)
+{
+    NODELIST_COMPILE_STATS stats;
+    int result;
+
+    if (pending_file_path[0] == '\0')
+    {
+        debug_printf("ftnupload: No file to compile");
+        return;
+    }
+
+    if (network_count == 0)
+    {
+        debug_printf("ftnupload: No networks configured");
+        return;
+    }
+
+    debug_printf("ftnupload: Compiling %s for network %d (%s)",
+                 pending_file_path, current_network_index,
+                 networks[current_network_index].name);
+
+    ftnlog_printf("Importing nodelist for %s", networks[current_network_index].name);
+
+    /* Set up progress callback */
+    nodelist_set_progress_callback(ftnupload_progress_callback);
+
+    /* Show initial status */
+    ftnupload_progress_callback(0, "Importing nodelist...");
+
+    /* Import and compile */
+    result = nodelist_import_and_compile(current_network_index, pending_file_path, &stats);
+
+    /* Clear callback */
+    nodelist_set_progress_callback(NULL);
+
+    if (result > 0)
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Compiled %d nodes from %d lines",
+                 stats.nodes_parsed, stats.lines_processed);
+        ftnlog_printf("%s", msg);
+
+        /* Clear the file display */
+        ftnupload_clear_file_display();
+
+        /* Close the window */
+        Desk_Window_Hide(ftnupload_window);
+    }
+    else
+    {
+        ftnlog_printf("Compilation failed");
+        ftnupload_progress_callback(0, "Compilation failed");
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* External Accessors                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+Desk_window_handle ftnupload_get_window(void)
+{
+    return ftnupload_window;
+}

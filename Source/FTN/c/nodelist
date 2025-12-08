@@ -1,0 +1,1316 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - Nodelist Processing Implementation                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "nodelist.h"
+#include "mailer.h"
+#include "debug.h"
+#include "ftnlog.h"
+
+/* SWI numbers */
+#define SWI_SUPPORT_FTN         0x5AA86
+#define SWI_OS_FILE             0x08
+#define SWI_OS_FSCONTROL        0x29
+
+/* FTN config reasons */
+#define FTN_CONFIG_GET_GLOBAL   0
+
+/* ******************************************************************************************************************************************************** */
+/* Static Data                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+static NODELIST_CONTEXT contexts[NODELIST_MAX_NETWORKS];
+static int nodelist_initialised = 0;
+
+/* Progress callback (set by ftnupload for UI updates) */
+static void (*progress_callback)(int percent, const char *status) = NULL;
+
+/* ******************************************************************************************************************************************************** */
+/* Forward Declarations                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static int nodelist_cache_lookup(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, NODELIST_ENTRY *entry);
+static void nodelist_cache_add(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, const NODELIST_ENTRY *entry);
+static int nodelist_index_search(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, NODELIST_ENTRY *entry);
+static int nodelist_compare_addr(const FTN_ADDR *a, unsigned short zone, unsigned short net, 
+                                  unsigned short node, unsigned short point);
+static int count_file_lines(const char *path);
+static char *trim_string(char *str);
+static int split_csv(char *line, char **fields, int max_fields);
+static char *local_strtok_r(char *str, const char *delim, char **saveptr);
+
+/* ******************************************************************************************************************************************************** */
+/* Initialisation                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+void nodelist_initialise(void)
+{
+    int i;
+
+    memset(contexts, 0, sizeof(contexts));
+
+    for (i = 0; i < NODELIST_MAX_NETWORKS; i++)
+    {
+        contexts[i].network_id = i;
+        contexts[i].loaded = 0;
+        contexts[i].index_file = NULL;
+    }
+
+    nodelist_initialised = 1;
+    debug_printf("nodelist: Initialised");
+}
+
+void nodelist_finalise(void)
+{
+    int i;
+
+    for (i = 0; i < NODELIST_MAX_NETWORKS; i++)
+    {
+        nodelist_unload_index(i);
+    }
+
+    nodelist_initialised = 0;
+    debug_printf("nodelist: Finalised");
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Path Helpers                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+/* FTN global config structure (local copy for path access) */
+typedef struct
+{
+    char sysop[64];
+    char system[64];
+    char location[64];
+    char phone[64];
+    int speed;
+    char flags[64];
+    char inbound[256];
+    char outbound[256];
+    char netmail[256];
+    char nodelists[256];
+    /* ... rest of struct not needed ... */
+} NL_FTN_CONFIG;
+
+int nodelist_get_base_path(char *buffer, size_t size)
+{
+    _kernel_swi_regs regs;
+    NL_FTN_CONFIG *cfg;
+
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        /* Fallback to default */
+        snprintf(buffer, size, "<Converse$Dir>.FTN.Nodelists");
+        return 0;
+    }
+
+    cfg = (NL_FTN_CONFIG *)regs.r[0];
+    snprintf(buffer, size, "%s", cfg->nodelists);
+    return 1;
+}
+
+void nodelist_format_network_path(char *buffer, size_t size, int network_id)
+{
+    char base[256];
+    nodelist_get_base_path(base, sizeof(base));
+    snprintf(buffer, size, "%s.%d", base, network_id);
+}
+
+void nodelist_format_index_path(char *buffer, size_t size, int network_id)
+{
+    char base[256];
+    nodelist_get_base_path(base, sizeof(base));
+    snprintf(buffer, size, "%s.%d.NodeIDX", base, network_id);
+}
+
+void nodelist_format_nodelist_path(char *buffer, size_t size, int network_id)
+{
+    char base[256];
+    nodelist_get_base_path(base, sizeof(base));
+    snprintf(buffer, size, "%s.%d.Nodelist", base, network_id);
+}
+
+void nodelist_ensure_directory(int network_id)
+{
+    _kernel_swi_regs regs;
+    char path[256];
+
+    /* Ensure base nodelists directory */
+    nodelist_get_base_path(path, sizeof(path));
+    regs.r[0] = 8;  /* Create directory */
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;
+    _kernel_swi(SWI_OS_FILE, &regs, &regs);
+
+    /* Ensure network subdirectory */
+    nodelist_format_network_path(path, sizeof(path), network_id);
+    regs.r[0] = 8;
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;
+    _kernel_swi(SWI_OS_FILE, &regs, &regs);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Network Enumeration                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* FTN address config structure (local copy) */
+typedef struct
+{
+    int id;
+    char network[64];
+    int zone, net, node, point;
+    char type[8];
+} NL_ADDR_CONFIG;
+
+typedef struct
+{
+    char sysop[64];
+    char system[64];
+    char location[64];
+    char phone[64];
+    int speed;
+    char flags[64];
+    char inbound[256];
+    char outbound[256];
+    char netmail[256];
+    char nodelists[256];
+    char freqpath[256];
+    char freqexec[256];
+    long max_packet_size;
+    int listen_port;
+    int max_sessions;
+    int connect_timeout;
+    int session_timeout;
+    int scan_interval;
+    int toss_interval;
+    int poll_interval;
+    int retry_delay;
+    int address_count;
+    NL_ADDR_CONFIG addresses[8];
+} NL_FULL_CONFIG;
+
+int nodelist_get_configured_networks(NODELIST_NETWORK *networks, int max)
+{
+    _kernel_swi_regs regs;
+    NL_FULL_CONFIG *cfg;
+    int i, count = 0;
+
+    if (networks == NULL || max <= 0)
+    {
+        return 0;
+    }
+
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    cfg = (NL_FULL_CONFIG *)regs.r[0];
+
+    /* Extract unique networks from addresses */
+    for (i = 0; i < cfg->address_count && count < max; i++)
+    {
+        NL_ADDR_CONFIG *addr = &cfg->addresses[i];
+        int j, found = 0;
+
+        /* Check if we already have this network */
+        for (j = 0; j < count; j++)
+        {
+            if (strcmp(networks[j].name, addr->network) == 0)
+            {
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found && addr->network[0] != '\0')
+        {
+            networks[count].id = count;
+            networks[count].active = 1;
+            strncpy(networks[count].name, addr->network, sizeof(networks[count].name) - 1);
+            networks[count].default_zone = addr->zone;
+            count++;
+        }
+    }
+
+    return count;
+}
+
+int nodelist_get_network_count(void)
+{
+    NODELIST_NETWORK networks[NODELIST_MAX_NETWORKS];
+    return nodelist_get_configured_networks(networks, NODELIST_MAX_NETWORKS);
+}
+
+const char *nodelist_get_network_name(int network_id)
+{
+    static NODELIST_NETWORK networks[NODELIST_MAX_NETWORKS];
+    static int cached_count = -1;
+
+    if (cached_count < 0)
+    {
+        cached_count = nodelist_get_configured_networks(networks, NODELIST_MAX_NETWORKS);
+    }
+
+    if (network_id >= 0 && network_id < cached_count)
+    {
+        return networks[network_id].name;
+    }
+
+    return "Unknown";
+}
+
+int nodelist_network_has_index(int network_id)
+{
+    _kernel_swi_regs regs;
+    char path[256];
+
+    nodelist_format_index_path(path, sizeof(path), network_id);
+
+    regs.r[0] = 17;  /* Read catalogue info */
+    regs.r[1] = (int)path;
+    if (_kernel_swi(SWI_OS_FILE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    return (regs.r[0] == 1);  /* Object is a file */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Nodelist Parsing                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int nodelist_parse_line(const char *line, NODELIST_ENTRY *entry,
+                        int *current_zone, int *current_net, int *current_hub)
+{
+    char buffer[512];
+    char *fields[8];
+    int field_count;
+    char *keyword;
+    int node_num;
+
+    if (line == NULL || entry == NULL)
+    {
+        return 0;
+    }
+
+    /* Skip comments and empty lines */
+    if (line[0] == ';' || line[0] == '\n' || line[0] == '\r' || line[0] == '\0')
+    {
+        return 0;
+    }
+
+    /* Copy line for parsing */
+    strncpy(buffer, line, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    /* Remove trailing newline */
+    {
+        size_t len = strlen(buffer);
+        while (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r'))
+        {
+            buffer[--len] = '\0';
+        }
+    }
+
+    /* Split CSV fields */
+    field_count = split_csv(buffer, fields, 8);
+    if (field_count < 6)
+    {
+        return 0;
+    }
+
+    /* Initialise entry */
+    memset(entry, 0, sizeof(NODELIST_ENTRY));
+
+    /* Parse keyword (first field) */
+    keyword = trim_string(fields[0]);
+
+    if (strcmp(keyword, "Zone") == 0)
+    {
+        *current_zone = atoi(fields[1]);
+        *current_net = *current_zone;  /* Zone coordinator is also net host */
+        *current_hub = 0;
+        entry->status = NODE_STATUS_ZONE;
+        node_num = *current_zone;
+    }
+    else if (strcmp(keyword, "Region") == 0)
+    {
+        *current_net = atoi(fields[1]);
+        *current_hub = 0;
+        entry->status = NODE_STATUS_REGION;
+        node_num = 0;
+    }
+    else if (strcmp(keyword, "Host") == 0)
+    {
+        *current_net = atoi(fields[1]);
+        *current_hub = 0;
+        entry->status = NODE_STATUS_HOST;
+        node_num = 0;
+    }
+    else if (strcmp(keyword, "Hub") == 0)
+    {
+        *current_hub = atoi(fields[1]);
+        entry->status = NODE_STATUS_HUB;
+        node_num = *current_hub;
+    }
+    else if (strcmp(keyword, "Pvt") == 0)
+    {
+        entry->status = NODE_STATUS_PVT;
+        node_num = atoi(fields[1]);
+    }
+    else if (strcmp(keyword, "Hold") == 0)
+    {
+        entry->status = NODE_STATUS_HOLD;
+        node_num = atoi(fields[1]);
+    }
+    else if (strcmp(keyword, "Down") == 0)
+    {
+        entry->status = NODE_STATUS_DOWN;
+        node_num = atoi(fields[1]);
+    }
+    else if (keyword[0] == '\0' || keyword[0] == ',')
+    {
+        /* Normal node - keyword is empty */
+        entry->status = NODE_STATUS_NORMAL;
+        node_num = atoi(fields[1]);
+    }
+    else
+    {
+        /* Unknown keyword - skip */
+        return 0;
+    }
+
+    /* Set address */
+    entry->zone = (unsigned short)*current_zone;
+    entry->net = (unsigned short)*current_net;
+    entry->node = (unsigned short)node_num;
+    entry->point = 0;
+    entry->hub = (unsigned short)*current_hub;
+
+    /* Copy name (field 2) */
+    if (field_count > 2 && fields[2] != NULL)
+    {
+        strncpy(entry->name, trim_string(fields[2]), sizeof(entry->name) - 1);
+        /* Replace underscores with spaces */
+        {
+            char *p = entry->name;
+            while (*p)
+            {
+                if (*p == '_') *p = ' ';
+                p++;
+            }
+        }
+    }
+
+    /* Skip location (field 3) */
+
+    /* Copy sysop (field 4) */
+    if (field_count > 4 && fields[4] != NULL)
+    {
+        strncpy(entry->sysop, trim_string(fields[4]), sizeof(entry->sysop) - 1);
+        /* Replace underscores with spaces */
+        {
+            char *p = entry->sysop;
+            while (*p)
+            {
+                if (*p == '_') *p = ' ';
+                p++;
+            }
+        }
+    }
+
+    /* Skip phone (field 5) and baud (field 6) */
+
+    /* Parse flags (field 7+) */
+    if (field_count > 7 && fields[7] != NULL)
+    {
+        nodelist_parse_flags(fields[7], entry);
+    }
+
+    return 1;
+}
+
+void nodelist_parse_flags(const char *flags, NODELIST_ENTRY *entry)
+{
+    char buffer[256];
+    char *token;
+    char *saveptr;
+
+    if (flags == NULL || entry == NULL)
+    {
+        return;
+    }
+
+    strncpy(buffer, flags, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    token = local_strtok_r(buffer, ",", &saveptr);
+    while (token != NULL)
+    {
+        token = trim_string(token);
+
+        if (strcmp(token, "CM") == 0)
+        {
+            entry->flags |= NODE_FLAG_CM;
+        }
+        else if (strcmp(token, "MO") == 0)
+        {
+            entry->flags |= NODE_FLAG_MO;
+        }
+        else if (strcmp(token, "LO") == 0)
+        {
+            entry->flags |= NODE_FLAG_LO;
+        }
+        else if (strncmp(token, "IBN", 3) == 0)
+        {
+            entry->flags |= NODE_FLAG_BINKP;
+            /* Parse IBN:hostname[:port] */
+            if (token[3] == ':')
+            {
+                char *host = token + 4;
+                char *port_str = strchr(host, ':');
+
+                if (port_str != NULL)
+                {
+                    *port_str = '\0';
+                    port_str++;
+                    entry->port = (unsigned short)atoi(port_str);
+                }
+
+                strncpy(entry->hostname, host, sizeof(entry->hostname) - 1);
+            }
+        }
+        else if (strncmp(token, "INA", 3) == 0)
+        {
+            /* INA:hostname - internet address without port */
+            if (token[3] == ':')
+            {
+                strncpy(entry->hostname, token + 4, sizeof(entry->hostname) - 1);
+            }
+        }
+        else if (strncmp(token, "ITN", 3) == 0)
+        {
+            entry->flags |= NODE_FLAG_TELNET;
+        }
+
+        token = local_strtok_r(NULL, ",", &saveptr);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Compilation                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+int nodelist_import_and_compile(int network_id, const char *source_path,
+                                 NODELIST_COMPILE_STATS *stats)
+{
+    _kernel_swi_regs regs;
+    char dest_path[256];
+    FILE *src, *dst;
+    char buffer[4096];
+    size_t bytes_read;
+
+    if (source_path == NULL)
+    {
+        return 0;
+    }
+
+    /* Ensure directory exists */
+    nodelist_ensure_directory(network_id);
+
+    /* Copy source file to network directory */
+    nodelist_format_nodelist_path(dest_path, sizeof(dest_path), network_id);
+
+    src = fopen(source_path, "rb");
+    if (src == NULL)
+    {
+        debug_printf("nodelist: Cannot open source file: %s", source_path);
+        return 0;
+    }
+
+    dst = fopen(dest_path, "wb");
+    if (dst == NULL)
+    {
+        debug_printf("nodelist: Cannot create destination file: %s", dest_path);
+        fclose(src);
+        return 0;
+    }
+
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), src)) > 0)
+    {
+        fwrite(buffer, 1, bytes_read, dst);
+    }
+
+    fclose(src);
+    fclose(dst);
+
+    debug_printf("nodelist: Copied %s to %s", source_path, dest_path);
+
+    /* Set filetype to Text */
+    regs.r[0] = 18;  /* Set filetype */
+    regs.r[1] = (int)dest_path;
+    regs.r[2] = 0xFFF;  /* Text */
+    _kernel_swi(SWI_OS_FILE, &regs, &regs);
+
+    /* Now compile */
+    return nodelist_compile(network_id, stats);
+}
+
+int nodelist_compile(int network_id, NODELIST_COMPILE_STATS *stats)
+{
+    char nodelist_path[256];
+    char index_path[256];
+    FILE *src, *dst;
+    char line[512];
+    NODELIST_ENTRY entry;
+    NODELIST_INDEX_HEADER header;
+    int current_zone = 0;
+    int current_net = 0;
+    int current_hub = 0;
+    int line_count = 0;
+    int total_lines;
+    int entries_written = 0;
+    int zones_found = 0;
+    int last_zone = -1;
+    int last_percent = -1;
+    time_t start_time;
+
+    /* Build paths */
+    nodelist_format_nodelist_path(nodelist_path, sizeof(nodelist_path), network_id);
+    nodelist_format_index_path(index_path, sizeof(index_path), network_id);
+
+    /* Count lines for progress */
+    total_lines = count_file_lines(nodelist_path);
+    if (total_lines <= 0)
+    {
+        debug_printf("nodelist: Cannot count lines in %s", nodelist_path);
+        return 0;
+    }
+
+    /* Open source */
+    src = fopen(nodelist_path, "r");
+    if (src == NULL)
+    {
+        debug_printf("nodelist: Cannot open nodelist file: %s", nodelist_path);
+        return 0;
+    }
+
+    /* Open destination */
+    dst = fopen(index_path, "wb");
+    if (dst == NULL)
+    {
+        debug_printf("nodelist: Cannot create index file: %s", index_path);
+        fclose(src);
+        return 0;
+    }
+
+    start_time = time(NULL);
+
+    /* Write placeholder header */
+    memset(&header, 0, sizeof(header));
+    memcpy(header.magic, NODELIST_INDEX_MAGIC, 4);
+    header.version = NODELIST_INDEX_VERSION;
+    fwrite(&header, sizeof(header), 1, dst);
+
+    ftnlog_printf("Compiling nodelist for network %d (%d lines)", network_id, total_lines);
+
+    /* Parse nodelist */
+    while (fgets(line, sizeof(line), src) != NULL)
+    {
+        line_count++;
+
+        if (nodelist_parse_line(line, &entry, &current_zone, &current_net, &current_hub))
+        {
+            fwrite(&entry, sizeof(entry), 1, dst);
+            entries_written++;
+
+            /* Track zones */
+            if (current_zone != last_zone)
+            {
+                zones_found++;
+                last_zone = current_zone;
+            }
+        }
+
+        /* Update progress */
+        if (progress_callback != NULL && total_lines > 0)
+        {
+            int percent = (line_count * 100) / total_lines;
+            if (percent != last_percent)
+            {
+                char status[64];
+                snprintf(status, sizeof(status), "Compiling... %d nodes", entries_written);
+                progress_callback(percent, status);
+                last_percent = percent;
+            }
+        }
+    }
+
+    fclose(src);
+
+    /* Update header with final counts */
+    header.entry_count = entries_written;
+    header.zone_count = zones_found;
+    header.compiled = time(NULL);
+    header.source_date = 0;  /* TODO: parse from filename/content */
+    strncpy(header.network, nodelist_get_network_name(network_id), sizeof(header.network) - 1);
+
+    /* Rewrite header at start of file */
+    fseek(dst, 0, SEEK_SET);
+    fwrite(&header, sizeof(header), 1, dst);
+    fclose(dst);
+
+    /* Update stats if provided */
+    if (stats != NULL)
+    {
+        stats->lines_processed = line_count;
+        stats->nodes_parsed = entries_written;
+        stats->zones_found = zones_found;
+        stats->errors = 0;
+        stats->elapsed = time(NULL) - start_time;
+    }
+
+    ftnlog_printf("Compiled %d nodes from %d lines (%d zones)", 
+                  entries_written, line_count, zones_found);
+
+    if (progress_callback != NULL)
+    {
+        char status[64];
+        snprintf(status, sizeof(status), "Complete: %d nodes", entries_written);
+        progress_callback(100, status);
+    }
+
+    return entries_written;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Index Loading                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+int nodelist_load_index(int network_id)
+{
+    NODELIST_CONTEXT *ctx;
+    char path[256];
+
+    if (network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        return 0;
+    }
+
+    ctx = &contexts[network_id];
+
+    /* Already loaded? */
+    if (ctx->loaded && ctx->index_file != NULL)
+    {
+        return 1;
+    }
+
+    /* Build path */
+    nodelist_format_index_path(path, sizeof(path), network_id);
+
+    /* Open index file */
+    ctx->index_file = fopen(path, "rb");
+    if (ctx->index_file == NULL)
+    {
+        debug_printf("nodelist: Cannot open index: %s", path);
+        return 0;
+    }
+
+    /* Read header */
+    if (fread(&ctx->header, sizeof(ctx->header), 1, ctx->index_file) != 1)
+    {
+        debug_printf("nodelist: Cannot read header from %s", path);
+        fclose(ctx->index_file);
+        ctx->index_file = NULL;
+        return 0;
+    }
+
+    /* Validate magic */
+    if (memcmp(ctx->header.magic, NODELIST_INDEX_MAGIC, 4) != 0)
+    {
+        debug_printf("nodelist: Invalid magic in %s", path);
+        fclose(ctx->index_file);
+        ctx->index_file = NULL;
+        return 0;
+    }
+
+    /* Check version */
+    if (ctx->header.version != NODELIST_INDEX_VERSION)
+    {
+        debug_printf("nodelist: Version mismatch in %s (got %d, expected %d)",
+                     path, ctx->header.version, NODELIST_INDEX_VERSION);
+        fclose(ctx->index_file);
+        ctx->index_file = NULL;
+        return 0;
+    }
+
+    ctx->loaded = 1;
+    ctx->network_id = network_id;
+    nodelist_clear_cache(network_id);
+
+    debug_printf("nodelist: Loaded index for network %d: %d nodes, %d zones",
+                 network_id, ctx->header.entry_count, ctx->header.zone_count);
+
+    return 1;
+}
+
+void nodelist_unload_index(int network_id)
+{
+    NODELIST_CONTEXT *ctx;
+
+    if (network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        return;
+    }
+
+    ctx = &contexts[network_id];
+
+    if (ctx->index_file != NULL)
+    {
+        fclose(ctx->index_file);
+        ctx->index_file = NULL;
+    }
+
+    ctx->loaded = 0;
+    nodelist_clear_cache(network_id);
+}
+
+int nodelist_is_loaded(int network_id)
+{
+    if (network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        return 0;
+    }
+
+    return contexts[network_id].loaded;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Cache Management                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int nodelist_cache_lookup(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, NODELIST_ENTRY *entry)
+{
+    int i;
+    time_t now = time(NULL);
+
+    for (i = 0; i < NODELIST_CACHE_SIZE; i++)
+    {
+        if (ctx->cache[i].valid &&
+            ctx->cache[i].addr.zone == addr->zone &&
+            ctx->cache[i].addr.net == addr->net &&
+            ctx->cache[i].addr.node == addr->node &&
+            ctx->cache[i].addr.point == addr->point)
+        {
+            /* Found in cache */
+            ctx->cache[i].last_access = now;
+            *entry = ctx->cache[i].entry;
+            ctx->cache_hits++;
+            return 1;
+        }
+    }
+
+    ctx->cache_misses++;
+    return 0;
+}
+
+static void nodelist_cache_add(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, const NODELIST_ENTRY *entry)
+{
+    int i;
+    int oldest_idx = 0;
+    time_t oldest_time = 0;
+    time_t now = time(NULL);
+
+    /* Find empty slot or oldest entry */
+    for (i = 0; i < NODELIST_CACHE_SIZE; i++)
+    {
+        if (!ctx->cache[i].valid)
+        {
+            oldest_idx = i;
+            break;
+        }
+
+        if (oldest_time == 0 || ctx->cache[i].last_access < oldest_time)
+        {
+            oldest_time = ctx->cache[i].last_access;
+            oldest_idx = i;
+        }
+    }
+
+    /* Store entry */
+    ctx->cache[oldest_idx].addr = *addr;
+    ctx->cache[oldest_idx].entry = *entry;
+    ctx->cache[oldest_idx].last_access = now;
+    ctx->cache[oldest_idx].valid = 1;
+}
+
+void nodelist_clear_cache(int network_id)
+{
+    NODELIST_CONTEXT *ctx;
+
+    if (network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        return;
+    }
+
+    ctx = &contexts[network_id];
+    memset(ctx->cache, 0, sizeof(ctx->cache));
+    ctx->cache_hits = 0;
+    ctx->cache_misses = 0;
+}
+
+void nodelist_get_cache_stats(int network_id, int *hits, int *misses)
+{
+    NODELIST_CONTEXT *ctx;
+
+    if (network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        if (hits) *hits = 0;
+        if (misses) *misses = 0;
+        return;
+    }
+
+    ctx = &contexts[network_id];
+    if (hits) *hits = ctx->cache_hits;
+    if (misses) *misses = ctx->cache_misses;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Index Search                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static int nodelist_compare_addr(const FTN_ADDR *a, unsigned short zone, unsigned short net,
+                                  unsigned short node, unsigned short point)
+{
+    if (a->zone != zone) return (a->zone < zone) ? -1 : 1;
+    if (a->net != net) return (a->net < net) ? -1 : 1;
+    if (a->node != node) return (a->node < node) ? -1 : 1;
+    if (a->point != point) return (a->point < point) ? -1 : 1;
+    return 0;
+}
+
+static int nodelist_index_search(NODELIST_CONTEXT *ctx, const FTN_ADDR *addr, NODELIST_ENTRY *entry)
+{
+    /* Linear search for now - could optimise to binary search if entries are sorted */
+    int i;
+    long offset;
+    NODELIST_ENTRY temp;
+
+    if (ctx == NULL || ctx->index_file == NULL || entry == NULL)
+    {
+        return 0;
+    }
+
+    /* Seek past header */
+    offset = sizeof(NODELIST_INDEX_HEADER);
+    fseek(ctx->index_file, offset, SEEK_SET);
+
+    /* Scan entries */
+    for (i = 0; i < ctx->header.entry_count; i++)
+    {
+        if (fread(&temp, sizeof(temp), 1, ctx->index_file) != 1)
+        {
+            break;
+        }
+
+        if (temp.zone == addr->zone &&
+            temp.net == addr->net &&
+            temp.node == addr->node &&
+            temp.point == addr->point)
+        {
+            *entry = temp;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Lookup Functions                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static NODELIST_ENTRY lookup_result;  /* Static buffer for return value */
+
+NODELIST_ENTRY *nodelist_lookup(int network_id, const FTN_ADDR *addr)
+{
+    NODELIST_CONTEXT *ctx;
+
+    if (addr == NULL || network_id < 0 || network_id >= NODELIST_MAX_NETWORKS)
+    {
+        return NULL;
+    }
+
+    ctx = &contexts[network_id];
+
+    /* Lazy load index if needed */
+    if (!ctx->loaded)
+    {
+        if (!nodelist_load_index(network_id))
+        {
+            return NULL;
+        }
+    }
+
+    /* Check cache first */
+    if (nodelist_cache_lookup(ctx, addr, &lookup_result))
+    {
+        return &lookup_result;
+    }
+
+    /* Search index file */
+    if (nodelist_index_search(ctx, addr, &lookup_result))
+    {
+        /* Add to cache */
+        nodelist_cache_add(ctx, addr, &lookup_result);
+        return &lookup_result;
+    }
+
+    return NULL;
+}
+
+NODELIST_ENTRY *nodelist_lookup_any(const FTN_ADDR *addr, int *found_network)
+{
+    int i;
+    int network_count;
+    NODELIST_ENTRY *entry;
+
+    network_count = nodelist_get_network_count();
+
+    for (i = 0; i < network_count; i++)
+    {
+        entry = nodelist_lookup(i, addr);
+        if (entry != NULL)
+        {
+            if (found_network) *found_network = i;
+            return entry;
+        }
+    }
+
+    if (found_network) *found_network = -1;
+    return NULL;
+}
+
+int nodelist_get_hostname(int network_id, const FTN_ADDR *addr,
+                          char *hostname, size_t size, int *port)
+{
+    NODELIST_ENTRY *entry;
+
+    if (hostname == NULL || size == 0)
+    {
+        return 0;
+    }
+
+    hostname[0] = '\0';
+    if (port) *port = 0;
+
+    /* Try specific network or search all */
+    if (network_id >= 0)
+    {
+        entry = nodelist_lookup(network_id, addr);
+    }
+    else
+    {
+        entry = nodelist_lookup_any(addr, NULL);
+    }
+
+    if (entry == NULL)
+    {
+        return 0;
+    }
+
+    if (entry->hostname[0] == '\0')
+    {
+        return 0;
+    }
+
+    strncpy(hostname, entry->hostname, size - 1);
+    hostname[size - 1] = '\0';
+
+    if (port)
+    {
+        *port = (entry->port > 0) ? entry->port : 24554;
+    }
+
+    return 1;
+}
+
+int nodelist_is_online(int network_id, const FTN_ADDR *addr)
+{
+    NODELIST_ENTRY *entry = nodelist_lookup(network_id, addr);
+
+    if (entry == NULL)
+    {
+        return 0;  /* Unknown node */
+    }
+
+    return (entry->status != NODE_STATUS_DOWN && entry->status != NODE_STATUS_HOLD);
+}
+
+int nodelist_supports_binkp(int network_id, const FTN_ADDR *addr)
+{
+    NODELIST_ENTRY *entry = nodelist_lookup(network_id, addr);
+
+    if (entry == NULL)
+    {
+        return 0;
+    }
+
+    return (entry->flags & NODE_FLAG_BINKP) != 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Routing                                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+NODELIST_ROUTE_RESULT nodelist_find_route(int network_id, const FTN_ADDR *dest,
+                                           FTN_ADDR *route_via)
+{
+    NODELIST_ENTRY *entry;
+    NODELIST_ENTRY *hub_entry;
+    NODELIST_ENTRY *host_entry;
+
+    if (dest == NULL || route_via == NULL)
+    {
+        return NODELIST_ROUTE_UNKNOWN;
+    }
+
+    /* Lookup destination in nodelist */
+    entry = nodelist_lookup(network_id, dest);
+    if (entry == NULL)
+    {
+        return NODELIST_ROUTE_UNKNOWN;
+    }
+
+    /* Check if node is available */
+    if (entry->status == NODE_STATUS_DOWN)
+    {
+        return NODELIST_ROUTE_UNAVAILABLE;
+    }
+
+    if (entry->status == NODE_STATUS_HOLD)
+    {
+        return NODELIST_ROUTE_UNAVAILABLE;
+    }
+
+    /* Can we connect directly? */
+    if ((entry->flags & NODE_FLAG_BINKP) && entry->hostname[0] != '\0')
+    {
+        *route_via = *dest;
+        return NODELIST_ROUTE_DIRECT;
+    }
+
+    /* Try routing via hub */
+    if (entry->hub != 0)
+    {
+        hub_entry = nodelist_find_hub(network_id, dest->zone, dest->net, entry->hub);
+        if (hub_entry != NULL && (hub_entry->flags & NODE_FLAG_BINKP))
+        {
+            route_via->zone = hub_entry->zone;
+            route_via->net = hub_entry->net;
+            route_via->node = hub_entry->node;
+            route_via->point = 0;
+            return NODELIST_ROUTE_VIA_HUB;
+        }
+    }
+
+    /* Try routing via net host */
+    host_entry = nodelist_find_host(network_id, dest->zone, dest->net);
+    if (host_entry != NULL && (host_entry->flags & NODE_FLAG_BINKP))
+    {
+        route_via->zone = host_entry->zone;
+        route_via->net = host_entry->net;
+        route_via->node = host_entry->node;
+        route_via->point = 0;
+        return NODELIST_ROUTE_VIA_HOST;
+    }
+
+    /* Fall back to uplink routing */
+    return NODELIST_ROUTE_VIA_UPLINK;
+}
+
+NODELIST_ENTRY *nodelist_find_hub(int network_id, int zone, int net, int hub_node)
+{
+    FTN_ADDR hub_addr;
+
+    hub_addr.zone = zone;
+    hub_addr.net = net;
+    hub_addr.node = hub_node;
+    hub_addr.point = 0;
+
+    return nodelist_lookup(network_id, &hub_addr);
+}
+
+NODELIST_ENTRY *nodelist_find_host(int network_id, int zone, int net)
+{
+    FTN_ADDR host_addr;
+
+    host_addr.zone = zone;
+    host_addr.net = net;
+    host_addr.node = 0;
+    host_addr.point = 0;
+
+    return nodelist_lookup(network_id, &host_addr);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Progress Callback                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+void nodelist_set_progress_callback(void (*callback)(int percent, const char *status))
+{
+    progress_callback = callback;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static int count_file_lines(const char *path)
+{
+    FILE *f;
+    int count = 0;
+    int c;
+
+    f = fopen(path, "r");
+    if (f == NULL)
+    {
+        return 0;
+    }
+
+    while ((c = fgetc(f)) != EOF)
+    {
+        if (c == '\n')
+        {
+            count++;
+        }
+    }
+
+    fclose(f);
+    return count + 1;  /* Account for last line without newline */
+}
+
+static char *trim_string(char *str)
+{
+    char *end;
+
+    if (str == NULL)
+    {
+        return NULL;
+    }
+
+    /* Trim leading space */
+    while (isspace((unsigned char)*str))
+    {
+        str++;
+    }
+
+    if (*str == '\0')
+    {
+        return str;
+    }
+
+    /* Trim trailing space */
+    end = str + strlen(str) - 1;
+    while (end > str && isspace((unsigned char)*end))
+    {
+        end--;
+    }
+
+    end[1] = '\0';
+
+    return str;
+}
+
+static int split_csv(char *line, char **fields, int max_fields)
+{
+    int count = 0;
+    char *p = line;
+    char *start = line;
+
+    while (*p && count < max_fields)
+    {
+        if (*p == ',')
+        {
+            *p = '\0';
+            fields[count++] = start;
+            start = p + 1;
+        }
+        p++;
+    }
+
+    /* Last field */
+    if (count < max_fields && start <= p)
+    {
+        fields[count++] = start;
+    }
+
+    return count;
+}
+
+/* RISC OS doesn't have strtok_r, provide simple implementation */
+static char *local_strtok_r(char *str, const char *delim, char **saveptr)
+{
+    char *token;
+    char *s;
+
+    if (str != NULL)
+    {
+        s = str;
+    }
+    else if (*saveptr != NULL)
+    {
+        s = *saveptr;
+    }
+    else
+    {
+        return NULL;
+    }
+
+    /* Skip leading delimiters */
+    while (*s && strchr(delim, *s))
+    {
+        s++;
+    }
+
+    if (*s == '\0')
+    {
+        *saveptr = NULL;
+        return NULL;
+    }
+
+    token = s;
+
+    /* Find end of token */
+    while (*s && !strchr(delim, *s))
+    {
+        s++;
+    }
+
+    if (*s)
+    {
+        *s = '\0';
+        *saveptr = s + 1;
+    }
+    else
+    {
+        *saveptr = NULL;
+    }
+
+    return token;
+}

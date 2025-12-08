@@ -67,6 +67,7 @@ typedef struct
     char inbound[B_FTN_PATH_LEN];
     char outbound[B_FTN_PATH_LEN];
     char netmail[B_FTN_PATH_LEN];
+    char nodelists[B_FTN_PATH_LEN];
     char freqpath[B_FTN_PATH_LEN];
     char freqexec[B_FTN_PATH_LEN];
     long max_packet_size;
