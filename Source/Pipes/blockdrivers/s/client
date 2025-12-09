@@ -1,0 +1,255 @@
+        AREA    |PipeClient|, CODE, READONLY
+
+PIPEDRV_MAX_PORTS       EQU     32
+PIPEDRV_BUFFER_CAP      EQU     4096
+
+; Client uses OPPOSITE buffer directions from host:
+; Client TX -> Output buffer (host reads from Output)
+; Client RX <- Input buffer (host writes to Input)
+SWI_PIPES_RESETSTATE    EQU     &5AA0A
+SWI_PIPES_CLEARINPUT    EQU     &5AA06
+SWI_PIPES_CLEAROUTPUT   EQU     &5AA07
+SWI_PIPES_INPUTSTATUS   EQU     &5AA02
+SWI_PIPES_OUTPUTSTATUS  EQU     &5AA04
+SWI_PIPES_OUTPUTWRITE   EQU     &5AA05
+SWI_PIPES_INPUTREAD     EQU     &5AA03
+
+MODEM_PRESENT           EQU     &0B     ; CTS|DSR|DCD high
+
+; Flags: bits 31-24=max port, bit 17=32bit only, bit 16=32bit ok, bit 6=block ops
+FLAGS                   EQU     ((PIPEDRV_MAX_PORTS-1) << 24) :OR: (1<<17) :OR: (1<<16) :OR: (1<<6)
+VERSION_WORD            EQU     &00010000
+DRIVER_ID               EQU     (129<<8) ; Virtual pipe end B
+
+; ===========================================================================
+; Main entry point at offset 0x0000 (128 bytes reserved)
+; ===========================================================================
+        ORG     0
+
+Driver_Entry
+        STMFD   r13!,{r14}
+        CMP     r0,#((table_end - table_start)/4)
+        ADDCC   pc,pc,r0,LSL #2
+        LDMFD   r13!,{pc}
+
+table_start
+        B       func_putbyte            ; 0
+        B       func_getbyte            ; 1
+        B       func_putblock           ; 2
+        B       func_getblock           ; 3
+        B       func_checktx            ; 4
+        B       func_checkrx            ; 5
+        B       func_flushtx            ; 6
+        B       func_flushrx            ; 7
+        B       func_controllines       ; 8
+        B       func_modemctrl          ; 9
+        B       func_rxerrors           ; 10
+        B       func_break              ; 11
+        B       func_examine            ; 12
+        B       func_txspeed            ; 13
+        B       func_rxspeed            ; 14
+        B       func_wordformat         ; 15
+        B       func_flowcontrol        ; 16
+        B       func_initialise         ; 17
+        B       func_closedown          ; 18
+        B       func_poll               ; 19
+        B       func_gettxbuf           ; 20
+        B       func_getrxbuf           ; 21
+        B       func_info               ; 22
+        B       func_description        ; 23
+table_end
+
+        ; Pad to offset 0x80
+        %       (&80 - (.-Driver_Entry))
+
+; ===========================================================================
+; Info / manufacturer / version / flags / ID (0x80 - 0xFF)
+; ===========================================================================
+        ; offset 0x80: info string (31 chars + NUL)
+info_string
+        DCB     "Converse Pipes B",0
+        %       (&A0 - (.-Driver_Entry))
+
+        ; offset 0xA0: manufacturer string (31 chars + NUL)
+manuf_string
+        DCB     "Andrew Timmins",0
+        %       (&C0 - (.-Driver_Entry))
+
+        ; offset 0xC0: version word
+version_word
+        DCD     VERSION_WORD
+
+        ; offset 0xC4: driver flags
+flags_word
+        DCD     FLAGS
+
+        ; offset 0xC8: driver ID
+id_word
+        DCD     DRIVER_ID
+
+        ; Pad 0xCC to 0xFF (reserved)
+        %       (&100 - (.-Driver_Entry))
+
+; ===========================================================================
+; Speed table at 0x100 (128 bytes, terminated with 0)
+; ===========================================================================
+speed_table
+        DCD     300,600,1200,2400,4800,9600,19200,38400,57600,115200,0
+
+        ; Pad to 0x180
+        %       (&180 - (.-Driver_Entry))
+
+; ===========================================================================
+; Function implementations (code starts at 0x180)
+; Client is OPPOSITE to host: TX->Output, RX<-Input
+; ===========================================================================
+
+func_initialise
+        ; r1 = port number, or -1 for pre-init inquiry
+        CMP     r1,#-1
+        BEQ     func_ret0               ; pre-init: just return 0
+        CMP     r1,#PIPEDRV_MAX_PORTS
+        BHS     func_err
+        MOV     r0,r1
+        SWI     SWI_PIPES_RESETSTATE
+        MOV     r0,r1
+        SWI     SWI_PIPES_CLEARINPUT
+        MOV     r0,r1
+        SWI     SWI_PIPES_CLEAROUTPUT
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+func_closedown
+func_poll
+func_ret0
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+func_err
+        MOV     r0,#-1
+        LDMFD   r13!,{pc}
+
+; CheckRXBuffer (5): bytes waiting in RX buffer (from host's input)
+func_checkrx
+        MOV     r0,r1
+        SWI     SWI_PIPES_INPUTSTATUS
+        BVS     func_ret0
+        ; r0 = bytes in input buffer (waiting to read)
+        LDMFD   r13!,{pc}
+
+; CheckTXBuffer (4): space free in TX buffer (to host via output)
+func_checktx
+        MOV     r0,r1
+        SWI     SWI_PIPES_OUTPUTSTATUS
+        BVS     func_ret0
+        ; r0 = bytes used; return free space
+        RSB     r0,r0,#PIPEDRV_BUFFER_CAP
+        LDMFD   r13!,{pc}
+
+; FlushTXBuffer (6): clear TX buffer (output)
+func_flushtx
+        MOV     r0,r1
+        SWI     SWI_PIPES_CLEAROUTPUT
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+; FlushRXBuffer (7): clear RX buffer (input)
+func_flushrx
+        MOV     r0,r1
+        SWI     SWI_PIPES_CLEARINPUT
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+; PutByte (0): send byte to TX buffer (output)
+func_putbyte
+        MOV     r0,r1                   ; port
+        MOV     r1,r2                   ; byte
+        SWI     SWI_PIPES_OUTPUTWRITE
+        BVS     func_err
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+; GetByte (1): receive byte from RX buffer (input)
+func_getbyte
+        MOV     r0,r1                   ; port
+        SWI     SWI_PIPES_INPUTREAD
+        ; r0 = byte or -1
+        LDMFD   r13!,{pc}
+
+; PutBlock (2): send block to TX buffer (output) - byte loop
+func_putblock
+        STMFD   r13!,{r4-r6}
+        MOV     r4,r1                   ; port
+        MOV     r5,r2                   ; ptr
+        MOV     r6,r3                   ; count
+        MOV     r3,#0                   ; transferred
+putblock_loop
+        CMP     r3,r6
+        BHS     putblock_done
+        LDRB    r1,[r5,r3]
+        MOV     r0,r4
+        SWI     SWI_PIPES_OUTPUTWRITE
+        BVS     putblock_done
+        CMP     r0,#-1
+        BEQ     putblock_done
+        ADD     r3,r3,#1
+        B       putblock_loop
+putblock_done
+        MOV     r0,r3
+        LDMFD   r13!,{r4-r6}
+        LDMFD   r13!,{pc}
+
+; GetBlock (3): receive block from RX buffer (input) - byte loop
+func_getblock
+        STMFD   r13!,{r4-r6}
+        MOV     r4,r1                   ; port
+        MOV     r5,r2                   ; ptr
+        MOV     r6,r3                   ; count
+        MOV     r3,#0                   ; transferred
+getblock_loop
+        CMP     r3,r6
+        BHS     getblock_done
+        MOV     r0,r4
+        SWI     SWI_PIPES_INPUTREAD
+        BVS     getblock_done
+        CMP     r0,#-1
+        BEQ     getblock_done
+        STRB    r0,[r5,r3]
+        ADD     r3,r3,#1
+        B       getblock_loop
+getblock_done
+        MOV     r0,r3
+        LDMFD   r13!,{r4-r6}
+        LDMFD   r13!,{pc}
+
+; ReadControlLines (9): always report modem present
+func_modemctrl
+        MOV     r0,#MODEM_PRESENT
+        LDMFD   r13!,{pc}
+
+; ExamineByte (12): peek at next byte without removing
+func_examine
+        ; We don't have a peek SWI, so return -1 (not available)
+        MOV     r0,#-1
+        LDMFD   r13!,{pc}
+
+; These functions just return 0 (success/no-op)
+func_controllines
+func_rxerrors
+func_break
+func_txspeed
+func_rxspeed
+func_wordformat
+func_flowcontrol
+        MOV     r0,#0
+        LDMFD   r13!,{pc}
+
+; These functions return -1 (not supported)
+func_gettxbuf
+func_getrxbuf
+func_info
+func_description
+        MOV     r0,#-1
+        LDMFD   r13!,{pc}
+
+        END

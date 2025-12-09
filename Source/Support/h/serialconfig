@@ -7,8 +7,11 @@
 
 #include "kernel.h"
 
-#define SERIALCONFIG_MAX_LINES      32
+#define SERIALCONFIG_MAX_LINES       32
 #define SERIALCONFIG_MAX_DRIVER_NAME 32
+#define SERIALCONFIG_MAX_INIT_LEN    64
+#define SERIALCONFIG_MAX_RING_LEN    32
+#define SERIALCONFIG_MAX_ANSWER_LEN  32
 
 /* Serial line configuration (stored in Support module) */
 typedef struct
@@ -19,6 +22,10 @@ typedef struct
     int baud_rate;                          /* Speed */
     int word_format;                        /* 8N1 etc encoded */
     int flow_control;                       /* Flow control mode */
+    int rings;                              /* Rings to wait before answer */
+    char init[SERIALCONFIG_MAX_INIT_LEN];   /* Modem init string */
+    char ring[SERIALCONFIG_MAX_RING_LEN];   /* Incoming ring indicator */
+    char answer[SERIALCONFIG_MAX_ANSWER_LEN]; /* Answer command */
 } SERIAL_CONFIG;
 
 /* Reasons for SWI */

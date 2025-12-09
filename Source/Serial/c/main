@@ -300,7 +300,19 @@ static void load_serial_lines(void)
                 serial_lines[serial_line_count].baud_rate = config.baud_rate;
                 serial_lines[serial_line_count].word_format = config.word_format;
                 serial_lines[serial_line_count].flow_control = config.flow_control;
+                serial_lines[serial_line_count].rings = (config.rings <= 0) ? 1 : config.rings;
                 serial_lines[serial_line_count].carrier_detect = 0;
+                strncpy(serial_lines[serial_line_count].init, config.init,
+                    sizeof(serial_lines[serial_line_count].init) - 1);
+                serial_lines[serial_line_count].init[sizeof(serial_lines[serial_line_count].init) - 1] = '\0';
+                strncpy(serial_lines[serial_line_count].ring, config.ring,
+                    sizeof(serial_lines[serial_line_count].ring) - 1);
+                serial_lines[serial_line_count].ring[sizeof(serial_lines[serial_line_count].ring) - 1] = '\0';
+                strncpy(serial_lines[serial_line_count].answer, config.answer,
+                    sizeof(serial_lines[serial_line_count].answer) - 1);
+                serial_lines[serial_line_count].answer[sizeof(serial_lines[serial_line_count].answer) - 1] = '\0';
+                serial_lines[serial_line_count].ring_count = 0;
+                serial_lines[serial_line_count].ring_match_index = 0;
                 serial_lines[serial_line_count].last_activity = 0;
                 strncpy(serial_lines[serial_line_count].driver_name, config.driver_name,
                         sizeof(serial_lines[serial_line_count].driver_name) - 1);

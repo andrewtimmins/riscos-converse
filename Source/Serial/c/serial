@@ -24,6 +24,48 @@ static int driver_block[SERIAL_DRIVER_BLOCK_SIZE];
 static int driver_loaded = 0;
 
 /* ============================================================================
+ * Helpers
+ * ============================================================================ */
+
+static void serial_reset_ring_state(SERIAL_LINE_STATE *line)
+{
+    if (line == NULL)
+    {
+        return;
+    }
+    line->ring_count = 0;
+    line->ring_match_index = 0;
+}
+
+static void serial_send_command(int line_index, const char *command)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    char buffer[128];
+    size_t len;
+
+    if (line_index < 0 || line_index >= serial_line_count || command == NULL)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL || command[0] == '\0')
+    {
+        return;
+    }
+
+    snprintf(buffer, sizeof(buffer), "%s\r", command);
+    len = strlen(buffer);
+    (*driver)(DRIVER_PUTBLOCK, port, buffer, (int)len);
+    debug_printf("serial: Line %d sent command '%s'", line->line_id, command);
+}
+
+/* ============================================================================
  * BlockDriver Loading
  * ============================================================================ */
 
@@ -216,6 +258,15 @@ int serial_init_port(int line_index)
     /* Initialise carrier detect state */
     line->carrier_detect = 0;
 
+    /* Reset ring detection counters */
+    serial_reset_ring_state(line);
+
+    /* Apply modem init string if provided */
+    if (line->init[0] != '\0')
+    {
+        serial_send_command(line_index, line->init);
+    }
+
     debug_printf("serial: Port %d initialised successfully", port);
     
     return 0;
@@ -340,12 +391,104 @@ void serial_handle_disconnect(int line_index)
 
     /* Update line state */
     line->last_activity = 0;
+    serial_reset_ring_state(line);
 
     /* Update Support module */
     support_set_line_connected(line->line_id, 0);
 
     /* Send Wimp message to Server */
     send_serial_disconnect_message(line->line_id);
+
+    /* Reapply modem init so the port is ready for the next call */
+    if (line->init[0] != '\0')
+    {
+        serial_send_command(line_index, line->init);
+    }
+}
+
+/* ============================================================================
+ * Ring Detection / Auto-Answer
+ * ============================================================================ */
+
+static void serial_scan_for_ring(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    char buffer[64];
+    int rx_waiting;
+    int to_read;
+    int read_bytes;
+    int i;
+    int rings_needed;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL || line->ring[0] == '\0')
+    {
+        return;
+    }
+
+    rx_waiting = (*driver)(DRIVER_CHECKRX, port);
+    if (rx_waiting <= 0)
+    {
+        return;
+    }
+
+    to_read = rx_waiting;
+    if (to_read > (int)sizeof(buffer))
+    {
+        to_read = (int)sizeof(buffer);
+    }
+
+    read_bytes = (*driver)(DRIVER_GETBLOCK, port, buffer, to_read);
+    if (read_bytes <= 0)
+    {
+        return;
+    }
+
+    rings_needed = (line->rings <= 0) ? 1 : line->rings;
+
+    for (i = 0; i < read_bytes; i++)
+    {
+        char ch = buffer[i];
+        if (ch == line->ring[line->ring_match_index])
+        {
+            line->ring_match_index++;
+            if (line->ring[line->ring_match_index] == '\0')
+            {
+                /* Full match */
+                line->ring_count++;
+                line->ring_match_index = 0;
+                debug_printf("serial: Line %d detected ring (%d/%d)", line->line_id, line->ring_count, rings_needed);
+
+                if (line->ring_count >= rings_needed)
+                {
+                    serial_send_command(line_index, (line->answer[0] != '\0') ? line->answer : "ATA");
+                    line->ring_count = 0;
+                }
+            }
+        }
+        else
+        {
+            /* Restart match if this char could be start of ring string */
+            if (ch == line->ring[0])
+            {
+                line->ring_match_index = 1;
+            }
+            else
+            {
+                line->ring_match_index = 0;
+            }
+        }
+    }
 }
 
 /* ============================================================================
@@ -540,11 +683,16 @@ void serial_poll(int line_index)
         serial_handle_disconnect(line_index);
     }
 
-    /* If connected, pump data */
     if (line->carrier_detect)
     {
+        /* Connected: move data between serial and pipes */
         serial_pump_to_pipe(line_index);
         serial_pump_from_pipe(line_index);
+    }
+    else
+    {
+        /* Not connected: watch for ring indications */
+        serial_scan_for_ring(line_index);
     }
 }
 

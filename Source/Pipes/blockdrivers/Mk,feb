@@ -1,0 +1,15 @@
+| Pipe-backed BlockDriver build
+Dir <Obey$Dir>
+IfThere o THEN | ELSE MakeDir o
+
+| Host driver (ObjAsm)
+objasm -apcs 3/32bit -o o.host s.host
+link -aof -o o.hostlink o.host
+link -bin -base 0 -o PipeHost o.hostlink
+
+| Client driver (ObjAsm)
+objasm -apcs 3/32bit -o o.client s.client
+link -aof -o o.clientlink o.client
+link -bin -base 0 -o PipeClient o.clientlink
+
+echo Build complete: PipeHost / PipeClient

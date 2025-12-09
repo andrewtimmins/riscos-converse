@@ -297,9 +297,25 @@ Each line block defines settings that override global defaults:
   start
   line        <number>      Line number (0-31)
   enabled     <yes|no>      Enable this line
-  botstopper  <string>      Line-specific botstopper
-  hello       <string>      Initial greeting message
+  type        <telnet|serial|local>
+  botstopper  <string>      Line-specific botstopper (telnet only)
+  hello       <string>      Initial greeting message (telnet only)
+
+  ; Serial-only options (type=serial)
+  driver      <name>        BlockDriver module name
+  port        <n>           Port number (0-based)
+  speed       <baud>        Baud rate (300-115200)
+  format      <8N1|7E1|7O1|8E1|8O1>
+  flow        <none|rts|xon>
+  init        <string>      Sent on startup and after hangup
+  ring        <string>      Text modem emits on incoming call (e.g. RING)
+  rings       <n>           How many ring indications before answering
+  answer      <string>      Command to answer the call (e.g. ATA)
   end
+
+Notes:
+- Botstopper/hello are ignored for serial and local lines; they proceed straight to prelogon.
+- Serial auto-answer waits for the configured number of ring strings, then sends the answer command; carrier detect still governs session connect/disconnect.
 
 Example:
 
@@ -308,15 +324,24 @@ Example:
   start
   line        0
   enabled     yes
+  type        telnet
   botstopper  Please press * twice to enter...
   hello       Welcome to the BBS!
   end
 
   start
-  line        1
+  line        10
   enabled     yes
-  botstopper  Please press # twice to enter...
-  hello       Welcome, Line 2 user!
+  type        serial
+  driver      Internal32
+  port        0
+  speed       115200
+  format      8N1
+  flow        rts
+  init        ATE0
+  ring        RING
+  rings       1
+  answer      ATA
   end
 
 

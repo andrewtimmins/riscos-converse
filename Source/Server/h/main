@@ -143,7 +143,11 @@
         int baud_rate;                  /* Baud rate (e.g., 115200) */
         int word_format;                /* Data/parity/stop encoded */
         int flow_control;               /* Flow control mode */
+        int rings;                      /* Rings to wait before answer */
         int carrier_detect;             /* Current DCD state */
+        char init[64];                  /* Modem init string */
+        char ring[32];                  /* Ring indicator */
+        char answer[32];                /* Answer command */
         char driver_name[32];           /* BlockDriver name */
 
         /* Common */

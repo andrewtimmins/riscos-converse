@@ -1,0 +1,99 @@
+Pipe-backed BlockDriver pair for Converse Pipes
+===============================================
+
+Overview
+--------
+Two BlockDriver binaries (v2.31 spec compliant) that use the Converse Pipes
+module as their transport. They are intended for bridging/testing scenarios
+where a BlockDriver-aware consumer should talk to another BlockDriver peer via
+Pipes rather than real serial hardware.
+
+Drivers
+-------
+- PipeHost (ID 128): Host endpoint. TX pushes into Pipes Input buffer; RX
+  drains the Pipes Output buffer. Uses block SWIs for better throughput.
+- PipeClient (ID 129): Client endpoint. TX pushes into Pipes Output buffer;
+  RX drains the Pipes Input buffer. Falls back to byte-at-a-time calls because
+  Pipes has no OutputWriteBlock/InputReadBlock SWIs.
+
+Driver IDs are allocated per the xat.nl BlockDriver registry:
+  128 = Virtual pipe (end A)
+  129 = Virtual pipe (end B)
+
+Port/Line Mapping
+-----------------
+The port number passed to the BlockDriver API maps directly to the Pipes line
+number (0-31). Maximum port count is 31 (reported in flags bits 24-31).
+
+Binary Layout (per BlockDriver v2.31 spec)
+------------------------------------------
+  0x0000-0x007F   Main entry point and branch table
+  0x0080-0x009F   Driver info string (32 bytes, NUL terminated)
+  0x00A0-0x00BF   Manufacturer string (32 bytes, NUL terminated)
+  0x00C0          Version word (0x00010000 = v1.0)
+  0x00C4          Flags word (see below)
+  0x00C8          Driver ID (128<<8 or 129<<8)
+  0x00CC-0x00FF   Reserved
+  0x0100-0x017F   Speed table (DCD array, 0 terminated)
+  0x0180+         Function code
+
+Flags (0x00C4)
+--------------
+  Bits 24-31: Maximum port number (31)
+  Bit 17:     32-bit only (NOT 26-bit compatible)
+  Bit 16:     32-bit compliant
+  Bit 6:      Supports block get/put operations
+
+Build Notes
+-----------
+Source files are ObjAsm (s/host, s/client). Build with:
+
+  objasm -apcs 3/32bit -o o.host s.host
+  link -aof -o o.hostlink o.host
+  link -bin -base 0 -o PipeHost o.hostlink
+
+  objasm -apcs 3/32bit -o o.client s.client
+  link -aof -o o.clientlink o.client
+  link -bin -base 0 -o PipeClient o.clientlink
+
+Or run the Mk obey file on RISC OS. The two-stage link produces clean raw
+binaries without AOF headers, suitable for loading via serial_load_driver().
+
+Ship the resulting binaries (PipeHost, PipeClient) in your driver search path;
+pass the filename as the BlockDriver name in the Lines config.
+
+Supported Functions
+-------------------
+  0  Driver_PutByte         Send byte to TX buffer
+  1  Driver_GetByte         Receive byte from RX buffer
+  2  Driver_PutBlock        Send block to TX buffer
+  3  Driver_GetBlock        Receive block from RX buffer
+  4  Driver_CheckTXBuffer   Space free in TX buffer
+  5  Driver_CheckRXBuffer   Bytes waiting in RX buffer
+  6  Driver_FlushTXBuffer   Clear TX buffer
+  7  Driver_FlushRXBuffer   Clear RX buffer
+  8  Driver_ControlLines    No-op (returns 0)
+  9  Driver_ReadControlLines Returns 0x0B (CTS|DSR|DCD high)
+ 10  Driver_ReadRXErrors    No-op (returns 0)
+ 11  Driver_SendBreak       No-op (returns 0)
+ 12  Driver_ExamineByte     Not supported (returns -1)
+ 13  Driver_BaudRateTX      No-op (returns 0)
+ 14  Driver_BaudRateRX      No-op (returns 0)
+ 15  Driver_DataFormat      No-op (returns 0)
+ 16  Driver_Handshaking     No-op (returns 0)
+ 17  Driver_Initialise      Reset/clear buffers; r1=-1 for pre-init
+ 18  Driver_CloseDown       No-op (returns 0)
+ 19  Driver_Poll            No-op (returns 0)
+ 20  Driver_GetTXBuffer     Not supported (returns -1)
+ 21  Driver_GetRXBuffer     Not supported (returns -1)
+ 22  Driver_Info            Not supported (returns -1)
+ 23  Driver_Description     Not supported (returns -1)
+
+Limitations
+-----------
+- No flow-control beyond Pipes watermarks; MODEMCONTROL always reports CTS/DSR/
+  DCD high (0x0B).
+- Client PUT/GET block operations are byte-looped; throughput depends on caller
+  chunk sizes.
+- No persistent state beyond buffer resets on DRIVER_INITIALISE.
+- ExamineByte (peek) not implemented as Pipes has no peek SWI.

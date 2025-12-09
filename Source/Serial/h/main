@@ -89,6 +89,10 @@ typedef struct
     int baud_rate;                  /* Speed */
     int word_format;                /* 8N1 etc encoded */
     int flow_control;               /* Flow control mode */
+    int rings;                      /* Rings to wait before answering */
+    char init[64];                  /* Modem init string */
+    char ring[32];                  /* Ring indicator string */
+    char answer[32];                /* Answer command */
 } SERIAL_LINE_CONFIG;
 
 /* ============================================================================
@@ -104,7 +108,13 @@ typedef struct
     int baud_rate;                  /* Baud rate */
     int word_format;                /* Word format */
     int flow_control;               /* Flow control */
+    int rings;                      /* Rings to wait before answer */
     int carrier_detect;             /* Current DCD state */
+    char init[64];                  /* Modem init string */
+    char ring[32];                  /* Ring indicator string */
+    char answer[32];                /* Answer command */
+    int ring_count;                 /* Rings observed so far */
+    int ring_match_index;           /* Current match position within ring string */
     clock_t last_activity;          /* Last activity time */
     char driver_name[32];           /* Driver name for debug */
 } SERIAL_LINE_STATE;

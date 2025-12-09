@@ -449,7 +449,11 @@ typedef struct
     int port_number;
     int baud_rate;
     int word_format;
-    int flow_control;
+	int flow_control;
+	int rings;
+	char init[64];
+	char ring[32];
+	char answer[32];
 } SERIAL_CONFIG_BLOCK;
 
 static void support_push_serial_config(int line_id)
@@ -470,6 +474,13 @@ static void support_push_serial_config(int line_id)
 	config.baud_rate = line_configuration[line_id].baud_rate;
 	config.word_format = line_configuration[line_id].word_format;
 	config.flow_control = line_configuration[line_id].flow_control;
+	config.rings = line_configuration[line_id].rings;
+	strncpy(config.init, line_configuration[line_id].init, sizeof(config.init) - 1);
+	config.init[sizeof(config.init) - 1] = '\0';
+	strncpy(config.ring, line_configuration[line_id].ring, sizeof(config.ring) - 1);
+	config.ring[sizeof(config.ring) - 1] = '\0';
+	strncpy(config.answer, line_configuration[line_id].answer, sizeof(config.answer) - 1);
+	config.answer[sizeof(config.answer) - 1] = '\0';
 
 	regs.r[0] = 1;  /* SERIAL_CONFIG_REASON_SET */
 	regs.r[1] = line_id;
@@ -2726,6 +2737,10 @@ void load_line_config(void)
 	char temp_enabled[4] = "";
 	char temp_botstopper[128] = "";
 	char temp_hello[256] = "";
+	char temp_init[64] = "";
+	char temp_ring[32] = "";
+	char temp_answer[32] = "";
+	int temp_rings = 1;
 
 	/* Line type storage */
 	char temp_type[16] = "";
@@ -2800,6 +2815,10 @@ void load_line_config(void)
 			temp_enabled[0] = '\0';
 			temp_botstopper[0] = '\0';
 			temp_hello[0] = '\0';
+			temp_init[0] = '\0';
+			temp_ring[0] = '\0';
+			temp_answer[0] = '\0';
+			temp_rings = 1;
 
 			/* Reset line type storage */
 			temp_type[0] = '\0';
@@ -2811,6 +2830,10 @@ void load_line_config(void)
 			temp_speed = 115200;
 			temp_format[0] = '\0';
 			temp_flow[0] = '\0';
+			temp_init[0] = '\0';
+			temp_ring[0] = '\0';
+			temp_answer[0] = '\0';
+			temp_rings = 1;
 
 			in_block = 1;
 			block_count++;
@@ -2832,6 +2855,9 @@ void load_line_config(void)
 				sanitize_string(temp_driver);
 				sanitize_string(temp_format);
 				sanitize_string(temp_flow);
+				sanitize_string(temp_init);
+				sanitize_string(temp_ring);
+				sanitize_string(temp_answer);
 
 				/* Parse line type */
 				if (str_casecmp(temp_type, "serial") == 0)
@@ -2845,6 +2871,13 @@ void load_line_config(void)
 				else
 				{
 					temp_line_type = LINE_TYPE_TELNET;
+				}
+
+				/* Serial and local lines never use botstopper/hello */
+				if (temp_line_type != LINE_TYPE_TELNET)
+				{
+					temp_botstopper[0] = '\0';
+					temp_hello[0] = '\0';
 				}
 
 				/* Only add line if enabled */
@@ -2877,6 +2910,18 @@ void load_line_config(void)
 					/* Serial-specific config */
 					if (temp_line_type == LINE_TYPE_SERIAL)
 					{
+						/* Apply serial defaults if not provided */
+						if (temp_ring[0] == '\0')
+						{
+							strncpy(temp_ring, "RING", sizeof(temp_ring) - 1);
+							temp_ring[sizeof(temp_ring) - 1] = '\0';
+						}
+						if (temp_answer[0] == '\0')
+						{
+							strncpy(temp_answer, "ATA", sizeof(temp_answer) - 1);
+							temp_answer[sizeof(temp_answer) - 1] = '\0';
+						}
+
 						strncpy(line_configuration[line_configurations].driver_name, temp_driver,
 						        sizeof(line_configuration[line_configurations].driver_name) - 1);
 						line_configuration[line_configurations].driver_name[sizeof(line_configuration[line_configurations].driver_name) - 1] = '\0';
@@ -2884,9 +2929,27 @@ void load_line_config(void)
 						line_configuration[line_configurations].baud_rate = temp_speed;
 						line_configuration[line_configurations].word_format = serial_parse_word_format(temp_format);
 						line_configuration[line_configurations].flow_control = serial_parse_flow_control(temp_flow);
+						line_configuration[line_configurations].rings = temp_rings;
+						strncpy(line_configuration[line_configurations].init, temp_init,
+						        sizeof(line_configuration[line_configurations].init) - 1);
+						line_configuration[line_configurations].init[sizeof(line_configuration[line_configurations].init) - 1] = '\0';
+						strncpy(line_configuration[line_configurations].ring, temp_ring,
+						        sizeof(line_configuration[line_configurations].ring) - 1);
+						line_configuration[line_configurations].ring[sizeof(line_configuration[line_configurations].ring) - 1] = '\0';
+						strncpy(line_configuration[line_configurations].answer, temp_answer,
+						        sizeof(line_configuration[line_configurations].answer) - 1);
+						line_configuration[line_configurations].answer[sizeof(line_configuration[line_configurations].answer) - 1] = '\0';
 						line_configuration[line_configurations].carrier_detect = 0;
 						debug_printf("load_line_config:   Serial: driver=%s port=%d speed=%d\n",
 						             temp_driver, temp_port, temp_speed);
+					}
+					else
+					{
+						/* Clear serial-only fields for non-serial lines */
+						line_configuration[line_configurations].rings = 0;
+						line_configuration[line_configurations].init[0] = '\0';
+						line_configuration[line_configurations].ring[0] = '\0';
+						line_configuration[line_configurations].answer[0] = '\0';
 					}
 
 					line_configurations++;
@@ -2964,6 +3027,33 @@ void load_line_config(void)
 			strncpy(temp_flow, temporary_line, sizeof(temp_flow) - 1);
 			temp_flow[sizeof(temp_flow) - 1] = '\0';
 			debug_printf("load_line_config:   flow = '%s'\n", temp_flow);
+		}
+		else if (strcmp(config_line,"init")==0)
+		{
+			strncpy(temp_init, temporary_line, sizeof(temp_init) - 1);
+			temp_init[sizeof(temp_init) - 1] = '\0';
+			debug_printf("load_line_config:   init = '%s'\n", temp_init);
+		}
+		else if (strcmp(config_line,"ring")==0)
+		{
+			strncpy(temp_ring, temporary_line, sizeof(temp_ring) - 1);
+			temp_ring[sizeof(temp_ring) - 1] = '\0';
+			debug_printf("load_line_config:   ring = '%s'\n", temp_ring);
+		}
+		else if (strcmp(config_line,"rings")==0)
+		{
+			temp_rings = atoi(temporary_line);
+			if (temp_rings <= 0)
+			{
+				temp_rings = 1;
+			}
+			debug_printf("load_line_config:   rings = %d\n", temp_rings);
+		}
+		else if (strcmp(config_line,"answer")==0)
+		{
+			strncpy(temp_answer, temporary_line, sizeof(temp_answer) - 1);
+			temp_answer[sizeof(temp_answer) - 1] = '\0';
+			debug_printf("load_line_config:   answer = '%s'\n", temp_answer);
 		}
 	}
 
