@@ -78,7 +78,10 @@ The workspace includes `SharedLibs` containing:
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
   - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback). `MORE <0|1>` temporarily disables (0) or enables (1) the "More?" prompt for the current session, overriding the user's preference.
-  - **More Prompts**: When enabled (user's `more` flag = 1), the script engine automatically pauses after displaying `lines` lines of output (default 24) and shows a "More?" prompt. Any key continues; Q/N/Ctrl+C aborts and disables further prompts for the session. The line counter resets on CLS. Use `more 0` in scripts to disable prompts during file listings or other bulk output.
+  - **More Prompts**: When enabled (user's `more` flag = 1), the script engine automatically pauses after displaying `lines` lines of output (default 24) and shows a "More?" prompt in reverse video. Any key continues; Q/N/Ctrl+C aborts and disables further prompts for the session. The line counter resets on CLS. Use `more 0` in scripts to disable prompts during file listings or other bulk output.
+    - **Implementation**: Uses `script_state` fields: `more_override` (-1=not set, 0=disabled, 1=enabled), `more_line_count` (current line count), `more_screen_lines` (user's configured screen height).
+    - **Status**: When awaiting More? response, script status is `SCRIPT_STATUS_WAIT_MORE`.
+    - **Output Counting**: `script_write_output()` counts newlines via `script_count_lines()` and triggers pause when `more_line_count >= more_screen_lines - 1`.
   - **Subscript Calls**: `SCRIPT <path>` loads and executes a subscript, then returns to the calling script. Supports up to 8 levels of nesting. Variables are shared between calling and called scripts. Use `return` or `stop` in the subscript to return early. Block IF/ELSE/ENDIF structures are fully supported in subscripts. Example: `script `<Converse$Dir>.BBS.Welcome``.
   - **Login Scan**: `LOGINSCAN` scans all accessible messagebases and filebases for new content since the user's last scan. Reports counts of new private messages addressed to the user (unread, by `receivedby` field) and new files uploaded since `lastscan`. After scanning, updates the user's `lastscan` timestamp in USER_STATS. Typically called in Postlogon script.
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
@@ -88,6 +91,11 @@ The workspace includes `SharedLibs` containing:
 
 - **LineTask / Terminal (`ansiterm`)**:
   - **Architecture**: The `ansiterm` module implements a custom ANSI terminal emulator. It maintains a grid of cells and handles rendering to a RISC OS window.
+  - **Terminal Dimensions**: Standard 80x25 character grid (defined in `LineTask/h/ansiterm`):
+    - `ANSITERM_COLS` = 80, `ANSITERM_ROWS` = 25
+    - `ANSITERM_CHAR_WIDTH` = 16, `ANSITERM_CHAR_HEIGHT` = 32 (OS units per cell)
+    - `ANSITERM_WIDTH` = 1280, `ANSITERM_HEIGHT` = 800 (total OS units)
+  - **Window Opening**: The `show_main_window()` function opens the terminal at full 80x25 size, centered on screen. It calculates screen dimensions via `OS_ReadModeVariable` and explicitly sets the visible area to match the terminal extent, rather than relying on template defaults.
   - **Cell Structure**: `ansiterm_cell` uses a 16-bit attribute field (`unsigned short attr`) to support standard colors (FG/BG) plus a **Flash** bit (bit 8).
   - **Blinking Text**: The `ansiterm_blink()` function toggles the visibility of flashing characters. It uses an optimized row-scanning approach to only invalidate/redraw rows containing flashing characters, preventing full-window flicker. This is driven by a 0.5s timer in `main.c`.
   - **Sysop Snoop**: The terminal window mirrors the user's session.
@@ -95,6 +103,13 @@ The workspace includes `SharedLibs` containing:
     - **Input**: `handle_plain_server_byte` echoes user input to the local terminal.
     - **Sysop Input**: `handle_terminal_key` injects local keystrokes into the input stream (local echo handled by `pipes_output_write_string` when the server echoes it back, or locally if needed).
   - **Focus**: The terminal window automatically claims input focus (`Wimp_SetCaretPosition`) when opened via the "View" button in the Server.
+
+- **LineTask / Script Call Stack**:
+  - **Purpose**: Supports `SCRIPT` command for subscript nesting up to 8 levels deep.
+  - **Structure**: `script_call_frame` array stores saved script state (path, line number, file pointer, block stack) for each nesting level. `call_depth` tracks current depth (0 = top-level script).
+  - **Push/Pop**: `script_push_call_stack()` saves current state before loading subscript. `script_pop_call_stack()` restores parent state when subscript ends via `RETURN` or EOF.
+  - **Session Cleanup**: The call stack is cleared in `script_reset_session()` (called only on disconnect), NOT in `script_stop()`. This is critical because `script_stop()` is also called internally when loading subscripts, so clearing the stack there would break subscript support.
+  - **Overflow Protection**: If `call_depth >= MAX_CALL_DEPTH` (8), the `SCRIPT` command fails with "[Script Error: Script stack overflow]".
 
 ## Wimp Messages (LineTask <-> Server)
 
