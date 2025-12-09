@@ -42,6 +42,7 @@ o.main:	C:Desk.h.Window
 o.main:	C:Desk.h.Pointer
 o.main:	C:Desk.h.Dialog2
 o.main:	C:Desk.h.Error
+o.main:	C:Desk.h.Error
 o.main:	h.main
 o.main:	C:Desk.h.Wimp
 o.main:	h.serial

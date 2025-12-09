@@ -29,6 +29,7 @@
 #include "C:Desk.Dialog.h"
 #include "C:Desk.Dialog2.h"
 #include "C:Desk.Error.h"
+#include "C:Desk.Error.h"
 
 /* Our Includes */
 #include "main.h"
@@ -43,7 +44,7 @@ WIMP_STATE wimp;
 SERIAL_LINE_STATE serial_lines[SERIAL_MAX_LINES];
 int serial_line_count = 0;
 
-static Desk_dialog2_block *proginfo_window;
+static Desk_window_handle proginfo_window;
 
 /* Menu indices */
 enum
@@ -385,17 +386,7 @@ static Desk_bool handle_broadcast_message(Desk_event_pollblock *event, void *ref
     return Desk_bool_FALSE;
 }
 
-static Desk_bool handle_open_proginfo(Desk_event_pollblock *event, void *ref)
-{
-    if (event->data.message.data.menuwarn.selection[0] != ICONBAR_MENU_INFO)
-    {
-        return Desk_bool_FALSE;
-    }
-
-    Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
-
-    return Desk_bool_TRUE;
-}
+/* Proginfo now attached as a submenu window; warn handler no longer needed */
 
 static void poll_idle(void)
 {
@@ -433,7 +424,7 @@ int main(void)
     Desk_Resource_Initialise("ConverseRes");
     Desk_Msgs_LoadFile("Messages");
 
-    Desk_Event_Initialise("Serial");
+    Desk_Event_Initialise("Serial Server");
     Desk_EventMsg_Initialise();
     Desk_Screen_CacheModeInfo();
 
@@ -447,13 +438,13 @@ int main(void)
     wimp.iconbar_icon = Desk_Icon_BarIcon("!serial", Desk_iconbar_RIGHT);
     Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon,
                      handle_iconbar_click, &wimp);
- /* Create iconbar menu */
+    /* Create iconbar menu */
     Desk_Msgs_Lookup("ser.ibmt", menu_title, sizeof(menu_title));
     Desk_Msgs_Lookup("ser.ibm", menu_items, sizeof(menu_items));
 
     if (menu_title[0] == '\0')
     {
-        strcpy(menu_title, "Serial");
+        strcpy(menu_title, "Serial Server");
     }
     if (menu_items[0] == '\0')
     {
@@ -467,8 +458,12 @@ int main(void)
     Desk_Template_UseOutlineFonts();
     Desk_Template_LoadFile("Templates");
 
-    proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
-    Desk_Menu_Warn(wimp.iconbar_menu, ICONBAR_MENU_INFO, Desk_bool_TRUE, handle_open_proginfo, (void *)proginfo_window);
+    proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+    if (wimp.iconbar_menu != NULL && proginfo_window != 0)
+    {
+        /* Attach proginfo as submenu of Info entry (matches FTN approach) */
+        Desk_Menu_AddSubMenu(wimp.iconbar_menu, ICONBAR_MENU_INFO, (Desk_menu_ptr)proginfo_window);
+    }
 
     /* Load serial line configuration from Support module */
     load_serial_lines();
