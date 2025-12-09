@@ -64,6 +64,65 @@ The workspace includes `SharedLibs` containing:
   - The server listens for several Wimp messages from LineTask (see Wimp Messages section below).
   - The `waiting_user` and `user_activity` strings are loaded from the Messages file tokens `server.wait` and `server.nact`. Fallback values are provided if the tokens are missing.
 
+- **Server / Line Types**:
+  - Lines are configured with a `type` keyword in the Lines config file. Each line can be one of three types:
+    - **telnet** (default): Accepts incoming TCP connections via the network listener. The hostname column shows the remote IP or resolved hostname.
+    - **serial**: Uses a BlockDriver for modem/serial communication. Handled by the separate Serial app. Requires additional config: `driver`, `port`, `speed`, `format`, `flow`. The hostname column shows "SERIAL".
+    - **local**: Reserved for desktop-only access via the View/Logon buttons. Never accepts external connections. The hostname column shows "LOCAL".
+  - **Serial Configuration Example**:
+    ```
+    line 1
+        enabled     1
+        type        serial
+        driver      InternalPC
+        port        0
+        speed       115200
+        format      8N1
+        flow        rts
+        botstopper  (Press ENTER to continue...)
+    endline
+    ```
+  - **Local Lines**: Simply excluded from `check_listener()`. Users access local lines via the L (Logon) button which launches LineTask, and the V (View) button which opens the sysop terminal window.
+
+- **Serial Handler** (`Serial/`):
+  - Standalone Wimp application launched by Server via `<Converse$Dir>.Resources.!RunSerial`.
+  - Only launched if at least one serial line is configured.
+  - Queries Support module for serial line configuration via SWI 0x5AA88.
+  - Loads BlockDrivers and initialises ports on startup.
+  - Polls for carrier detect (DCD) and pumps data between serial port and Pipes module.
+  - Sends `MESSAGE_SERIAL_CONNECT` (0x5AA06) and `MESSAGE_SERIAL_DISCONNECT` (0x5AA07) Wimp messages to Server for UI updates.
+  - Responds to `MESSAGE_LINE_BROADCAST` (0x5AA00) reason 0 for quit.
+  - **Serial Driver Keywords**:
+    - `driver <name>`: BlockDriver module name (e.g., InternalPC, Internal32, Dual, Atomwide, etc.)
+    - `port <n>`: Port number for multi-port drivers (0-based)
+    - `speed <baud>`: Baud rate (300-115200)
+    - `format <fmt>`: Word format: `8N1`, `7N1`, `7N2`, `7E1`, `7O1`, `8E1`, `8O1`, `8N2`
+    - `flow <type>`: Flow control: `none`, `rts` (RTS/CTS), `xon` (XON/XOFF), `dtr` (DTR/DSR)
+  - **BlockDriver Functions Used** (`Serial/c/serial`):
+    - `DRIVER_PUTBYTE` (0) / `DRIVER_GETBYTE` (1): Single byte I/O
+    - `DRIVER_PUTBLOCK` (2) / `DRIVER_GETBLOCK` (3): Block I/O
+    - `DRIVER_CHECKTX` (4) / `DRIVER_CHECKRX` (5): Check buffer status
+    - `DRIVER_FLUSHTX` (6) / `DRIVER_FLUSHRX` (7): Flush buffers
+    - `DRIVER_MODEMCONTROL` (9): Read modem control lines (CTS/DSR/RI/DCD)
+    - `DRIVER_TXSPEED` (13) / `DRIVER_RXSPEED` (14): Set baud rates
+    - `DRIVER_WORDFORMAT` (15): Set data bits, parity, stop bits
+    - `DRIVER_FLOWCONTROL` (16): Set handshaking mode
+    - `DRIVER_INITIALISE` (17): Initialize port
+    - `DRIVER_CLOSEDOWN` (18): Close port
+    - `DRIVER_POLL` (19): Poll driver (cooperative multitasking)
+  - **Modem Control Line Bits** (from function 9, per BlockDriver Spec v2.31):
+    - Bit 0 = CTS (Clear To Send)
+    - Bit 1 = DSR (Data Set Ready)
+    - Bit 2 = RI (Ring Indicator)
+    - Bit 3 = DCD (Data Carrier Detect)
+  - **Flow Control Values** (for function 16):
+    - 0 = None, 1 = RTS/CTS, 2 = XON/XOFF, 3 = DTR/DSR
+  - **Word Format Encoding** (for function 15):
+    - Bits 0-1 = data length (0=8, 1=7, 2=6, 3=5)
+    - Bit 2 = stop bits (0=1 stop, 1=2 stop)
+    - Bit 3 = parity enable, Bit 4 = even parity
+  - **Carrier Detection**: Serial lines detect carrier via DCD (bit 3 of modem status). When carrier drops, the line is disconnected and the port is reinitialized for the next connection.
+
 - **LineTask / Script Engine**:
   - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
   - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
@@ -123,6 +182,8 @@ The Server and LineTask communicate via Wimp user messages. Message base is `0x5
 | `MESSAGE_LINE_VIEW_WINDOW` | 0x5AA03 | Server->LineTask | Request to open line view window (word[0]=line) |
 | `MESSAGE_LINE_REGISTER` | 0x5AA04 | LineTask->Server | LineTask registering with server (word[0]=line) |
 | `MESSAGE_LINE_USER` | 0x5AA05 | LineTask->Server | Update user column (word[0]=line, bytes[4..]=realname or empty to reset) |
+| `MESSAGE_SERIAL_CONNECT` | 0x5AA06 | Serial->Server | Serial line connected (word[0]=line) |
+| `MESSAGE_SERIAL_DISCONNECT` | 0x5AA07 | Serial->Server | Serial line disconnected (word[0]=line) |
 
 ### MESSAGE_LINE_USER Details
 - Sent when user authenticates successfully (contains real name)
@@ -403,7 +464,7 @@ void log_ftn(char *entry);
 - **Line (0x5AA81)**:
   - 0 (Set): R1=Line, R2=Field, R3=Value
   - 1 (Get): R1=Line, R2=Field -> R0=Value
-  - Fields: 0=configured, 1=connected, 2=user_id, 3=connect_time, 4=hostname, 5=transfer_active
+  - Fields: 0=configured, 1=connected, 2=user_id, 3=connect_time, 4=hostname, 5=transfer_active, 6=line_type (0=telnet,1=serial,2=local)
 - **Activity (0x5AA82)**:
   - 0 (Set): R1=Line, R2=TextPtr
   - 1 (Get): R1=Line -> R0=TextPtr
@@ -438,6 +499,10 @@ void log_ftn(char *entry);
   - 5 (SetUplink): R1=UplinkID, R2=FTN_UPLINK_CONFIG ptr
   - 6 (CountAddresses): -> R0=Count
   - 7 (CountUplinks): -> R0=Count
+- **SerialConfig (0x5AA88)**:
+  - 0 (Get): R1=Line -> R0=SERIAL_CONFIG ptr
+  - 1 (Set): R1=Line, R2=SERIAL_CONFIG ptr
+  - SERIAL_CONFIG contains: enabled (int), driver_name (char[32]), port_number (int), baud_rate (int), word_format (int), flow_control (int)
 
 ## ARCbbsDoors Emulator Module
 
@@ -1869,20 +1934,26 @@ The Server application (`Server/`) displays a status window with connection info
 Each line row contains 8 icons (increased from 7 to add Logon button):
 
 | Column | Index | Width (OS) | Purpose |
-|--------|-------|------------|---------||
-| 0 | 0 | 56 | Line number |
-| 1 | 1 | 200 | Username/waiting |
-| 2 | 2 | 430 | Activity text |
-| 3 | 3 | 510 | Hostname |
-| 4 | 4 | 169 | Connect timer |
-| 5 | 5 | 56 | D (Disconnect) button |
-| 6 | 6 | 56 | V (View) button |
-| 7 | 7 | 56 | L (Logon) button |
+|--------|-------|------------|---------|
+| 0 | 0 | 88 | Line number |
+| 1 | 1 | 88 | Type (IP/BD/LC) |
+| 2 | 2 | 300 | Username/waiting |
+| 3 | 3 | 430 | Activity text |
+| 4 | 4 | 510 | Hostname/Phone |
+| 5 | 5 | 169 | Connect timer |
+| 6 | 6 | 56 | D (Disconnect) button |
+| 7 | 7 | 56 | V (View) button |
+| 8 | 8 | 56 | L (Logon) button |
+
+**Type Column Values:**
+- **IP** - Telnet (TCP/IP connection)
+- **BD** - BlockDriver (Serial/modem)
+- **LC** - Local (desktop-only access)
 
 **Icon Index Calculation:**
 ```c
-#define ICONS_PER_LINE 8
-#define FIRST_DYNAMIC_ICON 13
+#define ICONS_PER_LINE 9
+#define FIRST_DYNAMIC_ICON 15
 
 int main_window_icon_index(int line, int column)
 {

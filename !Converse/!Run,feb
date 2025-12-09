@@ -10,6 +10,7 @@ If "<Converse$Running>" = "1" Then Error Converse is already running.
 
 RMEnsure UtilityModule 3.70 Error RISC OS 3.70 or higher is required.
 If "<System$Path>" = "" Then Error 0 !System resources cannot be found.
+If "<SerialDev$Path>" = "" then Error 0 !SerialDev device drivers cannot be found.
 
 RMEnsure SharedCLibrary 6.23 RMLoad System:Modules.CLib
 RMEnsure SharedCLibrary 6.23 Error 0 Shared C Library 6.23 or higher is requred.

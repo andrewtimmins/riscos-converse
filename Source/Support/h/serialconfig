@@ -1,0 +1,42 @@
+/* ******************************************************************************************************************************************************** */
+/* Support Module - Serial Configuration                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef SERIALCONFIG_H
+#define SERIALCONFIG_H
+
+#include "kernel.h"
+
+#define SERIALCONFIG_MAX_LINES      32
+#define SERIALCONFIG_MAX_DRIVER_NAME 32
+
+/* Serial line configuration (stored in Support module) */
+typedef struct
+{
+    int enabled;                            /* Is this a serial line? */
+    char driver_name[SERIALCONFIG_MAX_DRIVER_NAME];  /* BlockDriver name */
+    int port_number;                        /* Port (0-based) */
+    int baud_rate;                          /* Speed */
+    int word_format;                        /* 8N1 etc encoded */
+    int flow_control;                       /* Flow control mode */
+} SERIAL_CONFIG;
+
+/* Reasons for SWI */
+typedef enum
+{
+    SERIAL_CONFIG_REASON_GET = 0,
+    SERIAL_CONFIG_REASON_SET = 1
+} SERIAL_CONFIG_REASON;
+
+/* Initialisation and finalisation */
+void serialconfig_initialise(void);
+void serialconfig_finalise(void);
+
+/* SWI handler */
+void serialconfig_swi_handler(_kernel_swi_regs *r);
+
+/* Direct access (for internal use) */
+const SERIAL_CONFIG *serialconfig_get(int line);
+int serialconfig_set(int line, const SERIAL_CONFIG *config);
+
+#endif /* SERIALCONFIG_H */

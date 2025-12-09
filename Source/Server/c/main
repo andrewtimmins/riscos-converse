@@ -111,6 +111,8 @@ Desk_bool wimp_handle_line_activity_message(Desk_event_pollblock *event, void *r
 Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_register_message(Desk_event_pollblock *event, void *ref);
 Desk_bool wimp_handle_line_user_message(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_serial_connect_message(Desk_event_pollblock *event, void *ref);
+Desk_bool wimp_handle_serial_disconnect_message(Desk_event_pollblock *event, void *ref);
 
 void display_error_dialog(int isFatal, const char *stringFormat, ...);
 
@@ -192,29 +194,76 @@ static int str_casecmp(const char *s1, const char *s2)
 	return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
 }
 
-#define MAIN_WINDOW_ICON_BASE 13
-#define MAIN_WINDOW_ICONS_PER_LINE 8
+#define MAIN_WINDOW_ICON_BASE 15
+#define MAIN_WINDOW_ICONS_PER_LINE 9
 #define MAIN_WINDOW_ICON_HEIGHT 64
 #define MAIN_WINDOW_TOP_STATIC_ROWS 2
 #define MAIN_WINDOW_BOTTOM_STATIC_ROWS 0
 #define MAIN_WINDOW_STATIC_ICON_COUNT (MAIN_WINDOW_TOP_STATIC_ROWS + MAIN_WINDOW_BOTTOM_STATIC_ROWS)
 #define MAIN_WINDOW_PADDING 10
 
-#define MAIN_WINDOW_COLUMN_START 5
+#define MAIN_WINDOW_COLUMN_START 0
 #define MAIN_WINDOW_COLUMN_GAP 8
-#define MAIN_WINDOW_LINE_COLUMN_WIDTH 88
-#define MAIN_WINDOW_USER_COLUMN_WIDTH 300
-#define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 430
-#define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 510
-#define MAIN_WINDOW_TIMER_COLUMN_WIDTH 169
-#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 56
-#define MAIN_WINDOW_VIEW_COLUMN_WIDTH 56
-#define MAIN_WINDOW_LOGON_COLUMN_WIDTH 56
+#define MAIN_WINDOW_LINE_COLUMN_WIDTH 70
+#define MAIN_WINDOW_TYPE_COLUMN_WIDTH 80
+#define MAIN_WINDOW_USER_COLUMN_WIDTH 280
+#define MAIN_WINDOW_ACTIVITY_COLUMN_WIDTH 300
+#define MAIN_WINDOW_HOSTNAME_COLUMN_WIDTH 546
+#define MAIN_WINDOW_TIMER_COLUMN_WIDTH 180
+#define MAIN_WINDOW_ACTION_COLUMN_WIDTH 72
+#define MAIN_WINDOW_VIEW_COLUMN_WIDTH 72
+#define MAIN_WINDOW_LOGON_COLUMN_WIDTH 72
 
 #define PIPES_SWI_BASE 0x5AA00
 #define PIPES_BUFFER_CAPACITY 4096
 #define PIPE_TRANSFER_CHUNK 1536
 #define LINE_IDLE_TIMEOUT_TICKS ((clock_t)(30 * CLOCKS_PER_SEC))
+
+/* Word Format Constants for serial config parsing */
+#define WORDFORMAT_8N1        0x00
+#define WORDFORMAT_8N2        0x04
+#define WORDFORMAT_7N1        0x01
+#define WORDFORMAT_7N2        0x05
+#define WORDFORMAT_8E1        0x18
+#define WORDFORMAT_8O1        0x08
+#define WORDFORMAT_7E1        0x19
+#define WORDFORMAT_7O1        0x09
+
+/* Flow Control Constants for serial config parsing */
+#define FLOWCONTROL_NONE      0x00
+#define FLOWCONTROL_RTSCTS    0x01
+#define FLOWCONTROL_XONXOFF   0x02
+#define FLOWCONTROL_DTRDSR    0x03
+
+/* Parse word format string to constant (for serial config) */
+static int serial_parse_word_format(const char *format)
+{
+	if (format == NULL) return WORDFORMAT_8N1;
+	if (strcmp(format, "8N1") == 0 || strcmp(format, "8n1") == 0) return WORDFORMAT_8N1;
+	if (strcmp(format, "8N2") == 0 || strcmp(format, "8n2") == 0) return WORDFORMAT_8N2;
+	if (strcmp(format, "8E1") == 0 || strcmp(format, "8e1") == 0) return WORDFORMAT_8E1;
+	if (strcmp(format, "8O1") == 0 || strcmp(format, "8o1") == 0) return WORDFORMAT_8O1;
+	if (strcmp(format, "7E1") == 0 || strcmp(format, "7e1") == 0) return WORDFORMAT_7E1;
+	if (strcmp(format, "7O1") == 0 || strcmp(format, "7o1") == 0) return WORDFORMAT_7O1;
+	if (strcmp(format, "7N1") == 0 || strcmp(format, "7n1") == 0) return WORDFORMAT_7N1;
+	if (strcmp(format, "7N2") == 0 || strcmp(format, "7n2") == 0) return WORDFORMAT_7N2;
+	return WORDFORMAT_8N1;
+}
+
+/* Parse flow control string to constant (for serial config) */
+static int serial_parse_flow_control(const char *flow)
+{
+	if (flow == NULL) return FLOWCONTROL_RTSCTS;
+	if (strcmp(flow, "none") == 0 || strcmp(flow, "NONE") == 0) return FLOWCONTROL_NONE;
+	if (strcmp(flow, "xonxoff") == 0 || strcmp(flow, "XONXOFF") == 0 ||
+	    strcmp(flow, "xon") == 0 || strcmp(flow, "software") == 0) return FLOWCONTROL_XONXOFF;
+	if (strcmp(flow, "rtscts") == 0 || strcmp(flow, "RTSCTS") == 0 ||
+	    strcmp(flow, "hardware") == 0 || strcmp(flow, "cts") == 0 ||
+	    strcmp(flow, "rts") == 0 || strcmp(flow, "RTS") == 0) return FLOWCONTROL_RTSCTS;
+	if (strcmp(flow, "dtrdsr") == 0 || strcmp(flow, "DTRDSR") == 0 ||
+	    strcmp(flow, "dtr") == 0 || strcmp(flow, "DTR") == 0) return FLOWCONTROL_DTRDSR;
+	return FLOWCONTROL_RTSCTS;
+}
 
 #define MAIN_WINDOW_HOSTNAME_TEXT_LEN 256
 
@@ -230,6 +279,11 @@ static int str_casecmp(const char *s1, const char *s2)
 #define SWI_CONVERSEBBS_LINE       0x5AA81
 #define SWI_CONVERSEBBS_ACTIVITY   0x5AA82
 #define SWI_CONVERSEBBS_LINECONFIG 0x5AA83
+#define SWI_CONVERSEBBS_SERIAL_CONFIG 0x5AA88
+
+/* Wimp messages from Serial handler */
+#define MESSAGE_SERIAL_CONNECT      0x5AA06
+#define MESSAGE_SERIAL_DISCONNECT   0x5AA07
 
 /* ConverseFiler Statistics SWI */
 #define SWI_CONVERSEFILER_STATISTICS 0x5AA44
@@ -250,6 +304,7 @@ static int str_casecmp(const char *s1, const char *s2)
 #define LINE_FIELD_CONNECT_TIME 3
 #define LINE_FIELD_HOSTNAME    4
 #define LINE_FIELD_TRANSFER    5
+#define LINE_FIELD_TYPE        6
 
 /* Activity reason codes */
 #define ACTIVITY_REASON_SET 0
@@ -281,17 +336,7 @@ static int str_casecmp(const char *s1, const char *s2)
 
 static Desk_sprite_area status_sprites = NULL;
 
-enum
-{
-	MAIN_WINDOW_COLUMN_LINE = 0,
-	MAIN_WINDOW_COLUMN_USER,
-	MAIN_WINDOW_COLUMN_ACTIVITY,
-	MAIN_WINDOW_COLUMN_HOSTNAME,
-	MAIN_WINDOW_COLUMN_TIMER,
-	MAIN_WINDOW_COLUMN_ACTION,
-	MAIN_WINDOW_COLUMN_VIEW,
-	MAIN_WINDOW_COLUMN_LOGON
-};
+/* Column constants now defined in main.h */
 
 static void poll_idle(void)
 {
@@ -318,7 +363,7 @@ static void waiting_update(const char *status)
 	Desk_Wimp_Poll(mask, &event);
 }
 
-static int main_window_icon_index(int line_id, int column)
+int main_window_icon_index(int line_id, int column)
 {
 	return MAIN_WINDOW_ICON_BASE + (line_id * MAIN_WINDOW_ICONS_PER_LINE) + column;
 }
@@ -394,6 +439,71 @@ static void launch_web_task(void)
 	debug_printf("launch_web_task: Starting Web server task\n");
 	Desk_Wimp_StartTask("Run <Converse$Dir>.Resources.!RunWeb");
 	debug_printf("launch_web_task: Web server task started\n");
+}
+
+/* Serial config structure for pushing to Support module */
+typedef struct
+{
+    int enabled;
+    char driver_name[32];
+    int port_number;
+    int baud_rate;
+    int word_format;
+    int flow_control;
+} SERIAL_CONFIG_BLOCK;
+
+static void support_push_serial_config(int line_id)
+{
+	_kernel_swi_regs regs;
+	SERIAL_CONFIG_BLOCK config;
+
+	if (line_configuration[line_id].type != LINE_TYPE_SERIAL)
+	{
+		return;
+	}
+
+	config.enabled = 1;
+	strncpy(config.driver_name, line_configuration[line_id].driver_name, 
+	        sizeof(config.driver_name) - 1);
+	config.driver_name[sizeof(config.driver_name) - 1] = '\0';
+	config.port_number = line_configuration[line_id].port_number;
+	config.baud_rate = line_configuration[line_id].baud_rate;
+	config.word_format = line_configuration[line_id].word_format;
+	config.flow_control = line_configuration[line_id].flow_control;
+
+	regs.r[0] = 1;  /* SERIAL_CONFIG_REASON_SET */
+	regs.r[1] = line_id;
+	regs.r[2] = (int)&config;
+	_kernel_swi(SWI_CONVERSEBBS_SERIAL_CONFIG, &regs, &regs);
+
+	debug_printf("support_push_serial_config: Pushed serial config for line %d (driver=%s)\n",
+	             line_id, config.driver_name);
+}
+
+static int has_serial_lines(void)
+{
+	int i;
+	for (i = 0; i < line_configurations; i++)
+	{
+		if (line_configuration[i].type == LINE_TYPE_SERIAL)
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void launch_serial_task(void)
+{
+	if (!has_serial_lines())
+	{
+		debug_printf("launch_serial_task: No serial lines configured, skipping\n");
+		return;
+	}
+
+	debug_printf("launch_serial_task: Starting Serial handler task\n");
+	Desk_Wimp_StartTask("Run <Converse$Dir>.Resources.!RunSerial");
+	debug_printf("launch_serial_task: Serial handler task started\n");
 }
 
 static Desk_bool main_window_icon_to_line(Desk_icon_handle icon, int *line_id, int *column)
@@ -662,6 +772,17 @@ static void support_set_line_connect_time(int line_id, time_t connect_time)
 	regs.r[1] = line_id;
 	regs.r[2] = LINE_FIELD_CONNECT_TIME;
 	regs.r[3] = (int)connect_time;
+	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+static void support_set_line_type(int line_id, int line_type)
+{
+	_kernel_swi_regs regs;
+
+	regs.r[0] = LINE_REASON_SET;
+	regs.r[1] = line_id;
+	regs.r[2] = LINE_FIELD_TYPE;
+	regs.r[3] = line_type;
 	_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
 }
 
@@ -1006,43 +1127,71 @@ Desk_bool wimp_open_systeminfo_window(Desk_event_pollblock *event, void *ref)
 
 Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
 {
-	int socket_poll = 0;
+	int line_id = 0;
 
 	Desk_UNUSED(event);
 	Desk_UNUSED(ref);
 
+	/* Check for incoming telnet connections */
 	check_listener();
 
-	while (socket_poll < line_configurations)
+	/* Process each line based on its type */
+	while (line_id < line_configurations)
 	{
-		if (line_configuration[socket_poll].socket != 0)
+		switch (line_configuration[line_id].type)
 		{
-			check_socket(socket_poll, line_configuration[socket_poll].socket);
-			if (line_configuration[socket_poll].resolved < 3)
-			{
-				resolve_address(socket_poll);
-			}
-		}
-		else if (support_get_line_connected(socket_poll))
-		{
-			/* Local connection (no socket) - update timer from Support module */
-			if (line_configuration[socket_poll].timer == 0)
-			{
-				/* Start timer for newly detected local connection */
-				line_configuration[socket_poll].timer = timer_set(100);
-			}
-			update_local_connection_timer(socket_poll);
-		}
-		else if (line_configuration[socket_poll].timer != 0)
-		{
-			/* Connection ended - clear timer and reset display */
-			line_configuration[socket_poll].timer = 0;
-			Desk_Icon_SetText(main_window,
-				main_window_icon_index(socket_poll, MAIN_WINDOW_COLUMN_TIMER),
-				"00:00:00");
+			case LINE_TYPE_TELNET:
+				/* Telnet line - check socket if connected */
+				if (line_configuration[line_id].socket != 0)
+				{
+					check_socket(line_id, line_configuration[line_id].socket);
+					if (line_configuration[line_id].resolved < 3)
+					{
+						resolve_address(line_id);
+					}
+				}
+				break;
+
+			case LINE_TYPE_SERIAL:
+				/* Serial line - handled by Serial app, just update timer if connected */
+				if (support_get_line_connected(line_id))
+				{
+					if (line_configuration[line_id].timer == 0)
+					{
+						line_configuration[line_id].timer = timer_set(100);
+					}
+					update_local_connection_timer(line_id);
+				}
+				else if (line_configuration[line_id].timer != 0)
+				{
+					line_configuration[line_id].timer = 0;
+					Desk_Icon_SetText(main_window,
+						main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+						"00:00:00");
+				}
+				break;
+
+			case LINE_TYPE_LOCAL:
+				/* Local line - just update timer if connected (LineTask handles I/O) */
+				if (support_get_line_connected(line_id))
+				{
+					if (line_configuration[line_id].timer == 0)
+					{
+						line_configuration[line_id].timer = timer_set(100);
+					}
+					update_local_connection_timer(line_id);
+				}
+				else if (line_configuration[line_id].timer != 0)
+				{
+					line_configuration[line_id].timer = 0;
+					Desk_Icon_SetText(main_window,
+						main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+						"00:00:00");
+				}
+				break;
 		}
 
-		socket_poll++;
+		line_id++;
 	}
 
 	/* Update status window periodically */
@@ -1198,6 +1347,76 @@ Desk_bool wimp_handle_line_user_message(Desk_event_pollblock *event, void *ref)
 	return Desk_bool_TRUE;
 }
 
+Desk_bool wimp_handle_serial_connect_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	if (line_id < 0 || line_id >= line_configurations)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	debug_printf("wimp_handle_serial_connect_message: Line %d connected\n", line_id);
+
+	/* Update UI - show SERIAL in hostname column */
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
+		"SERIAL");
+
+	/* Reset timer for this line */
+	line_configuration[line_id].connectedtime = (int)clock();
+	line_configuration[line_id].timer = timer_set(100);
+
+	return Desk_bool_TRUE;
+}
+
+Desk_bool wimp_handle_serial_disconnect_message(Desk_event_pollblock *event, void *ref)
+{
+	int line_id;
+
+	Desk_UNUSED(ref);
+
+	if (event == NULL)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	line_id = event->data.message.data.words[0];
+	if (line_id < 0 || line_id >= line_configurations)
+	{
+		return Desk_bool_FALSE;
+	}
+
+	debug_printf("wimp_handle_serial_disconnect_message: Line %d disconnected\n", line_id);
+
+	/* Update UI - reset all columns */
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_HOSTNAME),
+		"----");
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_USER),
+		waiting_user);
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_ACTIVITY),
+		user_activity);
+	Desk_Icon_SetText(main_window,
+		main_window_icon_index(line_id, MAIN_WINDOW_COLUMN_TIMER),
+		"00:00:00");
+
+	/* Reset timer */
+	line_configuration[line_id].timer = 0;
+
+	return Desk_bool_TRUE;
+}
+
 /* *********************************************************************************************************************************************************************************** */
 /* *********************************************************************************************************************************************************************************** */
 /* Error Handling Functions                                                                                                                                                            */
@@ -1240,6 +1459,11 @@ static void free_line_icon_buffers(void)
 		{
 			free(line_configuration[i].icons.line_text);
 			line_configuration[i].icons.line_text = NULL;
+		}
+		if (line_configuration[i].icons.type_text != NULL)
+		{
+			free(line_configuration[i].icons.type_text);
+			line_configuration[i].icons.type_text = NULL;
 		}
 		if (line_configuration[i].icons.user_text != NULL)
 		{
@@ -1289,6 +1513,13 @@ int create_line_icons(void)
 	Desk_icon_createblock icon_create_block;
 	Desk_icon_handle icon_handle;
 
+	/* Guard against zero lines configured */
+	if (line_configurations <= 0)
+	{
+		debug_printf("create_line_icons: No lines configured, skipping icon creation");
+		return Desk_bool_TRUE;
+	}
+
 	icon_create_block.window=main_window;
 	y_base = -((MAIN_WINDOW_TOP_STATIC_ROWS * MAIN_WINDOW_ICON_HEIGHT) + MAIN_WINDOW_PADDING);
 		
@@ -1298,6 +1529,7 @@ int create_line_icons(void)
 		
 		/* Allocate all buffers for this line */
 		icons->line_text = malloc(25);
+		icons->type_text = malloc(8);
 		icons->user_text = malloc(sizeof(waiting_user));
 		icons->activity_text = malloc(sizeof(user_activity));
 		icons->hostname_text = malloc(MAIN_WINDOW_HOSTNAME_TEXT_LEN);
@@ -1307,7 +1539,8 @@ int create_line_icons(void)
 		icons->logon_text = malloc(1);
 		
 		/* Check allocations */
-		if (icons->line_text == NULL || icons->user_text == NULL ||
+		if (icons->line_text == NULL || icons->type_text == NULL ||
+		    icons->user_text == NULL ||
 		    icons->activity_text == NULL || icons->hostname_text == NULL ||
 		    icons->timer_text == NULL || icons->action_text == NULL ||
 		    icons->view_text == NULL || icons->logon_text == NULL)
@@ -1318,10 +1551,24 @@ int create_line_icons(void)
 		
 		/* Initialize buffers */
 		snprintf(icons->line_text, 25, "%d", current_line_configuration);
+		/* Set type text based on line type: IP=Telnet, BD=BlockDriver/Serial, LC=Local */
+		if (line_configuration[current_line_configuration].type == LINE_TYPE_LOCAL)
+		{
+			strcpy(icons->type_text, "LC");
+		}
+		else if (line_configuration[current_line_configuration].type == LINE_TYPE_SERIAL)
+		{
+			strcpy(icons->type_text, "BD");
+		}
+		else
+		{
+			strcpy(icons->type_text, "IP");
+		}
 		strncpy(icons->user_text, waiting_user, sizeof(waiting_user) - 1);
 		icons->user_text[sizeof(waiting_user) - 1] = '\0';
 		strncpy(icons->activity_text, user_activity, sizeof(user_activity) - 1);
 		icons->activity_text[sizeof(user_activity) - 1] = '\0';
+		/* Hostname starts empty - will be populated on connection */
 		strncpy(icons->hostname_text, "-----", MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1);
 		icons->hostname_text[MAIN_WINDOW_HOSTNAME_TEXT_LEN - 1] = '\0';
 		strcpy(icons->timer_text, "00:00:00");
@@ -1350,6 +1597,27 @@ int create_line_icons(void)
 		icon_create_block.icondata.data.indirecttext.buffer=line_configuration[current_line_configuration].line;
 		icon_create_block.icondata.data.indirecttext.validstring="R2";
 		icon_create_block.icondata.data.indirecttext.bufflen=25;
+
+		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
+
+		column_x = icon_create_block.icondata.workarearect.max.x + MAIN_WINDOW_COLUMN_GAP;
+
+		/* Type column (IP/BD/LC) */
+		icon_create_block.icondata.flags.value=0;
+		icon_create_block.icondata.workarearect.min.x=column_x;
+		icon_create_block.icondata.workarearect.max.x=column_x+MAIN_WINDOW_TYPE_COLUMN_WIDTH;
+		icon_create_block.icondata.flags.value = Desk_icon_TEXT |
+												Desk_icon_VCENTRE |
+												Desk_icon_HCENTRE |
+												Desk_icon_INDIRECTED |
+												Desk_icon_BORDER |
+												Desk_icon_FILLED |
+												(Desk_icon_FORECOLOUR*7) |
+												(Desk_icon_BACKCOLOUR*1) |
+												(Desk_icon_BUTTONTYPE*Desk_iconbtype_CLICK);
+		icon_create_block.icondata.data.indirecttext.buffer=icons->type_text;
+		icon_create_block.icondata.data.indirecttext.validstring="R2";
+		icon_create_block.icondata.data.indirecttext.bufflen=8;
 
 		Desk_Wimp_CreateIcon(&icon_create_block, &icon_handle);
 
@@ -1606,15 +1874,28 @@ void check_listener(void)
          }
       	}
 
-		/* Find a free line - check both socket AND local connection state */
-		while (socket_poll < line_configurations && 
-		       (line_configuration[socket_poll].socket != 0 || support_get_line_connected(socket_poll)))
+		/* Find a free TELNET line - skip serial and local lines */
+		while (socket_poll < line_configurations)
 		{
-			socket_poll++;
+			/* Skip non-telnet lines */
+			if (line_configuration[socket_poll].type != LINE_TYPE_TELNET)
+			{
+				socket_poll++;
+				continue;
+			}
+			/* Skip busy lines */
+			if (line_configuration[socket_poll].socket != 0 || support_get_line_connected(socket_poll))
+			{
+				socket_poll++;
+				continue;
+			}
+			/* Found a free telnet line */
+			break;
 		}
 
-		/* Only accept if we found a truly free line */
+		/* Only accept if we found a truly free telnet line */
 		if (socket_poll < line_configurations && 
+		    line_configuration[socket_poll].type == LINE_TYPE_TELNET &&
 		    line_configuration[socket_poll].socket == 0 && 
 		    !support_get_line_connected(socket_poll))
 		{
@@ -1742,6 +2023,8 @@ void check_socket(int line_id, int socket)
 void destroy_listener(void)
 {
 	int socket_poll = 0;
+
+	/* Note: Serial ports are managed by the standalone Serial app */
 
 	while (socket_poll < line_configurations)
 	{
@@ -2444,6 +2727,17 @@ void load_line_config(void)
 	char temp_botstopper[128] = "";
 	char temp_hello[256] = "";
 
+	/* Line type storage */
+	char temp_type[16] = "";
+	line_type_t temp_line_type = LINE_TYPE_TELNET;
+
+	/* Serial-specific storage */
+	char temp_driver[32] = "";
+	int temp_port = 0;
+	int temp_speed = 115200;
+	char temp_format[8] = "";
+	char temp_flow[16] = "";
+
 	debug_printf("load_line_config: Opening <Converse$Dir>.Config.Lines\n");
 
 	if ((line_config=fopen("<Converse$Dir>.Config.Lines","r"))==NULL)
@@ -2506,6 +2800,18 @@ void load_line_config(void)
 			temp_enabled[0] = '\0';
 			temp_botstopper[0] = '\0';
 			temp_hello[0] = '\0';
+
+			/* Reset line type storage */
+			temp_type[0] = '\0';
+			temp_line_type = LINE_TYPE_TELNET;
+
+			/* Reset serial-specific storage */
+			temp_driver[0] = '\0';
+			temp_port = 0;
+			temp_speed = 115200;
+			temp_format[0] = '\0';
+			temp_flow[0] = '\0';
+
 			in_block = 1;
 			block_count++;
 			debug_printf("load_line_config: Parsing block %d\n", block_count);
@@ -2522,12 +2828,32 @@ void load_line_config(void)
 				sanitize_string(temp_enabled);
 				sanitize_string(temp_botstopper);
 				sanitize_string(temp_hello);
+				sanitize_string(temp_type);
+				sanitize_string(temp_driver);
+				sanitize_string(temp_format);
+				sanitize_string(temp_flow);
+
+				/* Parse line type */
+				if (str_casecmp(temp_type, "serial") == 0)
+				{
+					temp_line_type = LINE_TYPE_SERIAL;
+				}
+				else if (str_casecmp(temp_type, "local") == 0)
+				{
+					temp_line_type = LINE_TYPE_LOCAL;
+				}
+				else
+				{
+					temp_line_type = LINE_TYPE_TELNET;
+				}
 
 				/* Only add line if enabled */
 				if (str_casecmp(temp_enabled, "yes") == 0)
 				{
-					debug_printf("load_line_config: Adding line %s (index %d) - ENABLED\n", 
-					             temp_line, line_configurations);
+					debug_printf("load_line_config: Adding line %s (index %d) type=%d - ENABLED\n", 
+					             temp_line, line_configurations, temp_line_type);
+
+					/* Basic config */
 					strncpy(line_configuration[line_configurations].line, temp_line, 
 					        sizeof(line_configuration[line_configurations].line) - 1);
 					line_configuration[line_configurations].line[sizeof(line_configuration[line_configurations].line) - 1] = '\0';
@@ -2540,6 +2866,29 @@ void load_line_config(void)
 					strncpy(line_configuration[line_configurations].hello, temp_hello, 
 					        sizeof(line_configuration[line_configurations].hello) - 1);
 					line_configuration[line_configurations].hello[sizeof(line_configuration[line_configurations].hello) - 1] = '\0';
+
+					/* Line type */
+					line_configuration[line_configurations].type = temp_line_type;
+
+					/* Always initialise driver to NULL */
+					line_configuration[line_configurations].driver = NULL;
+					line_configuration[line_configurations].driver_name[0] = '\0';
+
+					/* Serial-specific config */
+					if (temp_line_type == LINE_TYPE_SERIAL)
+					{
+						strncpy(line_configuration[line_configurations].driver_name, temp_driver,
+						        sizeof(line_configuration[line_configurations].driver_name) - 1);
+						line_configuration[line_configurations].driver_name[sizeof(line_configuration[line_configurations].driver_name) - 1] = '\0';
+						line_configuration[line_configurations].port_number = temp_port;
+						line_configuration[line_configurations].baud_rate = temp_speed;
+						line_configuration[line_configurations].word_format = serial_parse_word_format(temp_format);
+						line_configuration[line_configurations].flow_control = serial_parse_flow_control(temp_flow);
+						line_configuration[line_configurations].carrier_detect = 0;
+						debug_printf("load_line_config:   Serial: driver=%s port=%d speed=%d\n",
+						             temp_driver, temp_port, temp_speed);
+					}
+
 					line_configurations++;
 				}
 				else
@@ -2581,6 +2930,40 @@ void load_line_config(void)
 			strncpy(temp_hello, temporary_line, sizeof(temp_hello) - 1);
 			temp_hello[sizeof(temp_hello) - 1] = '\0';
 			debug_printf("load_line_config:   hello = '%s'\n", temp_hello);
+		}
+		else if (strcmp(config_line,"type")==0)
+		{
+			strncpy(temp_type, temporary_line, sizeof(temp_type) - 1);
+			temp_type[sizeof(temp_type) - 1] = '\0';
+			debug_printf("load_line_config:   type = '%s'\n", temp_type);
+		}
+		else if (strcmp(config_line,"driver")==0)
+		{
+			strncpy(temp_driver, temporary_line, sizeof(temp_driver) - 1);
+			temp_driver[sizeof(temp_driver) - 1] = '\0';
+			debug_printf("load_line_config:   driver = '%s'\n", temp_driver);
+		}
+		else if (strcmp(config_line,"port")==0)
+		{
+			temp_port = atoi(temporary_line);
+			debug_printf("load_line_config:   port = %d\n", temp_port);
+		}
+		else if (strcmp(config_line,"speed")==0)
+		{
+			temp_speed = atoi(temporary_line);
+			debug_printf("load_line_config:   speed = %d\n", temp_speed);
+		}
+		else if (strcmp(config_line,"format")==0)
+		{
+			strncpy(temp_format, temporary_line, sizeof(temp_format) - 1);
+			temp_format[sizeof(temp_format) - 1] = '\0';
+			debug_printf("load_line_config:   format = '%s'\n", temp_format);
+		}
+		else if (strcmp(config_line,"flow")==0)
+		{
+			strncpy(temp_flow, temporary_line, sizeof(temp_flow) - 1);
+			temp_flow[sizeof(temp_flow) - 1] = '\0';
+			debug_printf("load_line_config:   flow = '%s'\n", temp_flow);
 		}
 	}
 
@@ -2643,6 +3026,8 @@ int main(void) {
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_CONTROL, Desk_event_ANY, wimp_handle_line_control_message, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_REGISTER, Desk_event_ANY, wimp_handle_line_register_message, NULL);
 	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_USER, Desk_event_ANY, wimp_handle_line_user_message, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_SERIAL_CONNECT, Desk_event_ANY, wimp_handle_serial_connect_message, NULL);
+	Desk_EventMsg_Claim((Desk_message_action)MESSAGE_SERIAL_DISCONNECT, Desk_event_ANY, wimp_handle_serial_disconnect_message, NULL);
 	Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY, Desk_Handler_NullRedraw, NULL);
 	Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY, Desk_Handler_OpenWindow, NULL);
   	Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY, wimp_handle_window_close, NULL);
@@ -2711,7 +3096,9 @@ int main(void) {
 		for (i = 0; i < line_configurations; i++)
 		{
 			support_set_line_configured(i, 1);
+			support_set_line_type(i, (int)line_configuration[i].type);
 			support_push_line_config(i);
+			support_push_serial_config(i);
 		}
 	}
 	waiting_update("Starting line tasks...");
@@ -2720,6 +3107,8 @@ int main(void) {
 	launch_ftn_task();
 	waiting_update("Starting web server...");
 	launch_web_task();
+	waiting_update("Starting serial handler...");
+	launch_serial_task();
 
 	waiting_update("Starting network listener...");
 	create_line_icons();

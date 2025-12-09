@@ -1,0 +1,497 @@
+/* ******************************************************************************************************************************************************** */
+/* Serial Handler - Main Module                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+/* Standard ANSI Includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+
+/* OS Includes */
+#include "kernel.h"
+#include "swis.h"
+
+/* Desk Includes */
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.EventMsg.h"
+#include "C:Desk.Resource.h"
+#include "C:Desk.Handler.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Menu.h"
+#include "C:Desk.Screen.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.Msgs.h"
+#include "C:Desk.Template.h"
+#include "C:Desk.Dialog.h"
+#include "C:Desk.Dialog2.h"
+#include "C:Desk.Error.h"
+
+/* Our Includes */
+#include "main.h"
+#include "serial.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Global Variables                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+WIMP_STATE wimp;
+SERIAL_LINE_STATE serial_lines[SERIAL_MAX_LINES];
+int serial_line_count = 0;
+
+static Desk_dialog2_block *proginfo_window;
+
+/* Menu indices */
+enum
+{
+    ICONBAR_MENU_INFO = 0,
+    ICONBAR_MENU_QUIT
+};
+
+/* Forward declarations for handlers used before definition */
+static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref);
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static void display_error(const char *message)
+{
+    Desk_Error_Report(1, (char *)message);
+}
+
+void serial_log(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+    _kernel_swi_regs regs;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    regs.r[0] = FILER_LOG_CMD_SERIAL;
+    regs.r[1] = (int)buffer;
+    _kernel_swi(SWI_FILER_LOGGING, &regs, &regs);
+
+    debug_printf("Serial: %s", buffer);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe Helper Functions                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+int pipes_input_status(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_STATUS, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+int pipes_input_write_block(int line_id, const char *buffer, int length)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = (int)buffer;
+    regs.r[2] = length;
+    if (_kernel_swi(SWI_CONVERSE_PIPES_INPUT_WRITE_BLOCK, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+int pipes_output_read_block(int line_id, char *buffer, int length)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = (int)buffer;
+    regs.r[2] = length;
+    if (_kernel_swi(SWI_CONVERSE_PIPES_OUTPUT_READ_BLOCK, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+void pipes_reset_line(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    _kernel_swi(SWI_CONVERSE_PIPES_RESET_STATE, &regs, &regs);
+    regs.r[0] = line_id;
+    _kernel_swi(SWI_CONVERSE_PIPES_CLEAR_INPUT, &regs, &regs);
+    regs.r[0] = line_id;
+    _kernel_swi(SWI_CONVERSE_PIPES_CLEAR_OUTPUT, &regs, &regs);
+}
+
+void pipes_send_control_command(int line_id, char command)
+{
+    unsigned char frame[3];
+
+    frame[0] = PIPE_CONTROL_TOKEN;
+    frame[1] = (unsigned char)command;
+    frame[2] = PIPE_CONTROL_TOKEN;
+    pipes_input_write_block(line_id, (const char *)frame, sizeof(frame));
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Support Module Helper Functions                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void support_set_line_connected(int line_id, int connected)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINE_REASON_SET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINE_FIELD_CONNECTED;
+    regs.r[3] = connected;
+    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+void support_set_line_hostname(int line_id, const char *hostname)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINE_REASON_SET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINE_FIELD_HOSTNAME;
+    regs.r[3] = (int)hostname;
+    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+void support_set_line_connect_time(int line_id, time_t connect_time)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINE_REASON_SET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINE_FIELD_CONNECT_TIME;
+    regs.r[3] = (int)connect_time;
+    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
+int support_get_line_type(int line_id)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = LINE_REASON_GET;
+    regs.r[1] = line_id;
+    regs.r[2] = LINE_FIELD_TYPE;
+    if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+int support_get_serial_config(int line_id, SERIAL_LINE_CONFIG *config)
+{
+    _kernel_swi_regs regs;
+    SERIAL_LINE_CONFIG *src;
+
+    if (config == NULL)
+    {
+        return -1;
+    }
+
+    regs.r[0] = 0;  /* SERIAL_CONFIG_REASON_GET */
+    regs.r[1] = line_id;
+    if (_kernel_swi(SWI_CONVERSEBBS_SERIAL_CONFIG, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    src = (SERIAL_LINE_CONFIG *)regs.r[0];
+    if (src == NULL)
+    {
+        return -1;
+    }
+
+    memcpy(config, src, sizeof(SERIAL_LINE_CONFIG));
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp Message Sending                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+void send_serial_connect_message(int line_id)
+{
+    Desk_message_block msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.header.size = 24;
+    msg.header.yourref = 0;
+    msg.header.action = MESSAGE_SERIAL_CONNECT;
+    msg.data.words[0] = line_id;
+
+    Desk_Wimp_SendMessage(Desk_event_SEND, &msg, 0, 0);
+
+    debug_printf("serial: Sent MESSAGE_SERIAL_CONNECT for line %d", line_id);
+}
+
+void send_serial_disconnect_message(int line_id)
+{
+    Desk_message_block msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.header.size = 24;
+    msg.header.yourref = 0;
+    msg.header.action = MESSAGE_SERIAL_DISCONNECT;
+    msg.data.words[0] = line_id;
+
+    Desk_Wimp_SendMessage(Desk_event_SEND, &msg, 0, 0);
+
+    debug_printf("serial: Sent MESSAGE_SERIAL_DISCONNECT for line %d", line_id);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Line Configuration Loading                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+static void load_serial_lines(void)
+{
+    int line_id;
+    SERIAL_LINE_CONFIG config;
+    int line_type;
+
+    serial_line_count = 0;
+    memset(serial_lines, 0, sizeof(serial_lines));
+
+    debug_printf("serial: Scanning for serial lines...");
+
+    /* Scan all possible lines looking for serial types */
+    for (line_id = 0; line_id < SERIAL_MAX_LINES; line_id++)
+    {
+        /* Check if this line is configured as serial */
+        line_type = support_get_line_type(line_id);
+        
+        if (line_type == LINE_TYPE_SERIAL)
+        {
+            /* Get the serial config for this line */
+            if (support_get_serial_config(line_id, &config) == 0 && config.enabled)
+            {
+                debug_printf("serial: Found serial line %d: driver=%s port=%d speed=%d",
+                             line_id, config.driver_name, config.port_number, config.baud_rate);
+
+                serial_lines[serial_line_count].line_id = line_id;
+                serial_lines[serial_line_count].enabled = 1;
+                serial_lines[serial_line_count].driver = NULL;
+                serial_lines[serial_line_count].port_number = config.port_number;
+                serial_lines[serial_line_count].baud_rate = config.baud_rate;
+                serial_lines[serial_line_count].word_format = config.word_format;
+                serial_lines[serial_line_count].flow_control = config.flow_control;
+                serial_lines[serial_line_count].carrier_detect = 0;
+                serial_lines[serial_line_count].last_activity = 0;
+                strncpy(serial_lines[serial_line_count].driver_name, config.driver_name,
+                        sizeof(serial_lines[serial_line_count].driver_name) - 1);
+                serial_lines[serial_line_count].driver_name[sizeof(serial_lines[serial_line_count].driver_name) - 1] = '\0';
+
+                serial_line_count++;
+            }
+        }
+    }
+
+    debug_printf("serial: Found %d serial lines", serial_line_count);
+    serial_log("Found %d serial lines", serial_line_count);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Wimp Event Handlers                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_bool handle_iconbar_click(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+
+    Desk_UNUSED(event);
+
+    if (event->data.mouse.button.data.menu)
+    {
+        Desk_Menu_Show(w->iconbar_menu, event->data.mouse.pos.x, -1);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+
+    switch (event->data.selection[0])
+    {
+        case ICONBAR_MENU_QUIT:
+            w->quit = Desk_bool_TRUE;
+            break;
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_null_event(Desk_event_pollblock *event, void *ref)
+{
+    int i;
+
+    Desk_UNUSED(event);
+    Desk_UNUSED(ref);
+
+    /* Poll all serial lines */
+    for (i = 0; i < serial_line_count; i++)
+    {
+        serial_poll(i);
+    }
+
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_broadcast_message(Desk_event_pollblock *event, void *ref)
+{
+    WIMP_STATE *w = (WIMP_STATE *)ref;
+    int reason;
+
+    if (event == NULL)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    reason = event->data.message.data.words[0];
+
+    /* Reason 0 = quit */
+    if (reason == 0)
+    {
+        debug_printf("serial: Received broadcast quit message");
+        w->quit = Desk_bool_TRUE;
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_open_proginfo(Desk_event_pollblock *event, void *ref)
+{
+    if (event->data.message.data.menuwarn.selection[0] != ICONBAR_MENU_INFO)
+    {
+        return Desk_bool_FALSE;
+    }
+
+    Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+
+    return Desk_bool_TRUE;
+}
+
+static void poll_idle(void)
+{
+    _kernel_swi_regs regs;
+    Desk_event_pollblock event;
+    int earliest;
+
+    /* Get current monotonic time and add delay */
+    _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+    earliest = regs.r[0] + SERIAL_POLL_DELAY;
+
+    /* Poll with idle time */
+    Desk_Wimp_PollIdle(Desk_Event_mask, &event, earliest);
+    Desk_Event_Process(&event);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Main Entry Point                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+int main(void)
+{
+    int i;
+    char menu_title[32];
+    char menu_items[64];
+
+    /* Initialise Wimp state */
+    wimp.quit = Desk_bool_FALSE;
+
+    /* Initialise debug */
+    debug_initialise();
+    debug_printf("serial: Starting Serial Handler");
+
+    /* Initialise DeskLib */
+    Desk_Resource_Initialise("ConverseRes");
+    Desk_Msgs_LoadFile("Messages");
+
+    Desk_Event_Initialise("Serial");
+    Desk_EventMsg_Initialise();
+    Desk_Screen_CacheModeInfo();
+
+    /* Set up event handlers */
+    Desk_EventMsg_Claim(Desk_message_MODECHANGE, Desk_event_ANY, Desk_Handler_ModeChange, NULL);
+    Desk_EventMsg_Claim((Desk_message_action)MESSAGE_LINE_BROADCAST, Desk_event_ANY, handle_broadcast_message, &wimp);
+    Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY, handle_null_event, NULL);
+    Desk_Event_Claim(Desk_event_MENU, Desk_event_ANY, Desk_event_ANY, handle_menu_selection, &wimp);
+
+    /* Create iconbar icon */
+    wimp.iconbar_icon = Desk_Icon_BarIcon("!serial", Desk_iconbar_RIGHT);
+    Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon,
+                     handle_iconbar_click, &wimp);
+ /* Create iconbar menu */
+    Desk_Msgs_Lookup("ser.ibmt", menu_title, sizeof(menu_title));
+    Desk_Msgs_Lookup("ser.ibm", menu_items, sizeof(menu_items));
+
+    if (menu_title[0] == '\0')
+    {
+        strcpy(menu_title, "Serial");
+    }
+    if (menu_items[0] == '\0')
+    {
+        strcpy(menu_items, "Info,Quit");
+    }
+
+    wimp.iconbar_menu = Desk_Menu_New(menu_title, menu_items);
+
+    /* Load templates and create proginfo window */
+    Desk_Template_Initialise();
+    Desk_Template_UseOutlineFonts();
+    Desk_Template_LoadFile("Templates");
+
+    proginfo_window = Desk_Dialog2_CreateDialogBlock("proginfo", -1, -1, NULL, NULL, NULL);
+    Desk_Menu_Warn(wimp.iconbar_menu, ICONBAR_MENU_INFO, Desk_bool_TRUE, handle_open_proginfo, (void *)proginfo_window);
+
+    /* Load serial line configuration from Support module */
+    load_serial_lines();
+
+    /* Initialise all serial ports */
+    serial_init_all();
+
+    serial_log("Serial handler started with %d lines", serial_line_count);
+
+    /* Main event loop */
+    while (wimp.quit == Desk_bool_FALSE)
+    {
+        poll_idle();
+    }
+
+    /* Shutdown */
+    serial_close_all();
+    serial_log("Serial handler stopped");
+
+    debug_printf("serial: Serial Handler shutdown complete");
+    debug_finalise();
+
+    Desk_Template_ClearAll();
+
+    return 0;
+}

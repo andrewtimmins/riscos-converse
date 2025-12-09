@@ -16,8 +16,8 @@ needlogin   yes
 closed      no
 pager       yes
 
-ftnmail    yes
-webserver  yes
+ftnmail     yes
+webserver   yes
 
 anykey      <Converse$Dir>.Resources.System.AnyKey
 protocol    <Converse$Dir>.Resources.System.Protocol

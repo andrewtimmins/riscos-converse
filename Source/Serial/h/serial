@@ -1,0 +1,161 @@
+/* ******************************************************************************************************************************************************** */
+/* Serial Handler - BlockDriver Support Header                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef SERIAL_H
+#define SERIAL_H
+
+/* ============================================================================
+ * BlockDriver Function Codes
+ * Per BlockDriver Specification v2.31 from xat.nl
+ * ============================================================================ */
+
+#define DRIVER_PUTBYTE        0   /* Write single byte */
+#define DRIVER_GETBYTE        1   /* Read single byte (-1 if none) */
+#define DRIVER_PUTBLOCK       2   /* Write block of data */
+#define DRIVER_GETBLOCK       3   /* Read block of data */
+#define DRIVER_CHECKTX        4   /* Bytes free in TX buffer */
+#define DRIVER_CHECKRX        5   /* Bytes waiting in RX buffer */
+#define DRIVER_FLUSHTX        6   /* Flush TX buffer */
+#define DRIVER_FLUSHRX        7   /* Flush RX buffer */
+#define DRIVER_CONTROLLINES   8   /* Set modem control lines (DTR, RTS) */
+#define DRIVER_MODEMCONTROL   9   /* Read modem status (CTS, DSR, RI, DCD) */
+#define DRIVER_RXERRORS      10   /* Read/clear RX error flags */
+#define DRIVER_BREAK         11   /* Send break signal */
+#define DRIVER_EXAMINE       12   /* Examine byte without removing */
+#define DRIVER_TXSPEED       13   /* Set TX baud rate */
+#define DRIVER_RXSPEED       14   /* Set RX baud rate */
+#define DRIVER_WORDFORMAT    15   /* Set data bits, parity, stop bits */
+#define DRIVER_FLOWCONTROL   16   /* Set flow control mode */
+#define DRIVER_INITIALISE    17   /* Open/initialise port */
+#define DRIVER_CLOSEDOWN     18   /* Close port */
+#define DRIVER_POLL          19   /* Poll driver (cooperative multitasking) */
+#define DRIVER_SELECT        20   /* Select port (multi-port drivers) */
+
+/* ============================================================================
+ * Modem Control Line Bits (from DRIVER_MODEMCONTROL / ReadControlLines)
+ * Per BlockDriver Specification v2.31 from xat.nl
+ * ============================================================================ */
+
+#define MODEM_CTS             0x01  /* Bit 0: Clear To Send */
+#define MODEM_DSR             0x02  /* Bit 1: Data Set Ready */
+#define MODEM_RI              0x04  /* Bit 2: Ring Indicator */
+#define MODEM_DCD             0x08  /* Bit 3: Data Carrier Detect */
+
+/* ============================================================================
+ * Word Format Encoding (for DRIVER_WORDFORMAT / DataFormat)
+ * Per BlockDriver Specification v2.31:
+ *   Bits 0-1 = data length (0=8, 1=7, 2=6, 3=5)
+ *   Bit 2    = stop bits (0=1 stop, 1=2 stop)
+ *   Bit 3    = parity enable (0=none, 1=enabled)
+ *   Bit 4    = parity type (0=odd, 1=even) - only if bit 3 set
+ * ============================================================================ */
+
+#define WORDFORMAT_8N1        0x00  /* 8 data, no parity, 1 stop */
+#define WORDFORMAT_8N2        0x04  /* 8 data, no parity, 2 stop */
+#define WORDFORMAT_7N1        0x01  /* 7 data, no parity, 1 stop */
+#define WORDFORMAT_7N2        0x05  /* 7 data, no parity, 2 stop */
+#define WORDFORMAT_8E1        0x18  /* 8 data, even parity, 1 stop */
+#define WORDFORMAT_8O1        0x08  /* 8 data, odd parity, 1 stop */
+#define WORDFORMAT_7E1        0x19  /* 7 data, even parity, 1 stop */
+#define WORDFORMAT_7O1        0x09  /* 7 data, odd parity, 1 stop */
+
+/* ============================================================================
+ * Flow Control Modes (for DRIVER_FLOWCONTROL / Handshaking)
+ * Per BlockDriver Specification v2.31:
+ *   0 = no handshaking
+ *   1 = RTS/CTS
+ *   2 = XON/XOFF
+ *   3 = DTR/DSR
+ * ============================================================================ */
+
+#define FLOWCONTROL_NONE      0x00  /* No handshaking */
+#define FLOWCONTROL_RTSCTS    0x01  /* RTS/CTS hardware flow control */
+#define FLOWCONTROL_XONXOFF   0x02  /* XON/XOFF software flow control */
+#define FLOWCONTROL_DTRDSR    0x03  /* DTR/DSR handshaking */
+
+/* ============================================================================
+ * Serial Configuration
+ * ============================================================================ */
+
+#define SERIAL_MAX_DRIVER_NAME  32
+#define SERIAL_DRIVER_BLOCK_SIZE 1024  /* Storage for driver binary (ints) */
+
+#define PIPE_TRANSFER_CHUNK     1536
+#define PIPES_BUFFER_CAPACITY   4096
+
+/* ============================================================================
+ * Function Prototypes
+ * ============================================================================ */
+
+/*
+ * Load a BlockDriver by name
+ * 
+ * name:       Driver name (e.g., "Internal32", "SerialUSB")
+ * driver_out: Pointer to receive the driver function pointer
+ * 
+ * Returns: 0 on success, -1 on failure
+ */
+int serial_load_driver(const char *name, int (**driver_out)(int, ...));
+
+/*
+ * Parse word format string to driver value
+ */
+int serial_parse_word_format(const char *format);
+
+/*
+ * Parse flow control string to driver value
+ */
+int serial_parse_flow_control(const char *flow);
+
+/*
+ * Initialise a serial port for a line
+ */
+int serial_init_port(int line_index);
+
+/*
+ * Close a serial port
+ */
+void serial_close_port(int line_index);
+
+/*
+ * Poll a serial line - check carrier, pump data
+ */
+void serial_poll(int line_index);
+
+/*
+ * Check carrier detect state
+ */
+int serial_check_carrier(int line_index);
+
+/*
+ * Handle new serial connection (DCD rising edge)
+ */
+void serial_handle_connect(int line_index);
+
+/*
+ * Handle serial disconnection (DCD falling edge)
+ */
+void serial_handle_disconnect(int line_index);
+
+/*
+ * Pump data from serial port to pipe
+ */
+void serial_pump_to_pipe(int line_index);
+
+/*
+ * Pump data from pipe to serial port
+ */
+void serial_pump_from_pipe(int line_index);
+
+/*
+ * Initialise all serial lines on startup
+ */
+void serial_init_all(void);
+
+/*
+ * Close all serial lines on shutdown
+ */
+void serial_close_all(void);
+
+#endif /* SERIAL_H */

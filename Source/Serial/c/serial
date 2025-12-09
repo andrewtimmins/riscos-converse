@@ -1,0 +1,601 @@
+/* ******************************************************************************************************************************************************** */
+/* Serial Handler - BlockDriver Support                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "main.h"
+#include "serial.h"
+#include "debug.h"
+
+/* ============================================================================
+ * Static Data
+ * ============================================================================ */
+
+/* Storage for loaded BlockDriver binaries */
+static int driver_block[SERIAL_DRIVER_BLOCK_SIZE];
+static int driver_loaded = 0;
+
+/* ============================================================================
+ * BlockDriver Loading
+ * ============================================================================ */
+
+int serial_load_driver(const char *name, int (**driver_out)(int, ...))
+{
+    FILE *drv;
+    long len;
+    char path[256];
+
+    if (name == NULL || driver_out == NULL)
+    {
+        return -1;
+    }
+
+    *driver_out = NULL;
+
+    /* Build path to driver file */
+    snprintf(path, sizeof(path), "<SerialDev$Path>Modules.%s.Driver", name);
+    
+    debug_printf("serial: Loading driver from %s", path);
+
+    drv = fopen(path, "rb");
+    if (drv == NULL)
+    {
+        debug_printf("serial: Failed to open driver file");
+        return -1;
+    }
+
+    /* Get file length */
+    fseek(drv, 0, SEEK_END);
+    len = ftell(drv);
+    fseek(drv, 0, SEEK_SET);
+
+    if (len > (long)(SERIAL_DRIVER_BLOCK_SIZE * sizeof(int)))
+    {
+        debug_printf("serial: Driver too large (%ld bytes)", len);
+        fclose(drv);
+        return -1;
+    }
+
+    /* Load driver into memory */
+    if (fread(driver_block, 1, len, drv) != (size_t)len)
+    {
+        debug_printf("serial: Failed to read driver");
+        fclose(drv);
+        return -1;
+    }
+    fclose(drv);
+
+    /* The driver entry point is at offset 0 */
+    *driver_out = (int (*)(int, ...))driver_block;
+    driver_loaded = 1;
+
+    debug_printf("serial: Driver loaded successfully (%ld bytes)", len);
+    
+    return 0;
+}
+
+/* ============================================================================
+ * Port Configuration
+ * ============================================================================ */
+
+int serial_parse_word_format(const char *format)
+{
+    if (format == NULL)
+    {
+        return WORDFORMAT_8N1;
+    }
+
+    if (strcmp(format, "8N1") == 0 || strcmp(format, "8n1") == 0)
+    {
+        return WORDFORMAT_8N1;
+    }
+    if (strcmp(format, "8N2") == 0 || strcmp(format, "8n2") == 0)
+    {
+        return WORDFORMAT_8N2;
+    }
+    if (strcmp(format, "8E1") == 0 || strcmp(format, "8e1") == 0)
+    {
+        return WORDFORMAT_8E1;
+    }
+    if (strcmp(format, "8O1") == 0 || strcmp(format, "8o1") == 0)
+    {
+        return WORDFORMAT_8O1;
+    }
+    if (strcmp(format, "7E1") == 0 || strcmp(format, "7e1") == 0)
+    {
+        return WORDFORMAT_7E1;
+    }
+    if (strcmp(format, "7O1") == 0 || strcmp(format, "7o1") == 0)
+    {
+        return WORDFORMAT_7O1;
+    }
+    if (strcmp(format, "7N1") == 0 || strcmp(format, "7n1") == 0)
+    {
+        return WORDFORMAT_7N1;
+    }
+    if (strcmp(format, "7N2") == 0 || strcmp(format, "7n2") == 0)
+    {
+        return WORDFORMAT_7N2;
+    }
+
+    return WORDFORMAT_8N1;
+}
+
+int serial_parse_flow_control(const char *flow)
+{
+    if (flow == NULL)
+    {
+        return FLOWCONTROL_RTSCTS;
+    }
+
+    if (strcmp(flow, "none") == 0 || strcmp(flow, "NONE") == 0)
+    {
+        return FLOWCONTROL_NONE;
+    }
+    if (strcmp(flow, "xonxoff") == 0 || strcmp(flow, "XONXOFF") == 0 ||
+        strcmp(flow, "xon") == 0 || strcmp(flow, "software") == 0)
+    {
+        return FLOWCONTROL_XONXOFF;
+    }
+    if (strcmp(flow, "rtscts") == 0 || strcmp(flow, "RTSCTS") == 0 ||
+        strcmp(flow, "hardware") == 0 || strcmp(flow, "cts") == 0 ||
+        strcmp(flow, "rts") == 0 || strcmp(flow, "RTS") == 0)
+    {
+        return FLOWCONTROL_RTSCTS;
+    }
+    if (strcmp(flow, "dtrdsr") == 0 || strcmp(flow, "DTRDSR") == 0 ||
+        strcmp(flow, "dtr") == 0 || strcmp(flow, "DTR") == 0)
+    {
+        return FLOWCONTROL_DTRDSR;
+    }
+
+    return FLOWCONTROL_RTSCTS;
+}
+
+/* ============================================================================
+ * Port Initialisation
+ * ============================================================================ */
+
+int serial_init_port(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    int result;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return -1;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        debug_printf("serial: Line index %d has no driver loaded", line_index);
+        return -1;
+    }
+
+    debug_printf("serial: Initialising port %d for line %d", port, line->line_id);
+
+    /* Initialise the port */
+    result = (*driver)(DRIVER_INITIALISE, port);
+    if (result != 0)
+    {
+        debug_printf("serial: DRIVER_INITIALISE failed with %d", result);
+        return -1;
+    }
+
+    /* Set baud rate */
+    (*driver)(DRIVER_TXSPEED, port, line->baud_rate);
+    (*driver)(DRIVER_RXSPEED, port, line->baud_rate);
+    debug_printf("serial: Set baud rate to %d", line->baud_rate);
+
+    /* Set word format */
+    (*driver)(DRIVER_WORDFORMAT, port, line->word_format);
+    debug_printf("serial: Set word format to %d", line->word_format);
+
+    /* Set flow control */
+    (*driver)(DRIVER_FLOWCONTROL, port, line->flow_control);
+    debug_printf("serial: Set flow control to %d", line->flow_control);
+
+    /* Flush any stale data */
+    (*driver)(DRIVER_FLUSHRX, port);
+    (*driver)(DRIVER_FLUSHTX, port);
+
+    /* Initialise carrier detect state */
+    line->carrier_detect = 0;
+
+    debug_printf("serial: Port %d initialised successfully", port);
+    
+    return 0;
+}
+
+void serial_close_port(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        return;
+    }
+
+    debug_printf("serial: Closing port %d for line %d", port, line->line_id);
+
+    (*driver)(DRIVER_CLOSEDOWN, port);
+}
+
+/* ============================================================================
+ * Carrier Detection
+ * ============================================================================ */
+
+int serial_check_carrier(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    int modem_status;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return 0;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        return 0;
+    }
+
+    modem_status = (*driver)(DRIVER_MODEMCONTROL, port);
+    
+    return (modem_status & MODEM_DCD) ? 1 : 0;
+}
+
+/* ============================================================================
+ * Connection Handling
+ * ============================================================================ */
+
+void serial_handle_connect(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+
+    debug_printf("serial: Line %d - carrier detected (DCD rise)", line->line_id);
+    serial_log("Line %d: Carrier detected", line->line_id);
+
+    /* Reset pipes and send connect frame */
+    pipes_reset_line(line->line_id);
+    pipes_send_control_command(line->line_id, PIPE_CONTROL_CONNECT);
+
+    /* Update line state */
+    line->last_activity = clock();
+
+    /* Update Support module */
+    support_set_line_connected(line->line_id, 1);
+    support_set_line_hostname(line->line_id, "SERIAL");
+    support_set_line_connect_time(line->line_id, time(NULL));
+
+    /* Send Wimp message to Server */
+    send_serial_connect_message(line->line_id);
+}
+
+void serial_handle_disconnect(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    debug_printf("serial: Line %d - carrier lost (DCD fall)", line->line_id);
+    serial_log("Line %d: Carrier lost", line->line_id);
+
+    /* Send disconnect frame */
+    pipes_send_control_command(line->line_id, PIPE_CONTROL_DISCONNECT);
+
+    /* Flush buffers */
+    if (driver != NULL)
+    {
+        (*driver)(DRIVER_FLUSHRX, port);
+        (*driver)(DRIVER_FLUSHTX, port);
+    }
+
+    /* Update line state */
+    line->last_activity = 0;
+
+    /* Update Support module */
+    support_set_line_connected(line->line_id, 0);
+
+    /* Send Wimp message to Server */
+    send_serial_disconnect_message(line->line_id);
+}
+
+/* ============================================================================
+ * Data Pumping
+ * ============================================================================ */
+
+void serial_pump_to_pipe(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    char buffer[PIPE_TRANSFER_CHUNK];
+    int rx_waiting;
+    int pipe_free;
+    int to_read;
+    int read_bytes;
+    int iteration = 0;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        return;
+    }
+
+    while (iteration < 4)
+    {
+        /* Check how much data is waiting in serial RX buffer */
+        rx_waiting = (*driver)(DRIVER_CHECKRX, port);
+        if (rx_waiting <= 0)
+        {
+            return;
+        }
+
+        /* Check how much space in pipe */
+        pipe_free = PIPES_BUFFER_CAPACITY - pipes_input_status(line->line_id);
+        if (pipe_free <= 0)
+        {
+            return;
+        }
+
+        /* Calculate how much to transfer */
+        to_read = rx_waiting;
+        if (to_read > pipe_free)
+        {
+            to_read = pipe_free;
+        }
+        if (to_read > PIPE_TRANSFER_CHUNK)
+        {
+            to_read = PIPE_TRANSFER_CHUNK;
+        }
+
+        /* Read from serial */
+        read_bytes = (*driver)(DRIVER_GETBLOCK, port, buffer, to_read);
+        if (read_bytes <= 0)
+        {
+            return;
+        }
+
+        /* Write to pipe */
+        pipes_input_write_block(line->line_id, buffer, read_bytes);
+        line->last_activity = clock();
+
+        if (read_bytes < to_read)
+        {
+            break;
+        }
+
+        iteration++;
+    }
+}
+
+void serial_pump_from_pipe(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    char buffer[PIPE_TRANSFER_CHUNK];
+    int tx_free;
+    int copied;
+    int written;
+    int loops = 0;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        return;
+    }
+
+    while (loops < 4)
+    {
+        /* Check how much space in serial TX buffer */
+        tx_free = (*driver)(DRIVER_CHECKTX, port);
+        if (tx_free <= 0)
+        {
+            return;
+        }
+
+        if (tx_free > PIPE_TRANSFER_CHUNK)
+        {
+            tx_free = PIPE_TRANSFER_CHUNK;
+        }
+
+        /* Read from pipe */
+        copied = pipes_output_read_block(line->line_id, buffer, tx_free);
+        if (copied <= 0)
+        {
+            return;
+        }
+
+        /* Write to serial */
+        written = (*driver)(DRIVER_PUTBLOCK, port, buffer, copied);
+        if (written <= 0)
+        {
+            return;
+        }
+
+        line->last_activity = clock();
+
+        if (copied < tx_free)
+        {
+            break;
+        }
+
+        loops++;
+    }
+}
+
+/* ============================================================================
+ * Main Poll Function
+ * ============================================================================ */
+
+void serial_poll(int line_index)
+{
+    SERIAL_LINE_STATE *line;
+    int (*driver)(int, ...);
+    int port;
+    int carrier;
+
+    if (line_index < 0 || line_index >= serial_line_count)
+    {
+        return;
+    }
+
+    line = &serial_lines[line_index];
+
+    if (!line->enabled)
+    {
+        return;
+    }
+
+    driver = line->driver;
+    port = line->port_number;
+
+    if (driver == NULL)
+    {
+        return;
+    }
+
+    /* Call driver poll for cooperative multitasking */
+    (*driver)(DRIVER_POLL, port);
+
+    /* Check carrier detect state */
+    carrier = serial_check_carrier(line_index);
+
+    /* Handle carrier state changes */
+    if (carrier && !line->carrier_detect)
+    {
+        /* Rising edge - new connection */
+        line->carrier_detect = 1;
+        serial_handle_connect(line_index);
+    }
+    else if (!carrier && line->carrier_detect)
+    {
+        /* Falling edge - disconnection */
+        line->carrier_detect = 0;
+        serial_handle_disconnect(line_index);
+    }
+
+    /* If connected, pump data */
+    if (line->carrier_detect)
+    {
+        serial_pump_to_pipe(line_index);
+        serial_pump_from_pipe(line_index);
+    }
+}
+
+/* ============================================================================
+ * Initialisation / Shutdown
+ * ============================================================================ */
+
+void serial_init_all(void)
+{
+    int i;
+
+    debug_printf("serial: Initialising all serial lines (%d configured)", serial_line_count);
+    serial_log("Initialising %d serial lines", serial_line_count);
+
+    for (i = 0; i < serial_line_count; i++)
+    {
+        if (serial_lines[i].enabled)
+        {
+            /* Load driver if not already loaded */
+            if (serial_lines[i].driver == NULL &&
+                serial_lines[i].driver_name[0] != '\0')
+            {
+                serial_load_driver(serial_lines[i].driver_name,
+                                   &serial_lines[i].driver);
+            }
+
+            /* Initialise port */
+            if (serial_lines[i].driver != NULL)
+            {
+                serial_init_port(i);
+            }
+        }
+    }
+
+    debug_printf("serial: Serial initialisation complete");
+}
+
+void serial_close_all(void)
+{
+    int i;
+
+    debug_printf("serial: Closing all serial lines");
+    serial_log("Shutting down serial handler");
+
+    for (i = 0; i < serial_line_count; i++)
+    {
+        if (serial_lines[i].enabled)
+        {
+            serial_close_port(i);
+        }
+    }
+
+    debug_printf("serial: Serial shutdown complete");
+}

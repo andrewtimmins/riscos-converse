@@ -1,0 +1,156 @@
+/* ******************************************************************************************************************************************************** */
+/* Serial Handler - Main Header                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef MAIN_H
+#define MAIN_H
+
+#include <time.h>
+#include "C:Desk.Wimp.h"
+
+/* ============================================================================
+ * Configuration
+ * ============================================================================ */
+
+#define SERIAL_MAX_LINES        32
+#define SERIAL_POLL_DELAY       1       /* centiseconds between null polls (10ms) */
+
+/* ============================================================================
+ * Wimp Messages
+ * ============================================================================ */
+
+/* Wimp message from Converse Server */
+#define MESSAGE_LINE_BROADCAST      0x5AA00
+
+/* Messages from Serial to Server */
+#define MESSAGE_SERIAL_CONNECT      0x5AA06
+#define MESSAGE_SERIAL_DISCONNECT   0x5AA07
+
+/* ============================================================================
+ * SWI Numbers
+ * ============================================================================ */
+
+#define SWI_OS_READMONOTONICTIME    0x00000042
+
+/* Pipes module SWIs */
+#define PIPES_SWI_BASE                      0x5AA00
+#define SWI_CONVERSE_PIPES_INPUT_STATUS     (PIPES_SWI_BASE + 2)
+#define SWI_CONVERSE_PIPES_CLEAR_INPUT      (PIPES_SWI_BASE + 6)
+#define SWI_CONVERSE_PIPES_CLEAR_OUTPUT     (PIPES_SWI_BASE + 7)
+#define SWI_CONVERSE_PIPES_INPUT_WRITE_BLOCK (PIPES_SWI_BASE + 13)
+#define SWI_CONVERSE_PIPES_OUTPUT_READ_BLOCK (PIPES_SWI_BASE + 14)
+#define SWI_CONVERSE_PIPES_RESET_STATE      (PIPES_SWI_BASE + 10)
+
+/* Support module SWIs */
+#define SWI_CONVERSEBBS_LINE            0x5AA81
+#define SWI_CONVERSEBBS_SERIAL_CONFIG   0x5AA88
+
+/* Filer logging SWI */
+#define SWI_FILER_LOGGING               0x5AA40
+#define FILER_LOG_CMD_SERIAL            5
+
+/* ============================================================================
+ * Support Module Constants
+ * ============================================================================ */
+
+#define LINE_REASON_SET             0
+#define LINE_REASON_GET             1
+
+#define LINE_FIELD_CONFIGURED       0
+#define LINE_FIELD_CONNECTED        1
+#define LINE_FIELD_USER_ID          2
+#define LINE_FIELD_CONNECT_TIME     3
+#define LINE_FIELD_HOSTNAME         4
+#define LINE_FIELD_TRANSFER         5
+#define LINE_FIELD_TYPE             6
+
+/* Line types */
+#define LINE_TYPE_TELNET            0
+#define LINE_TYPE_SERIAL            1
+#define LINE_TYPE_LOCAL             2
+
+/* ============================================================================
+ * Pipe Control Frames
+ * ============================================================================ */
+
+#define PIPE_CONTROL_TOKEN          ((unsigned char)0x00)
+#define PIPE_CONTROL_CONNECT        'C'
+#define PIPE_CONTROL_DISCONNECT     'D'
+
+/* ============================================================================
+ * Serial Line Configuration (from Support module)
+ * ============================================================================ */
+
+typedef struct
+{
+    int enabled;                    /* Is this a serial line? */
+    char driver_name[32];           /* BlockDriver name */
+    int port_number;                /* Port (0-based) */
+    int baud_rate;                  /* Speed */
+    int word_format;                /* 8N1 etc encoded */
+    int flow_control;               /* Flow control mode */
+} SERIAL_LINE_CONFIG;
+
+/* ============================================================================
+ * Serial Line State (runtime)
+ * ============================================================================ */
+
+typedef struct
+{
+    int line_id;                    /* Line number */
+    int enabled;                    /* Is this line active? */
+    int (*driver)(int, ...);        /* BlockDriver function pointer */
+    int port_number;                /* Port number */
+    int baud_rate;                  /* Baud rate */
+    int word_format;                /* Word format */
+    int flow_control;               /* Flow control */
+    int carrier_detect;             /* Current DCD state */
+    clock_t last_activity;          /* Last activity time */
+    char driver_name[32];           /* Driver name for debug */
+} SERIAL_LINE_STATE;
+
+/* ============================================================================
+ * Wimp State
+ * ============================================================================ */
+
+typedef struct
+{
+    Desk_bool quit;
+    Desk_icon_handle iconbar_icon;
+    Desk_menu_ptr iconbar_menu;
+} WIMP_STATE;
+
+/* =================== =========================================================
+ * Global State
+ * ============================================================================ */
+
+extern WIMP_STATE wimp;
+extern SERIAL_LINE_STATE serial_lines[SERIAL_MAX_LINES];
+extern int serial_line_count;
+
+/* ============================================================================
+ * Function Prototypes
+ * ============================================================================ */
+
+/* Pipe helpers */
+int pipes_input_status(int line_id);
+int pipes_input_write_block(int line_id, const char *buffer, int length);
+int pipes_output_read_block(int line_id, char *buffer, int length);
+void pipes_reset_line(int line_id);
+void pipes_send_control_command(int line_id, char command);
+
+/* Support module helpers */
+void support_set_line_connected(int line_id, int connected);
+void support_set_line_hostname(int line_id, const char *hostname);
+void support_set_line_connect_time(int line_id, time_t connect_time);
+int support_get_line_type(int line_id);
+int support_get_serial_config(int line_id, SERIAL_LINE_CONFIG *config);
+
+/* Wimp message sending */
+void send_serial_connect_message(int line_id);
+void send_serial_disconnect_message(int line_id);
+
+/* Logging */
+void serial_log(const char *format, ...);
+
+#endif /* MAIN_H */

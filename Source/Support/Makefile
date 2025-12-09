@@ -1,7 +1,7 @@
 # Makefile for Support
 
 COMPONENT   = Support
-OBJS        = config debug filebaseconfig ftnconfig lineconfig linestate msgbaseconfig accessconfig support
+OBJS        = config debug filebaseconfig ftnconfig lineconfig linestate msgbaseconfig accessconfig serialconfig support
 LIBS        = OSLib:o.OSLib32
 CMHGDEPENDS = support
 CFLAGS      = -c -depend !Depend -I,C: -apcs 3/32bit -Wcdp -throwback -fan
@@ -47,6 +47,9 @@ o.accessconfig:	c.accessconfig
 o.accessconfig:	C:h.kernel
 o.accessconfig:	h.accessconfig
 o.accessconfig:	C:h.kernel
+o.serialconfig:	c.serialconfig
+o.serialconfig:	h.serialconfig
+o.serialconfig:	C:h.kernel
 o.support:	c.support
 o.support:	C:h.kernel
 o.support:	h.supporthdr
@@ -65,6 +68,8 @@ o.support:	C:h.kernel
 o.support:	h.ftnconfig
 o.support:	C:h.kernel
 o.support:	h.accessconfig
+o.support:	C:h.kernel
+o.support:	h.serialconfig
 o.support:	C:h.kernel
 h.SupportHdr:	cmhg.SupportHdr
 o.SupportHdr:	cmhg.SupportHdr

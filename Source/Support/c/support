@@ -16,6 +16,7 @@
 #include "filebaseconfig.h"
 #include "ftnconfig.h"
 #include "accessconfig.h"
+#include "serialconfig.h"
 
 /* SWI numbers (offset from chunk base) */
 typedef enum
@@ -27,7 +28,8 @@ typedef enum
     SWI_MSGBASECONFIG = 4,
     SWI_FILEBASECONFIG = 5,
     SWI_FTNCONFIG = 6,
-    SWI_ACCESSCONFIG = 7
+    SWI_ACCESSCONFIG = 7,
+    SWI_SERIALCONFIG = 8
 } SUPPORT_SWI;
 
 /* Command numbers */
@@ -59,6 +61,7 @@ _kernel_oserror *module_initialise(const char *cmd_tail, int podule_base, void *
     filebaseconfig_initialise();
     ftnconfig_initialise();
     accessconfig_initialise();
+    serialconfig_initialise();
 
     return NULL;
 }
@@ -69,6 +72,7 @@ _kernel_oserror *module_finalise(int fatal, int podule, void *pw)
     UNUSED(podule);
     UNUSED(pw);
 
+    serialconfig_finalise();
     accessconfig_finalise();
     ftnconfig_finalise();
     filebaseconfig_finalise();
@@ -128,6 +132,10 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
 
         case SWI_ACCESSCONFIG:
             accessconfig_swi_handler(r);
+            break;
+
+        case SWI_SERIALCONFIG:
+            serialconfig_swi_handler(r);
             break;
 
         default:

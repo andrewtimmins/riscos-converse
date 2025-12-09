@@ -1,74 +1,128 @@
 ;
 ; Lines configuration file
 ;
+; Line types:
+;   telnet  - Accept incoming TCP connections (default)
+;   serial  - Use BlockDriver for modem/serial communication
+;   local   - Desktop-only access via View/Logon buttons
+;
+; Serial options (required when type=serial):
+;   driver  - BlockDriver module name (e.g., InternalPC, Dual, Atomwide)
+;   port    - Port number for multi-port drivers (0-based)
+;   speed   - Baud rate (300-115200)
+;   format  - Word format: 8N1, 7E1, 7O1, 8E1, 8O1
+;   flow    - Flow control: none, rts, xon
+;
 
+; ----------------------------------------------------------------------------
+; Telnet lines 0-9 (accept TCP connections)
+; ----------------------------------------------------------------------------
 start
 line        0
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        1
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        2
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        3
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        4
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        5
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        6
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        7
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        8
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
 end
 ; ----------------------------------------------------------------------------
 start
 line        9
 enabled     yes
+type        telnet
 botstopper  Please press * (SHIFT+8) twice to enter the system...
-hello       Welcome to The Yellow Toaser BBS...
+hello       Welcome to The Yellow Toaster BBS...
+end
+; ----------------------------------------------------------------------------
+
+; ----------------------------------------------------------------------------
+; Serial line 10 (modem/serial via BlockDriver)
+; ----------------------------------------------------------------------------
+start
+line        10
+enabled     yes
+type        serial
+driver      Internal32
+port        0
+speed       115200
+format      8N1
+flow        rts
+answer      ATA|
+ring        RING
+rings       1
+init        ATE0|
+end
+; ----------------------------------------------------------------------------
+
+; ----------------------------------------------------------------------------
+; Local line 11 (sysop desktop access only, no external connections)
+; ----------------------------------------------------------------------------
+start
+line        11
+enabled     yes
+type        local
 end
 ; ----------------------------------------------------------------------------

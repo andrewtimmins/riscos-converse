@@ -9,6 +9,12 @@
 
     #include <time.h>
 
+    /* Socket includes for struct sockaddr_in, fd_set etc */
+    #include "sys/types.h"
+    #include "sys/socket.h"
+    #include "sys/time.h"
+    #include "netinet/in.h"
+
     /* Desk Includes */
     #include "C:Desk.Core.h"
     #include "C:Desk.Menu.h"
@@ -59,6 +65,14 @@
 
     #define MAX_LINES                32
 
+    /* Line connection types */
+    typedef enum
+    {
+        LINE_TYPE_TELNET = 0,   /* TCP/IP telnet connections (default) */
+        LINE_TYPE_SERIAL = 1,   /* Serial/modem via BlockDriver */
+        LINE_TYPE_LOCAL  = 2    /* Local desktop login only */
+    } line_type_t;
+
     /* Variables */
     struct wimp_components
     {
@@ -99,6 +113,7 @@
     typedef struct
     {
         char *line_text;
+        char *type_text;
         char *user_text;
         char *activity_text;
         char *hostname_text;
@@ -114,8 +129,24 @@
         char enabled[4];
         char botstopper[128];
         char hello[256];
+
+        /* Line type */
+        line_type_t type;
+
+        /* Telnet-specific */
         int socket;
-        struct sockaddr to;
+        struct sockaddr_in remote_addr;
+
+        /* Serial-specific (BlockDriver) */
+        int (*driver)(int, ...);        /* BlockDriver function pointer */
+        int port_number;                /* Port number (0-based) */
+        int baud_rate;                  /* Baud rate (e.g., 115200) */
+        int word_format;                /* Data/parity/stop encoded */
+        int flow_control;               /* Flow control mode */
+        int carrier_detect;             /* Current DCD state */
+        char driver_name[32];           /* BlockDriver name */
+
+        /* Common */
         int connectedtime;
         clock_t last_activity;
         long timer;
@@ -164,5 +195,18 @@
     extern time_t server_start_time;
     extern long status_update_timer;
     extern char error_connections_disabled[];
+
+    /* Main window icon column indices */
+    #define MAIN_WINDOW_COLUMN_LINE      0
+    #define MAIN_WINDOW_COLUMN_USER      1
+    #define MAIN_WINDOW_COLUMN_ACTIVITY  2
+    #define MAIN_WINDOW_COLUMN_HOSTNAME  3
+    #define MAIN_WINDOW_COLUMN_TIMER     4
+    #define MAIN_WINDOW_COLUMN_ACTION    5
+    #define MAIN_WINDOW_COLUMN_VIEW      6
+    #define MAIN_WINDOW_COLUMN_LOGON     7
+
+    /* Icon helper function */
+    int main_window_icon_index(int line, int column);
 
 #endif
