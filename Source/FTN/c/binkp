@@ -910,6 +910,9 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         session->authenticated = 1;
         binkp_send_ok(session, 0);
         session->state = SESSION_STATE_AUTHENTICATED;
+        
+        /* Update status window with connection info */
+        ftnstatus_update_connection(session->remote_system, &session->remote_addr);
     }
     else if (session->cram_enabled && data[0] == 'C' && data[1] == 'R' && data[2] == 'A' && data[3] == 'M')
     {
@@ -920,6 +923,9 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             secure = 1;
             binkp_send_ok(session, secure);
             session->state = SESSION_STATE_AUTHENTICATED;
+            
+            /* Update status window with connection info */
+            ftnstatus_update_connection(session->remote_system, &session->remote_addr);
         }
         else
         {
@@ -937,6 +943,9 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             session->authenticated = 1;
             binkp_send_ok(session, 0);
             session->state = SESSION_STATE_AUTHENTICATED;
+            
+            /* Update status window with connection info */
+            ftnstatus_update_connection(session->remote_system, &session->remote_addr);
         }
         else
         {
@@ -957,6 +966,9 @@ void binkp_handle_ok(MAILER_SESSION *session, const char *data)
 
     session->authenticated = 1;
     session->state = SESSION_STATE_AUTHENTICATED;
+    
+    /* Update status window with connection info */
+    ftnstatus_update_connection(session->remote_system, &session->remote_addr);
 
     /* Enable encryption after M_OK if both sides support CRYPT */
     if ((session->crypt_flag & (BINKP_CRYPT_WE | BINKP_CRYPT_THEY)) == 
@@ -1146,7 +1158,24 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
         }
         else
         {
-            binkp_start_receive_file(session, filename, size, (time_t)mtime, offset);
+            /* Check if we're already receiving this file (NR mode confirmation) */
+            if (session->recv_file.state == TRANSFER_STATE_RECEIVING &&
+                strcmp(session->recv_file.filename, filename) == 0)
+            {
+                /* This is the confirmation after our M_GET - just update offset */
+                debug_printf("binkp: NR mode - FILE confirmation for %s at offset %ld", filename, offset);
+                if (offset > 0 && session->recv_file.file != NULL)
+                {
+                    fseek(session->recv_file.file, offset, SEEK_SET);
+                    session->recv_file.offset = offset;
+                }
+                /* Don't start a new receive - we're already set up */
+            }
+            else
+            {
+                /* Normal case - start receiving */
+                binkp_start_receive_file(session, filename, size, (time_t)mtime, offset);
+            }
         }
     }
 }
@@ -1445,6 +1474,20 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     /* Treat -1 (or any negative) offset as 0 - start from beginning */
     if (offset < 0) offset = 0;
 
+    /* Close any existing receive file first (defensive) */
+    if (session->recv_file.file != NULL)
+    {
+        debug_printf("binkp: WARNING - Closing existing receive file before starting new one");
+        fclose(session->recv_file.file);
+        session->recv_file.file = NULL;
+        
+        /* Remove the incomplete temp file */
+        if (session->recv_file.local_path[0] != '\\0')
+        {
+            remove(session->recv_file.local_path);
+        }
+    }
+
     /* Convert DOS filename to RISC OS format */
     filename_dos_to_riscos(filename, riscos_filename, sizeof(riscos_filename));
 
@@ -1471,7 +1514,7 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     session->recv_file.offset = offset;
     session->recv_file.state = TRANSFER_STATE_RECEIVING;
 
-    ftnstatus_start_transfer(0, filename);
+    ftnstatus_start_transfer_ex(0, filename, size);
 
     debug_printf("binkp: Receiving %s as %s (%ld bytes)", filename, riscos_filename, size);
     mailer_log("Receiving: %s (%ld bytes)", filename, size);
@@ -1487,7 +1530,7 @@ void binkp_receive_file_data(MAILER_SESSION *session, const unsigned char *data,
         ft->offset += length;
         session->bytes_received += length;
 
-        ftnstatus_update_progress((int)((ft->offset * 100) / ft->size));
+        ftnstatus_update_progress_ex(ft->offset, ft->size);
 
         /* Check if complete */
         if (ft->offset >= ft->size)
@@ -1617,7 +1660,7 @@ void binkp_start_send_file(MAILER_SESSION *session, const char *path)
     mailer_log("Sending: %s (%ld bytes)", dos_filename, fsize);
     
     /* Update status window with transfer progress */
-    ftnstatus_start_transfer(1, dos_filename);
+    ftnstatus_start_transfer_ex(1, dos_filename, fsize);
 }
 
 void binkp_send_file_data(MAILER_SESSION *session)
@@ -1660,12 +1703,8 @@ void binkp_send_file_data(MAILER_SESSION *session)
         ft->offset += bytes_read;
         session->bytes_sent += bytes_read;
         
-        /* Update progress bar */
-        if (ft->size > 0)
-        {
-            int percent = (int)((ft->offset * 100) / ft->size);
-            ftnstatus_update_progress(percent);
-        }
+        /* Update progress bar with byte counts */
+        ftnstatus_update_progress_ex(ft->offset, ft->size);
     }
 
     /* Check if complete */

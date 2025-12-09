@@ -77,7 +77,8 @@ The workspace includes `SharedLibs` containing:
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
-  - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback).
+  - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback). `MORE <0|1>` temporarily disables (0) or enables (1) the "More?" prompt for the current session, overriding the user's preference.
+  - **More Prompts**: When enabled (user's `more` flag = 1), the script engine automatically pauses after displaying `lines` lines of output (default 24) and shows a "More?" prompt. Any key continues; Q/N/Ctrl+C aborts and disables further prompts for the session. The line counter resets on CLS. Use `more 0` in scripts to disable prompts during file listings or other bulk output.
   - **Subscript Calls**: `SCRIPT <path>` loads and executes a subscript, then returns to the calling script. Supports up to 8 levels of nesting. Variables are shared between calling and called scripts. Use `return` or `stop` in the subscript to return early. Block IF/ELSE/ENDIF structures are fully supported in subscripts. Example: `script `<Converse$Dir>.BBS.Welcome``.
   - **Login Scan**: `LOGINSCAN` scans all accessible messagebases and filebases for new content since the user's last scan. Reports counts of new private messages addressed to the user (unread, by `receivedby` field) and new files uploaded since `lastscan`. After scanning, updates the user's `lastscan` timestamp in USER_STATS. Typically called in Postlogon script.
   - **System Macros**: `%{accesslevel}`, `%{userid}`, `%{registered}` (1 if logged in), `%{sysop}` (1 if sysop), `%{keys}` (user's key string), `%{hour}`, `%{minute}`, `%{dayofweek}` (0=Sun..6=Sat), `%{day}` (1-31), `%{month}` (1-12), `%{year}` (e.g., 2025).
@@ -454,11 +455,12 @@ The ARCbbs door protocol uses three communication mechanisms:
 6. LineTask detects status=0 and resumes script execution
 
 ### Script Integration
-Use `call arcbbsdoor <door_number> <command>` in scripts:
+Use `call arcbbsdoor <door_number> <command> [26bit]` in scripts:
 ```
 call arcbbsdoor 4 `<Converse$Dir>.BBS.Doors.ARCbbs.!SnakeDoor %{line}`
 ```
 The door number must match the door's configured `DoorNumber` (usually in its `Config` file).
+Add the optional `26bit` keyword to run legacy 26-bit doors via Aemulor.
 
 ### ARCbbsDoors SWI Reference (Base 0x41040)
 
@@ -553,11 +555,12 @@ The ConverseDoors module (`Doors/`) provides a native door interface for Convers
 5. LineTask receives notification and resumes script execution
 
 ### Script Integration
-Use `call door <command>` in scripts:
+Use `call door <command> [26bit]` in scripts:
 ```
 call door `<Converse$Dir>.BBS.Doors.MyDoor %{line}`
 ```
 The door receives the line number as a command-line argument and registers itself.
+Add the optional `26bit` keyword to run legacy 26-bit doors via Aemulor.
 
 ### Data Structures
 
@@ -701,6 +704,65 @@ int main(int argc, char *argv[])
     _kernel_swi(SWI_Deregister, &regs, &regs);
     
     return 0;
+}
+```
+
+## 26-bit Door Support (Aemulor)
+
+### Overview
+Legacy 26-bit doors (compiled for RISC OS 3.x and earlier) can be run on 32-bit RISC OS systems using the Aemulor module. Converse BBS supports this via the optional `26bit` keyword on door script commands.
+
+### Requirements
+- **Aemulor** module must be loaded (available from R-Comp at https://www.rcomp.co.uk/)
+- LineTask checks for Aemulor presence using `OS_Module 18` before launching
+
+### Script Syntax
+Add the `26bit` keyword at the end of any door command to run it via Aemulor:
+
+**Native doors:**
+```
+call door `<Converse$Dir>.BBS.Doors.MyOldDoor %{line}` 26bit
+```
+
+**ARCbbs doors:**
+```
+call arcbbsdoor 4 `<Converse$Dir>.BBS.Doors.ARCbbs.!SnakeDoor %{line}` 26bit
+```
+
+**RiscBBS doors:**
+```
+call riscbbsdoor `<Converse$Dir>.BBS.Doors.RiscBBS.OldDoor %{line}` 26bit
+```
+
+### How It Works
+1. Script parser detects `26bit` keyword in the final argument position
+2. Host callback receives `use_26bit` flag
+3. If `use_26bit` is set, LineTask calls `is_aemulor_loaded()` via `OS_Module 18`
+4. If Aemulor is present, the command is prefixed with `AemuExecute `
+5. Door is launched with Wimp_StartTask as normal
+
+### Error Handling
+If `26bit` is specified but Aemulor is not loaded, the user sees:
+```
+[26-bit door requires Aemulor module]
+```
+and the door launch is aborted.
+
+### Implementation Details
+```c
+/* Check if Aemulor module is loaded */
+static int is_aemulor_loaded(void)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = 18;  /* OS_Module reason: Lookup */
+    regs.r[1] = (int)"Aemulor";
+    return (_kernel_swi(0x1E, &regs, &regs) == NULL) ? 1 : 0;
+}
+
+/* If 26bit flag set and Aemulor available, prepend AemuExecute */
+if (use_26bit && is_aemulor_loaded())
+{
+    snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
 }
 ```
 

@@ -290,7 +290,10 @@ void mailer_log(const char *format, ...);
 
 /* Transfer progress display */
 void ftnstatus_start_transfer(int is_sending, const char *filename);
+void ftnstatus_start_transfer_ex(int is_sending, const char *filename, long total_size);
 void ftnstatus_update_progress(int percent);
+void ftnstatus_update_progress_ex(long bytes_done, long total_size);
+void ftnstatus_update_connection(const char *system_name, const FTN_ADDR *addr);
 void ftnstatus_end_transfer(void);
 
 /* ******************************************************************************************************************************************************** */

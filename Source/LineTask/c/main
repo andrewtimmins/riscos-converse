@@ -117,6 +117,10 @@
 #define LINE_FIELD_CONNECT_TIME      3
 #define LINE_FIELD_HOSTNAME          4
 
+/* OS_Module SWI */
+#define SWI_OS_MODULE                0x1E
+#define OS_MODULE_LOOKUP             18
+
 /* Activity reason codes */
 #define ACTIVITY_REASON_GET          1
 
@@ -347,9 +351,10 @@ static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_terminal_click(Desk_event_pollblock *event, void *ref);
 static void script_host_write(void *context, const char *text);
-static void script_host_launch_riscbbs_door(void *context, const char *command_line);
-static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line);
-static void script_host_launch_door(void *context, const char *command_line);
+static void script_host_launch_riscbbs_door(void *context, const char *command_line, int use_26bit);
+static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line, int use_26bit);
+static void script_host_launch_door(void *context, const char *command_line, int use_26bit);
+static int is_aemulor_loaded(void);
 static void script_host_report_time(void *context);
 static void script_host_report_line_info(void *context);
 static void script_host_request_disconnect(void *context);
@@ -682,7 +687,55 @@ static void show_main_window(void)
 {
     if (main_window_handle != 0)
     {
-        Desk_Window_Show(main_window_handle, Desk_open_CENTERED);
+        /* Open window at full terminal size, centered on screen */
+        {
+            Desk_window_state state;
+            int screen_width, screen_height;
+            int window_width = ANSITERM_WIDTH;
+            int window_height = ANSITERM_HEIGHT;
+            
+            /* Get current screen mode dimensions */
+            {
+                _kernel_swi_regs regs;
+                int xeig, yeig, xpixels, ypixels;
+                
+                regs.r[0] = -1;
+                regs.r[1] = 4; /* XEigFactor */
+                _kernel_swi(0x35, &regs, &regs); /* OS_ReadModeVariable */
+                xeig = regs.r[2];
+                
+                regs.r[0] = -1;
+                regs.r[1] = 5; /* YEigFactor */
+                _kernel_swi(0x35, &regs, &regs);
+                yeig = regs.r[2];
+                
+                regs.r[0] = -1;
+                regs.r[1] = 11; /* XWindLimit */
+                _kernel_swi(0x35, &regs, &regs);
+                xpixels = regs.r[2] + 1;
+                
+                regs.r[0] = -1;
+                regs.r[1] = 12; /* YWindLimit */
+                _kernel_swi(0x35, &regs, &regs);
+                ypixels = regs.r[2] + 1;
+                
+                screen_width = xpixels << xeig;
+                screen_height = ypixels << yeig;
+            }
+            
+            Desk_Wimp_GetWindowState(main_window_handle, &state);
+            
+            /* Center the window on screen with full terminal dimensions */
+            state.openblock.screenrect.min.x = (screen_width - window_width) / 2;
+            state.openblock.screenrect.max.x = state.openblock.screenrect.min.x + window_width;
+            state.openblock.screenrect.max.y = (screen_height + window_height) / 2;
+            state.openblock.screenrect.min.y = state.openblock.screenrect.max.y - window_height;
+            state.openblock.scroll.x = 0;
+            state.openblock.scroll.y = 0;
+            state.openblock.behind = -1; /* Open at front */
+            
+            Desk_Wimp_OpenWindow(&state.openblock);
+        }
 
         /* Set input focus to the window */
         {
@@ -2614,9 +2667,19 @@ static void script_host_write(void *context, const char *text)
     }
 }
 
-static void script_host_launch_riscbbs_door(void *context, const char *command_line)
+/* Check if Aemulor module is loaded for 26-bit door support */
+static int is_aemulor_loaded(void)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = OS_MODULE_LOOKUP;
+    regs.r[1] = (int)"Aemulor";
+    return (_kernel_swi(SWI_OS_MODULE, &regs, &regs) == NULL) ? 1 : 0;
+}
+
+static void script_host_launch_riscbbs_door(void *context, const char *command_line, int use_26bit)
 {
     line_task_state *state = (line_task_state *)context;
+    char final_command[512];
 
     if (state == NULL)
     {
@@ -2651,15 +2714,39 @@ static void script_host_launch_riscbbs_door(void *context, const char *command_l
         return;
     }
 
-    Desk_Wimp_StartTask(command_line);
+    /* Build command line, optionally with Aemulor prefix */
+    if (use_26bit)
+    {
+        if (!is_aemulor_loaded())
+        {
+            pipes_output_write_string(state->line_id, "\r\n[26-bit door requires Aemulor module]\r\n");
+            script_notify_door_closed(&state->script);
+            return;
+        }
+        snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
+    }
+    else
+    {
+        snprintf(final_command, sizeof(final_command), "%s", command_line);
+    }
+
+    Desk_Wimp_StartTask(final_command);
     state->door_launch_pending = Desk_bool_TRUE;
     state->door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
-    pipes_output_write_string(state->line_id, "\r\n[Launching RiscBBS door]\r\n");
+    if (use_26bit)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching 26-bit RiscBBS door]\r\n");
+    }
+    else
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching RiscBBS door]\r\n");
+    }
 }
 
-static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line)
+static void script_host_launch_arcbbs_door(void *context, int door_number, const char *command_line, int use_26bit)
 {
     line_task_state *state = (line_task_state *)context;
+    char final_command[512];
 
     if (state == NULL)
     {
@@ -2702,6 +2789,22 @@ static void script_host_launch_arcbbs_door(void *context, int door_number, const
         return;
     }
 
+    /* Build command line, optionally with Aemulor prefix */
+    if (use_26bit)
+    {
+        if (!is_aemulor_loaded())
+        {
+            pipes_output_write_string(state->line_id, "\r\n[26-bit door requires Aemulor module]\r\n");
+            script_notify_door_closed(&state->script);
+            return;
+        }
+        snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
+    }
+    else
+    {
+        snprintf(final_command, sizeof(final_command), "%s", command_line);
+    }
+
     /* Activate the line in ARCbbsDoors module */
     if (arcbbs_activate_line(state->line_id) != 0)
     {
@@ -2720,10 +2823,10 @@ static void script_host_launch_arcbbs_door(void *context, int door_number, const
     arcbbs_set_status(state->line_id, (unsigned char)door_number);
     debug_printf("LineTask ARCbbs: set status to %d (door number) BEFORE launch\n", door_number);
 
-    debug_printf("LineTask ARCbbs: launching '%s'\n", command_line);
+    debug_printf("LineTask ARCbbs: launching '%s'\n", final_command);
 
     /* Launch the door */
-    Desk_Wimp_StartTask(command_line);
+    Desk_Wimp_StartTask(final_command);
 
     /* Enter launch pending state - wait for door to acknowledge with status 255 */
     state->arcbbs_door_launch_pending = Desk_bool_TRUE;
@@ -2731,12 +2834,20 @@ static void script_host_launch_arcbbs_door(void *context, int door_number, const
     state->arcbbs_door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
 
     debug_printf("LineTask ARCbbs: door launched, waiting for status 255\n");
-    pipes_output_write_string(state->line_id, "\r\n[Launching ARCbbs door]\r\n");
+    if (use_26bit)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching 26-bit ARCbbs door]\r\n");
+    }
+    else
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching ARCbbs door]\r\n");
+    }
 }
 
-static void script_host_launch_door(void *context, const char *command_line)
+static void script_host_launch_door(void *context, const char *command_line, int use_26bit)
 {
     line_task_state *state = (line_task_state *)context;
+    char final_command[512];
 
     if (state == NULL)
     {
@@ -2767,13 +2878,29 @@ static void script_host_launch_door(void *context, const char *command_line)
         return;
     }
 
+    /* Build command line, optionally with Aemulor prefix */
+    if (use_26bit)
+    {
+        if (!is_aemulor_loaded())
+        {
+            pipes_output_write_string(state->line_id, "\r\n[26-bit door requires Aemulor module]\r\n");
+            script_notify_door_closed(&state->script);
+            return;
+        }
+        snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
+    }
+    else
+    {
+        snprintf(final_command, sizeof(final_command), "%s", command_line);
+    }
+
     /* Set user info in ConverseDoors module before launching */
     native_door_set_user_info(state);
 
-    debug_printf("LineTask Door: launching '%s'\n", command_line);
+    debug_printf("LineTask Door: launching '%s'\n", final_command);
 
     /* Launch the door */
-    Desk_Wimp_StartTask(command_line);
+    Desk_Wimp_StartTask(final_command);
 
     /* Enter launch pending state - wait for door to register */
     state->native_door_launch_pending = Desk_bool_TRUE;
@@ -2781,7 +2908,14 @@ static void script_host_launch_door(void *context, const char *command_line)
     state->native_door_launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
 
     debug_printf("LineTask Door: door launched, waiting for registration\n");
-    pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
+    if (use_26bit)
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching 26-bit door]\r\n");
+    }
+    else
+    {
+        pipes_output_write_string(state->line_id, "\r\n[Launching door]\r\n");
+    }
 }
 
 static void script_host_report_time(void *context)

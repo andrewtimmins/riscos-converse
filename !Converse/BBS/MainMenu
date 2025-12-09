@@ -6,6 +6,7 @@
     fgbg 7 0
     doing `Main Menu...`
 
+    more 0
     type `<Converse$Dir>.BBS.Menus.Main`
 
     pos 49 23
@@ -17,12 +18,12 @@
     goto main_menu
 
     label user_chat
-    call arcbbsdoor 10 `<Converse$Dir>.BBS.Doors.ARCbbs.!Parlez -door 126`
+    call arcbbsdoor 10 `<Converse$Dir>.BBS.Doors.ARCbbs.!Parlez -door 126` 26bit
     fgbg 7 0
     goto main_menu
 
     label snooper_door
-    call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126`
+    call arcbbsdoor 126 `<Converse$Dir>.BBS.Doors.ARCbbs.!Snoop -door 126` 26bit
     fgbg 7 0
     goto main_menu
 

@@ -134,6 +134,11 @@ void script_initialise(script_state *state, const script_host *host)
     }
 
     state->status = SCRIPT_STATUS_IDLE;
+    
+    /* More prompt state: -1 = use user setting */
+    state->more_override = -1;
+    state->more_line_count = 0;
+    state->more_screen_lines = 24;
 }
 
 void script_dispose(script_state *state)
@@ -234,6 +239,7 @@ void script_stop(script_state *state)
     script_clear_program(state);
     /* NOTE: Do NOT clear variables here - they persist across script transitions
      * Variables are only cleared on session disconnect via script_reset_session
+     * Also do NOT clear call_depth here - subscripts may be active
      */
     state->program_counter = 0;
     state->status = SCRIPT_STATUS_IDLE;
@@ -242,13 +248,47 @@ void script_stop(script_state *state)
 
 void script_reset_session(script_state *state)
 {
+    size_t i;
+    
     if (state == NULL)
     {
         return;
     }
 
+    /* Free any call stack entries first (in case we stopped mid-subscript) */
+    while (state->call_depth > 0)
+    {
+        script_call_frame *frame = &state->call_stack[state->call_depth - 1];
+        
+        if (frame->instructions != NULL)
+        {
+            for (i = 0; i < frame->instruction_count; ++i)
+            {
+                script_free_instruction(&frame->instructions[i]);
+            }
+            free(frame->instructions);
+        }
+        
+        if (frame->labels != NULL)
+        {
+            for (i = 0; i < frame->label_count; ++i)
+            {
+                script_free_label(&frame->labels[i]);
+            }
+            free(frame->labels);
+        }
+        
+        memset(frame, 0, sizeof(*frame));
+        state->call_depth--;
+    }
+
     script_stop(state);
     script_clear_variables(state);
+    
+    /* Reset more prompt state for new session */
+    state->more_override = -1;
+    state->more_line_count = 0;
+    state->more_screen_lines = 24;
 }
 
 void script_process(script_state *state)
@@ -326,9 +366,37 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD &&
         state->status != SCRIPT_STATUS_WAIT_ANSI &&
         state->status != SCRIPT_STATUS_WAIT_CHAT_REASON &&
-        state->status != SCRIPT_STATUS_WAIT_CHAT)
+        state->status != SCRIPT_STATUS_WAIT_CHAT &&
+        state->status != SCRIPT_STATUS_WAIT_MORE)
     {
         return 0;
+    }
+
+    /* Handle More? prompt - any key continues, 'q' or 'Q' or 'n' or 'N' aborts */
+    if (state->status == SCRIPT_STATUS_WAIT_MORE)
+    {
+        /* Clear the "More?" prompt from the line */
+        if (state->host.write_text != NULL)
+        {
+            state->host.write_text(state->host.context, "\r\033[K");
+        }
+        
+        /* Check for quit/abort keys */
+        if (byte == 'q' || byte == 'Q' || byte == 'n' || byte == 'N' || byte == 3)  /* 3 = Ctrl+C */
+        {
+            /* User wants to stop - disable more for this session */
+            state->more_override = 0;
+            state->more_line_count = 0;
+        }
+        else
+        {
+            /* Continue - reset line counter for next page */
+            state->more_line_count = 0;
+        }
+        
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
     }
 
     /* Handle chat reason input */
@@ -1807,6 +1875,14 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
     if (script_stringcasecmp(token, "loginscan") == 0)
     {
         instruction->type = SCRIPT_CMD_LOGINSCAN;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "more") == 0)
+    {
+        char *arg = strtok(NULL, " \t");
+        instruction->type = SCRIPT_CMD_MORE;
+        instruction->arg1 = script_duplicate_string(arg != NULL ? arg : "1");
         return 1;
     }
 
@@ -3346,8 +3422,10 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 {
                     char buffer[256];
                     const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
+                    int use_26bit = (instruction->arg3 != NULL && 
+                                     script_stringcasecmp(instruction->arg3, "26bit") == 0) ? 1 : 0;
                     script_expand_macros(state, command, buffer, sizeof(buffer));
-                    state->host.launch_riscbbs_door(state->host.context, buffer);
+                    state->host.launch_riscbbs_door(state->host.context, buffer, use_26bit);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }
@@ -3359,13 +3437,15 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     char cmd_buffer[256];
                     const char *door_num_str = instruction->arg2 != NULL ? instruction->arg2 : "1";
                     const char *command = instruction->arg3 != NULL ? instruction->arg3 : "";
+                    int use_26bit = (instruction->arg4 != NULL && 
+                                     script_stringcasecmp(instruction->arg4, "26bit") == 0) ? 1 : 0;
                     int door_number;
                     script_expand_macros(state, door_num_str, num_buffer, sizeof(num_buffer));
                     script_expand_macros(state, command, cmd_buffer, sizeof(cmd_buffer));
                     door_number = atoi(num_buffer);
                     if (door_number < 1) door_number = 1;
                     if (door_number > 254) door_number = 254;
-                    state->host.launch_arcbbs_door(state->host.context, door_number, cmd_buffer);
+                    state->host.launch_arcbbs_door(state->host.context, door_number, cmd_buffer, use_26bit);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }
@@ -3375,8 +3455,10 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 {
                     char buffer[256];
                     const char *command = instruction->arg2 != NULL ? instruction->arg2 : "";
+                    int use_26bit = (instruction->arg3 != NULL && 
+                                     script_stringcasecmp(instruction->arg3, "26bit") == 0) ? 1 : 0;
                     script_expand_macros(state, command, buffer, sizeof(buffer));
-                    state->host.launch_door(state->host.context, buffer);
+                    state->host.launch_door(state->host.context, buffer, use_26bit);
                     state->status = SCRIPT_STATUS_WAIT_DOOR;
                 }
             }
@@ -3503,6 +3585,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
         case SCRIPT_CMD_CLS:
         {
             script_send_clear_screen(state);
+            /* Reset line counter when screen is cleared */
+            state->more_line_count = 0;
         }
         break;
 
@@ -3903,6 +3987,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     state->host.update_lastscan(state->host.context, now);
                 }
             }
+        }
+        break;
+
+        case SCRIPT_CMD_MORE:
+        {
+            /* more <n> - temporarily enable/disable more prompts (0=off, 1=on) */
+            char buffer[16];
+            int enable;
+            const char *arg = instruction->arg1 != NULL ? instruction->arg1 : "1";
+            
+            script_expand_macros(state, arg, buffer, sizeof(buffer));
+            enable = atoi(buffer);
+            
+            /* Set override: 0 = disabled, 1 = enabled */
+            state->more_override = enable ? 1 : 0;
+            
+            /* Reset line counter when enabling/disabling */
+            state->more_line_count = 0;
         }
         break;
 
@@ -5182,11 +5284,99 @@ static void script_reset_input(script_state *state)
     state->input_target[0] = '\0';
 }
 
+/*
+ * Check if "more" prompts should be active for this session.
+ * Returns the screen lines setting if active, 0 if not.
+ */
+static int script_more_active(script_state *state)
+{
+    const script_user_flags *flags;
+    int more_enabled;
+    int screen_lines;
+    
+    if (state == NULL)
+    {
+        return 0;
+    }
+    
+    /* Check override first */
+    if (state->more_override == 0)
+    {
+        return 0;  /* Explicitly disabled */
+    }
+    else if (state->more_override == 1)
+    {
+        /* Explicitly enabled - use stored screen lines or default */
+        return state->more_screen_lines > 0 ? state->more_screen_lines : 24;
+    }
+    
+    /* No override (-1) - use user flags */
+    if (state->host.get_user_flags == NULL)
+    {
+        return 0;
+    }
+    
+    flags = state->host.get_user_flags(state->host.context);
+    if (flags == NULL)
+    {
+        return 0;
+    }
+    
+    more_enabled = flags->more;
+    screen_lines = flags->lines > 0 ? flags->lines : 24;
+    
+    /* Cache the screen lines setting */
+    state->more_screen_lines = screen_lines;
+    
+    return more_enabled ? screen_lines : 0;
+}
+
+/*
+ * Count newlines in text and update line counter.
+ * Returns 1 if we hit the line limit and should pause, 0 otherwise.
+ */
+static int script_count_lines(script_state *state, const char *text)
+{
+    const char *p;
+    int screen_lines;
+    
+    screen_lines = script_more_active(state);
+    if (screen_lines == 0)
+    {
+        return 0;  /* More prompts not active */
+    }
+    
+    /* Count newlines in the text */
+    for (p = text; *p != '\0'; p++)
+    {
+        if (*p == '\n')
+        {
+            state->more_line_count++;
+        }
+    }
+    
+    /* Check if we've hit the limit (leave 1 line for the prompt) */
+    if (state->more_line_count >= screen_lines - 1)
+    {
+        return 1;  /* Pause needed */
+    }
+    
+    return 0;
+}
+
 static void script_write_output(script_state *state, const char *text)
 {
     if (state != NULL && state->host.write_text != NULL && text != NULL)
     {
         state->host.write_text(state->host.context, text);
+        
+        /* Check if we need to pause for "More?" prompt */
+        if (script_count_lines(state, text))
+        {
+            /* Output the More? prompt and pause */
+            state->host.write_text(state->host.context, "\r\n\033[7mMore?\033[0m ");
+            state->status = SCRIPT_STATUS_WAIT_MORE;
+        }
     }
 }
 

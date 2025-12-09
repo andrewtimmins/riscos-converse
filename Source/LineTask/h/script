@@ -37,9 +37,9 @@ typedef struct script_host
 {
     void *context;
     void (*write_text)(void *context, const char *text);
-    void (*launch_riscbbs_door)(void *context, const char *command_line);
-    void (*launch_arcbbs_door)(void *context, int door_number, const char *command_line);
-    void (*launch_door)(void *context, const char *command_line);
+    void (*launch_riscbbs_door)(void *context, const char *command_line, int use_26bit);
+    void (*launch_arcbbs_door)(void *context, int door_number, const char *command_line, int use_26bit);
+    void (*launch_door)(void *context, const char *command_line, int use_26bit);
     void (*report_time)(void *context);
     void (*report_line_info)(void *context);
     void (*request_disconnect)(void *context);
@@ -92,6 +92,7 @@ typedef enum
     SCRIPT_STATUS_WAIT_ANSI,
     SCRIPT_STATUS_WAIT_CHAT_REASON,
     SCRIPT_STATUS_WAIT_CHAT,
+    SCRIPT_STATUS_WAIT_MORE,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -138,7 +139,8 @@ typedef enum
     SCRIPT_CMD_FLASH,
     SCRIPT_CMD_OSCLI,
     SCRIPT_CMD_CLL,
-    SCRIPT_CMD_LOGINSCAN
+    SCRIPT_CMD_LOGINSCAN,
+    SCRIPT_CMD_MORE
 } script_command_type;
 
 typedef enum
@@ -217,6 +219,10 @@ typedef struct script_state
     /* Call stack for subscripts */
     script_call_frame call_stack[SCRIPT_MAX_CALL_DEPTH];
     int call_depth;
+    /* More prompt state */
+    int more_override;              /* -1 = use user setting, 0 = disabled, 1 = enabled */
+    int more_line_count;            /* Current line count since last reset */
+    int more_screen_lines;          /* Lines per screen (from user settings, default 24) */
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);

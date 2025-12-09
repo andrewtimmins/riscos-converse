@@ -16,6 +16,11 @@
     type `<Converse$Dir>.BBS.Today`
 
     cls
+    doing `Merry Christmas...`
+    type `<Converse$Dir>.BBS.ANSI.Christmas`
+    anykey
+
+    cls
     doing `Login scan...`
     loginscan
     anykey

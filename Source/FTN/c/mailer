@@ -209,6 +209,34 @@ void mailer_log(const char *format, ...)
 /* FTN Status Window                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/* Progress bar constants */
+#define FTNSTATUS_PROGRESS_MIN_WIDTH 20
+#define FTNSTATUS_PROGRESS_MAX_WIDTH 776
+
+/* Current transfer state for progress display */
+static long ftnstatus_transfer_total = 0;
+static int ftnstatus_is_sending = 0;
+static char ftnstatus_transfer_filename[128];
+
+/*
+ * Helper function to reset progress bar to minimum width.
+ */
+static void ftnstatus_reset_progress(void)
+{
+    Desk_icon_block icon;
+    Desk_icon_createblock createblock;
+    Desk_icon_handle new_icon;
+    
+    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
+    icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
+    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
+    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+    
+    createblock.window = ftnstatus_window;
+    createblock.icondata = icon;
+    Desk_Wimp_CreateIcon(&createblock, &new_icon);
+}
+
 /*
  * Open the ftnstatus window positioned at bottom-left, just above iconbar.
  * Sets the operation text from the message tag.
@@ -227,6 +255,9 @@ static void ftnstatus_open(const char *operation_msg_tag)
     
     /* Clear status */
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "");
+    
+    /* Reset progress bar to minimum */
+    ftnstatus_reset_progress();
     
     /* Position window at bottom-left, just above iconbar */
     Desk_Wimp_GetWindowState(ftnstatus_window, &state);
@@ -276,20 +307,11 @@ static void ftnstatus_set_idle(void)
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
     
     /* Reset progress bar to minimum width */
-    {
-        Desk_icon_block icon;
-        Desk_icon_createblock createblock;
-        Desk_icon_handle new_icon;
-        
-        Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
-        icon.workarearect.max.x = icon.workarearect.min.x + 20;
-        Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
-        Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
-        
-        createblock.window = ftnstatus_window;
-        createblock.icondata = icon;
-        Desk_Wimp_CreateIcon(&createblock, &new_icon);
-    }
+    ftnstatus_reset_progress();
+    
+    /* Clear transfer state */
+    ftnstatus_transfer_total = 0;
+    ftnstatus_transfer_filename[0] = '\0';
     
     /* Force a redraw so user sees update */
     {
@@ -300,39 +322,67 @@ static void ftnstatus_set_idle(void)
     }
 }
 
-/* Progress bar constants */
-#define FTNSTATUS_PROGRESS_MIN_WIDTH 20
-#define FTNSTATUS_PROGRESS_MAX_WIDTH 776
+/*
+ * Format a file size into a human-readable string.
+ */
+static void ftnstatus_format_size(long bytes, char *buffer, size_t size)
+{
+    if (bytes >= 1048576)
+    {
+        snprintf(buffer, size, "%.1f MB", (double)bytes / 1048576.0);
+    }
+    else if (bytes >= 1024)
+    {
+        snprintf(buffer, size, "%.1f KB", (double)bytes / 1024.0);
+    }
+    else
+    {
+        snprintf(buffer, size, "%ld B", bytes);
+    }
+}
 
 /*
- * Start a file transfer display.
+ * Start a file transfer display (legacy version without size).
  * Sets operation to "Transferring..." and status to direction + filename.
  */
 void ftnstatus_start_transfer(int is_sending, const char *filename)
 {
+    ftnstatus_start_transfer_ex(is_sending, filename, 0);
+}
+
+/*
+ * Start a file transfer display with size information.
+ * Sets operation to "Sending/Receiving" and status to filename with size.
+ */
+void ftnstatus_start_transfer_ex(int is_sending, const char *filename, long total_size)
+{
     char status[128];
-    Desk_icon_block icon;
+    char size_str[32];
     
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Transferring...");
+    /* Store transfer state */
+    ftnstatus_is_sending = is_sending;
+    ftnstatus_transfer_total = total_size;
+    strncpy(ftnstatus_transfer_filename, filename, sizeof(ftnstatus_transfer_filename) - 1);
+    ftnstatus_transfer_filename[sizeof(ftnstatus_transfer_filename) - 1] = '\0';
     
-    snprintf(status, sizeof(status), "%s: %s", 
-             is_sending ? "Sending" : "Receiving", filename);
+    /* Set operation text */
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, 
+                      is_sending ? "Sending..." : "Receiving...");
+    
+    /* Build status with size if available */
+    if (total_size > 0)
+    {
+        ftnstatus_format_size(total_size, size_str, sizeof(size_str));
+        snprintf(status, sizeof(status), "%s (0 / %s)", filename, size_str);
+    }
+    else
+    {
+        snprintf(status, sizeof(status), "%s", filename);
+    }
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
     
     /* Reset progress bar to minimum */
-    {
-        Desk_icon_createblock createblock;
-        Desk_icon_handle new_icon;
-        
-        Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
-        icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
-        Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
-        Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
-        
-        createblock.window = ftnstatus_window;
-        createblock.icondata = icon;
-        Desk_Wimp_CreateIcon(&createblock, &new_icon);
-    }
+    ftnstatus_reset_progress();
     
     /* Force redraw */
     {
@@ -370,6 +420,91 @@ void ftnstatus_update_progress(int percent)
     createblock.window = ftnstatus_window;
     createblock.icondata = icon;
     Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    
+    /* Force a redraw so user sees progress update */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
+}
+
+/*
+ * Update file transfer progress with byte counts.
+ * Updates both the progress bar and the status text with current/total size.
+ */
+void ftnstatus_update_progress_ex(long bytes_done, long total_size)
+{
+    char status[128];
+    char done_str[32];
+    char total_str[32];
+    int percent;
+    
+    /* Calculate percentage */
+    if (total_size > 0)
+    {
+        percent = (int)((bytes_done * 100) / total_size);
+    }
+    else
+    {
+        percent = 0;
+    }
+    
+    /* Update progress bar */
+    ftnstatus_update_progress(percent);
+    
+    /* Update status text with size info */
+    if (total_size > 0)
+    {
+        ftnstatus_format_size(bytes_done, done_str, sizeof(done_str));
+        ftnstatus_format_size(total_size, total_str, sizeof(total_str));
+        snprintf(status, sizeof(status), "%s (%s / %s)", 
+                 ftnstatus_transfer_filename, done_str, total_str);
+        Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
+    }
+}
+
+/*
+ * Update status to show connected system name and address.
+ * Called after successful BinkP authentication.
+ */
+void ftnstatus_update_connection(const char *system_name, const FTN_ADDR *addr)
+{
+    char status[128];
+    char addr_str[64];
+    
+    if (addr != NULL)
+    {
+        ftn_addr_to_string(addr, addr_str, sizeof(addr_str));
+        
+        if (system_name != NULL && system_name[0] != '\0')
+        {
+            snprintf(status, sizeof(status), "%s (%s)", system_name, addr_str);
+        }
+        else
+        {
+            snprintf(status, sizeof(status), "Connected: %s", addr_str);
+        }
+    }
+    else if (system_name != NULL && system_name[0] != '\0')
+    {
+        snprintf(status, sizeof(status), "Connected: %s", system_name);
+    }
+    else
+    {
+        return;  /* Nothing useful to show */
+    }
+    
+    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
+    
+    /* Force a redraw */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
 }
 
 /*
@@ -377,19 +512,20 @@ void ftnstatus_update_progress(int percent)
  */
 void ftnstatus_end_transfer(void)
 {
-    Desk_icon_block icon;
-    Desk_icon_createblock createblock;
-    Desk_icon_handle new_icon;
-    
     /* Reset progress bar to minimum */
-    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
-    icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
-    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
-    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
+    ftnstatus_reset_progress();
     
-    createblock.window = ftnstatus_window;
-    createblock.icondata = icon;
-    Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    /* Clear transfer state */
+    ftnstatus_transfer_total = 0;
+    ftnstatus_transfer_filename[0] = '\0';
+    
+    /* Force a redraw */
+    {
+        Desk_event_pollblock event;
+        Desk_event_pollmask mask;
+        mask.value = 0;
+        Desk_Wimp_Poll3(mask, &event, NULL);
+    }
 }
 
 /*
@@ -403,6 +539,13 @@ static void ftnstatus_open_idle(void)
     /* Set idle text */
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
     Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
+    
+    /* Reset progress bar to minimum */
+    ftnstatus_reset_progress();
+    
+    /* Clear transfer state */
+    ftnstatus_transfer_total = 0;
+    ftnstatus_transfer_filename[0] = '\0';
     
     /* Position window at bottom-left, just above iconbar */
     Desk_Wimp_GetWindowState(ftnstatus_window, &state);
@@ -836,7 +979,11 @@ void mailer_accept_connection(void)
 
     /* Open status window for incoming call */
     ftnstatus_open("ftn.incoming");
-    ftnstatus_update(session->remote_hostname);
+    {
+        char status_msg[128];
+        snprintf(status_msg, sizeof(status_msg), "From: %s (authenticating...)", session->remote_hostname);
+        ftnstatus_update(status_msg);
+    }
     ftnlog_printf("Incoming connection from %s", session->remote_hostname);
 
     mailer_log_ftn("Incoming connection from %s", session->remote_hostname);

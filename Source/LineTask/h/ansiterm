@@ -6,9 +6,9 @@
 #include "C:Desk.Wimp.h"
 #include "C:Desk.Window.h"
 
-/* Terminal dimensions - fixed 80x24 */
+/* Terminal dimensions - fixed 80x25 */
 #define ANSITERM_COLS       80
-#define ANSITERM_ROWS       24
+#define ANSITERM_ROWS       25
 
 /* Character cell size in OS units */
 #define ANSITERM_CHAR_WIDTH  16
