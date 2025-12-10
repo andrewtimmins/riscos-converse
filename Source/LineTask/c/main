@@ -275,6 +275,13 @@ typedef struct
     chat_pane_view chat_sysop_pane;
     /* ANSI terminal emulator for snoop/login (dynamically allocated) */
     ansiterm_state *terminal;
+    /* Pending write buffers for door I/O partial write recovery */
+    unsigned char pending_pipe_out[PIPE_TRANSFER_CHUNK];
+    int pending_pipe_out_offset;
+    int pending_pipe_out_length;
+    unsigned char pending_door_in[PIPE_TRANSFER_CHUNK];
+    int pending_door_in_offset;
+    int pending_door_in_length;
 } line_task_state;
 
 static line_task_state task_state;
@@ -1733,6 +1740,12 @@ static void arcbbs_door_reset_state(line_task_state *state)
     state->arcbbs_poll_tick = 0;
     state->arcbbs_requested_door_number = 0;
 
+    /* Clear any pending partial write buffers */
+    state->pending_pipe_out_offset = 0;
+    state->pending_pipe_out_length = 0;
+    state->pending_door_in_offset = 0;
+    state->pending_door_in_length = 0;
+
     /* Deactivate line in ARCbbsDoors module */
     arcbbs_deactivate_line(state->line_id);
 }
@@ -1812,27 +1825,87 @@ static void arcbbs_door_process(line_task_state *state)
             debug_poll_count++;
         }
 
-        /* Read output from door and send to pipe (door->user) using block I/O */
-        output_count = arcbbs_read_output_block(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
-        if (output_count > 0)
+        /* First, flush any pending pipe output from previous partial write */
+        while (state->pending_pipe_out_length > 0)
         {
-            int written = pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
-            debug_printf("LineTask ARCbbs: read %d bytes from door, wrote %d to pipe\n", output_count, written);
-            
-            /* Feed to terminal for sysop snoop */
-            if (state->terminal != NULL && state->terminal->snoop_mode)
+            int remaining = state->pending_pipe_out_length - state->pending_pipe_out_offset;
+            int written = pipes_output_write_block(state->line_id,
+                (const char *)state->pending_pipe_out + state->pending_pipe_out_offset, remaining);
+            if (written <= 0)
             {
-                ansiterm_process_block(state->terminal, buffer, output_count);
-                ansiterm_update_dirty(state->terminal);
+                break;  /* Pipe still full, try again next poll */
+            }
+            state->pending_pipe_out_offset += written;
+            if (state->pending_pipe_out_offset >= state->pending_pipe_out_length)
+            {
+                state->pending_pipe_out_length = 0;
+                state->pending_pipe_out_offset = 0;
+            }
+        }
+
+        /* Flush any pending door input from previous partial write */
+        while (state->pending_door_in_length > 0)
+        {
+            int remaining = state->pending_door_in_length - state->pending_door_in_offset;
+            int written = arcbbs_write_input_block(state->line_id,
+                state->pending_door_in + state->pending_door_in_offset, remaining);
+            if (written <= 0)
+            {
+                break;  /* Door buffer still full, try again next poll */
+            }
+            state->pending_door_in_offset += written;
+            if (state->pending_door_in_offset >= state->pending_door_in_length)
+            {
+                state->pending_door_in_length = 0;
+                state->pending_door_in_offset = 0;
+            }
+        }
+
+        /* Read output from door and send to pipe (door->user) using block I/O */
+        if (state->pending_pipe_out_length == 0)
+        {
+            output_count = arcbbs_read_output_block(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
+            if (output_count > 0)
+            {
+                int written = pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
+                debug_printf("LineTask ARCbbs: read %d bytes from door, wrote %d to pipe\n", output_count, written);
+                
+                /* Save any unwritten bytes to pending buffer */
+                if (written < output_count)
+                {
+                    int remaining = output_count - written;
+                    memcpy(state->pending_pipe_out, buffer + written, remaining);
+                    state->pending_pipe_out_offset = 0;
+                    state->pending_pipe_out_length = remaining;
+                }
+                
+                /* Feed to terminal for sysop snoop (always snoop all data) */
+                if (state->terminal != NULL && state->terminal->snoop_mode)
+                {
+                    ansiterm_process_block(state->terminal, buffer, output_count);
+                    ansiterm_update_dirty(state->terminal);
+                }
             }
         }
 
         /* Read input from pipe and send to door (user->door) using block I/O */
-        input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
-        if (input_count > 0)
+        if (state->pending_door_in_length == 0)
         {
-            int written = arcbbs_write_input_block(state->line_id, buffer, input_count);
-            debug_printf("LineTask ARCbbs: wrote %d/%d bytes to door input\n", written, input_count);
+            input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
+            if (input_count > 0)
+            {
+                int written = arcbbs_write_input_block(state->line_id, buffer, input_count);
+                debug_printf("LineTask ARCbbs: wrote %d/%d bytes to door input\n", written, input_count);
+                
+                /* Save any unwritten bytes to pending buffer */
+                if (written < input_count)
+                {
+                    int remaining = input_count - written;
+                    memcpy(state->pending_door_in, buffer + written, remaining);
+                    state->pending_door_in_offset = 0;
+                    state->pending_door_in_length = remaining;
+                }
+            }
         }
     }
 }
@@ -1979,6 +2052,12 @@ static void native_door_reset_state(line_task_state *state)
     state->native_door_active = Desk_bool_FALSE;
     state->native_door_launch_pending = Desk_bool_FALSE;
     state->native_door_launch_deadline = 0;
+
+    /* Clear any pending partial write buffers */
+    state->pending_pipe_out_offset = 0;
+    state->pending_pipe_out_length = 0;
+    state->pending_door_in_offset = 0;
+    state->pending_door_in_length = 0;
 }
 
 static int native_door_is_registered(int line_id)
@@ -2107,25 +2186,85 @@ static void native_door_process(line_task_state *state)
             return;
         }
         
-        /* Read output from door and send to pipe (door->user) */
-        output_count = native_door_host_read(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
-        if (output_count > 0)
+        /* First, flush any pending pipe output from previous partial write */
+        while (state->pending_pipe_out_length > 0)
         {
-            pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
-            
-            /* Feed to terminal for sysop snoop */
-            if (state->terminal != NULL && state->terminal->snoop_mode)
+            int remaining = state->pending_pipe_out_length - state->pending_pipe_out_offset;
+            int written = pipes_output_write_block(state->line_id,
+                (const char *)state->pending_pipe_out + state->pending_pipe_out_offset, remaining);
+            if (written <= 0)
             {
-                ansiterm_process_block(state->terminal, buffer, output_count);
-                ansiterm_update_dirty(state->terminal);
+                break;  /* Pipe still full, try again next poll */
+            }
+            state->pending_pipe_out_offset += written;
+            if (state->pending_pipe_out_offset >= state->pending_pipe_out_length)
+            {
+                state->pending_pipe_out_length = 0;
+                state->pending_pipe_out_offset = 0;
+            }
+        }
+
+        /* Flush any pending door input from previous partial write */
+        while (state->pending_door_in_length > 0)
+        {
+            int remaining = state->pending_door_in_length - state->pending_door_in_offset;
+            int written = native_door_host_write(state->line_id,
+                state->pending_door_in + state->pending_door_in_offset, remaining);
+            if (written <= 0)
+            {
+                break;  /* Door buffer still full, try again next poll */
+            }
+            state->pending_door_in_offset += written;
+            if (state->pending_door_in_offset >= state->pending_door_in_length)
+            {
+                state->pending_door_in_length = 0;
+                state->pending_door_in_offset = 0;
+            }
+        }
+
+        /* Read output from door and send to pipe (door->user) */
+        if (state->pending_pipe_out_length == 0)
+        {
+            output_count = native_door_host_read(state->line_id, buffer, PIPE_TRANSFER_CHUNK);
+            if (output_count > 0)
+            {
+                int written = pipes_output_write_block(state->line_id, (const char *)buffer, output_count);
+                
+                /* Save any unwritten bytes to pending buffer */
+                if (written < output_count)
+                {
+                    int remaining = output_count - written;
+                    memcpy(state->pending_pipe_out, buffer + written, remaining);
+                    state->pending_pipe_out_offset = 0;
+                    state->pending_pipe_out_length = remaining;
+                }
+                
+                /* Feed to terminal for sysop snoop (always snoop all data) */
+                if (state->terminal != NULL && state->terminal->snoop_mode)
+                {
+                    ansiterm_process_block(state->terminal, buffer, output_count);
+                    ansiterm_update_dirty(state->terminal);
+                }
             }
         }
         
         /* Read input from pipe and send to door (user->door) */
-        input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
-        if (input_count > 0)
+        if (state->pending_door_in_length == 0)
         {
-            native_door_host_write(state->line_id, buffer, input_count);
+            input_count = pipes_input_read_block(state->line_id, (char *)buffer, PIPE_TRANSFER_CHUNK);
+            if (input_count > 0)
+            {
+                int written = native_door_host_write(state->line_id, buffer, input_count);
+                
+                /* Save any unwritten bytes to pending buffer */
+                if (written < input_count)
+                {
+                    int remaining = input_count - written;
+                    memcpy(state->pending_door_in, buffer + written, remaining);
+                    state->pending_door_in_offset = 0;
+                    state->pending_door_in_length = remaining;
+                }
+            }
         }
     }
 }
