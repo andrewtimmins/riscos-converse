@@ -786,6 +786,45 @@ QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out)
 }
 
 /*
+ * Get the next file to send for a specific session.
+ * This correctly handles routing:
+ * - For uplinks: returns files from ANY node in the zone (uplink routes for us)
+ * - For direct/non-uplink: returns only files addressed to that specific node
+ * 
+ * Parameters:
+ *   target_addr: The address we're connected to
+ *   is_uplink:   1 if target is an uplink, 0 for direct connections
+ *   node_out:    [out] Returns the QUEUE_NODE containing the file
+ * 
+ * Returns: Next file to send, or NULL if none available.
+ */
+QUEUE_FILE *queue_get_next_file_for_session(const FTN_ADDR *target_addr, int is_uplink, QUEUE_NODE **node_out)
+{
+    if (is_uplink)
+    {
+        /* For uplinks, send all mail for their zone - they will route it */
+        return queue_get_next_file_for_zone(target_addr->zone, node_out);
+    }
+    else
+    {
+        /* For direct connections, only send mail addressed to this specific node */
+        QUEUE_NODE *node = queue_find_node_by_any_address(target_addr);
+        
+        if (node_out != NULL)
+        {
+            *node_out = node;
+        }
+        
+        if (node == NULL || node->file_count == 0)
+        {
+            return NULL;
+        }
+        
+        return queue_get_next_file(node);
+    }
+}
+
+/*
  * Count total files pending for a zone.
  */
 int queue_count_files_for_zone(int zone)

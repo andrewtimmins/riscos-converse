@@ -2,7 +2,7 @@
     detectansi ansi 3000
     cls
     doing `Logging on...`
-} 
-Welcome to the Yellow Toaster BBS!
-
-{ logon }
+    type `<Converse$Dir>.BBS.ANSI.Welcome`
+    pos 2 17
+    logon
+}

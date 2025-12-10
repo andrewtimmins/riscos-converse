@@ -105,8 +105,8 @@ start
 line        10
 enabled     yes
 type        serial
-driver      Internal32
-port        0
+driver      InternalPC
+port        31
 speed       115200
 format      8N1
 flow        rts

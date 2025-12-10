@@ -107,6 +107,7 @@ typedef struct
     /* Remote node info */
     FTN_ADDR remote_addr;           /* Address reported by remote in M_ADR */
     FTN_ADDR target_addr;           /* For outbound: address we're calling (for password lookup) */
+    int target_is_uplink;           /* 1 if target is a configured uplink (routes zone mail) */
     char remote_sysop[64];
     char remote_system[64];
     char remote_location[64];
@@ -154,6 +155,10 @@ typedef struct
     /* ND mode received files tracking (to prevent duplicates) */
     char nd_received_files[32][MAILER_PATH_SIZE];  /* Track received filenames */
     int nd_received_count;
+
+    /* NR mode sent files queue - files sent but waiting for M_GOT */
+    FILE_TRANSFER sent_files[16];   /* Queue of sent files awaiting M_GOT */
+    int sent_files_count;           /* Number of files in sent queue */
 
     /* Compression support */
     int z_can_send;                 /* Compression types we can send (bitmask) */
@@ -235,6 +240,7 @@ typedef struct
     /* Automatic scheduling timestamps */
     time_t last_auto_toss;
     time_t last_auto_poll;
+    time_t startup_delay_until;          /* Don't poll until after this time */
 
     /* Statistics */
     int total_sessions;
@@ -272,11 +278,13 @@ void mailer_free_session(MAILER_SESSION *session);
 void mailer_close_session(MAILER_SESSION *session, const char *reason);
 void mailer_process_sessions(void);
 void mailer_check_timeouts(void);
+int mailer_is_aka_busy(const FTN_ADDR *addr, MAILER_SESSION *exclude);
 
 /* Outbound connections */
-int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port);
+int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port, int is_uplink);
 void mailer_poll_outbound(void);
 void mailer_poll_all_uplinks(void);
+int mailer_poll_next_ready_node(void);
 
 /* Statistics */
 void mailer_update_stats(MAILER_SESSION *session);
@@ -288,7 +296,20 @@ void mailer_update_stats(MAILER_SESSION *session);
 void mailer_update_status_window(void);
 void mailer_log(const char *format, ...);
 
-/* Transfer progress display */
+/* FTN Status window - multi-network display */
+int ftnstatus_initialise(void);
+void ftnstatus_finalise(void);
+void ftnstatus_open_window(void);
+void ftnstatus_close_window(void);
+void ftnstatus_set_activity(int network_id, int is_outbound, const char *activity);
+void ftnstatus_set_activity_percent(int network_id, int is_outbound, const char *activity, int percent);
+void ftnstatus_set_session_direction(int is_outbound);
+void ftnstatus_clear_network(int network_id);
+void ftnstatus_clear_all(void);
+void ftnstatus_update_timers(void);
+int ftnstatus_find_network_by_zone(int zone);
+
+/* Legacy transfer progress display (deprecated - calls new functions internally) */
 void ftnstatus_start_transfer(int is_sending, const char *filename);
 void ftnstatus_start_transfer_ex(int is_sending, const char *filename, long total_size);
 void ftnstatus_update_progress(int percent);

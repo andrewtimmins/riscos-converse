@@ -1314,6 +1314,8 @@ void tosser_move_to_processed(const char *path)
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
     int zone = 2;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
 
     if (path == NULL)
     {
@@ -1332,18 +1334,25 @@ void tosser_move_to_processed(const char *path)
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
 
     /* Use OS_FSControl 25 to rename/move */
+    regs.r[0] = 25;  /* Rename */
+    regs.r[1] = (int)path;
+    regs.r[2] = (int)dest;
+
+    err = _kernel_swi(OS_FSControl, &regs, &regs);
+    if (err != NULL)
     {
-        _kernel_swi_regs regs;
-
-        regs.r[0] = 25;  /* Rename */
-        regs.r[1] = (int)path;
-        regs.r[2] = (int)dest;
-
-        if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
-        {
-            /* If rename fails, try to delete original */
-            remove(path);
-        }
+        /* Move failed - DO NOT delete the original file!
+         * Log the error and leave file in place for manual intervention.
+         * The file will be re-tossed next time, which is better than losing it.
+         * Common causes: destination exists, disk full, permissions.
+         */
+        debug_printf("tosser: Failed to move %s to Processed: %s", leaf, err->errmess);
+        mailer_log("WARNING: Could not move %s to Processed folder: %s", leaf, err->errmess);
+        tosser_report_status("Move failed: %s", leaf);
+    }
+    else
+    {
+        debug_printf("tosser: Moved %s to Processed", leaf);
     }
 }
 
@@ -1353,6 +1362,8 @@ void tosser_move_to_bad(const char *path)
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
     int zone = 2;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
 
     if (path == NULL)
     {
@@ -1370,18 +1381,25 @@ void tosser_move_to_bad(const char *path)
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
 
     /* Use OS_FSControl 25 to rename/move */
+    regs.r[0] = 25;  /* Rename */
+    regs.r[1] = (int)path;
+    regs.r[2] = (int)dest;
+
+    err = _kernel_swi(OS_FSControl, &regs, &regs);
+    if (err != NULL)
     {
-        _kernel_swi_regs regs;
-
-        regs.r[0] = 25;  /* Rename */
-        regs.r[1] = (int)path;
-        regs.r[2] = (int)dest;
-
-        if (_kernel_swi(OS_FSControl, &regs, &regs) != NULL)
-        {
-            /* If rename fails, try to delete original */
-            remove(path);
-        }
+        /* Move failed - DO NOT delete the original file!
+         * Log the error and leave file in place for manual investigation.
+         * Bad packets should be preserved for debugging.
+         */
+        debug_printf("tosser: Failed to move %s to Bad: %s", leaf, err->errmess);
+        mailer_log("WARNING: Could not move bad packet %s: %s", leaf, err->errmess);
+        tosser_report_status("Move to Bad failed: %s", leaf);
+    }
+    else
+    {
+        debug_printf("tosser: Moved bad packet %s to Bad folder", leaf);
+        mailer_log("Bad packet moved: %s", leaf);
     }
 }
 

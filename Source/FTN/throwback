@@ -1,0 +1,16 @@
+link  -o FTN o.debug o.timer o.ftnlog o.mailer o.binkp o.queue o.tosser o.scanner o.packer o.md5 o.tic o.crypt o.compress o.freq o.echofix o.nodelist o.ftnupload C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32 CLIB:o.stubs
+ARM Linker: (Error) Undefined symbol(s).
+ARM Linker:     FTNSTATUS_TOP_STATIC_ROWS, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_PADDING, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_COLUMN_GAP, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_COLUMN_START, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_NUM_WIDTH, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_NETWORK_WIDTH, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_ACTIVITY_WIDTH, referred to from o.mailer.
+ARM Linker:     FTNSTATUS_TIME_WIDTH, referred to from o.mailer.
+ARM Linker: Errors in link, no output generated.
+ARM Linker: finished,  9 informational, 0 warning and 1 error messages.
+AMU: *** exit (1) ***
+
+AMU: *** 'all' not re-made because of errors ***
+

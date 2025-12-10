@@ -206,64 +206,286 @@ void mailer_log(const char *format, ...)
 }
 
 /* ******************************************************************************************************************************************************** */
-/* FTN Status Window                                                                                                                                        */
+/* FTN Status Window - Multi-Network Display                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
-/* Progress bar constants */
-#define FTNSTATUS_PROGRESS_MIN_WIDTH 20
-#define FTNSTATUS_PROGRESS_MAX_WIDTH 776
+/* Per-network icon text buffers */
+typedef struct {
+    char *num_text;         /* "0", "1", etc. */
+    char *network_text;     /* "Zone 2 (FidoNet)" */
+    char *activity_text;    /* "IN: Receiving file (45%)" */
+    char *time_text;        /* "00:01:23" or "--" */
+    time_t start_time;      /* When activity started (0 = idle) */
+} FTNSTATUS_ROW;
 
-/* Current transfer state for progress display */
-static long ftnstatus_transfer_total = 0;
-static int ftnstatus_is_sending = 0;
-static char ftnstatus_transfer_filename[128];
+static FTNSTATUS_ROW *ftnstatus_rows = NULL;
+static int ftnstatus_row_count = 0;
+static int ftnstatus_window_open = 0;
+static NODELIST_NETWORK ftnstatus_networks[NODELIST_MAX_NETWORKS];
+
+/* Legacy state for backward compatibility */
+static int ftnstatus_legacy_network = 0;
+static int ftnstatus_legacy_is_sending = 0;
+static int ftnstatus_legacy_is_outbound = 1;    /* Direction: 1=outbound, 0=inbound */
+static long ftnstatus_legacy_total = 0;
+static char ftnstatus_legacy_filename[128];
 
 /*
- * Helper function to reset progress bar to minimum width.
+ * Calculate icon index for a given row and column.
  */
-static void ftnstatus_reset_progress(void)
+static int ftnstatus_icon_index(int row, int column)
 {
-    Desk_icon_block icon;
-    Desk_icon_createblock createblock;
-    Desk_icon_handle new_icon;
-    
-    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
-    icon.workarearect.max.x = icon.workarearect.min.x + FTNSTATUS_PROGRESS_MIN_WIDTH;
-    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
-    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
-    
-    createblock.window = ftnstatus_window;
-    createblock.icondata = icon;
-    Desk_Wimp_CreateIcon(&createblock, &new_icon);
+    return FTNSTATUS_ICON_BASE + (row * FTNSTATUS_ICONS_PER_ROW) + column;
 }
 
 /*
- * Open the ftnstatus window positioned at bottom-left, just above iconbar.
- * Sets the operation text from the message tag.
+ * Create dynamic icons for all network rows.
+ * Follows the same pattern as Server's create_line_icons().
  */
-static void ftnstatus_open(const char *operation_msg_tag)
+static int ftnstatus_create_icons(void)
 {
-    char operation[64];
+    int row;
+    int y_base;
+    int column_x;
+    Desk_icon_createblock icon_create;
+    Desk_icon_handle icon_handle;
+    
+    if (ftnstatus_row_count <= 0)
+    {
+        debug_printf("ftnstatus: No networks configured");
+        return 0;
+    }
+    
+    icon_create.window = ftnstatus_window;
+    y_base = -((FTNSTATUS_TOP_STATIC_ROWS * FTNSTATUS_ICON_HEIGHT) + FTNSTATUS_PADDING);
+    
+    for (row = 0; row < ftnstatus_row_count; row++)
+    {
+        FTNSTATUS_ROW *r = &ftnstatus_rows[row];
+        
+        /* Allocate text buffers */
+        r->num_text = malloc(8);
+        r->network_text = malloc(64);
+        r->activity_text = malloc(128);
+        r->time_text = malloc(16);
+        
+        if (!r->num_text || !r->network_text || !r->activity_text || !r->time_text)
+        {
+            debug_printf("ftnstatus: Failed to allocate icon buffers");
+            return 0;
+        }
+        
+        /* Initialize text */
+        snprintf(r->num_text, 8, "%d", row);
+        snprintf(r->network_text, 64, "Zone %d (%s)", 
+                 ftnstatus_networks[row].default_zone,
+                 ftnstatus_networks[row].name);
+        strcpy(r->activity_text, "Idle");
+        strcpy(r->time_text, "--");
+        r->start_time = 0;
+        
+        /* Calculate Y position for this row */
+        icon_create.icondata.workarearect.max.y = y_base - (FTNSTATUS_ICON_HEIGHT * row);
+        icon_create.icondata.workarearect.min.y = icon_create.icondata.workarearect.max.y - FTNSTATUS_ICON_HEIGHT;
+        
+        column_x = FTNSTATUS_COLUMN_START;
+        
+        /* Column 0: Number */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + FTNSTATUS_NUM_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = r->num_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 8;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + FTNSTATUS_COLUMN_GAP;
+        
+        /* Column 1: Network */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + FTNSTATUS_NETWORK_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = r->network_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 64;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + FTNSTATUS_COLUMN_GAP;
+        
+        /* Column 2: Activity */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + FTNSTATUS_ACTIVITY_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = r->activity_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 128;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + FTNSTATUS_COLUMN_GAP;
+        
+        /* Column 3: Time */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + FTNSTATUS_TIME_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = r->time_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 16;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+    }
+    
+    return 1;
+}
+
+/*
+ * Free all dynamically allocated icon buffers.
+ */
+static void ftnstatus_free_icons(void)
+{
+    int i;
+    
+    if (ftnstatus_rows == NULL)
+        return;
+    
+    for (i = 0; i < ftnstatus_row_count; i++)
+    {
+        if (ftnstatus_rows[i].num_text) free(ftnstatus_rows[i].num_text);
+        if (ftnstatus_rows[i].network_text) free(ftnstatus_rows[i].network_text);
+        if (ftnstatus_rows[i].activity_text) free(ftnstatus_rows[i].activity_text);
+        if (ftnstatus_rows[i].time_text) free(ftnstatus_rows[i].time_text);
+    }
+    
+    free(ftnstatus_rows);
+    ftnstatus_rows = NULL;
+    ftnstatus_row_count = 0;
+}
+
+/*
+ * Set window extent based on number of network rows.
+ * Follows the same pattern as Server's set_extent calculation.
+ */
+static void ftnstatus_set_extent(void)
+{
+    Desk_wimp_box extent;
+    int total_height;
+    int total_width;
+    
+    /* Calculate total height: (header rows + data rows) * row height + top padding + bottom padding */
+    total_height = ((ftnstatus_row_count + FTNSTATUS_TOP_STATIC_ROWS) * FTNSTATUS_ICON_HEIGHT) + 
+                   FTNSTATUS_PADDING + FTNSTATUS_BOTTOM_PADDING;
+    
+    /* Calculate total width: all columns + gaps between them */
+    total_width = FTNSTATUS_COLUMN_START + 
+                  FTNSTATUS_NUM_WIDTH + FTNSTATUS_COLUMN_GAP +
+                  FTNSTATUS_NETWORK_WIDTH + FTNSTATUS_COLUMN_GAP +
+                  FTNSTATUS_ACTIVITY_WIDTH + FTNSTATUS_COLUMN_GAP +
+                  FTNSTATUS_TIME_WIDTH;
+    
+    extent.min.x = 0;
+    extent.max.x = total_width;
+    extent.min.y = -total_height;
+    extent.max.y = 0;
+    
+    Desk_Wimp_SetExtent(ftnstatus_window, &extent);
+}
+
+/*
+ * Initialise the FTN status window with dynamic network rows.
+ * Called after template is loaded but before window is opened.
+ */
+int ftnstatus_initialise(void)
+{
+    /* Get configured networks */
+    ftnstatus_row_count = nodelist_get_configured_networks(ftnstatus_networks, NODELIST_MAX_NETWORKS);
+    
+    if (ftnstatus_row_count <= 0)
+    {
+        debug_printf("ftnstatus: No networks configured, using 1 row");
+        ftnstatus_row_count = 1;
+        ftnstatus_networks[0].id = 0;
+        ftnstatus_networks[0].active = 1;
+        strcpy(ftnstatus_networks[0].name, "Default");
+        ftnstatus_networks[0].default_zone = 0;
+    }
+    
+    /* Allocate row structures */
+    ftnstatus_rows = calloc(ftnstatus_row_count, sizeof(FTNSTATUS_ROW));
+    if (ftnstatus_rows == NULL)
+    {
+        debug_printf("ftnstatus: Failed to allocate row structures");
+        return 0;
+    }
+    
+    /* Set window extent */
+    ftnstatus_set_extent();
+    
+    /* Create dynamic icons */
+    if (!ftnstatus_create_icons())
+    {
+        ftnstatus_free_icons();
+        return 0;
+    }
+    
+    debug_printf("ftnstatus: Initialised with %d network rows", ftnstatus_row_count);
+    return 1;
+}
+
+/*
+ * Finalise the FTN status window.
+ */
+void ftnstatus_finalise(void)
+{
+    ftnstatus_free_icons();
+}
+
+/*
+ * Open the FTN status window at bottom-left of screen.
+ */
+void ftnstatus_open_window(void)
+{
     Desk_window_state state;
     int win_width, win_height;
     
-    /* Look up operation string from Messages file */
-    Desk_Msgs_Lookup(operation_msg_tag, operation, sizeof(operation));
+    /* Don't open if not initialised or already open */
+    if (ftnstatus_rows == NULL || ftnstatus_window_open)
+        return;
     
-    /* Set operation text */
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, operation);
-    
-    /* Clear status */
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "");
-    
-    /* Reset progress bar to minimum */
-    ftnstatus_reset_progress();
-    
-    /* Position window at bottom-left, just above iconbar */
+    /* Get current window state */
     Desk_Wimp_GetWindowState(ftnstatus_window, &state);
     win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
     win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
     
+    /* Position at bottom-left, just above iconbar */
     state.openblock.screenrect.min.x = 16;
     state.openblock.screenrect.max.x = 16 + win_width;
     state.openblock.screenrect.min.y = 134;  /* Just above iconbar (128) + margin */
@@ -271,79 +493,211 @@ static void ftnstatus_open(const char *operation_msg_tag)
     state.openblock.behind = -1;  /* Open at front */
     
     Desk_Wimp_OpenWindow(&state.openblock);
-    
-    /* Force a redraw so user sees it immediately */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
-    }
+    ftnstatus_window_open = 1;
 }
 
 /*
- * Update the status text in the ftnstatus window.
+ * Close the FTN status window.
  */
-static void ftnstatus_update(const char *status)
+void ftnstatus_close_window(void)
 {
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, (char *)status);
+    if (!ftnstatus_window_open)
+        return;
     
-    /* Force a redraw so user sees update */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
-    }
+    Desk_Wimp_CloseWindow(ftnstatus_window);
+    ftnstatus_window_open = 0;
 }
 
 /*
- * Set the ftnstatus window to idle state.
- * Shows "Idle..." and "Waiting for connection."
+ * Find network ID by zone number.
+ * Returns -1 if not found.
  */
-static void ftnstatus_set_idle(void)
+int ftnstatus_find_network_by_zone(int zone)
 {
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
+    int i;
     
-    /* Reset progress bar to minimum width */
-    ftnstatus_reset_progress();
-    
-    /* Clear transfer state */
-    ftnstatus_transfer_total = 0;
-    ftnstatus_transfer_filename[0] = '\0';
-    
-    /* Force a redraw so user sees update */
+    for (i = 0; i < ftnstatus_row_count; i++)
     {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
+        if (ftnstatus_networks[i].default_zone == zone)
+            return i;
     }
+    
+    /* Default to first network if zone not found */
+    return (ftnstatus_row_count > 0) ? 0 : -1;
 }
 
 /*
- * Format a file size into a human-readable string.
+ * Update icon text and force redraw.
  */
-static void ftnstatus_format_size(long bytes, char *buffer, size_t size)
+static void ftnstatus_update_icon(int row, int column)
 {
-    if (bytes >= 1048576)
+    Desk_icon_handle icon;
+    
+    if (ftnstatus_rows == NULL || row < 0 || row >= ftnstatus_row_count)
+        return;
+    
+    icon = ftnstatus_icon_index(row, column);
+    Desk_Wimp_SetIconState(ftnstatus_window, icon, 0, 0);
+}
+
+/*
+ * Set activity text for a network.
+ * is_outbound: 1 = outbound (OUT:), 0 = inbound (IN:)
+ */
+void ftnstatus_set_activity(int network_id, int is_outbound, const char *activity)
+{
+    FTNSTATUS_ROW *row;
+    
+    if (ftnstatus_rows == NULL || network_id < 0 || network_id >= ftnstatus_row_count)
+        return;
+    
+    row = &ftnstatus_rows[network_id];
+    
+    /* Format with direction prefix */
+    if (activity != NULL && activity[0] != '\0')
     {
-        snprintf(buffer, size, "%.1f MB", (double)bytes / 1048576.0);
-    }
-    else if (bytes >= 1024)
-    {
-        snprintf(buffer, size, "%.1f KB", (double)bytes / 1024.0);
+        snprintf(row->activity_text, 128, "%s: %s", 
+                 is_outbound ? "OUT" : "IN", activity);
+        
+        /* Start timer if not already running */
+        if (row->start_time == 0)
+        {
+            row->start_time = time(NULL);
+            strcpy(row->time_text, "00:00:00");
+        }
     }
     else
     {
-        snprintf(buffer, size, "%ld B", bytes);
+        strcpy(row->activity_text, "Idle");
+        row->start_time = 0;
+        strcpy(row->time_text, "--");
+    }
+    
+    /* Auto-open window on activity */
+    if (!ftnstatus_window_open && activity != NULL && activity[0] != '\0')
+    {
+        ftnstatus_open_window();
+    }
+    
+    ftnstatus_update_icon(network_id, 2);  /* Activity column */
+    ftnstatus_update_icon(network_id, 3);  /* Time column */
+}
+
+/*
+ * Set activity text with percentage for a network.
+ */
+void ftnstatus_set_activity_percent(int network_id, int is_outbound, const char *activity, int percent)
+{
+    FTNSTATUS_ROW *row;
+    
+    if (ftnstatus_rows == NULL || network_id < 0 || network_id >= ftnstatus_row_count)
+        return;
+    
+    row = &ftnstatus_rows[network_id];
+    
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    
+    /* Format with direction prefix and percentage */
+    snprintf(row->activity_text, 128, "%s: %s (%d%%)",
+             is_outbound ? "OUT" : "IN", activity, percent);
+    
+    /* Start timer if not already running */
+    if (row->start_time == 0)
+    {
+        row->start_time = time(NULL);
+        strcpy(row->time_text, "00:00:00");
+    }
+    
+    /* Auto-open window on activity */
+    if (!ftnstatus_window_open)
+    {
+        ftnstatus_open_window();
+    }
+    
+    ftnstatus_update_icon(network_id, 2);  /* Activity column */
+}
+
+/*
+ * Clear a network row back to idle state.
+ */
+void ftnstatus_clear_network(int network_id)
+{
+    FTNSTATUS_ROW *row;
+    
+    if (ftnstatus_rows == NULL || network_id < 0 || network_id >= ftnstatus_row_count)
+        return;
+    
+    row = &ftnstatus_rows[network_id];
+    strcpy(row->activity_text, "Idle");
+    row->start_time = 0;
+    strcpy(row->time_text, "--");
+    
+    ftnstatus_update_icon(network_id, 2);  /* Activity column */
+    ftnstatus_update_icon(network_id, 3);  /* Time column */
+}
+
+/*
+ * Clear all networks to idle state.
+ */
+void ftnstatus_clear_all(void)
+{
+    int i;
+    
+    if (ftnstatus_rows == NULL)
+        return;
+    
+    for (i = 0; i < ftnstatus_row_count; i++)
+    {
+        ftnstatus_clear_network(i);
     }
 }
 
 /*
- * Start a file transfer display (legacy version without size).
- * Sets operation to "Transferring..." and status to direction + filename.
+ * Update elapsed time display for all active networks.
+ * Call this from the main poll loop (every second or so).
+ */
+void ftnstatus_update_timers(void)
+{
+    int i;
+    time_t now = time(NULL);
+    
+    if (ftnstatus_rows == NULL)
+        return;
+    
+    for (i = 0; i < ftnstatus_row_count; i++)
+    {
+        FTNSTATUS_ROW *row = &ftnstatus_rows[i];
+        
+        if (row->start_time != 0)
+        {
+            int elapsed = (int)(now - row->start_time);
+            int hours = elapsed / 3600;
+            int minutes = (elapsed % 3600) / 60;
+            int seconds = elapsed % 60;
+            
+            snprintf(row->time_text, 16, "%02d:%02d:%02d", hours, minutes, seconds);
+            ftnstatus_update_icon(i, 3);  /* Time column */
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Legacy FTN Status Functions - Backward Compatibility                                                                                                     */
+/* These map to the new multi-network display using network 0 by default.                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Set the session direction for legacy functions.
+ * Call this when a session is established before calling transfer functions.
+ */
+void ftnstatus_set_session_direction(int is_outbound)
+{
+    ftnstatus_legacy_is_outbound = is_outbound;
+}
+
+/*
+ * Start a file transfer display (legacy).
  */
 void ftnstatus_start_transfer(int is_sending, const char *filename)
 {
@@ -351,214 +705,151 @@ void ftnstatus_start_transfer(int is_sending, const char *filename)
 }
 
 /*
- * Start a file transfer display with size information.
- * Sets operation to "Sending/Receiving" and status to filename with size.
+ * Start a file transfer display with size (legacy).
+ * Note: is_sending indicates the direction of file transfer (1=sending, 0=receiving),
+ * which is combined with session direction (outbound/inbound) for display.
  */
 void ftnstatus_start_transfer_ex(int is_sending, const char *filename, long total_size)
 {
-    char status[128];
-    char size_str[32];
+    char activity[128];
+    const char *direction = ftnstatus_legacy_is_outbound ? "OUT" : "IN";
+    const char *action = is_sending ? "Sending" : "Receiving";
     
-    /* Store transfer state */
-    ftnstatus_is_sending = is_sending;
-    ftnstatus_transfer_total = total_size;
-    strncpy(ftnstatus_transfer_filename, filename, sizeof(ftnstatus_transfer_filename) - 1);
-    ftnstatus_transfer_filename[sizeof(ftnstatus_transfer_filename) - 1] = '\0';
+    /* Store for legacy progress updates */
+    ftnstatus_legacy_is_sending = is_sending;
+    ftnstatus_legacy_total = total_size;
+    strncpy(ftnstatus_legacy_filename, filename, sizeof(ftnstatus_legacy_filename) - 1);
+    ftnstatus_legacy_filename[sizeof(ftnstatus_legacy_filename) - 1] = '\0';
     
-    /* Set operation text */
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, 
-                      is_sending ? "Sending..." : "Receiving...");
+    /* Format activity with direction prefix */
+    snprintf(activity, sizeof(activity), "%s: %s %s", direction, action, filename);
     
-    /* Build status with size if available */
-    if (total_size > 0)
+    /* Update the network row directly (bypass set_activity to avoid double prefix) */
+    if (ftnstatus_rows != NULL && ftnstatus_legacy_network >= 0 && ftnstatus_legacy_network < ftnstatus_row_count)
     {
-        ftnstatus_format_size(total_size, size_str, sizeof(size_str));
-        snprintf(status, sizeof(status), "%s (0 / %s)", filename, size_str);
-    }
-    else
-    {
-        snprintf(status, sizeof(status), "%s", filename);
-    }
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
-    
-    /* Reset progress bar to minimum */
-    ftnstatus_reset_progress();
-    
-    /* Force redraw */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
+        FTNSTATUS_ROW *row = &ftnstatus_rows[ftnstatus_legacy_network];
+        
+        strncpy(row->activity_text, activity, 127);
+        row->activity_text[127] = '\0';
+        
+        if (row->start_time == 0)
+        {
+            row->start_time = time(NULL);
+            strcpy(row->time_text, "00:00:00");
+        }
+        
+        if (!ftnstatus_window_open)
+        {
+            ftnstatus_open_window();
+        }
+        
+        ftnstatus_update_icon(ftnstatus_legacy_network, 2);
+        ftnstatus_update_icon(ftnstatus_legacy_network, 3);
     }
 }
 
 /*
- * Update file transfer progress.
- * percent should be 0-100.
+ * Update file transfer progress (legacy).
  */
 void ftnstatus_update_progress(int percent)
 {
-    Desk_icon_block icon;
-    Desk_icon_createblock createblock;
-    Desk_icon_handle new_icon;
-    int width;
+    char activity[128];
+    const char *direction = ftnstatus_legacy_is_outbound ? "OUT" : "IN";
+    const char *action = ftnstatus_legacy_is_sending ? "Sending" : "Receiving";
     
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
     
-    /* Calculate new width based on percentage */
-    width = FTNSTATUS_PROGRESS_MIN_WIDTH + 
-            ((FTNSTATUS_PROGRESS_MAX_WIDTH - FTNSTATUS_PROGRESS_MIN_WIDTH) * percent) / 100;
+    /* Format activity with direction, action, filename and percentage */
+    snprintf(activity, sizeof(activity), "%s: %s %s (%d%%)", 
+             direction, action, ftnstatus_legacy_filename, percent);
     
-    /* Update the icon width */
-    Desk_Wimp_GetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, &icon);
-    icon.workarearect.max.x = icon.workarearect.min.x + width;
-    Desk_Wimp_SetIconState(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER, 0, 0);
-    Desk_Wimp_DeleteIcon(ftnstatus_window, FTNSTATUS_PROGRESSCOUNTER);
-    
-    createblock.window = ftnstatus_window;
-    createblock.icondata = icon;
-    Desk_Wimp_CreateIcon(&createblock, &new_icon);
-    
-    /* Force a redraw so user sees progress update */
+    /* Update the network row directly */
+    if (ftnstatus_rows != NULL && ftnstatus_legacy_network >= 0 && ftnstatus_legacy_network < ftnstatus_row_count)
     {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
+        FTNSTATUS_ROW *row = &ftnstatus_rows[ftnstatus_legacy_network];
+        
+        strncpy(row->activity_text, activity, 127);
+        row->activity_text[127] = '\0';
+        
+        ftnstatus_update_icon(ftnstatus_legacy_network, 2);
     }
 }
 
 /*
- * Update file transfer progress with byte counts.
- * Updates both the progress bar and the status text with current/total size.
+ * Update file transfer progress with byte counts (legacy).
  */
 void ftnstatus_update_progress_ex(long bytes_done, long total_size)
 {
-    char status[128];
-    char done_str[32];
-    char total_str[32];
-    int percent;
+    int percent = 0;
     
-    /* Calculate percentage */
     if (total_size > 0)
     {
         percent = (int)((bytes_done * 100) / total_size);
     }
-    else
-    {
-        percent = 0;
-    }
     
-    /* Update progress bar */
     ftnstatus_update_progress(percent);
-    
-    /* Update status text with size info */
-    if (total_size > 0)
-    {
-        ftnstatus_format_size(bytes_done, done_str, sizeof(done_str));
-        ftnstatus_format_size(total_size, total_str, sizeof(total_str));
-        snprintf(status, sizeof(status), "%s (%s / %s)", 
-                 ftnstatus_transfer_filename, done_str, total_str);
-        Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
-    }
 }
 
 /*
- * Update status to show connected system name and address.
- * Called after successful BinkP authentication.
+ * Update connection display (legacy).
+ * Note: Call ftnstatus_set_session_direction() before this to set IN/OUT.
  */
 void ftnstatus_update_connection(const char *system_name, const FTN_ADDR *addr)
 {
-    char status[128];
-    char addr_str[64];
+    char activity[128];
+    const char *direction = ftnstatus_legacy_is_outbound ? "OUT" : "IN";
     
     if (addr != NULL)
     {
+        char addr_str[64];
         ftn_addr_to_string(addr, addr_str, sizeof(addr_str));
+        
+        /* Find network by zone */
+        ftnstatus_legacy_network = ftnstatus_find_network_by_zone(addr->zone);
         
         if (system_name != NULL && system_name[0] != '\0')
         {
-            snprintf(status, sizeof(status), "%s (%s)", system_name, addr_str);
+            snprintf(activity, sizeof(activity), "%s: Connected to %s (%s)", 
+                     direction, system_name, addr_str);
         }
         else
         {
-            snprintf(status, sizeof(status), "Connected: %s", addr_str);
+            snprintf(activity, sizeof(activity), "%s: Connected to %s", 
+                     direction, addr_str);
         }
-    }
-    else if (system_name != NULL && system_name[0] != '\0')
-    {
-        snprintf(status, sizeof(status), "Connected: %s", system_name);
-    }
-    else
-    {
-        return;  /* Nothing useful to show */
-    }
-    
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, status);
-    
-    /* Force a redraw */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
+        
+        /* Update the network row directly */
+        if (ftnstatus_rows != NULL && ftnstatus_legacy_network >= 0 && ftnstatus_legacy_network < ftnstatus_row_count)
+        {
+            FTNSTATUS_ROW *row = &ftnstatus_rows[ftnstatus_legacy_network];
+            
+            strncpy(row->activity_text, activity, 127);
+            row->activity_text[127] = '\0';
+            
+            if (row->start_time == 0)
+            {
+                row->start_time = time(NULL);
+                strcpy(row->time_text, "00:00:00");
+            }
+            
+            if (!ftnstatus_window_open)
+            {
+                ftnstatus_open_window();
+            }
+            
+            ftnstatus_update_icon(ftnstatus_legacy_network, 2);
+            ftnstatus_update_icon(ftnstatus_legacy_network, 3);
+        }
     }
 }
 
 /*
- * End file transfer display, resetting progress bar.
+ * End file transfer display (legacy).
  */
 void ftnstatus_end_transfer(void)
 {
-    /* Reset progress bar to minimum */
-    ftnstatus_reset_progress();
-    
-    /* Clear transfer state */
-    ftnstatus_transfer_total = 0;
-    ftnstatus_transfer_filename[0] = '\0';
-    
-    /* Force a redraw */
-    {
-        Desk_event_pollblock event;
-        Desk_event_pollmask mask;
-        mask.value = 0;
-        Desk_Wimp_Poll3(mask, &event, NULL);
-    }
-}
-
-/*
- * Open the ftnstatus window in idle state at bottom-left.
- */
-static void ftnstatus_open_idle(void)
-{
-    Desk_window_state state;
-    int win_width, win_height;
-    
-    /* Set idle text */
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_OPERATION, "Idle...");
-    Desk_Icon_SetText(ftnstatus_window, FTNSTATUS_STATUS, "Waiting for connection.");
-    
-    /* Reset progress bar to minimum */
-    ftnstatus_reset_progress();
-    
-    /* Clear transfer state */
-    ftnstatus_transfer_total = 0;
-    ftnstatus_transfer_filename[0] = '\0';
-    
-    /* Position window at bottom-left, just above iconbar */
-    Desk_Wimp_GetWindowState(ftnstatus_window, &state);
-    win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
-    win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
-    
-    state.openblock.screenrect.min.x = 16;
-    state.openblock.screenrect.max.x = 16 + win_width;
-    state.openblock.screenrect.min.y = 134;  /* Just above iconbar (128) + margin */
-    state.openblock.screenrect.max.y = 134 + win_height;
-    state.openblock.behind = -1;  /* Open at front */
-    
-    Desk_Wimp_OpenWindow(&state.openblock);
+    ftnstatus_clear_network(ftnstatus_legacy_network);
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -977,12 +1268,12 @@ void mailer_accept_connection(void)
     strncpy(session->remote_hostname, inet_ntoa(client_addr.sin_addr),
             sizeof(session->remote_hostname) - 1);
 
-    /* Open status window for incoming call */
-    ftnstatus_open("ftn.incoming");
+    /* Update status window for incoming call - use network 0 for now (updated when authenticated) */
+    ftnstatus_set_session_direction(0);  /* Inbound */
     {
-        char status_msg[128];
-        snprintf(status_msg, sizeof(status_msg), "From: %s (authenticating...)", session->remote_hostname);
-        ftnstatus_update(status_msg);
+        char activity[128];
+        snprintf(activity, sizeof(activity), "Connecting from %s...", session->remote_hostname);
+        ftnstatus_set_activity(0, 0, activity);  /* Inbound connection */
     }
     ftnlog_printf("Incoming connection from %s", session->remote_hostname);
 
@@ -1029,20 +1320,47 @@ MAILER_SESSION *mailer_allocate_session(void)
 
 void mailer_free_session(MAILER_SESSION *session)
 {
+    int i;
+
     if (session->socket >= 0)
     {
         socketclose(session->socket);
+        session->socket = -1;
     }
 
     if (session->send_file.file != NULL)
     {
         fclose(session->send_file.file);
+        session->send_file.file = NULL;
     }
 
     if (session->recv_file.file != NULL)
     {
         fclose(session->recv_file.file);
+        session->recv_file.file = NULL;
+        
+        /* Clean up incomplete temp file from disk */
+        if (session->recv_file.local_path[0] != '\0')
+        {
+            debug_printf("mailer: Cleaning up incomplete receive: %s", session->recv_file.local_path);
+            mailer_log("Removing incomplete file: %s", session->recv_file.filename);
+            remove(session->recv_file.local_path);
+            session->recv_file.local_path[0] = '\0';
+        }
     }
+
+    /* Clean up sent files queue (NR mode) - close any open file handles */
+    for (i = 0; i < session->sent_files_count; i++)
+    {
+        if (session->sent_files[i].file != NULL)
+        {
+            fclose(session->sent_files[i].file);
+            session->sent_files[i].file = NULL;
+        }
+        /* Note: Files in sent queue are NOT marked as sent if session closes prematurely.
+         * They will be resent in the next session, as per BinkD behavior. */
+    }
+    session->sent_files_count = 0;
 
     /* Update queue */
     queue_mark_node_busy(&session->remote_addr, 0);
@@ -1102,7 +1420,52 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
     }
 
     /* Reset status window to idle state */
-    ftnstatus_set_idle();
+    ftnstatus_clear_all();
+}
+
+/*
+ * Check if an FTN address is busy (already has an active session).
+ * Used to prevent multiple concurrent sessions to the same node.
+ * The 'exclude' parameter allows excluding a specific session from the check
+ * (e.g., the session making the check to see if others exist).
+ * Returns 1 if busy (another session exists), 0 if not busy.
+ */
+int mailer_is_aka_busy(const FTN_ADDR *addr, MAILER_SESSION *exclude)
+{
+    int i;
+
+    if (addr == NULL)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        MAILER_SESSION *session = &mailer.sessions[i];
+
+        /* Skip inactive sessions */
+        if (!session->active)
+        {
+            continue;
+        }
+
+        /* Skip the excluded session */
+        if (session == exclude)
+        {
+            continue;
+        }
+
+        /* Check if this session is for the same address */
+        if (session->remote_addr.zone == addr->zone &&
+            session->remote_addr.net == addr->net &&
+            session->remote_addr.node == addr->node &&
+            session->remote_addr.point == addr->point)
+        {
+            return 1;  /* AKA is busy */
+        }
+    }
+
+    return 0;  /* AKA is not busy */
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1216,6 +1579,18 @@ static void process_session_rx(MAILER_SESSION *session)
                         session->rx_length - consumed);
             }
             session->rx_length -= consumed;
+            
+            /* STATE GUARD: Stop processing if session state changed to error/closing.
+             * Frame handlers can change state (e.g., M_ERR, M_BSY, authentication failure).
+             * Continuing to process frames after error could cause issues.
+             */
+            if (session->state == SESSION_STATE_ERROR || 
+                session->state == SESSION_STATE_CLOSING ||
+                !session->active)
+            {
+                debug_printf("mailer: Session state changed during frame processing, stopping");
+                break;
+            }
         }
         else
         {
@@ -1447,7 +1822,7 @@ void mailer_check_timeouts(void)
 /* Outbound Polling                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
-int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
+int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port, int is_uplink)
 {
     MAILER_SESSION *session;
     struct sockaddr_in server_addr;
@@ -1509,6 +1884,7 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     session->state = SESSION_STATE_CONNECTING;
     session->remote_addr = *addr;
     session->target_addr = *addr;  /* Save target for password lookup */
+    session->target_is_uplink = is_uplink;  /* Remember if this is an uplink for routing */
     session->connect_time = time(NULL);
     session->last_activity = session->connect_time;
     strncpy(session->remote_hostname, hostname, sizeof(session->remote_hostname) - 1);
@@ -1516,26 +1892,88 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port)
     /* Mark node as busy */
     queue_mark_node_busy(addr, 1);
 
+    /* Update status window for outbound connection */
+    ftnstatus_set_session_direction(1);  /* Outbound */
+    {
+        char activity[128];
+        int network_id = ftnstatus_find_network_by_zone(addr->zone);
+        snprintf(activity, sizeof(activity), "Connecting to %s...", addr_str);
+        ftnstatus_set_activity(network_id >= 0 ? network_id : 0, 1, activity);
+    }
+
     /* Log to connection window */
-    ftnlog_printf("Connecting to %s:%d", hostname, port);
+    ftnlog_printf("Connecting to %s:%d%s", hostname, port, is_uplink ? " (uplink)" : "");
     ftnlog_printf("Node: %s", addr_str);
 
-    mailer_log_ftn("Connecting to %s (%s:%d)", addr_str, hostname, port);
+    mailer_log_ftn("Connecting to %s (%s:%d)%s", addr_str, hostname, port, is_uplink ? " [uplink]" : "");
     mailer.total_sessions++;
 
     return 1;
 }
 
 /*
+ * Poll the next uplink that is ready for connection.
+ * This is non-blocking - it starts a connection and returns immediately.
+ * The session will be processed by the normal event loop.
+ * Returns 1 if a connection was started, 0 if no nodes are ready.
+ */
+int mailer_poll_next_ready_node(void)
+{
+    QUEUE_NODE *node;
+    char addr_str[64];
+
+    /* Check if we have capacity for another session */
+    if (mailer.active_sessions >= mailer.max_sessions)
+    {
+        return 0;  /* All session slots full */
+    }
+
+    /* Find the next node ready for polling */
+    node = queue_get_next_poll_node();
+    if (node == NULL)
+    {
+        return 0;  /* No nodes ready */
+    }
+
+    ftn_addr_to_string(&node->addr, addr_str, sizeof(addr_str));
+
+    /* Skip nodes without hostname (safety check - queue_get_next_poll_node should already filter) */
+    if (node->hostname[0] == '\0')
+    {
+        debug_printf("mailer: Skipping %s (no hostname)", addr_str);
+        return 0;
+    }
+
+    /* Mark as busy BEFORE connecting to prevent immediate re-selection */
+    queue_mark_node_busy(&node->addr, 1);
+
+    /* Start non-blocking connection */
+    ftnlog_printf("Connecting to %s (%s:%d)%s", addr_str, node->hostname, node->port,
+                  node->is_uplink ? " [uplink]" : "");
+    
+    if (!mailer_connect_to_node(&node->addr, node->hostname, node->port, node->is_uplink))
+    {
+        ftnlog_printf("Failed to start connection to %s", addr_str);
+        /* Mark as not busy and schedule retry */
+        queue_mark_node_busy(&node->addr, 0);
+        queue_schedule_retry(node, mailer.retry_delay > 0 ? mailer.retry_delay : 300);
+        return 0;
+    }
+
+    return 1;  /* Connection started */
+}
+
+/*
  * Poll all configured uplinks.
- * This connects to each uplink in sequence, waiting for each session
- * to complete before moving to the next.
+ * This is now NON-BLOCKING - it starts connections to ready nodes
+ * up to max_sessions and returns immediately.
+ * Sessions are processed by the normal event loop.
  * Called on startup and when user clicks Poll menu.
  */
 void mailer_poll_all_uplinks(void)
 {
-    int i;
-    int poll_count = 0;
+    int connections_started = 0;
+    int max_to_start;
 
     /* Re-entry guard: prevent recursive calls during Wimp_Poll dispatch */
     if (mailer.polling_in_progress)
@@ -1545,71 +1983,39 @@ void mailer_poll_all_uplinks(void)
     }
     mailer.polling_in_progress = 1;
 
-    debug_printf("mailer: Polling all uplinks... node_count=%d", outbound_queue.node_count);
-    ftnlog_printf("Found %d nodes in queue", outbound_queue.node_count);
+    debug_printf("mailer: Polling uplinks... active=%d, max=%d, nodes=%d",
+                 mailer.active_sessions, mailer.max_sessions, outbound_queue.node_count);
+    ftnlog_printf("Starting poll run (%d nodes in queue)", outbound_queue.node_count);
 
-    for (i = 0; i < outbound_queue.node_count; i++)
+    /* Calculate how many connections we can start */
+    max_to_start = mailer.max_sessions - mailer.active_sessions;
+    if (max_to_start <= 0)
     {
-        QUEUE_NODE *node = &outbound_queue.nodes[i];
-        char addr_str[64];
-        int zone_files;
-
-        ftn_addr_to_string(&node->addr, addr_str, sizeof(addr_str));
-
-        /* Only poll configured uplinks, not destination nodes */
-        if (!node->is_uplink)
-        {
-            debug_printf("mailer: Skipping %s (not an uplink, just a destination)", addr_str);
-            continue;
-        }
-
-        /* Skip nodes without hostname */
-        if (node->hostname[0] == '\0')
-        {
-            ftnlog_printf("Skipping %s (no hostname)", addr_str);
-            continue;
-        }
-
-        /* Count files for this node's zone */
-        zone_files = queue_count_files_for_zone(node->addr.zone);
-        ftnlog_printf("Uplink %s -> %s:%d (%d files in zone %d)", 
-                      addr_str, node->hostname, node->port,
-                      zone_files, node->addr.zone);
-
-        /* Wait for any active session to complete */
-        while (mailer.active_sessions > 0)
-        {
-            Desk_event_pollblock event;
-            Desk_event_pollmask mask;
-            mask.value = 0;
-            Desk_Wimp_Poll3(mask, &event, NULL);
-            Desk_Event_Process(&event);
-        }
-
-        /* Connect to this node */
-        ftnlog_printf("Polling %s", addr_str);
-        if (mailer_connect_to_node(&node->addr, node->hostname, node->port))
-        {
-            poll_count++;
-
-            /* Wait for this session to complete */
-            while (mailer.active_sessions > 0)
-            {
-                Desk_event_pollblock event;
-                Desk_event_pollmask mask;
-                mask.value = 0;
-                Desk_Wimp_Poll3(mask, &event, NULL);
-                Desk_Event_Process(&event);
-            }
-        }
-        else
-        {
-            ftnlog_printf("Failed to connect to %s", addr_str);
-        }
+        debug_printf("mailer: No session slots available");
+        ftnlog_printf("All session slots busy (%d/%d)", mailer.active_sessions, mailer.max_sessions);
+        mailer.polling_in_progress = 0;
+        return;
     }
 
-    debug_printf("mailer: Poll complete, connected to %d nodes", poll_count);
-    ftnlog_printf("Poll complete: %d nodes", poll_count);
+    /* Start connections to ready nodes (non-blocking) */
+    while (connections_started < max_to_start)
+    {
+        if (!mailer_poll_next_ready_node())
+        {
+            break;  /* No more nodes ready */
+        }
+        connections_started++;
+    }
+
+    debug_printf("mailer: Started %d connections", connections_started);
+    if (connections_started > 0)
+    {
+        ftnlog_printf("Started %d connection(s)", connections_started);
+    }
+    else
+    {
+        ftnlog_printf("No nodes ready for polling");
+    }
 
     mailer.polling_in_progress = 0;
 }
@@ -1815,7 +2221,8 @@ void mailer_finalise(void)
     }
 
     mailer_destroy_listener();
-    nodelist_finalise();
+    ftnstatus_finalise();
+    nodelist_finalise();;
     tic_finalise();
     echofix_finalise();
     packer_finalise();
@@ -1840,8 +2247,15 @@ static Desk_bool wimp_handle_iconbar_click(Desk_event_pollblock *event, void *re
 
     if (event->data.mouse.button.data.select)
     {
-        /* Open status window in idle state */
-        ftnstatus_open_idle();
+        /* Open/close status window */
+        if (ftnstatus_window_open)
+        {
+            ftnstatus_close_window();
+        }
+        else
+        {
+            ftnstatus_open_window();
+        }
     }
     else if (event->data.mouse.button.data.adjust)
     {
@@ -1870,79 +2284,61 @@ static Desk_bool wimp_handle_iconbar_menu_choice(Desk_event_pollblock *event, vo
         switch (event->data.selection[1])
         {
             case MAIL_MENU_POLL:
-                /* Force poll now with status window */
-                ftnstatus_open("ftn.polling");
-                ftnstatus_update("Scanning outbound...");
+                /* Force poll now */
+                ftnstatus_set_activity(0, 1, "Polling uplinks...");
                 ftnlog_printf("Scanning outbound queue...");
                 queue_scan_outbound();
-                ftnstatus_update("Polling uplinks...");
                 ftnlog_printf("Polling all uplinks...");
                 mailer_poll_all_uplinks();
                 ftnlog_printf("Poll complete");
-                ftnstatus_set_idle();
+                ftnstatus_clear_network(0);
                 break;
 
             case MAIL_MENU_TOSS:
-                /* Process inbound mail with status window */
-                ftnstatus_open("ftn.tossing");
-                ftnstatus_update("Scanning inbound...");
+                /* Process inbound mail */
+                ftnstatus_set_activity(0, 0, "Tossing inbound...");
                 ftnlog_printf("Scanning inbound directory...");
-                tosser_set_status_callback(ftnstatus_update);
                 {
                     int count = tosser_process_inbound();
                     int tic_count;
                     
-                    tosser_set_status_callback(NULL);
                     if (count > 0)
                     {
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "Tossed %d messages", count);
-                        ftnstatus_update(msg);
-                        ftnlog_printf("%s", msg);
+                        ftnlog_printf("Tossed %d messages", count);
                         mailer_log("Tossed %d messages", count);
                     }
                     else
                     {
-                        ftnstatus_update("No packets found");
                         ftnlog_printf("No packets found");
                     }
                     
                     /* Process TIC files */
-                    ftnstatus_update("Processing TIC files...");
                     tic_count = tic_process_inbound();
                     if (tic_count > 0)
                     {
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "Received %d files", tic_count);
-                        ftnstatus_update(msg);
-                        ftnlog_printf("%s", msg);
+                        ftnlog_printf("Received %d files", tic_count);
                     }
                 }
-                ftnstatus_set_idle();
+                ftnstatus_clear_network(0);
                 break;
 
             case MAIL_MENU_SCAN:
                 /* Scan messagebases for outbound mail */
-                ftnstatus_open("ftn.scanning");
-                ftnstatus_update("Scanning messagebases...");
+                ftnstatus_set_activity(0, 1, "Scanning outbound...");
                 ftnlog_printf("Scanning for outbound mail...");
                 {
                     int count = scanner_scan_outbound();
                     if (count > 0)
                     {
-                        char msg[64];
-                        snprintf(msg, sizeof(msg), "Packed %d messages", count);
-                        ftnstatus_update(msg);
-                        ftnlog_printf("%s", msg);
+                        ftnlog_printf("Packed %d messages", count);
                         mailer_log("Packed %d messages for export", count);
                     }
                     else
                     {
-                        ftnstatus_update("No outbound mail");
                         ftnlog_printf("No outbound mail found");
                     }
                 }
-                ftnstatus_set_idle();
+                ftnstatus_clear_network(0);
                 break;
         }
         return Desk_bool_TRUE;
@@ -2045,39 +2441,95 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     /* Check for timeouts */
     mailer_check_timeouts();
 
+    /* Update status window timers */
+    ftnstatus_update_timers();
+
     /* Periodically rescan outbound directories so new mail is noticed */
     if (outbound_queue.scan_interval > 0)
     {
         if (now - outbound_queue.last_scan >= outbound_queue.scan_interval)
         {
+            /* First pack any locally posted messages into outbound packets */
+            int packed = scanner_scan_outbound();
+            if (packed > 0)
+            {
+                debug_printf("mailer: Auto-scan packed %d messages", packed);
+            }
+            
+            /* Then scan BSO directories for new/changed files */
             queue_scan_outbound();
         }
     }
 
-    /* Automatic toss: process inbound packets */
+    /* Automatic toss: process inbound packets when no sessions active */
     if (mailer.toss_interval > 0 && mailer.active_sessions == 0)
     {
         if (now - mailer.last_auto_toss >= mailer.toss_interval)
         {
+            int tossed, tic_count;
+            
             debug_printf("mailer: Auto-toss triggered");
             ftnlog_printf("Auto-toss: processing inbound...");
-            tosser_process_inbound();
+            
+            tossed = tosser_process_inbound();
+            if (tossed > 0)
+            {
+                ftnlog_printf("Auto-toss: tossed %d messages", tossed);
+            }
+            
+            /* Also process TIC files for file distribution */
+            tic_count = tic_process_inbound();
+            if (tic_count > 0)
+            {
+                ftnlog_printf("Auto-toss: processed %d TIC files", tic_count);
+            }
+            
             mailer.last_auto_toss = now;
         }
     }
 
-    /* Automatic poll: connect to uplinks and exchange mail */
-    if (mailer.poll_interval > 0 && mailer.active_sessions == 0 && !mailer.polling_in_progress)
+    /* Automatic poll: trigger a poll run at configured intervals */
+    if (mailer.poll_interval > 0 && !mailer.polling_in_progress)
     {
-        if (now - mailer.last_auto_poll >= mailer.poll_interval)
+        /* Check startup delay */
+        if (mailer.startup_delay_until > 0 && now < mailer.startup_delay_until)
         {
+            /* Still in startup delay period - skip poll */
+        }
+        else if (now - mailer.last_auto_poll >= mailer.poll_interval)
+        {
+            int packed;
+            
+            /* Clear startup delay once we've polled */
+            mailer.startup_delay_until = 0;
+            
             debug_printf("mailer: Auto-poll triggered");
             ftnlog_printf("Auto-poll: connecting to uplinks...");
             /* Update timestamp BEFORE calling poll to prevent re-entry */
             mailer.last_auto_poll = now;
+            
+            /* Pack any locally posted messages before polling */
+            packed = scanner_scan_outbound();
+            if (packed > 0)
+            {
+                ftnlog_printf("Auto-poll: packed %d messages", packed);
+            }
+            
+            /* Scan BSO directories for outbound files */
             queue_scan_outbound();
             mailer_poll_all_uplinks();
         }
+    }
+
+    /* Opportunistic connections: if we have free session slots and nodes ready,
+     * start a connection. This allows multiple simultaneous sessions and
+     * picks up nodes that became ready since the last poll run.
+     * Skip during startup delay period.
+     */
+    if (mailer.active_sessions < mailer.max_sessions && !mailer.polling_in_progress &&
+        (mailer.startup_delay_until == 0 || now >= mailer.startup_delay_until))
+    {
+        mailer_poll_next_ready_node();
     }
 
     return Desk_bool_TRUE;
@@ -2210,12 +2662,14 @@ int main(int argc, char *argv[])
     ftnfreq_window = Desk_Window_Create("ftnfreq", Desk_template_TITLEMIN);
     ftnupload_window = Desk_Window_Create("ftnupload", Desk_template_TITLEMIN);
 
+    /* Initialise ftnstatus module - creates dynamic network row icons */
+    ftnstatus_initialise();
+
     /* Initialise ftnlog module */
     ftnlog_initialise(ftnlog_window);
 
-    /* Initialise ftnupload module with status window for progress */
-    ftnupload_initialise(ftnupload_window, ftnstatus_window,
-                         FTNSTATUS_PROGRESSCOUNTER, FTNSTATUS_STATUS);
+    /* Initialise ftnupload module (no longer uses progress bar) */
+    ftnupload_initialise(ftnupload_window, 0, 0, 0);
 
     /* Attach proginfo dialog as submenu of the Info entry */
     if (wimp.iconbar_menu_handle != NULL && proginfo_window != NULL)
@@ -2237,6 +2691,8 @@ int main(int argc, char *argv[])
                      wimp_handle_window_open, NULL);
     Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_window_close, NULL);
+    Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY,
+                     Desk_Handler_NullRedraw, NULL);
     Desk_Event_Claim(Desk_event_NULL, Desk_event_ANY, Desk_event_ANY,
                      wimp_handle_poll, NULL);
 
@@ -2254,17 +2710,13 @@ int main(int argc, char *argv[])
     /* Create listener */
     mailer_create_listener();
 
-    /* Initial queue scan and poll all uplinks */
-    queue_scan_outbound();
+    /* Delay initial poll by 30 seconds to let everything initialise */
+    mailer.startup_delay_until = time(NULL) + 30;
+    mailer.last_auto_poll = time(NULL);
+    mailer.last_auto_toss = time(NULL);
 
     mailer_log_ftn("Mailer ready (%s %s)", MAILER_NAME, MAILER_VERSION);
-
-    /* Poll all uplinks on startup */
-    ftnlog_printf("Startup poll...");
-    mailer_poll_all_uplinks();
-
-    /* Update last_auto_poll to prevent immediate auto-poll after startup */
-    mailer.last_auto_poll = time(NULL);
+    ftnlog_printf("Initial poll in 30 seconds...");
 
     /* Main loop */
     while (wimp.quit == Desk_bool_FALSE)

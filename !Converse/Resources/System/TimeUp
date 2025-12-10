@@ -1,3 +1,3 @@
 {fg 1,doing `Time up`}
-Sorry, your time is up for today. Logging off...
+{fgbg 7 1,pos 0 25}                      Sorry, your time is up for today...{cll,fgbg 7 0}
 {logoff}

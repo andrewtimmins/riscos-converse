@@ -1,3 +1,3 @@
 {fgbg 1 0,doing `Inactive`}
-Sorry, your session has reached it's inactive limit. Logging off...
+{fgbg 7 1,pos 0 25}                    Sorry, disconnecting you due to inactivity...{cll,fgbg 7 0}
 {logoff}

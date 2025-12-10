@@ -1,1 +1,1 @@
-{fgbg 7 4}                                 Press any key...{cll,fgbg 7 0}
+{fgbg 7 1,pos 0 25}                                 Press any key...{cll,fgbg 7 0}

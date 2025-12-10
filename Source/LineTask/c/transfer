@@ -300,22 +300,18 @@ static int ymodem_parse_block0(const uint8_t *data, int data_len, char *filename
     }
     filename[name_len] = '\0';
 
-    /* Strip file extension for RISC OS compatibility */
+    /* Convert DOS filename (name.ext) to RISC OS format (nameext) by removing dots.
+     * e.g., "archive.zip" -> "archivezip", "file.txt" -> "filetxt" */
     {
-        int i;
-        for (i = name_len - 1; i > 0; i--)
+        int i, j;
+        for (i = 0, j = 0; filename[i] != '\0'; i++)
         {
-            if (filename[i] == '.')
+            if (filename[i] != '.')
             {
-                filename[i] = '\0';
-                break;
-            }
-            /* Stop at path separator */
-            if (filename[i] == '/' || filename[i] == '\\')
-            {
-                break;
+                filename[j++] = filename[i];
             }
         }
+        filename[j] = '\0';
     }
 
     if (pos >= data_len)

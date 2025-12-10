@@ -128,6 +128,26 @@ static char *strtok_r(char *str, const char *delim, char **saveptr)
     return token;
 }
 
+/*
+ * Case-insensitive string comparison for filenames.
+ * FTN filenames are case-insensitive (DOS heritage).
+ */
+static int binkp_strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Frame Building                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
@@ -890,6 +910,19 @@ void binkp_handle_adr(MAILER_SESSION *session, const char *data)
     mailer_log("Remote address: %d:%d/%d.%d",
                session->remote_addr.zone, session->remote_addr.net,
                session->remote_addr.node, session->remote_addr.point);
+
+    /* Check if this AKA already has an active session (busy AKA tracking) */
+    if (mailer_is_aka_busy(&session->remote_addr, session))
+    {
+        char busy_msg[128];
+        snprintf(busy_msg, sizeof(busy_msg), "AKA %d:%d/%d.%d busy",
+                 session->remote_addr.zone, session->remote_addr.net,
+                 session->remote_addr.node, session->remote_addr.point);
+        debug_printf("binkp: %s - rejecting connection", busy_msg);
+        ftnlog_printf(">> BSY: %s", busy_msg);
+        binkp_send_bsy(session, busy_msg);
+        session->state = SESSION_STATE_CLOSING;
+    }
 }
 
 void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
@@ -912,6 +945,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         session->state = SESSION_STATE_AUTHENTICATED;
         
         /* Update status window with connection info */
+        ftnstatus_set_session_direction(session->direction == SESSION_DIR_OUTBOUND ? 1 : 0);
         ftnstatus_update_connection(session->remote_system, &session->remote_addr);
     }
     else if (session->cram_enabled && data[0] == 'C' && data[1] == 'R' && data[2] == 'A' && data[3] == 'M')
@@ -925,6 +959,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             session->state = SESSION_STATE_AUTHENTICATED;
             
             /* Update status window with connection info */
+            ftnstatus_set_session_direction(session->direction == SESSION_DIR_OUTBOUND ? 1 : 0);
             ftnstatus_update_connection(session->remote_system, &session->remote_addr);
         }
         else
@@ -945,6 +980,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             session->state = SESSION_STATE_AUTHENTICATED;
             
             /* Update status window with connection info */
+            ftnstatus_set_session_direction(session->direction == SESSION_DIR_OUTBOUND ? 1 : 0);
             ftnstatus_update_connection(session->remote_system, &session->remote_addr);
         }
         else
@@ -968,6 +1004,7 @@ void binkp_handle_ok(MAILER_SESSION *session, const char *data)
     session->state = SESSION_STATE_AUTHENTICATED;
     
     /* Update status window with connection info */
+    ftnstatus_set_session_direction(session->direction == SESSION_DIR_OUTBOUND ? 1 : 0);
     ftnstatus_update_connection(session->remote_system, &session->remote_addr);
 
     /* Enable encryption after M_OK if both sides support CRYPT */
@@ -1005,17 +1042,27 @@ void binkp_handle_eob(MAILER_SESSION *session)
 
     session->remote_eob = 1;
 
-    /* If we've also sent EOB AND no file transfer in progress, try session restart */
+    /* If we've also sent EOB AND no file transfer in progress AND
+     * no files waiting for M_GOT (NR mode), try session restart */
     if (session->local_eob && session->remote_eob &&
         session->recv_file.state != TRANSFER_STATE_RECEIVING &&
-        session->send_file.state != TRANSFER_STATE_SENDING)
+        session->send_file.state != TRANSFER_STATE_SENDING &&
+        session->sent_files_count == 0)
     {
         /* BinkP 1.1 session restart: Check for new files before closing */
         binkp_try_session_restart(session);
     }
     else if (session->local_eob && session->remote_eob)
     {
-        debug_printf("binkp: Both EOBs exchanged but transfer in progress, waiting...");
+        if (session->sent_files_count > 0)
+        {
+            debug_printf("binkp: Both EOBs exchanged but waiting for %d M_GOT responses", 
+                         session->sent_files_count);
+        }
+        else
+        {
+            debug_printf("binkp: Both EOBs exchanged but transfer in progress, waiting...");
+        }
     }
 }
 
@@ -1182,31 +1229,177 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
 
 void binkp_handle_got(MAILER_SESSION *session, const char *data)
 {
+    char filename[128];
+    long size, mtime;
+    int i;
+
     debug_printf("binkp: << M_GOT %s", data);
     ftnlog_printf("<< GOT: %s", data);
 
-    /* Remote has received our file successfully */
-    if (session->send_file.state == TRANSFER_STATE_SENDING)
+    /* Parse: filename size time */
+    if (sscanf(data, "%127s %ld %ld", filename, &size, &mtime) < 3)
     {
-        ftnlog_printf("<< GOT: File sent successfully");
-        binkp_finish_send_file(session);
-
-        /* Check for more files to send */
-        binkp_check_for_files(session);
+        debug_printf("binkp: M_GOT parse failed");
+        return;
     }
+
+    /* First check if this matches the file currently being sent.
+     * Use case-insensitive comparison as FTN filenames are DOS-style. */
+    if (session->send_file.state == TRANSFER_STATE_SENDING &&
+        binkp_strcasecmp(session->send_file.filename, filename) == 0 &&
+        session->send_file.size == size)
+    {
+        ftnlog_printf("<< GOT: File sent successfully (current)");
+        binkp_finish_send_file(session);
+        binkp_check_for_files(session);
+        return;
+    }
+
+    /* Search the sent files queue for NR mode.
+     * Use case-insensitive comparison as FTN filenames are DOS-style. */
+    for (i = 0; i < session->sent_files_count; i++)
+    {
+        FILE_TRANSFER *ft = &session->sent_files[i];
+        if (binkp_strcasecmp(ft->filename, filename) == 0 && ft->size == size)
+        {
+            QUEUE_NODE *node = (QUEUE_NODE *)ft->queue_node;
+
+            debug_printf("binkp: Found sent file in queue: %s", filename);
+            ftnlog_printf("<< GOT: File sent successfully (from queue)");
+
+            /* Mark the file as sent in the outbound queue */
+            if (node != NULL)
+            {
+                queue_mark_file_sent(node, ft->local_path);
+            }
+
+            /* Close file if still open */
+            if (ft->file != NULL)
+            {
+                fclose(ft->file);
+                ft->file = NULL;
+            }
+
+            session->files_sent++;
+            mailer_log("Sent: %s (%ld bytes)", filename, size);
+
+            /* Remove from sent queue by shifting remaining entries */
+            if (i < session->sent_files_count - 1)
+            {
+                memmove(&session->sent_files[i],
+                        &session->sent_files[i + 1],
+                        (session->sent_files_count - i - 1) * sizeof(FILE_TRANSFER));
+            }
+            session->sent_files_count--;
+
+            /* Check if session should complete now */
+            if (session->local_eob && session->remote_eob &&
+                session->sent_files_count == 0 &&
+                session->send_file.state != TRANSFER_STATE_SENDING &&
+                session->recv_file.state != TRANSFER_STATE_RECEIVING)
+            {
+                debug_printf("binkp: All files acknowledged, session complete");
+                binkp_try_session_restart(session);
+            }
+            return;
+        }
+    }
+
+    debug_printf("binkp: M_GOT for unknown file: %s", filename);
 }
 
 void binkp_handle_skip(MAILER_SESSION *session, const char *data)
 {
+    char filename[128];
+    long size, mtime;
+    FILE_TRANSFER *ft = &session->send_file;
+    int i;
+
     debug_printf("binkp: << M_SKIP %s", data);
     ftnlog_printf("<< SKIP: %s", data);
 
-    /* Remote doesn't want this file */
-    if (session->send_file.state == TRANSFER_STATE_SENDING)
+    /* Parse: filename size time */
+    if (sscanf(data, "%127s %ld %ld", filename, &size, &mtime) < 3)
     {
-        binkp_finish_send_file(session);
-        binkp_check_for_files(session);
+        /* Older format - just skip current file without matching */
+        debug_printf("binkp: M_SKIP parse failed, using legacy handling");
+        if (ft->state == TRANSFER_STATE_SENDING)
+        {
+            /* Close file without marking as sent - remote skipped it */
+            if (ft->file != NULL)
+            {
+                fclose(ft->file);
+                ft->file = NULL;
+            }
+            mailer_log("Skipped by remote: %s", ft->filename);
+            ft->state = TRANSFER_STATE_IDLE;
+            ft->queue_node = NULL;
+            ftnstatus_end_transfer();
+            binkp_check_for_files(session);
+        }
+        return;
     }
+
+    /* First check if this matches the file currently being sent */
+    if (ft->state == TRANSFER_STATE_SENDING &&
+        binkp_strcasecmp(ft->filename, filename) == 0 &&
+        ft->size == size)
+    {
+        /* Close file without marking as sent - remote skipped it */
+        if (ft->file != NULL)
+        {
+            fclose(ft->file);
+            ft->file = NULL;
+        }
+        mailer_log("Skipped by remote: %s", filename);
+        ft->state = TRANSFER_STATE_IDLE;
+        ft->queue_node = NULL;
+        ftnstatus_end_transfer();
+        binkp_check_for_files(session);
+        return;
+    }
+
+    /* Search the sent files queue for NR mode - remote is rejecting a sent file */
+    for (i = 0; i < session->sent_files_count; i++)
+    {
+        FILE_TRANSFER *qft = &session->sent_files[i];
+        if (binkp_strcasecmp(qft->filename, filename) == 0 && qft->size == size)
+        {
+            debug_printf("binkp: Found skipped file in queue: %s", filename);
+            ftnlog_printf("<< SKIP: File rejected (from queue)");
+            mailer_log("Skipped by remote: %s", filename);
+
+            /* Close file if still open (shouldn't be, but be safe) */
+            if (qft->file != NULL)
+            {
+                fclose(qft->file);
+                qft->file = NULL;
+            }
+
+            /* Remove from sent queue by shifting remaining entries.
+             * Do NOT mark as sent - the file was rejected! */
+            if (i < session->sent_files_count - 1)
+            {
+                memmove(&session->sent_files[i],
+                        &session->sent_files[i + 1],
+                        (session->sent_files_count - i - 1) * sizeof(FILE_TRANSFER));
+            }
+            session->sent_files_count--;
+
+            /* Check if session should complete now */
+            if (session->local_eob && session->remote_eob &&
+                session->sent_files_count == 0 &&
+                session->send_file.state != TRANSFER_STATE_SENDING &&
+                session->recv_file.state != TRANSFER_STATE_RECEIVING)
+            {
+                debug_printf("binkp: All files acknowledged/skipped, session complete");
+                binkp_try_session_restart(session);
+            }
+            return;
+        }
+    }
+
+    debug_printf("binkp: M_SKIP for unknown file: %s", filename);
 }
 
 void binkp_handle_get(MAILER_SESSION *session, const char *data)
@@ -1482,9 +1675,11 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
         session->recv_file.file = NULL;
         
         /* Remove the incomplete temp file */
-        if (session->recv_file.local_path[0] != '\\0')
+        if (session->recv_file.local_path[0] != '\0')
         {
+            debug_printf("binkp: Removing incomplete temp file: %s", session->recv_file.local_path);
             remove(session->recv_file.local_path);
+            session->recv_file.local_path[0] = '\0';
         }
     }
 
@@ -1570,8 +1765,28 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
     /* Move from temp to final inbound */
     snprintf(final_path, sizeof(final_path), "%s.%s", zone_path, riscos_filename);
 
-    /* Rename temp file to final location */
-    rename(ft->local_path, final_path);
+    /* Rename temp file to final location - CRITICAL: Must succeed before we ACK! */
+    if (rename(ft->local_path, final_path) != 0)
+    {
+        /* Rename failed - try to preserve the temp file for manual recovery.
+         * DO NOT send GOT, which would tell remote to delete their copy.
+         * Send SKIP instead to indicate we didn't successfully receive.
+         */
+        debug_printf("binkp: CRITICAL - Failed to move %s to inbound!", ft->filename);
+        mailer_log("ERROR: Failed to move received file %s from temp to inbound", ft->filename);
+        ftnlog_printf(">> ERROR: Could not move %s to inbound - file left in Temp", ft->filename);
+        
+        /* Send SKIP to tell sender we failed - they should retry later */
+        binkp_send_skip(session, ft->filename, ft->size, ft->mtime);
+        
+        ft->state = TRANSFER_STATE_IDLE;
+        ft->local_path[0] = '\0';  /* Don't delete temp file in cleanup */
+        ftnstatus_end_transfer();
+        return;
+    }
+    
+    /* Clear temp path since file is now in final location */
+    ft->local_path[0] = '\0';
 
     debug_printf("binkp: Received %s as %s (%ld bytes)", ft->filename, riscos_filename, ft->size);
 
@@ -1587,8 +1802,11 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
 
     mailer_log("Received: %s (%ld bytes)", ft->filename, ft->size);
 
-    /* Check if session should complete/restart now that transfer is done */
-    if (session->local_eob && session->remote_eob)
+    /* Check if session should complete/restart now that transfer is done.
+     * Must also wait for all sent files to be acknowledged (NR mode). */
+    if (session->local_eob && session->remote_eob &&
+        session->send_file.state != TRANSFER_STATE_SENDING &&
+        session->sent_files_count == 0)
     {
         debug_printf("binkp: File received, both EOBs exchanged - checking for restart");
         binkp_try_session_restart(session);
@@ -1719,6 +1937,12 @@ void binkp_finish_send_file(MAILER_SESSION *session)
 {
     FILE_TRANSFER *ft = &session->send_file;
     QUEUE_NODE *node;
+    int nr_active;
+
+    /* Check if NR mode is active (both sides support it and not buggy) */
+    nr_active = ((session->nr_mode & BINKP_WE_NR) &&
+                 (session->nr_mode & BINKP_THEY_NR) &&
+                 !session->buggy_nr);
 
     if (ft->file != NULL)
     {
@@ -1728,27 +1952,45 @@ void binkp_finish_send_file(MAILER_SESSION *session)
 
     /* Use the queue node we stored when starting the transfer */
     node = (QUEUE_NODE *)ft->queue_node;
-    if (node != NULL)
+
+    if (nr_active && session->sent_files_count < 16)
     {
-        queue_mark_file_sent(node, ft->local_path);
-        ft->queue_node = NULL;
+        /* NR mode: Add to sent files queue, wait for M_GOT before marking sent */
+        memcpy(&session->sent_files[session->sent_files_count], ft, sizeof(FILE_TRANSFER));
+        session->sent_files_count++;
+        debug_printf("binkp: Added %s to sent queue (waiting for M_GOT)", ft->filename);
     }
     else
     {
-        debug_printf("binkp: WARNING - No queue node for sent file, cannot mark as sent");
+        /* Non-NR mode or queue full: Mark sent immediately */
+        if (nr_active && session->sent_files_count >= 16)
+        {
+            debug_printf("binkp: WARNING - NR sent queue full, falling back to immediate mark");
+            ftnlog_printf("Warning: NR sent queue full for %s", ft->filename);
+        }
+        if (node != NULL)
+        {
+            queue_mark_file_sent(node, ft->local_path);
+        }
+        else
+        {
+            debug_printf("binkp: WARNING - No queue node for sent file, cannot mark as sent");
+        }
+        session->files_sent++;
+        mailer_log("Sent: %s (%ld bytes)", ft->filename, ft->size);
     }
 
     ft->state = TRANSFER_STATE_IDLE;
+    ft->queue_node = NULL;
 
     ftnstatus_end_transfer();
 
-    debug_printf("binkp: Sent %s successfully", ft->filename);
-    mailer_log("Sent: %s (%ld bytes)", ft->filename, ft->size);
-    session->files_sent++;
+    debug_printf("binkp: Finished sending %s", ft->filename);
 
     /* Check if session should complete/restart now that transfer is done */
     if (session->local_eob && session->remote_eob &&
-        session->recv_file.state != TRANSFER_STATE_RECEIVING)
+        session->recv_file.state != TRANSFER_STATE_RECEIVING &&
+        session->sent_files_count == 0)
     {
         debug_printf("binkp: File sent, both EOBs exchanged - checking for restart");
         binkp_try_session_restart(session);
@@ -1763,35 +2005,41 @@ void binkp_check_for_files(MAILER_SESSION *session)
 {
     QUEUE_NODE *node;
     QUEUE_FILE *file;
-    int zone;
+    FTN_ADDR *target_addr;
+    int is_uplink;
 
     if (session->send_file.state != TRANSFER_STATE_IDLE)
     {
         return;  /* Already sending */
     }
 
-    /* Determine which zone we're sending to.
-     * For outbound: use target_addr (the uplink we called)
-     * For inbound: use remote_addr (who connected to us) */
+    /* Determine target address and uplink status for routing.
+     * For outbound: use target_addr (the node we called)
+     * For inbound: use remote_addr (who connected to us) - treat as non-uplink */
     if (session->direction == SESSION_DIR_OUTBOUND)
     {
-        zone = session->target_addr.zone;
+        target_addr = &session->target_addr;
+        is_uplink = session->target_is_uplink;
     }
     else
     {
-        zone = session->remote_addr.zone;
+        target_addr = &session->remote_addr;
+        is_uplink = 0;  /* Incoming connections are never uplinks for routing */
     }
 
-    debug_printf("binkp: Looking for files to send for zone %d", zone);
-    ftnlog_printf("Checking outbound for zone %d", zone);
+    debug_printf("binkp: Looking for files to send to %d:%d/%d.%d (uplink=%d)",
+                 target_addr->zone, target_addr->net, target_addr->node, target_addr->point,
+                 is_uplink);
+    ftnlog_printf("Checking outbound for %d:%d/%d.%d%s",
+                  target_addr->zone, target_addr->net, target_addr->node, target_addr->point,
+                  is_uplink ? " (zone mail)" : "");
 
-    /* Get the next file from ANY node in this zone */
-    file = queue_get_next_file_for_zone(zone, &node);
+    /* Get the next file - routing depends on whether target is an uplink */
+    file = queue_get_next_file_for_session(target_addr, is_uplink, &node);
 
     if (file == NULL)
     {
-        int pending = queue_count_files_for_zone(zone);
-        debug_printf("binkp: No files to send for zone %d (total pending: %d)", zone, pending);
+        debug_printf("binkp: No files to send for this session");
         /* No files to send, send EOB */
         if (!session->local_eob)
         {

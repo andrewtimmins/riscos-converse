@@ -105,6 +105,7 @@ void queue_remove_file(QUEUE_NODE *node, const char *path);
 void queue_mark_file_sent(QUEUE_NODE *node, const char *path);
 QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node);
 QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out);
+QUEUE_FILE *queue_get_next_file_for_session(const FTN_ADDR *target_addr, int is_uplink, QUEUE_NODE **node_out);
 int queue_count_files_for_zone(int zone);
 int queue_count_files_for_address(const FTN_ADDR *addr, long *total_bytes);
 

@@ -5615,10 +5615,12 @@ static char *script_strcasestr(const char *haystack, const char *needle)
 
 static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg)
 {
-    char sequence[32];
+    char sequence[48];
     int length = 0;
-    int fg_value;
-    int bg_value;
+    int fg_value = 0;
+    int bg_value = 0;
+    int fg_bright = 0;
+    int bg_bright = 0;
 
     if (state == NULL)
     {
@@ -5632,11 +5634,16 @@ static void script_apply_colour_change(script_state *state, const char *fg_text,
         {
             fg_value = 0;
         }
-        if (fg_value > 7)
+        if (fg_value > 15)
         {
-            fg_value = 7;
+            fg_value = 15;
         }
-        length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%s%d", (length == 0) ? "\x1B[" : ";", 30 + fg_value);
+        /* Colors 8-15 are bright versions of 0-7 */
+        if (fg_value >= 8)
+        {
+            fg_bright = 1;
+            fg_value -= 8;
+        }
     }
 
     if (apply_bg && bg_text != NULL)
@@ -5646,14 +5653,53 @@ static void script_apply_colour_change(script_state *state, const char *fg_text,
         {
             bg_value = 0;
         }
-        if (bg_value > 7)
+        if (bg_value > 15)
         {
-            bg_value = 7;
+            bg_value = 15;
         }
-        length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%s%d", (length == 0) ? "\x1B[" : ";", 40 + bg_value);
+        /* Colors 8-15 are bright versions of 0-7 */
+        if (bg_value >= 8)
+        {
+            bg_bright = 1;
+            bg_value -= 8;
+        }
     }
 
-    if (length > 0 && length < (int)sizeof(sequence))
+    /* Build ANSI sequence */
+    /* For bright foreground colors, we need bold (1) attribute */
+    /* For non-bright, we turn off bold (22) to be safe */
+    length = snprintf(sequence, sizeof(sequence), "\x1B[");
+    
+    if (apply_fg && fg_text != NULL)
+    {
+        if (fg_bright)
+        {
+            length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "1;%d", 30 + fg_value);
+        }
+        else
+        {
+            length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "22;%d", 30 + fg_value);
+        }
+    }
+
+    if (apply_bg && bg_text != NULL)
+    {
+        if (length > 2)
+        {
+            length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, ";");
+        }
+        if (bg_bright)
+        {
+            /* Bright backgrounds use 100-107 */
+            length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%d", 100 + bg_value);
+        }
+        else
+        {
+            length += snprintf(sequence + length, sizeof(sequence) - (size_t)length, "%d", 40 + bg_value);
+        }
+    }
+
+    if (length > 2 && length < (int)sizeof(sequence))
     {
         sequence[length++] = 'm';
         sequence[length] = '\0';

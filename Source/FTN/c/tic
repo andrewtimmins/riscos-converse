@@ -829,10 +829,12 @@ int tic_create_for_file(int filebase_id, int file_id, const char *area_tag,
     
     tic.valid = 1;
     
-    /* Build TIC filename - use file ID and random component */
+    /* Build TIC filename - use file ID and random component.
+     * Use zone format %03x to match BSO directory structure.
+     * No dot before extension - RISC OS format: xxxxxxxxtic not xxxxxxxx.tic */
     zone = dest->zone > 0 ? dest->zone : 2;
     snprintf(tic_path, sizeof(tic_path),
-             "<Converse$Dir>.FTN.Outbound.%d.%08X.tic",
+             "<Converse$Dir>.FTN.Outbound.%03x.%08Xtic",
              zone, (unsigned int)(file_id * 65536 + (rand() & 0xFFFF)));
     
     /* Write TIC file */
