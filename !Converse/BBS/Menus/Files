@@ -1,0 +1,21 @@
+{cls}
+{fgbg 11 0}
++============================================================================+
+|                    {fg 14}T H E   Y E L L O W   T O A S T E R{fg 11}                       |
+|                            {fg 7}File Areas{fg 11}                                    |
++============================================================================+
+{fg 15}
+
+    {fg 14}[L]{fg 7}ist Areas           {fg 6}- Show available file areas
+    {fg 14}[S]{fg 7}elect Area          {fg 6}- Choose a file area
+    {fg 14}[D]{fg 7}ownload             {fg 6}- Download a file
+    {fg 14}[U]{fg 7}pload               {fg 6}- Upload a file
+    {fg 14}[N]{fg 7}ew Files            {fg 6}- List new files since last visit
+    {fg 14}[I]{fg 7}nfo                 {fg 6}- View file information
+
+{fg 11}    -------------------------------------------------------------------------
+
+    {fg 14}[?]{fg 7} Help               {fg 6}- File area commands help
+    {fg 14}[Q]{fg 7}uit to Main         {fg 6}- Return to main menu
+
+{fg 15}

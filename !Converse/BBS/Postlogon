@@ -1,29 +1,63 @@
 {
     cls
-
+    fgbg 11 0
     doing `Welcome...`
+    print `\r\n`
+    fgbg 14 0
+    print `    Welcome back, `
+    fgbg 15 0
+    print `%{realname}`
+    fgbg 14 0
+    print `!\r\n\r\n`
     script `<Converse$Dir>.BBS.Welcome`
     anykey
-
-    if %{registered} == 1 then
-        doing `Registration reminder...`
-        script  `<Converse$Dir>.BBS.Register`
+    if %{registered} == 0 then
+        doing `Registration required...`
+        fgbg 14 0
+        print `\r\n    Please complete your registration:\r\n\r\n`
+        fgbg 7 0
+        script `<Converse$Dir>.BBS.Register`
     end if
-
+    cls
+    fgbg 11 0
+    print `+============================================================================+\r\n`
+    print `|                      {fg 14}Today in Computing History{fg 11}                          |\r\n`
+    print `+============================================================================+\r\n`
+    fgbg 7 0
+    print `\r\n`
+    
     oscli `Filer_Run <Converse$Dir>.BBS.Utils.!Today`
     sleep 500
     doing `Today in history...`
     type `<Converse$Dir>.BBS.Today`
-
-    cls
-    doing `Merry Christmas...`
-    type `<Converse$Dir>.BBS.ANSI.Christmas`
+    print `\r\n`
     anykey
-
     cls
+    fgbg 11 0
+    print `+============================================================================+\r\n`
+    print `|                         {fg 14}Scanning for New Items{fg 11}                           |\r\n`
+    print `+============================================================================+\r\n`
+    fgbg 7 0
+    print `\r\n`
+    
     doing `Login scan...`
     loginscan
+    print `\r\n`
     anykey
-
+    cls
+    fgbg 11 0
+    print `+============================================================================+\r\n`
+    print `|                           {fg 14}Users Online Now{fg 11}                               |\r\n`
+    print `+============================================================================+\r\n`
+    fgbg 7 0
+    print `\r\n`
+    
+    doing `Who's online...`
+    online
+    print `\r\n`
+    anykey
+    
+    fgbg 7 0
+    cls
     script `<Converse$Dir>.BBS.MainMenu`
 }

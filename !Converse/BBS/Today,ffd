@@ -1,12 +1,21 @@
 {cls,fgbg 7 4}Birthdays today...{cll,bg 0}
-{fg 6}07-12-1957{fg 7} Geoff Lawson, Australian Test cricketer
+{fg 6}10-12-1830{fg 7} Emily Dickinson, poet
+{fg 6}10-12-1851{fg 7} Melvil Dewey, created the Dewey Decimal System for libraries
 
 {bg 4}Special events...{cll,bg 0}
-{fg 6}07-12-1941{fg 7} Pearl Harbour attacked by Japan.
-{fg 6}07-12-1972{fg 7} Apollo 17, last of the Apollo moon series, launched.
+{fg 6}10-12-1901{fg 7} First distribution of Nobel Peace Prizes.
+{fg 6}10-12-1902{fg 7} Aswan dam on the Nile is completed.
+{fg 6}10-12-1907{fg 7} Rudyard Kipling wins Nobel Literature prize.
+{fg 6}10-12-1915{fg 7} Mr.Ford makes his millionth car.
+{fg 6}10-12-1919{fg 7} Smith brothers are first to fly from UK to Australia.
+{fg 6}10-12-1927{fg 7} Greyhound racing starts at Wembley Stadium.
+{fg 6}10-12-1928{fg 7} Piccadilly Circus Underground station opens for business.
+{fg 6}10-12-1931{fg 7} Chrysler Motor Company plan to open factory in Britain.
+{fg 6}10-12-1941{fg 7} Prince of Wales and Renown sunk.
+{fg 6}10-12-1984{fg 7} A chemical leak in Bhopal, India kills at least 2,000. 
+{fg 6}10-12-    {fg 7} Human Rights Day, a United Nations observance.
 
 {bg 4}Thought for the day...{cll,bg 0}
-The amount of free space on a disk is inversely proportional to the size
- of the file which you want to save.
+When the wind is great, bow before it; when the wind is heavy, yield to it.
 
 {anykey}

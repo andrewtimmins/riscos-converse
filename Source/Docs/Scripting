@@ -220,6 +220,25 @@ Output
         flash 0
         print ` Important message.\r\n`
 
+`BOLD`
+    Enables the bold/bright ANSI attribute. Subsequent text will be
+    displayed in high intensity until STD is called to reset.
+    Example:
+        bold
+        print `Important!`
+        std
+
+`STD`
+    Resets terminal attributes to standard white text on black
+    background with no bold, flash, or other effects.
+    Equivalent to sending ESC[0m ESC[37m ESC[40m.
+    Example:
+        bold
+        fg 1
+        print `Red alert!`
+        std
+        print ` Back to normal.\r\n`
+
 Terminal Detection
 ~~~~~~~~~~~~~~~~~~
 `DETECTANSI <result> [timeout_ms]`
@@ -256,6 +275,27 @@ Input
     Example:
         anykey
         anykey `<Converse$Dir>.BBS.Menus.Anykey`
+
+`READLINE <variable> [echo|noecho]`
+    Reads a line of input into the specified variable. This is a
+    shorthand for `PROMPT <variable> line <echo>`. Defaults to echo.
+    Example:
+        print `Enter your name: `
+        readline username
+        readline password noecho
+
+`YESNO <variable>`
+    Prompts for a Yes/No response. Waits for Y, y, N, or n keypress,
+    ignoring all other keys. Stores "1" for Yes or "0" for No.
+    Echoes the uppercase response (Y or N) followed by newline.
+    Example:
+        print `Download file? (Y/N): `
+        yesno confirm
+        if confirm == 1 goto do_download
+        print `Cancelled.\r\n`
+        stop
+        label do_download
+        sendfile %{file_id} zmodem
 
 Variables
 ~~~~~~~~~

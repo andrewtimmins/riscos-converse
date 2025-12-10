@@ -1,40 +1,53 @@
-{cls, fgbg 2 0}Welcome to the {fg 3}Yellow Toaster BBS,{fg 2} using{fg 2} Converse BBS software,
-a Bulletin Board System server designed for RISC OS.
+{cls}
+{fgbg 11 0}
++============================================================================+
+|                    {fg 14}W E L C O M E   T O   T H E{fg 11}                             |
+|                    {fg 14}Y E L L O W   T O A S T E R{fg 11}                             |
++============================================================================+
 
-Converse is programmed in C, supports modern features and is {flash 1}Open Source!{flash 0}
-It is designed to be {fg 1}user-friendly{fg 3}, {fg 3}versatile{fg 2} and {fg 7}expandable{fg 3}.
+{fg 7}    Welcome to {fg 14}The Yellow Toaster BBS{fg 7}, running {fg 10}Converse BBS{fg 7} software
+    for RISC OS. Converse is programmed in C and is {flash 1}{fg 15}Open Source!{flash 0}{fg 7}
 
-You can find out more at https://www.github.com/andrewtimmins/riscos-converse
+    Find out more at: {fg 6}https://github.com/andrewtimmins/riscos-converse{fg 7}
 
-{fg 2,flash 1}Please mail the sysop if you're interested in running an Converse system!{flash 0}
+{fg 11}    -------------------------------------------------------------------------
+{fg 14}    Session Information:
+{fg 11}    -------------------------------------------------------------------------
 
--------------------------------------------------------------------------------
-{fg 3}The time is %{time} and the date is %{date}.
-{fg 2}You have used %{todaytime} minutes so far today.
-{fg 3}You have logged on %{usercalls} times.
-{fg 2}You last called on %{lastlogon}.
-{fg 3}Your user-level is %{accesslevel}, and your usernumber is #%{userid}
--------------------------------------------------------------------------------
+    {fg 6}Current Time:{fg 7}     %{time}
+    {fg 6}Current Date:{fg 7}     %{date}
+    {fg 6}Time Online:{fg 7}      %{todaytime} minutes today
+    {fg 6}Total Calls:{fg 7}      %{usercalls}
+    {fg 6}Last Login:{fg 7}       %{lastlogon}
 
-{fg 6}You are using Converse version %{version}.{fg 2}
+{fg 11}    -------------------------------------------------------------------------
+{fg 14}    Your Account:
+{fg 11}    -------------------------------------------------------------------------
+
+    {fg 6}User Number:{fg 7}      #%{userid}
+    {fg 6}Access Level:{fg 7}     %{accesslevel}
+    {fg 6}Converse Ver:{fg 7}     %{version}
 
 {
+    fgbg 6 0
+    print `    Default Protocol: `
+    fgbg 7 0
     if %{userprotocol} == 0 then
-        print `Your default protocol is XMODEM\r\n`
+        print `XMODEM\r\n`
     else
         if %{userprotocol} == 1 then
-            print `Your default protocol is XMODEM-CRC\r\n`
+            print `XMODEM-CRC\r\n`
         else
             if %{userprotocol} == 2 then
-                print `Your default protocol is XMODEM-1K\r\n`
+                print `XMODEM-1K\r\n`
             else
                 if %{userprotocol} == 3 then
-                    print `Your default protocol is YMODEM\r\n`
+                    print `YMODEM\r\n`
                 else
                     if %{userprotocol} == 4 then
-                        print `Your default protocol is YMODEM-G\r\n`
+                        print `YMODEM-G\r\n`
                     else
-                        print `Your default protocol is ZMODEM\r\n`
+                        print `ZMODEM\r\n`
                     end if
                 end if
             end if
@@ -42,4 +55,5 @@ You can find out more at https://www.github.com/andrewtimmins/riscos-converse
     end if
 }
 
-{anykey}
+{fgbg 11 0}    -------------------------------------------------------------------------
+{fgbg 7 0}

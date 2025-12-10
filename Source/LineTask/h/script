@@ -140,14 +140,19 @@ typedef enum
     SCRIPT_CMD_OSCLI,
     SCRIPT_CMD_CLL,
     SCRIPT_CMD_LOGINSCAN,
-    SCRIPT_CMD_MORE
+    SCRIPT_CMD_MORE,
+    SCRIPT_CMD_BOLD,
+    SCRIPT_CMD_STD,
+    SCRIPT_CMD_READLINE,
+    SCRIPT_CMD_YESNO
 } script_command_type;
 
 typedef enum
 {
     SCRIPT_INPUT_NONE = 0,
     SCRIPT_INPUT_CHAR,
-    SCRIPT_INPUT_LINE
+    SCRIPT_INPUT_LINE,
+    SCRIPT_INPUT_YESNO
 } script_input_mode;
 
 typedef struct script_instruction

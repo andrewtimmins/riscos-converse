@@ -1,0 +1,20 @@
+{cls}
+{fgbg 11 0}
++============================================================================+
+|                    {fg 14}T H E   Y E L L O W   T O A S T E R{fg 11}                       |
+|                          {fg 7}User Settings{fg 11}                                   |
++============================================================================+
+{fg 15}
+
+    {fg 14}[P]{fg 7}assword             {fg 6}- Change your password
+    {fg 14}[E]{fg 7}mail                {fg 6}- Update your email address
+    {fg 14}[S]{fg 7}creen Size          {fg 6}- Set your screen dimensions
+    {fg 14}[T]{fg 7}erminal Type        {fg 6}- Change terminal emulation
+    {fg 14}[M]{fg 7}ore Prompts         {fg 6}- Toggle page-pause prompts
+
+{fg 11}    -------------------------------------------------------------------------
+
+    {fg 14}[V]{fg 7}iew Profile         {fg 6}- View your current settings
+    {fg 14}[Q]{fg 7}uit to Main         {fg 6}- Return to main menu
+
+{fg 15}

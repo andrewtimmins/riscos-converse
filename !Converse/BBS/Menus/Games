@@ -1,0 +1,26 @@
+{cls}
+{fgbg 11 0}
++============================================================================+
+|                    {fg 14}T H E   Y E L L O W   T O A S T E R{fg 11}                       |
+|                          {fg 7}Games & Doors{fg 11}                                   |
++============================================================================+
+{fg 15}
+
+    {fg 14}[1]{fg 7} Trade Wars 2002     {fg 6}- Interstellar trading game
+    {fg 14}[2]{fg 7} Legend of the Red Dragon {fg 6}- Fantasy adventure RPG
+    {fg 14}[3]{fg 7} Usurper             {fg 6}- Medieval strategy game
+    {fg 14}[4]{fg 7} Global War          {fg 6}- World domination conquest
+    {fg 14}[5]{fg 7} Planets: TEOS       {fg 6}- Space empire simulation
+
+{fg 11}    -------------------------------------------------------------------------
+
+    {fg 14}[6]{fg 7} Hangman             {fg 6}- Classic word guessing
+    {fg 14}[7]{fg 7} Trivia Challenge    {fg 6}- Test your knowledge
+    {fg 14}[8]{fg 7} Blackjack           {fg 6}- Casino card game
+    {fg 14}[9]{fg 7} Snake               {fg 6}- The classic arcade game
+
+{fg 11}    -------------------------------------------------------------------------
+
+    {fg 14}[Q]{fg 7}uit to Main         {fg 6}- Return to main menu
+
+{fg 15}
