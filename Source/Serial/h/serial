@@ -81,8 +81,14 @@
 #define SERIAL_MAX_DRIVER_NAME  32
 #define SERIAL_DRIVER_BLOCK_SIZE 1024  /* Storage for driver binary (ints) */
 
+#ifndef PIPE_TRANSFER_CHUNK
 #define PIPE_TRANSFER_CHUNK     1536
+#endif
 #define PIPES_BUFFER_CAPACITY   4096
+
+/* Forward declaration for SERIAL_LINE_STATE used in prototypes */
+struct SERIAL_LINE_STATE_TAG;
+typedef struct SERIAL_LINE_STATE_TAG SERIAL_LINE_STATE_FWD;
 
 /* ============================================================================
  * Function Prototypes

@@ -2145,6 +2145,10 @@ static void pipes_reset_line(int line_id)
 	_kernel_swi(SWI_CONVERSE_PIPES_CLEAR_INPUT, &regs, &regs);
 	regs.r[0] = line_id;
 	_kernel_swi(SWI_CONVERSE_PIPES_CLEAR_OUTPUT, &regs, &regs);
+
+	/* Clear any pending partial write buffer from previous connection */
+	line_configuration[line_id].pending_offset = 0;
+	line_configuration[line_id].pending_length = 0;
 }
 
 static void pipes_send_control_command(int line_id, char command)
@@ -2222,6 +2226,30 @@ static void pump_pipe_to_socket(int line_id, int socket)
 {
 	int loops = 0;
 
+	/* First, flush any pending data from a previous partial write */
+	while (line_configuration[line_id].pending_length > 0)
+	{
+		int remaining = line_configuration[line_id].pending_length - 
+		                line_configuration[line_id].pending_offset;
+		int written = socketwrite(socket, 
+			line_configuration[line_id].pending_buffer + line_configuration[line_id].pending_offset,
+			remaining);
+		if (written <= 0)
+		{
+			/* Socket still blocked, try again next poll */
+			return;
+		}
+		line_configuration[line_id].pending_offset += written;
+		if (line_configuration[line_id].pending_offset >= line_configuration[line_id].pending_length)
+		{
+			/* Pending buffer fully written */
+			line_configuration[line_id].pending_length = 0;
+			line_configuration[line_id].pending_offset = 0;
+		}
+		line_configuration[line_id].last_activity = clock();
+	}
+
+	/* Now read new data from pipe and write to socket */
 	while (loops < 4)
 	{
 		char buffer[PIPE_TRANSFER_CHUNK];
@@ -2238,6 +2266,15 @@ static void pump_pipe_to_socket(int line_id, int socket)
 			int written = socketwrite(socket, buffer + offset, copied - offset);
 			if (written <= 0)
 			{
+				/* Socket blocked - save remaining data to pending buffer */
+				int remaining = copied - offset;
+				if (remaining > 0 && remaining <= PIPE_TRANSFER_CHUNK)
+				{
+					memcpy(line_configuration[line_id].pending_buffer, 
+					       buffer + offset, remaining);
+					line_configuration[line_id].pending_offset = 0;
+					line_configuration[line_id].pending_length = remaining;
+				}
 				return;
 			}
 			offset += written;
@@ -2260,6 +2297,53 @@ static void close_line_connection(int line_id)
 
 	if (socket > 0)
 	{
+		/* Flush any pending partial write data first */
+		while (line_configuration[line_id].pending_length > 0)
+		{
+			int remaining = line_configuration[line_id].pending_length - 
+			                line_configuration[line_id].pending_offset;
+			int written = socketwrite(socket, 
+				line_configuration[line_id].pending_buffer + line_configuration[line_id].pending_offset,
+				remaining);
+			if (written <= 0)
+			{
+				break;  /* Can't write more, give up */
+			}
+			line_configuration[line_id].pending_offset += written;
+			if (line_configuration[line_id].pending_offset >= line_configuration[line_id].pending_length)
+			{
+				line_configuration[line_id].pending_length = 0;
+				line_configuration[line_id].pending_offset = 0;
+			}
+		}
+
+		/* Flush any remaining output from the pipe */
+		{
+			char flush_buffer[PIPE_TRANSFER_CHUNK];
+			int flush_loops = 0;
+			int copied;
+
+			while (flush_loops < 10 && 
+			       (copied = pipes_output_read_block(line_id, flush_buffer, PIPE_TRANSFER_CHUNK)) > 0)
+			{
+				int offset = 0;
+				while (offset < copied)
+				{
+					int written = socketwrite(socket, flush_buffer + offset, copied - offset);
+					if (written <= 0)
+					{
+						break;  /* Can't write more, give up */
+					}
+					offset += written;
+				}
+				if (offset < copied)
+				{
+					break;  /* Couldn't write everything, stop trying */
+				}
+				flush_loops++;
+			}
+		}
+
 		pipes_send_control_command(line_id, PIPE_CONTROL_DISCONNECT);
 		shutdown(socket, 0);
 		socketclose(socket);

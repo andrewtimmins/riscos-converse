@@ -157,6 +157,11 @@
         int resolved;
         char remote[128];
         line_icon_buffers icons;
+
+        /* Pending write buffer for partial socket writes */
+        char pending_buffer[1536];
+        int pending_offset;
+        int pending_length;
     } line_components;
 
     /* Extern declarations - definitions in main.c */

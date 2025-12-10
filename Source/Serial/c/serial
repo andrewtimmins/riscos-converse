@@ -345,6 +345,10 @@ void serial_handle_connect(int line_index)
     debug_printf("serial: Line %d - carrier detected (DCD rise)", line->line_id);
     serial_log("Line %d: Carrier detected", line->line_id);
 
+    /* Clear any pending serial write buffer from previous connection */
+    line->pending_serial_length = 0;
+    line->pending_serial_offset = 0;
+
     /* Reset pipes and send connect frame */
     pipes_reset_line(line->line_id);
     pipes_send_control_command(line->line_id, PIPE_CONTROL_CONNECT);
@@ -379,10 +383,25 @@ void serial_handle_disconnect(int line_index)
     debug_printf("serial: Line %d - carrier lost (DCD fall)", line->line_id);
     serial_log("Line %d: Carrier lost", line->line_id);
 
+    /* Drain any pending serial write buffer (can't send, but clear it) */
+    line->pending_serial_length = 0;
+    line->pending_serial_offset = 0;
+
+    /* Drain the output pipe so LineTask doesn't see stale data on reconnect */
+    {
+        char drain_buffer[PIPE_TRANSFER_CHUNK];
+        int drain_loops = 0;
+        while (drain_loops < 20 &&
+               pipes_output_read_block(line->line_id, drain_buffer, PIPE_TRANSFER_CHUNK) > 0)
+        {
+            drain_loops++;
+        }
+    }
+
     /* Send disconnect frame */
     pipes_send_control_command(line->line_id, PIPE_CONTROL_DISCONNECT);
 
-    /* Flush buffers */
+    /* Flush hardware buffers */
     if (driver != NULL)
     {
         (*driver)(DRIVER_FLUSHRX, port);
@@ -555,8 +574,23 @@ void serial_pump_to_pipe(int line_index)
             return;
         }
 
-        /* Write to pipe */
-        pipes_input_write_block(line->line_id, buffer, read_bytes);
+        /* Write to pipe - handle partial writes */
+        {
+            int offset = 0;
+            while (offset < read_bytes)
+            {
+                int written = pipes_input_write_block(line->line_id, buffer + offset, read_bytes - offset);
+                if (written <= 0)
+                {
+                    /* Pipe full - put remaining data back into serial RX buffer is not possible,
+                       so we must drop it. Log this rare condition. */
+                    debug_printf("serial: Line %d dropped %d bytes (pipe full)",
+                                 line->line_id, read_bytes - offset);
+                    break;
+                }
+                offset += written;
+            }
+        }
         line->last_activity = clock();
 
         if (read_bytes < to_read)
@@ -593,6 +627,36 @@ void serial_pump_from_pipe(int line_index)
         return;
     }
 
+    /* First, flush any pending data from a previous partial write */
+    while (line->pending_serial_length > 0)
+    {
+        int remaining = line->pending_serial_length - line->pending_serial_offset;
+        tx_free = (*driver)(DRIVER_CHECKTX, port);
+        if (tx_free <= 0)
+        {
+            return;  /* TX buffer still full, try again next poll */
+        }
+        if (remaining > tx_free)
+        {
+            remaining = tx_free;
+        }
+        written = (*driver)(DRIVER_PUTBLOCK, port,
+            line->pending_serial + line->pending_serial_offset, remaining);
+        if (written <= 0)
+        {
+            return;  /* Can't write, try again next poll */
+        }
+        line->pending_serial_offset += written;
+        if (line->pending_serial_offset >= line->pending_serial_length)
+        {
+            /* Pending buffer fully written */
+            line->pending_serial_length = 0;
+            line->pending_serial_offset = 0;
+        }
+        line->last_activity = clock();
+    }
+
+    /* Now read new data from pipe and write to serial */
     while (loops < 4)
     {
         /* Check how much space in serial TX buffer */
@@ -618,6 +682,23 @@ void serial_pump_from_pipe(int line_index)
         written = (*driver)(DRIVER_PUTBLOCK, port, buffer, copied);
         if (written <= 0)
         {
+            /* TX buffer blocked - save all data to pending buffer */
+            if (copied <= PIPE_TRANSFER_CHUNK)
+            {
+                memcpy(line->pending_serial, buffer, copied);
+                line->pending_serial_offset = 0;
+                line->pending_serial_length = copied;
+            }
+            return;
+        }
+        else if (written < copied)
+        {
+            /* Partial write - save remainder to pending buffer */
+            int remaining = copied - written;
+            memcpy(line->pending_serial, buffer + written, remaining);
+            line->pending_serial_offset = 0;
+            line->pending_serial_length = remaining;
+            line->last_activity = clock();
             return;
         }
 

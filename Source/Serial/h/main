@@ -14,6 +14,7 @@
 
 #define SERIAL_MAX_LINES        32
 #define SERIAL_POLL_DELAY       1       /* centiseconds between null polls (10ms) */
+#define PIPE_TRANSFER_CHUNK     1536    /* Transfer buffer size */
 
 /* ============================================================================
  * Wimp Messages
@@ -117,6 +118,11 @@ typedef struct
     int ring_match_index;           /* Current match position within ring string */
     clock_t last_activity;          /* Last activity time */
     char driver_name[32];           /* Driver name for debug */
+
+    /* Pending write buffer for partial serial/pipe writes */
+    char pending_serial[PIPE_TRANSFER_CHUNK];
+    int pending_serial_offset;
+    int pending_serial_length;
 } SERIAL_LINE_STATE;
 
 /* ============================================================================
