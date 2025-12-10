@@ -144,7 +144,14 @@ typedef enum
     SCRIPT_CMD_BOLD,
     SCRIPT_CMD_STD,
     SCRIPT_CMD_READLINE,
-    SCRIPT_CMD_YESNO
+    SCRIPT_CMD_YESNO,
+    /* Loop commands */
+    SCRIPT_CMD_FOR,
+    SCRIPT_CMD_ENDFOR,
+    SCRIPT_CMD_WHILE,
+    SCRIPT_CMD_ENDWHILE,
+    SCRIPT_CMD_BREAK,
+    SCRIPT_CMD_CONTINUE
 } script_command_type;
 
 typedef enum
@@ -162,6 +169,7 @@ typedef struct script_instruction
     char *arg2;
     char *arg3;
     char *arg4;
+    char *arg5;  /* Used by FOR to pass start_label for post-append registration */
 } script_instruction;
 
 typedef struct script_label

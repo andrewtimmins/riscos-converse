@@ -57,7 +57,6 @@ Use `{{` to output a literal `{` character in embedded format.
 General Rules
 -------------
 - Leading/trailing whitespace is ignored.
-- Lines beginning with `#` are comments (plain format).
 - Block comments `/* ... */` work in both formats.
 - Commands and labels are case-insensitive.
 - Multi-word arguments can be wrapped in backticks (`` `like this` ``) to
@@ -158,6 +157,108 @@ Compound conditions work with block IF:
 - Nesting depth tracked per-script (resets on subscript call)
 - When condition is false, parser skips to matching ELSE/ENDIF
 - Labels inside skipped blocks are NOT registered
+
+Loop Commands (FOR, WHILE)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+The script engine supports structured iteration with FOR and WHILE loops:
+
+`FOR var = start TO end [STEP n]` ... `ENDFOR` (or `NEXT`)
+    Iterates from start to end (inclusive). STEP defaults to 1 if omitted.
+    Use negative STEP to count down. The loop variable is updated each iteration.
+    
+    Examples:
+        ; Count 1 to 10
+        for i = 1 to 10
+            print `%{i} `
+        endfor
+        
+        ; Count by twos
+        for j = 0 to 100 step 2
+            print `%{j}\r\n`
+        next
+        
+        ; Countdown
+        for k = 10 to 1 step -1
+            print `%{k}...`
+        endfor
+        print `Blast off!\r\n`
+    
+    **Technical Notes:**
+    - Start, end, and step values are macro-expanded and converted to integers
+    - FOR initializes the variable, then falls through to the loop body
+    - ENDFOR increments, tests, and jumps back if continuing
+    - If step > 0 and start > end, the loop body is skipped entirely
+    - If step < 0 and start < end, the loop body is skipped entirely
+    - Internal variables `_for_end_<var>` and `_for_step_<var>` store limits
+
+`WHILE condition` ... `ENDWHILE`
+    Repeats while the condition is true. Uses the same condition syntax as IF,
+    supporting all operators (`==`, `!=`, `>`, `<`, `>=`, `<=`) and compound
+    conditions (`&&`, `||`).
+    
+    Examples:
+        ; Double until > 100
+        set x `1`
+        while x <= 100
+            print `%{x} `
+            mul x %{x} 2
+        endwhile
+        
+        ; Wait for specific input
+        set done `0`
+        while done == 0
+            prompt choice char echo
+            if choice == `Q` then
+                set done `1`
+            end if
+        endwhile
+
+`BREAK`
+    Exits the innermost loop immediately, continuing after ENDFOR/ENDWHILE.
+    
+    Example:
+        for i = 1 to 100
+            if i == 50 then
+                print `Stopping at 50!\r\n`
+                break
+            end if
+            print `%{i} `
+        endfor
+        print `Done.\r\n`
+
+`CONTINUE`
+    Skips the rest of the current iteration and jumps to the next:
+    - For FOR loops: jumps to ENDFOR (which increments and tests)
+    - For WHILE loops: jumps to WHILE (which re-tests the condition)
+    
+    Example (print only even numbers):
+        for i = 1 to 10
+            mod remainder %{i} 2
+            if remainder == 1 then
+                continue
+            end if
+            print `%{i} `
+        endfor
+
+**Nested Loops:**
+    Loops can be nested up to 16 levels deep. BREAK and CONTINUE always
+    operate on the innermost loop.
+    
+    Example (multiplication table):
+        for row = 1 to 5
+            for col = 1 to 5
+                mul product %{row} %{col}
+                print `%{product}\t`
+            endfor
+            print `\r\n`
+        endfor
+
+**Technical Notes:**
+- Loop state is tracked in a static stack during parsing
+- Labels are generated internally: `_for_start_N`, `_for_test_N`, `_for_end_N`
+- BREAK uses the end_label to exit
+- CONTINUE uses the test_label (ENDFOR for FOR, WHILE for WHILE)
+- Loop state is reset on session disconnect via `script_reset_loop_state()`
 
 `RETURN` or `STOP`
     Ends the current script immediately. If called from a subscript,

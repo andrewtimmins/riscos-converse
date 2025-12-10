@@ -12,7 +12,7 @@
     fgbg 15 0
     print `\r\n    Your choice [`
     fg 14
-    print `M F D B O U Y W C G`
+    print `M F D B O U Y W C L G`
     fg 15
     print `]: `
     prompt choice char echo upper
@@ -26,6 +26,7 @@
     if choice == `Y` goto statistics
     if choice == `W` goto whoami
     if choice == `C` goto chat
+    if choice == `L` goto loop_demo
     if choice == `G` goto goodbye
     goto main_menu
 
@@ -541,6 +542,120 @@
     end if
     
     goto games_menu
+
+    label loop_demo
+    doing `Loop Demo`
+    cls
+    fgbg 11 0
+    print `+============================================================================+\r\n`
+    print `|                           `
+    fg 14
+    print `Loop Demonstration`
+    fg 11
+    print `                            |\r\n`
+    print `+============================================================================+\r\n`
+    fgbg 7 0
+    print `\r\n`
+    print `  This demonstrates the FOR, WHILE, BREAK, and CONTINUE loop commands.\r\n`
+    print `\r\n`
+    
+    bold
+    print `  1. FOR Loop (Count 1 to 5):\r\n`
+    std
+    print `     `
+    for i = 1 to 5
+        print `%{i} `
+    endfor
+    print `\r\n\r\n`
+    
+    bold
+    print `  2. FOR Loop with STEP 2 (Count 0 to 10):\r\n`
+    std
+    print `     `
+    for j = 0 to 10 step 2
+        print `%{j} `
+    next
+    print `\r\n\r\n`
+    
+    bold
+    print `  3. FOR Loop Countdown (10 to 1):\r\n`
+    std
+    print `     `
+    for k = 10 to 1 step -1
+        print `%{k} `
+    endfor
+    print `BLAST OFF!\r\n\r\n`
+    
+    bold
+    print `  4. WHILE Loop (Double until > 100):\r\n`
+    std
+    set val `1`
+    print `     `
+    while val <= 100
+        print `%{val} `
+        mul val %{val} 2
+    endwhile
+    print `\r\n\r\n`
+    
+    bold
+    print `  5. FOR Loop with BREAK (Stop at 7):\r\n`
+    std
+    print `     `
+    for n = 1 to 10
+        if n == 7 then
+            print `[BREAK]`
+            break
+        end if
+        print `%{n} `
+    endfor
+    print `\r\n\r\n`
+    
+    bold
+    print `  6. FOR Loop with CONTINUE (Skip odd numbers):\r\n`
+    std
+    print `     `
+    for m = 1 to 10
+        mod remainder %{m} 2
+        if remainder == 1 then
+            continue
+        end if
+        print `%{m} `
+    endfor
+    print `\r\n\r\n`
+    
+    bold
+    print `  7. WHILE Loop with BREAK (Find first > 50):\r\n`
+    std
+    set search `1`
+    while search < 100
+        mul search %{search} 2
+        if search > 50 then
+            print `     First value > 50 is: %{search}\r\n`
+            break
+        end if
+    endwhile
+    print `\r\n`
+    
+    bold
+    print `  8. Nested FOR Loops (3x3 grid):\r\n`
+    std
+    for row = 1 to 3
+        print `     `
+        for col = 1 to 3
+            mul cell %{row} 3
+            sub cell %{cell} 3
+            add cell %{cell} %{col}
+            print `[%{cell}] `
+        endfor
+        print `\r\n`
+    endfor
+    print `\r\n`
+    
+    fgbg 14 0
+    print `  Loop demonstration complete!\r\n`
+    fgbg 7 0
+    anykey
+    goto main_menu
 
     label goodbye
     cls

@@ -138,6 +138,16 @@ The workspace includes `SharedLibs` containing:
   - **Terminal Detection**: `DETECTANSI result [timeout_ms]` sends ANSI DSR query (ESC[6n) and waits for cursor position report. Sets result to "1" if ANSI terminal detected, "0" if timeout (default 3000ms). The `ansi` variable is set in Prelogon and available throughout the session.
   - **Visual Control**: `FLASH <0|1>` toggles the blinking text attribute state. `BOLD` enables bold/bright ANSI attribute. `STD` resets all attributes to white on black with no bold/flash. `ANYKEY [file]` displays a "Press any key" prompt, optionally loading a custom ANSI file (default: `<Converse$Dir>.BBS.Menus.Anykey` or internal fallback). `MORE <0|1>` temporarily disables (0) or enables (1) the "More?" prompt for the current session, overriding the user's preference.
   - **Input Commands**: `PROMPT varname mode echo` requests input (mode: `char`/`line`, echo: `echo`/`noecho`). `READLINE varname [echo|noecho]` is shorthand for `prompt varname line echo`. `YESNO varname` waits for Y/y/N/n keypress and stores "1" or "0".
+  - **Loop Commands**: FOR, WHILE, BREAK, CONTINUE provide structured iteration:
+    - `FOR var = start TO end [STEP n]` ... `ENDFOR` or `NEXT`: Counts from start to end (inclusive). STEP defaults to 1. Negative STEP counts down. Variable is updated each iteration.
+    - `WHILE condition` ... `ENDWHILE`: Repeats while condition is true. Uses same condition syntax as IF (supports `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`).
+    - `BREAK`: Exits innermost loop immediately, continuing after ENDFOR/ENDWHILE.
+    - `CONTINUE`: Skips to next iteration. For FOR loops, goes to ENDFOR (increment happens). For WHILE loops, goes to condition re-test.
+    - Loops can be nested up to 16 levels deep.
+    - Example FOR: `for i = 1 to 10` ... `print %{i}` ... `endfor`
+    - Example WHILE: `set x 1` ... `while x <= 100` ... `mul x %{x} 2` ... `endwhile`
+    - Example BREAK: `for i = 1 to 100` ... `if i == 50 then` `break` `end if` ... `endfor`
+    - Example CONTINUE: `for i = 1 to 10` ... `mod r %{i} 2` ... `if r == 1 then` `continue` `end if` ... `print %{i}` ... `endfor`
   - **More Prompts**: When enabled (user's `more` flag = 1), the script engine automatically pauses after displaying `lines` lines of output (default 24) and shows a "More?" prompt in reverse video. Any key continues; Q/N/Ctrl+C aborts and disables further prompts for the session. The line counter resets on CLS. Use `more 0` in scripts to disable prompts during file listings or other bulk output.
     - **Implementation**: Uses `script_state` fields: `more_override` (-1=not set, 0=disabled, 1=enabled), `more_line_count` (current line count), `more_screen_lines` (user's configured screen height).
     - **Status**: When awaiting More? response, script status is `SCRIPT_STATUS_WAIT_MORE`.
