@@ -575,7 +575,7 @@ Messagebase Commands
         messagebase area 3
         messagebase messages
         messagebase read 1
-        messagebase post
+        messagebase compose
 
 Direct Mail Commands
 ~~~~~~~~~~~~~~~~~~~~

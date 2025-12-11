@@ -1,115 +1,0 @@
-06601030305800
-1
-2#
-F0110030
-9[.............................................................]101
-Ä
-ÅâONLINE,Real-TimeONLINEcommanddoor
-
-àAboutONLINE:â
-
-ÅÄThisdoorbehavesinasimilarwayArcBBS'sONLINEcommand(showlistof
-on-lineusers)rightdowntoappearances.Theonlydifferenceisitis
-real-time,andwillupdateonceevery15"Wimp_Poll"s.Systemloadingis
-approximatelybetween6%to10%.
-à
-
-InstallingONLINE:Ä
-
-Right.Toinstall,loadthe<ONLINE$Dir>.Configurefile.It'sÑreallyÄ
-simple,forachange...Thenumberyouseeisthenumberthatthedoor
-willbe.Enteryourchosennumberandsave.
-
-     ThenfindyourONLINEmenuscript.Minelookslike:
-DOING "On-line users"
-ECHO "{std cls bfgbg wn}   ___  ___  ___    ___  ___{|}"
-ECHO "  /_   /  / /    / /  / /__/{|}"
-ECHO " /__  /  / /__  / /  / /  /          {fg g}USERS ON-LINE (real-
-time){eol |}"
-ECHO "{eol std | |}"  
-ONLINE
-ECHO "{| | | _>0016}"
-ECHO "{bfgbgwbeol_>2223}Press any key{eol std}"
-     ANYKEY
-     GOTO sysutils.menu
-
-     Removeorcommentoutthelinethatcalls"ONLINE",andaddinsomething
-     similarto:
-
-     OSCLI "WimpTask <ArcBBS$Door>.!ONLINE"
-     DOOR 29
-
-     tocalltheONLINEdoor.
-
-
-àAfewpointstonote:Ä
-
-     1.Isthisdooris'realtime',itrequirestheusertocancelthedoor
-bypressingakey(anykeythatreturnsacode>ASCII2).Untilthe
-userdoesso,thedoorwillnotreturn.
-     2.ThedoorÑwillÄquitiftheuserdropscarrier.
-     3.Theuser'sportnumberisshowninwhiteifcontactablewith
-SubSpace/Parlezorsimilar-andredifnot.
-     4.Thedisplaywillgetnaffedifmorethantwopeoplequitwithinthe
-sameupdate.Thisseemsunlikelythough...
-     5.Theprogramdoesn'tusemuchmemory.My'pagesize'is32K,sothe
-WimpSlotissetto32K.Usersofcomputerswithotherpagesizes
-(1/2MborRiscPC)canplayaroundandseewhatworksbest.
-     6.Eachloop,thedoorbackspacesandcorrectsitself,soitÑshouldÄ
-handlebeingplacedinascrollingposition.
-à
-Support:Ä
-
-     Sendmessagesto:
-
-     RichardMurrayat2:254/86.1@Fidonet
-          or
-     rmurray@digibank.demon.co.uk
-         or
-     rmurray@arcade.demon.co.uk
-
-     Nosupportbypostorbytelephone.
-
-àEnduserlicenseconditionsandtheworldaccordingtoMurray:Ä
-
-9[...................................................]011
-Thisismine.ThisisFreeware.Thismustnotbecharged
-for.TheSerialPortoranyagentofTheSerialPortmay
-distributethisutilityfreewithArcBBS.Pleasedon'trip
-mycode.Allrightsreserved.Anyresemblancetoreal
-persons,livingordeadispurelycoincidental.Some
-assemblyrequired.Applyonlytoaffectedarea.For
-recreationaluseonly.Forexternaluseonly.Nottobe
-takenorally.Ifsymptomspersist,consultyourdoctor.No
-user-serviceablepartsinside.AsseenonTV.Thisdoormay
-     bedistributedonBBSs,butNOToncoverdiscsorfromaPD
-     librarywithoutthepermissionoftheauthor,RickMurray.
-9[.............................................................]101
-
-Alwaysloveyourbudgie.
-
-     YouÑmustÄknowtheblurbbynow...:-)
-
-
-àHistory:Ä
-
-ThisdoorcontainsalotofstuffrippedfromParlez.Theideawasto
-haveParlezautomaticallyupdateitself.However,duetocertain
-restrictions,thiswasnot/easily/possible.ThenIthoughtabouthaving
-thedoingdisplay'real-time',asI'mforeverbashing'Who'sonline?'
-timeaftertimetokeepupwiththings.Hencethisdoor.
-
- Thelatestupdate,version1.10,altersthedoorsoitwillonlyupdate
-thedisplayifsomethingchanges.Thiswon'tmakethedoorfaster,butit
-willpreventthecursorfromleapingallovertheuser'sdisplay.
-
-Pleasewriteandletmeknowifyouusethisdoor.Itseemseverybodyis
-usingRickySarge'sSnooperPro.Didyouknowyoucanoverlaythisdooron
-anANSIgraphic???Simplyloadyourgraphic-movethecursortotheline
-beforewhereyouwantONLINEtooutput,thencalloutput.:-)
-
-LikeIsaid,mostpeopleuseSnooperPro.ThereforeI'llnotmention
-anythingaboutthisdoorandAndrewLobelasit'slargelyacademicnow.
-     <sigh>:-)
-Enjoy!
-

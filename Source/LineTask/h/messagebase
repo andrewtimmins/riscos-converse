@@ -82,7 +82,17 @@
 #define VIEWER_ACTION_PREV          2
 #define VIEWER_ACTION_REPLY         3
 #define VIEWER_ACTION_QUIT          4
+#define VIEWER_ACTION_START         5
+#define VIEWER_ACTION_END           6
+#define VIEWER_ACTION_NEXT_AREA     7
+#define VIEWER_ACTION_PREV_AREA     8
+#define VIEWER_ACTION_CURRENT       9
+#define VIEWER_ACTION_PRIVATE_REPLY 10
 #define VIEWER_ACTION_INVALID       (-1)
+
+/* Reading direction */
+#define READER_DIR_FORWARD          1
+#define READER_DIR_BACKWARD         (-1)
 
 /* Viewer phase enum */
 typedef enum
@@ -101,7 +111,8 @@ typedef enum
     MESSAGE_COMPOSE_ADDRESS,
     MESSAGE_COMPOSE_SUBJECT,
     MESSAGE_COMPOSE_BODY,
-    MESSAGE_COMPOSE_CONFIRM
+    MESSAGE_COMPOSE_CONFIRM,
+    MESSAGE_COMPOSE_CONFIRM_ABORT
 } message_compose_phase;
 
 /* FTN address structure */
@@ -171,6 +182,12 @@ typedef struct
     int current_line;
     int page_lines;
     int is_ansi;
+    int reading_direction;      /* READER_DIR_FORWARD or READER_DIR_BACKWARD */
+    int message_position;       /* 1-based position in area */
+    int total_messages;         /* Total messages in area */
+    int times_read;             /* Times this message has been read */
+    int saved_messagebase;      /* Saved messagebase selection (for inbox command) */
+    int saved_area;             /* Saved area selection (for inbox command) */
 } message_viewer_state;
 
 /* Message composer state */
@@ -180,12 +197,26 @@ typedef struct
     int reply_to_id;
     int is_ftn;
     int is_private;
+    int is_netmail;
     char to_name[MAX_TO_NAME];
     int to_user_id;
     LINETASK_FTN_ADDRESS to_ftn_address;
+    char to_address_str[64];            /* Raw FTN address string for netmail */
     char subject[MB_MAX_DESC];
     char body[MAX_COMPOSER_LINES][MAX_LINE_WIDTH];
     int body_lines;
+    
+    /* Editor state */
+    int editor_line;                    /* Current line number in editor (0-based) */
+    int editor_insert_mode;             /* 0=append at end, 1=insert at editor_line */
+    int editor_priority;                /* Priority flag for private mail */
+    int editor_recorded;                /* Recorded delivery flag for private mail */
+    
+    /* Cached area info */
+    short area_type;                    /* Cached area type (AREA_TYPE_*) */
+    char area_name[MB_MAX_NAME];        /* Cached area name */
+    int area_id;                        /* Cached area ID */
+    LINETASK_FTN_ADDRESS from_ftn_address;  /* User's FTN AKA for this area */
 } message_composer_state;
 
 /* Session messagebase state */
@@ -235,9 +266,10 @@ int messagebase_list_areas(messagebase_session *session,
                            void (*output)(void *ctx, const char *text),
                            void *ctx);
 
-int messagebase_list_messages(messagebase_session *session,
-                              void (*output)(void *ctx, const char *text),
-                              void *ctx);
+/* Continuous message reader - replaces table listing */
+int messagebase_enter_reader(messagebase_session *session,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx);
 
 int messagebase_show_message_info(messagebase_session *session,
                                   int message_id,
@@ -271,9 +303,28 @@ int messagebase_viewer_goto_next(messagebase_session *session,
 int messagebase_viewer_goto_prev(messagebase_session *session,
                                   void (*output)(void *ctx, const char *text),
                                   void *ctx);
+int messagebase_viewer_goto_start(messagebase_session *session,
+                                   void (*output)(void *ctx, const char *text),
+                                   void *ctx);
+int messagebase_viewer_goto_end(messagebase_session *session,
+                                 void (*output)(void *ctx, const char *text),
+                                 void *ctx);
+int messagebase_viewer_next_area(messagebase_session *session,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_prev_area(messagebase_session *session,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_show_current(messagebase_session *session,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx);
 int messagebase_viewer_start_reply(messagebase_session *session,
                                     void (*output)(void *ctx, const char *text),
                                     void *ctx);
+int messagebase_viewer_start_private_reply(messagebase_session *session,
+                                            void (*output)(void *ctx, const char *text),
+                                            void *ctx);
+int messagebase_mark_as_read(messagebase_session *session, int message_id);
 
 /* ******************************************************************************************************************************************************** */
 /* Message Composer                                                                                                                                         */
@@ -288,6 +339,22 @@ int messagebase_composer_start_reply(messagebase_session *session,
                                       int message_id,
                                       void (*output)(void *ctx, const char *text),
                                       void *ctx);
+
+/* Start composer for private mail (auto-finds Private area) 
+ * If to_username is NULL, prompts for recipient */
+int messagebase_composer_start_private(messagebase_session *session,
+                                        const char *to_username,
+                                        void (*output)(void *ctx, const char *text),
+                                        void *ctx);
+
+/* Start composer for netmail (auto-finds Netmail area)
+ * If to_name/to_address are NULL, prompts for recipient */
+int messagebase_composer_start_netmail(messagebase_session *session,
+                                        const char *to_name,
+                                        const char *to_address,
+                                        void (*output)(void *ctx, const char *text),
+                                        void *ctx);
+
 int messagebase_composer_handle_line(messagebase_session *session,
                                       const char *line,
                                       void (*output)(void *ctx, const char *text),
@@ -310,28 +377,46 @@ int messagebase_composer_send(messagebase_session *session,
                                void (*output)(void *ctx, const char *text),
                                void *ctx);
 
+/* Composer header display */
+void messagebase_composer_show_header(messagebase_session *session,
+                                      void (*output)(void *ctx, const char *text),
+                                      void *ctx,
+                                      int cursor_field);  /* 0=To, 1=Address, 2=Subject, -1=none */
+
+/* Line editor functions */
+void messagebase_editor_show_prompt(messagebase_session *session,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+void messagebase_editor_show_help(void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+void messagebase_editor_show_intro(messagebase_session *session,
+                                   void (*output)(void *ctx, const char *text),
+                                   void *ctx);
+void messagebase_editor_list_lines(messagebase_session *session,
+                                   int from_line, int to_line,
+                                   void (*output)(void *ctx, const char *text),
+                                   void *ctx);
+int messagebase_editor_delete_lines(messagebase_session *session,
+                                    int from_line, int to_line);
+int messagebase_editor_insert_line(messagebase_session *session,
+                                   int at_line, const char *text);
+int messagebase_editor_centre_line(messagebase_session *session, int line_num);
+int messagebase_editor_handle_command(messagebase_session *session,
+                                      const char *command,
+                                      void (*output)(void *ctx, const char *text),
+                                      void *ctx);
+
 /* ******************************************************************************************************************************************************** */
-/* Direct Message Sending (Script Commands)                                                                                                                 */
+/* Area Auto-Discovery                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
 
-/* Send a private message to a local user
- * Returns message ID on success, 0 on failure */
-int messagebase_send_private(messagebase_session *session,
-                             const char *to_username,
-                             const char *subject,
-                             const char *body,
-                             void (*output)(void *ctx, const char *text),
-                             void *ctx);
+/* Find the first private mail area (AREA_TYPE_OTHER) across all messagebases
+ * Returns 1 on success, 0 if not found. Sets base_id and area_id output params */
+int messagebase_find_private_area_global(int *base_id_out, int *area_id_out);
 
-/* Send a netmail message to an FTN address
- * Returns message ID on success, 0 on failure */
-int messagebase_send_netmail(messagebase_session *session,
-                             const char *to_address,
-                             const char *to_name,
-                             const char *subject,
-                             const char *body,
-                             void (*output)(void *ctx, const char *text),
-                             void *ctx);
+/* Find the first netmail area (AREA_TYPE_NETMAIL) across all messagebases
+ * Returns 1 on success, 0 if not found. Sets base_id and area_id output params */
+int messagebase_find_netmail_area_global(int *base_id_out, int *area_id_out);
 
 /* Find or create the default private mail area in a messagebase
  * Returns area ID on success, 0 if not found */
@@ -360,6 +445,12 @@ int messagebase_can_post_to_area(messagebase_session *session, int base_id, int 
 int messagebase_get_next_message_id(messagebase_session *session, int current_id);
 int messagebase_get_prev_message_id(messagebase_session *session, int current_id);
 int messagebase_get_first_message_id(messagebase_session *session);
+int messagebase_get_last_message_id(messagebase_session *session);
+int messagebase_get_newest_unread_id(messagebase_session *session);
+int messagebase_count_messages(messagebase_session *session);
+int messagebase_get_message_position(messagebase_session *session, int message_id);
+int messagebase_get_next_area_id(messagebase_session *session);
+int messagebase_get_prev_area_id(messagebase_session *session);
 
 /* ******************************************************************************************************************************************************** */
 /* FTN Address Helpers                                                                                                                                      */

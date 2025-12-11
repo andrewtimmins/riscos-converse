@@ -1,8 +1,0 @@
-{
- report `Reading NextCaller message`
- bg 0
- cls
- show <RiscBBS$Dir>.BBS.NextCaller.Message
- show <RiscBBS$Dir>.BBS.AnyKey
- eof
-}

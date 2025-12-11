@@ -125,8 +125,8 @@ uplink 2
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
-    areafix_password
-    filefix_password
+    areafix_password 5SBE737Z
+    filefix_password 5SBE737Z
     groups          A,B,C
 enduplink
 
@@ -136,8 +136,8 @@ uplink 3
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
-    areafix_password
-    filefix_password
+    areafix_password 5SBE737Z
+    filefix_password 5SBE737Z
     groups          A,B,C
 enduplink
 
@@ -147,8 +147,8 @@ uplink 4
     host            call.rofbbs.com
     port            24556
     password        5SBE737Z
-    areafix_password
-    filefix_password
+    areafix_password 5SBE737Z
+    filefix_password 5SBE737Z
     groups          A,B,C
 enduplink
 
@@ -158,8 +158,8 @@ uplink 5
     host            otherhub.abad1dea.to
     port            24554
     password        PKYEGB7A
-    areafix_password
-    filefix_password
+    areafix_password PKYEGB7A
+    filefix_password PKYEGB7A
     groups          A,B,C
 enduplink
 
@@ -169,8 +169,8 @@ uplink 6
     host            bbs.zeusdev.co.uk
     port            24554
     password        IRM76TQL
-    areafix_password
-    filefix_password
+    areafix_password IRM76TQL
+    filefix_password IRM76TQL
     groups          A,B,C
 enduplink
 

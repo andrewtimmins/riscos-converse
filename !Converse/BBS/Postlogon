@@ -1,63 +1,177 @@
 {
+/* Run login scan on entry */
+loginscan
+anykey
+
+goto main_menu
+
+label main_menu
     cls
-    fgbg 11 0
-    doing `Welcome...`
+    bold
     print `\r\n`
-    fgbg 14 0
-    print `    Welcome back, `
-    fgbg 15 0
-    print `%{realname}`
-    fgbg 14 0
-    print `!\r\n\r\n`
-    script `<Converse$Dir>.BBS.Welcome`
+    print `  ============================================\r\n`
+    print `      M E S S A G E B A S E   T E S T E R\r\n`
+    print `  ============================================\r\n`
+    std
+    print `\r\n`
+    print `  Current Selection:\r\n`
+    print `    Messagebase: %{messagebasename} (ID: %{messagebaseid})\r\n`
+    print `    Area:        %{messagebaseareaname} (ID: %{messagebaseareaid})\r\n`
+    print `\r\n`
+    bold
+    print `  Navigation                        Compose & Other\r\n`
+    std
+    print `    [1] List/Select Messagebases     [P] Post New Message\r\n`
+    print `    [2] List/Select Areas            [M] Send Private Mail\r\n`
+    print `    [3] Reset Selection              [N] Send Netmail (FTN)\r\n`
+    print `    [4] Read Messages                [S] Scan for New\r\n`
+    print `    [5] Message Info                 [I] Read Inbox\r\n`
+    print `                                     [Q] Quit / Logoff\r\n`
+    print `\r\n`
+    print `  Choice: `
+    prompt choice char echo
+
+    if choice == `1` goto select_base
+    if choice == `2` goto select_area
+    if choice == `3` goto reset_selection
+    if choice == `4` goto read_messages
+    if choice == `5` goto message_info
+    if choice == `p` goto post_message
+    if choice == `P` goto post_message
+    if choice == `m` goto send_mail
+    if choice == `M` goto send_mail
+    if choice == `n` goto send_netmail
+    if choice == `N` goto send_netmail
+    if choice == `s` goto login_scan
+    if choice == `S` goto login_scan
+    if choice == `i` goto read_inbox
+    if choice == `I` goto read_inbox
+    if choice == `q` goto quit
+    if choice == `Q` goto quit
+
+    print `\r\n\r\n[Invalid choice]\r\n`
     anykey
-    if %{registered} == 0 then
-        doing `Registration required...`
-        fgbg 14 0
-        print `\r\n    Please complete your registration:\r\n\r\n`
-        fgbg 7 0
-        script `<Converse$Dir>.BBS.Register`
+    goto main_menu
+
+/* List/select a messagebase */
+label select_base
+    messagebase list
+    goto main_menu
+
+/* List/select an area */
+label select_area
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto main_menu
     end if
-    cls
-    fgbg 11 0
-    print `+============================================================================+\r\n`
-    print `|                      {fg 14}Today in Computing History{fg 11}                          |\r\n`
-    print `+============================================================================+\r\n`
-    fgbg 7 0
-    print `\r\n`
-    
-    oscli `Filer_Run <Converse$Dir>.BBS.Utils.!Today`
-    sleep 500
-    doing `Today in history...`
-    type `<Converse$Dir>.BBS.Today`
+    messagebase areas
+    goto main_menu
+
+/* Reset selection */
+label reset_selection
+    messagebase reset
+    anykey
+    goto main_menu
+
+/* Read messages in continuous reader */
+label read_messages
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto main_menu
+    end if
+    if %{messagebaseareaid} == 0 then
+        print `[Select an area first]\r\n`
+        anykey
+        goto main_menu
+    end if
+    doing `Reading messages...`
+    more 0
+    messagebase messages
+    more 1
+    doing
+    /* Reader handles all navigation and returns here when user aborts */
+    /* If no messages existed, the error was shown - wait for keypress */
+    anykey
+    goto main_menu
+
+/* Show message info */
+label message_info
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto main_menu
+    end if
+    print `Enter message ID: `
+    readline msg_id
+    if msg_id == `` goto main_menu
+    messagebase info %{msg_id}
     print `\r\n`
     anykey
-    cls
-    fgbg 11 0
-    print `+============================================================================+\r\n`
-    print `|                         {fg 14}Scanning for New Items{fg 11}                           |\r\n`
-    print `+============================================================================+\r\n`
-    fgbg 7 0
+    goto main_menu
+
+/* Post a new message */
+label post_message
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto main_menu
+    end if
+    if %{messagebaseareaid} == 0 then
+        print `[Select an area first]\r\n`
+        anykey
+        goto main_menu
+    end if
+    doing `Composing message...`
+    messagebase compose
+    /* Composer handles To/Subject/Body prompts and returns here when done */
+    doing
+    goto main_menu
+
+/* Send private mail to a local user */
+label send_mail
+    doing `Composing private mail...`
+    messagebase compose private
+    /* Composer auto-finds Private area, handles To/Subject/Body with full editor */
+    doing
+    goto main_menu
+
+/* Send FTN netmail */
+label send_netmail
+    doing `Composing netmail...`
+    messagebase compose netmail
+    /* Composer auto-finds Netmail area, handles To/Address/Subject/Body with full editor */
+    doing
+    goto main_menu
+
+/* Scan for new messages/files */
+label login_scan
     print `\r\n`
-    
-    doing `Login scan...`
     loginscan
-    print `\r\n`
     anykey
-    cls
-    fgbg 11 0
-    print `+============================================================================+\r\n`
-    print `|                           {fg 14}Users Online Now{fg 11}                               |\r\n`
-    print `+============================================================================+\r\n`
-    fgbg 7 0
+    goto main_menu
+
+/* Read private inbox */
+label read_inbox
     print `\r\n`
-    
-    doing `Who's online...`
-    online
-    print `\r\n`
+    doing `Reading inbox...`
+    more 0
+    messagebase inbox
+    more 1
+    doing
+    /* Inbox reader auto-restores selection when done */
     anykey
-    
-    fgbg 7 0
-    cls
-    script `<Converse$Dir>.BBS.MainMenu`
+    goto main_menu
+
+/* Quit */
+label quit
+    print `\r\n\r\n`
+    bold
+    print `Goodbye!\r\n`
+    std
+    logoff
 }

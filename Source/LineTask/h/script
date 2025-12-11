@@ -53,6 +53,7 @@ typedef struct script_host
     int (*get_user_accesslevel)(void *context);
     int (*get_user_sysop)(void *context);
     const char *(*get_user_keys)(void *context);
+    const char *(*get_user_realname)(void *context);
     int (*filebase_download)(void *context, int base_id, int file_id);
     /* Messagebase callbacks */
     void *(*get_messagebase_session)(void *context);
@@ -95,6 +96,8 @@ typedef enum
     SCRIPT_STATUS_WAIT_CHAT_REASON,
     SCRIPT_STATUS_WAIT_CHAT,
     SCRIPT_STATUS_WAIT_MORE,
+    SCRIPT_STATUS_WAIT_MB_SELECT,
+    SCRIPT_STATUS_WAIT_MB_AREA_SELECT,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -136,8 +139,6 @@ typedef enum
     SCRIPT_CMD_DETECTANSI,
     SCRIPT_CMD_SYSOPCHAT,
     SCRIPT_CMD_MESSAGEBASE,
-    SCRIPT_CMD_SENDMAIL,
-    SCRIPT_CMD_SENDNETMAIL,
     SCRIPT_CMD_FLASH,
     SCRIPT_CMD_OSCLI,
     SCRIPT_CMD_CLL,

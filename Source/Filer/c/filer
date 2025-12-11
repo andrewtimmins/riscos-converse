@@ -340,6 +340,18 @@ static void filer_swi_userdb(_kernel_swi_regs *r)
       r->r[0] = userdb_update_stats((int)r->r[1], stats);
       break;
     }
+    case FILER_USERDB_CMD_FIND_USERNAME:
+    {
+      const char *username = (const char *)r->r[1];
+      if (username == NULL || *username == '\0')
+      {
+        r->r[0] = 0;
+        return;
+      }
+      record = userdb_find_username(username);
+      r->r[0] = (int)record;
+      break;
+    }
     default:
       r->r[0] = -1;
       break;

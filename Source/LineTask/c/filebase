@@ -290,8 +290,17 @@ int filebase_list_bases(filebase_session *session,
     _kernel_swi_regs regs;
     LINETASK_FILEBASE_RECORD *record;
     char line[256];
-    int count = 0;
+    int count = 0;          /* entries stored for display */
+    int total_count = 0;    /* total entries enumerated */
     int index = 0;
+    /* Collect entries for side-by-side (two-column) rendering */
+    #define MAX_FILEBASE_ENTRIES 256
+    struct base_entry
+    {
+        int id;
+        char name[64];
+        char access[16];
+    } entries[MAX_FILEBASE_ENTRIES];
 
     if (output == NULL)
     {
@@ -299,10 +308,6 @@ int filebase_list_bases(filebase_session *session,
     }
 
     debug_printf("filebase_list_bases: enumerating via SWI\n");
-
-    output(ctx, "\r\n");
-    output(ctx, "\033[1;37m ID  Name                                             Access\033[0m\r\n");
-    output(ctx, "\033[1;30m---- ------------------------------------------------ ------\033[0m\r\n");
 
     while (1)
     {
@@ -352,24 +357,55 @@ int filebase_list_bases(filebase_session *session,
             }
         }
 
-        snprintf(line, sizeof(line), "\033[1;33m%4d\033[0m %-48.48s %6d\r\n",
-                 record->id, record->name, record->accesslevel);
-        output(ctx, line);
-        count++;
+        if (count < MAX_FILEBASE_ENTRIES)
+        {
+            entries[count].id = record->id;
+            snprintf(entries[count].access, sizeof(entries[count].access), "%d", record->accesslevel);
+            strncpy(entries[count].name, record->name, sizeof(entries[count].name) - 1);
+            entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+            count++;
+        }
+        total_count++;
         index++;
     }
 
-    if (count == 0)
+    if (total_count == 0)
     {
         output(ctx, "[No filebases available]\r\n");
     }
     else
     {
-        snprintf(line, sizeof(line), "\r\n\033[1;30m%d filebase(s) listed.\033[0m\r\n", count);
+        int i = 0;
+        output(ctx, "\r\n");
+        output(ctx, "\033[1;37m #   Name                         Acc     #   Name                         Acc\033[0m\r\n");
+        output(ctx, "\033[1;30m---- --------------------------- ------ ---- --------------------------- ------\033[0m\r\n");
+
+        while (i < count)
+        {
+            int has_right = (i + 1 < count);
+            if (has_right)
+            {
+                snprintf(line, sizeof(line),
+                         "\033[1;33m%3d\033[0m %-27.27s %6.6s   \033[1;33m%3d\033[0m %-27.27s %6.6s\r\n",
+                         entries[i].id, entries[i].name, entries[i].access,
+                         entries[i + 1].id, entries[i + 1].name, entries[i + 1].access);
+                i += 2;
+            }
+            else
+            {
+                snprintf(line, sizeof(line),
+                         "\033[1;33m%3d\033[0m %-27.27s %6.6s\r\n",
+                         entries[i].id, entries[i].name, entries[i].access);
+                i++;
+            }
+            output(ctx, line);
+        }
+
+        snprintf(line, sizeof(line), "\r\n\033[1;30m%d filebase(s) listed.\033[0m\r\n", total_count);
         output(ctx, line);
     }
 
-    return count;
+    return total_count;
 }
 
 int filebase_list_areas(filebase_session *session,
@@ -380,8 +416,17 @@ int filebase_list_areas(filebase_session *session,
     LINETASK_FILEBASE_AREA_RECORD *record_ptr;
     LINETASK_FILEBASE_RECORD base_record;
     char line[256];
-    int count = 0;
+    int count = 0;          /* entries stored for display */
+    int total_count = 0;    /* total entries enumerated */
     int index = 0;
+    /* Collect entries to render side-by-side */
+    #define MAX_FB_AREA_ENTRIES 256
+    struct area_entry
+    {
+        int id;
+        char name[64];
+        char access[16];
+    } entries[MAX_FB_AREA_ENTRIES];
 
     if (output == NULL || session == NULL)
     {
@@ -401,14 +446,14 @@ int filebase_list_areas(filebase_session *session,
         return 0;
     }
 
-    snprintf(line, sizeof(line), "\r\n\033[1;36mAreas in: %s\033[0m\r\n", base_record.name);
-    output(ctx, line);
-    output(ctx, "\033[1;37m ID  Name                                             Access\033[0m\r\n");
-    output(ctx, "\033[1;30m---- ------------------------------------------------ ------\033[0m\r\n");
-
     /* Add "root" area option */
-    output(ctx, "\033[1;33m   0\033[0m [Root - All Files]                                  0\r\n");
+    entries[count].id = 0;
+    strncpy(entries[count].name, "[Root - All Files]", sizeof(entries[count].name) - 1);
+    entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+    strncpy(entries[count].access, "0", sizeof(entries[count].access) - 1);
+    entries[count].access[sizeof(entries[count].access) - 1] = '\0';
     count++;
+    total_count++;
 
     /* Enumerate areas via SWI */
     while (1)
@@ -437,17 +482,51 @@ int filebase_list_areas(filebase_session *session,
             continue;
         }
 
-        snprintf(line, sizeof(line), "\033[1;33m%4d\033[0m %-48.48s %6d\r\n",
-                 record_ptr->id, record_ptr->name, record_ptr->accesslevel);
-        output(ctx, line);
-        count++;
+        if (count < MAX_FB_AREA_ENTRIES)
+        {
+            entries[count].id = record_ptr->id;
+            snprintf(entries[count].access, sizeof(entries[count].access), "%d", record_ptr->accesslevel);
+            strncpy(entries[count].name, record_ptr->name, sizeof(entries[count].name) - 1);
+            entries[count].name[sizeof(entries[count].name) - 1] = '\0';
+            count++;
+        }
+        total_count++;
         index++;
     }
 
-    snprintf(line, sizeof(line), "\r\n\033[1;30m%d area(s) listed.\033[0m\r\n", count);
+    snprintf(line, sizeof(line), "\r\n\033[1;36mAreas in: %s\033[0m\r\n", base_record.name);
+    output(ctx, line);
+    output(ctx, "\033[1;37m #   Name                         Acc     #   Name                         Acc\033[0m\r\n");
+    output(ctx, "\033[1;30m---- --------------------------- ------ ---- --------------------------- ------\033[0m\r\n");
+
+    {
+        int i = 0;
+        while (i < count)
+        {
+            int has_right = (i + 1 < count);
+            if (has_right)
+            {
+                snprintf(line, sizeof(line),
+                         "\033[1;33m%3d\033[0m %-27.27s %6.6s   \033[1;33m%3d\033[0m %-27.27s %6.6s\r\n",
+                         entries[i].id, entries[i].name, entries[i].access,
+                         entries[i + 1].id, entries[i + 1].name, entries[i + 1].access);
+                i += 2;
+            }
+            else
+            {
+                snprintf(line, sizeof(line),
+                         "\033[1;33m%3d\033[0m %-27.27s %6.6s\r\n",
+                         entries[i].id, entries[i].name, entries[i].access);
+                i++;
+            }
+            output(ctx, line);
+        }
+    }
+
+    snprintf(line, sizeof(line), "\r\n\033[1;30m%d area(s) listed.\033[0m\r\n", total_count);
     output(ctx, line);
 
-    return count;
+    return total_count;
 }
 
 int filebase_list_files(filebase_session *session,

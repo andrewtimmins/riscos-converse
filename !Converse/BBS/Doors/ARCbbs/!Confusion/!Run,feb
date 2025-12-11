@@ -1,8 +1,0 @@
-|Virtual Confusion, 8 person ArcBBS chat door
-| By Andy Jones, SysOp of :
-| SATURN BBS - Manchester, 0161 707 9306
-
-Set Confusion$Dir <Obey$Dir>
-Iconsprites <Obey$Dir>.!Sprites
-WimpSlot -min 32k -max 32k
-BASIC -QUIT <Obey$Dir>.LoaderProg

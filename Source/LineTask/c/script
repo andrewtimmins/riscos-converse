@@ -55,6 +55,9 @@ static script_loop_block script_loop_stack[SCRIPT_MAX_LOOP_DEPTH];
 static int script_loop_depth = 0;
 static int script_loop_counter = 0;
 
+/* Preserve user "more" preference while composer runs */
+static int composer_more_saved = -1;
+
 typedef struct script_buffer
 {
     char *data;
@@ -399,7 +402,9 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         state->status != SCRIPT_STATUS_WAIT_ANSI &&
         state->status != SCRIPT_STATUS_WAIT_CHAT_REASON &&
         state->status != SCRIPT_STATUS_WAIT_CHAT &&
-        state->status != SCRIPT_STATUS_WAIT_MORE)
+        state->status != SCRIPT_STATUS_WAIT_MORE &&
+        state->status != SCRIPT_STATUS_WAIT_MB_SELECT &&
+        state->status != SCRIPT_STATUS_WAIT_MB_AREA_SELECT)
     {
         return 0;
     }
@@ -627,18 +632,38 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                         return 1;
 
                     case VIEWER_ACTION_NEXT:
-                        if (!messagebase_viewer_goto_next(session,
-                                                          (void (*)(void*, const char*))script_write_output, state))
-                        {
-                            /* No more messages - return to script */
-                            state->status = SCRIPT_STATUS_RUNNING;
-                            script_process(state);
-                        }
+                        messagebase_viewer_goto_next(session,
+                                                      (void (*)(void*, const char*))script_write_output, state);
                         return 1;
 
                     case VIEWER_ACTION_PREV:
                         messagebase_viewer_goto_prev(session,
                                                       (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_START:
+                        messagebase_viewer_goto_start(session,
+                                                       (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_END:
+                        messagebase_viewer_goto_end(session,
+                                                     (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_NEXT_AREA:
+                        messagebase_viewer_next_area(session,
+                                                      (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_PREV_AREA:
+                        messagebase_viewer_prev_area(session,
+                                                      (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case VIEWER_ACTION_CURRENT:
+                        messagebase_viewer_show_current(session,
+                                                         (void (*)(void*, const char*))script_write_output, state);
                         return 1;
 
                     case VIEWER_ACTION_REPLY:
@@ -656,9 +681,30 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                         }
                         else
                         {
-                            /* Reply failed - return to script */
-                            state->status = SCRIPT_STATUS_RUNNING;
-                            script_process(state);
+                            /* Reply failed - stay in viewer */
+                            messagebase_viewer_show_prompt(session,
+                                                            (void (*)(void*, const char*))script_write_output, state);
+                        }
+                        return 1;
+
+                    case VIEWER_ACTION_PRIVATE_REPLY:
+                        if (messagebase_viewer_start_private_reply(session,
+                                                                    (void (*)(void*, const char*))script_write_output, state))
+                        {
+                            /* Composer is now active - switch to line input */
+                            state->input_echo = 1;
+                            state->input_length = 0;
+                            if (state->input_buffer != NULL)
+                            {
+                                state->input_buffer[0] = '\0';
+                            }
+                            state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                        }
+                        else
+                        {
+                            /* Private reply failed - stay in viewer */
+                            messagebase_viewer_show_prompt(session,
+                                                            (void (*)(void*, const char*))script_write_output, state);
                         }
                         return 1;
 
@@ -767,6 +813,11 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                     else
                     {
                         /* Composer finished (sent, cancelled, or error) - resume script */
+                        if (composer_more_saved != -1)
+                        {
+                            state->more_override = composer_more_saved;
+                            composer_more_saved = -1;
+                        }
                         state->status = SCRIPT_STATUS_RUNNING;
                         script_process(state);
                         return 1;
@@ -814,6 +865,204 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         {
             char echo[2] = { (char)byte, '\0' };
             state->host.write_text(state->host.context, echo);
+        }
+        return 1;
+    }
+
+    /* Handle messagebase selection input */
+    if (state->status == SCRIPT_STATUS_WAIT_MB_SELECT)
+    {
+        /* Ignore LF */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Empty input = cancel */
+            if (state->input_length == 0)
+            {
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Try to select the messagebase */
+            {
+                int base_id = atoi(state->input_buffer);
+                messagebase_session *session = NULL;
+                LINETASK_MESSAGEBASE_RECORD record;
+
+                if (state->host.get_messagebase_session != NULL)
+                {
+                    session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+                }
+
+                if (session != NULL && base_id > 0)
+                {
+                    if (messagebase_get_info(base_id, &record))
+                    {
+                        if (messagebase_check_access(record.accesslevel, record.keys,
+                                                      session->user_accesslevel, session->user_keys))
+                        {
+                            char msg[128];
+                            session->current_messagebase = base_id;
+                            session->current_area = 0;
+                            script_save_user_history(state);
+                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
+                            script_write_output(state, msg);
+                        }
+                        else
+                        {
+                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+                        }
+                    }
+                    else
+                    {
+                        script_write_output(state, "\033[1;31m[Messagebase not found]\033[0m\r\n");
+                    }
+                }
+                else if (base_id <= 0 && state->input_length > 0)
+                {
+                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+                }
+            }
+
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        }
+
+        /* Handle backspace */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Accumulate input */
+        if (state->input_length + 1 < state->input_capacity)
+        {
+            state->input_buffer[state->input_length++] = (char)byte;
+            if (state->host.write_text != NULL)
+            {
+                char echo[2] = { (char)byte, '\0' };
+                state->host.write_text(state->host.context, echo);
+            }
+        }
+        return 1;
+    }
+
+    /* Handle messagebase area selection input */
+    if (state->status == SCRIPT_STATUS_WAIT_MB_AREA_SELECT)
+    {
+        /* Ignore LF */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Empty input = cancel */
+            if (state->input_length == 0)
+            {
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Try to select the area */
+            {
+                int area_id = atoi(state->input_buffer);
+                messagebase_session *session = NULL;
+                LINETASK_MESSAGEBASE_AREA_RECORD area_record;
+
+                if (state->host.get_messagebase_session != NULL)
+                {
+                    session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+                }
+
+                if (session != NULL && area_id >= 0)
+                {
+                    if (area_id == 0)
+                    {
+                        /* Select root/all messages */
+                        session->current_area = 0;
+                        script_save_user_history(state);
+                        script_write_output(state, "\033[1;32mSelected: [All Messages]\033[0m\r\n");
+                    }
+                    else if (messagebase_get_area_info(session->current_messagebase, area_id, &area_record))
+                    {
+                        char msg[128];
+                        session->current_area = area_id;
+                        script_save_user_history(state);
+                        snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
+                        script_write_output(state, msg);
+                    }
+                    else
+                    {
+                        script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
+                    }
+                }
+                else if (state->input_length > 0)
+                {
+                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+                }
+            }
+
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        }
+
+        /* Handle backspace */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Accumulate input */
+        if (state->input_length + 1 < state->input_capacity)
+        {
+            state->input_buffer[state->input_length++] = (char)byte;
+            if (state->host.write_text != NULL)
+            {
+                char echo[2] = { (char)byte, '\0' };
+                state->host.write_text(state->host.context, echo);
+            }
         }
         return 1;
     }
@@ -2731,189 +2980,6 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
-    /* Send private mail: sendmail <username> <subject> <body> */
-    if (script_stringcasecmp(token, "sendmail") == 0)
-    {
-        char *rest = strtok(NULL, "");
-        char *username = NULL;
-        char *subject = NULL;
-        char *body = NULL;
-        size_t consumed = 0;
-
-        instruction->type = SCRIPT_CMD_SENDMAIL;
-
-        if (rest != NULL)
-        {
-            rest = script_trim(rest);
-
-            /* Parse username (backtick or plain) */
-            if (!script_parse_backtick_string(rest, &consumed, &username))
-            {
-                char *space = strchr(rest, ' ');
-                if (space != NULL)
-                {
-                    *space = '\0';
-                    username = script_duplicate_string(rest);
-                    rest = space + 1;
-                }
-                else
-                {
-                    username = script_duplicate_string(rest);
-                    rest = NULL;
-                }
-            }
-            else
-            {
-                rest = script_trim(rest + consumed);
-            }
-
-            instruction->arg1 = username;
-
-            /* Parse subject */
-            if (rest != NULL && *rest != '\0')
-            {
-                rest = script_trim(rest);
-                if (!script_parse_backtick_string(rest, &consumed, &subject))
-                {
-                    char *space = strchr(rest, ' ');
-                    if (space != NULL)
-                    {
-                        *space = '\0';
-                        subject = script_duplicate_string(rest);
-                        rest = space + 1;
-                    }
-                    else
-                    {
-                        subject = script_duplicate_string(rest);
-                        rest = NULL;
-                    }
-                }
-                else
-                {
-                    rest = script_trim(rest + consumed);
-                }
-                instruction->arg2 = subject;
-
-                /* Parse body */
-                if (rest != NULL && *rest != '\0')
-                {
-                    rest = script_trim(rest);
-                    if (!script_parse_backtick_string(rest, &consumed, &body))
-                    {
-                        body = script_duplicate_string(rest);
-                    }
-                    instruction->arg3 = body;
-                }
-            }
-        }
-        return 1;
-    }
-
-    /* Send netmail: sendnetmail <address> <name> <subject> <body> */
-    if (script_stringcasecmp(token, "sendnetmail") == 0)
-    {
-        char *rest = strtok(NULL, "");
-        char *address = NULL;
-        char *name = NULL;
-        char *subject = NULL;
-        char *body = NULL;
-        size_t consumed = 0;
-
-        instruction->type = SCRIPT_CMD_SENDNETMAIL;
-
-        if (rest != NULL)
-        {
-            rest = script_trim(rest);
-
-            /* Parse FTN address */
-            if (!script_parse_backtick_string(rest, &consumed, &address))
-            {
-                char *space = strchr(rest, ' ');
-                if (space != NULL)
-                {
-                    *space = '\0';
-                    address = script_duplicate_string(rest);
-                    rest = space + 1;
-                }
-                else
-                {
-                    address = script_duplicate_string(rest);
-                    rest = NULL;
-                }
-            }
-            else
-            {
-                rest = script_trim(rest + consumed);
-            }
-
-            instruction->arg1 = address;
-
-            /* Parse recipient name */
-            if (rest != NULL && *rest != '\0')
-            {
-                rest = script_trim(rest);
-                if (!script_parse_backtick_string(rest, &consumed, &name))
-                {
-                    char *space = strchr(rest, ' ');
-                    if (space != NULL)
-                    {
-                        *space = '\0';
-                        name = script_duplicate_string(rest);
-                        rest = space + 1;
-                    }
-                    else
-                    {
-                        name = script_duplicate_string(rest);
-                        rest = NULL;
-                    }
-                }
-                else
-                {
-                    rest = script_trim(rest + consumed);
-                }
-                instruction->arg2 = name;
-
-                /* Parse subject */
-                if (rest != NULL && *rest != '\0')
-                {
-                    rest = script_trim(rest);
-                    if (!script_parse_backtick_string(rest, &consumed, &subject))
-                    {
-                        char *space = strchr(rest, ' ');
-                        if (space != NULL)
-                        {
-                            *space = '\0';
-                            subject = script_duplicate_string(rest);
-                            rest = space + 1;
-                        }
-                        else
-                        {
-                            subject = script_duplicate_string(rest);
-                            rest = NULL;
-                        }
-                    }
-                    else
-                    {
-                        rest = script_trim(rest + consumed);
-                    }
-                    instruction->arg3 = subject;
-
-                    /* Parse body */
-                    if (rest != NULL && *rest != '\0')
-                    {
-                        rest = script_trim(rest);
-                        if (!script_parse_backtick_string(rest, &consumed, &body))
-                        {
-                            body = script_duplicate_string(rest);
-                        }
-                        instruction->arg4 = body;
-                    }
-                }
-            }
-        }
-        return 1;
-    }
-
     script_set_error(state, "Unknown command '%s' on line %d", token, line_number);
     return 0;
 }
@@ -3710,6 +3776,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
             {
                 int level = state->host.get_user_accesslevel(state->host.context);
                 const char *keys = NULL;
+                const char *realname = NULL;
                 int user_id = 0;
                 if (state->host.get_user_keys != NULL)
                 {
@@ -3719,12 +3786,30 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 {
                     user_id = state->host.get_user_id(state->host.context);
                 }
-                messagebase_session_set_access(session, user_id, level, keys, NULL);
+                if (state->host.get_user_realname != NULL)
+                {
+                    realname = state->host.get_user_realname(state->host.context);
+                }
+                messagebase_session_set_access(session, user_id, level, keys, realname);
             }
 
             if (script_stringcasecmp(subcmd, "list") == 0)
             {
-                messagebase_list_bases(session, (void (*)(void*, const char*))script_write_output, state);
+                int saved_more = state->more_override;
+                state->more_override = 0;  /* Disable More during list */
+                state->more_line_count = 0;  /* Reset line count */
+                state->host.write_text(state->host.context, "\033[2J\033[H");  /* Clear screen directly */
+                messagebase_list_bases(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
+                state->more_override = saved_more;
+                /* Prompt for selection */
+                state->host.write_text(state->host.context, "\r\nEnter messagebase number to access: ");
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_MB_SELECT;
+                return;
             }
             else if (script_stringcasecmp(subcmd, "select") == 0)
             {
@@ -3766,7 +3851,23 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
             else if (script_stringcasecmp(subcmd, "areas") == 0)
             {
-                messagebase_list_areas(session, (void (*)(void*, const char*))script_write_output, state);
+                if (session->current_messagebase <= 0)
+                {
+                    script_write_output(state, "[Select a messagebase first]\r\n");
+                    break;
+                }
+                state->more_line_count = 0;  /* Reset line count */
+                state->host.write_text(state->host.context, "\033[2J\033[H");  /* Clear screen directly */
+                messagebase_list_areas(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
+                /* Prompt for selection */
+                state->host.write_text(state->host.context, "\r\nEnter area number to access: ");
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_MB_AREA_SELECT;
+                return;
             }
             else if (script_stringcasecmp(subcmd, "area") == 0)
             {
@@ -3802,14 +3903,77 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 snprintf(msg, sizeof(msg), "\r\n\033[1;32mSelected area: %s\033[0m\r\n", area_record.name);
                 script_write_output(state, msg);
             }
+            else if (script_stringcasecmp(subcmd, "inbox") == 0)
+            {
+                /* Read private inbox - automatically selects private area */
+                int private_base = 0, private_area = 0;
+                
+                if (!messagebase_find_private_area_global(&private_base, &private_area))
+                {
+                    script_write_output(state, "\r\n[No Private Mail area configured]\r\n");
+                    break;
+                }
+                
+                /* Save current selection to restore when viewer closes */
+                session->viewer.saved_messagebase = session->current_messagebase;
+                session->viewer.saved_area = session->current_area;
+                
+                /* Temporarily select the private area */
+                session->current_messagebase = private_base;
+                session->current_area = private_area;
+                
+                if (messagebase_enter_reader(session, (void (*)(void*, const char*))script_write_output, state))
+                {
+                    /* Reader is now active - wait for char input */
+                    state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+                    state->input_echo = 0;
+                    return;
+                }
+                /* enter_reader already displayed error message */
+                /* Restore selection since we didn't enter the reader */
+                session->current_messagebase = session->viewer.saved_messagebase;
+                session->current_area = session->viewer.saved_area;
+                session->viewer.saved_messagebase = 0;
+                session->viewer.saved_area = 0;
+            }
             else if (script_stringcasecmp(subcmd, "messages") == 0)
             {
-                messagebase_list_messages(session, (void (*)(void*, const char*))script_write_output, state);
+                /* Enter continuous message reader */
+                if (session->current_messagebase <= 0)
+                {
+                    script_write_output(state, "\r\n[Select a messagebase first]\r\n");
+                    break;
+                }
+                if (session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n[Select an area first]\r\n");
+                    break;
+                }
+
+                if (messagebase_enter_reader(session, (void (*)(void*, const char*))script_write_output, state))
+                {
+                    /* Reader is now active - wait for char input */
+                    state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+                    state->input_echo = 0;
+                    return;
+                }
+                /* enter_reader already displayed error message */
             }
             else if (script_stringcasecmp(subcmd, "read") == 0)
             {
                 int msg_id;
                 LINETASK_MESSAGE_RECORD msg_record;
+
+                if (session->current_messagebase <= 0)
+                {
+                    script_write_output(state, "\r\n[Select a messagebase first]\r\n");
+                    break;
+                }
+                if (session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n[Select an area first]\r\n");
+                    break;
+                }
 
                 if (arg == NULL || *arg == '\0')
                 {
@@ -3838,7 +4002,13 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     break;
                 }
 
+                /* Initialize reader state */
+                session->viewer.total_messages = messagebase_count_messages(session);
+                session->viewer.message_position = messagebase_get_message_position(session, msg_id);
+                session->viewer.reading_direction = READER_DIR_FORWARD;
+
                 messagebase_viewer_init(session, msg_id);
+                messagebase_mark_as_read(session, msg_id);
                 messagebase_viewer_show_header(session, (void (*)(void*, const char*))script_write_output, state);
                 messagebase_viewer_show_body(session, (void (*)(void*, const char*))script_write_output, state);
                 messagebase_viewer_show_prompt(session, (void (*)(void*, const char*))script_write_output, state);
@@ -3847,24 +4017,111 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 state->input_echo = 0;
                 return;
             }
-            else if (script_stringcasecmp(subcmd, "post") == 0)
+            else if (script_stringcasecmp(subcmd, "compose") == 0)
             {
-                if (session->current_messagebase <= 0 || session->current_area <= 0)
+                /* messagebase compose [type] [args]
+                 * type can be: private [username], netmail [address] [name], or empty for current area
+                 */
+                char type[32];
+                char arg1_buf[64];
+                char arg2_buf[64];
+                int parsed = 0;
+                int result = 0;
+
+                type[0] = '\0';
+                arg1_buf[0] = '\0';
+                arg2_buf[0] = '\0';
+
+                /* Parse compose type and optional args */
+                if (arg != NULL && *arg != '\0')
                 {
-                    script_write_output(state, "\r\n[Select a messagebase and area first]\r\n");
+                    char temp_arg[256];
+                    char *tok;
+                    strncpy(temp_arg, arg, sizeof(temp_arg) - 1);
+                    temp_arg[sizeof(temp_arg) - 1] = '\0';
+
+                    tok = strtok(temp_arg, " \t");
+                    if (tok != NULL)
+                    {
+                        strncpy(type, tok, sizeof(type) - 1);
+                        type[sizeof(type) - 1] = '\0';
+
+                        tok = strtok(NULL, " \t");
+                        if (tok != NULL)
+                        {
+                            strncpy(arg1_buf, tok, sizeof(arg1_buf) - 1);
+                            arg1_buf[sizeof(arg1_buf) - 1] = '\0';
+
+                            tok = strtok(NULL, "");
+                            if (tok != NULL)
+                            {
+                                while (*tok == ' ' || *tok == '\t') tok++;
+                                strncpy(arg2_buf, tok, sizeof(arg2_buf) - 1);
+                                arg2_buf[sizeof(arg2_buf) - 1] = '\0';
+                            }
+                        }
+                    }
+                }
+
+                if (script_stringcasecmp(type, "private") == 0)
+                {
+                    /* Disable More? prompts during composer BEFORE starting */
+                    composer_more_saved = state->more_override;
+                    state->more_override = 0;
+                    
+                    /* messagebase compose private [username] */
+                    result = messagebase_composer_start_private(session,
+                        arg1_buf[0] != '\0' ? arg1_buf : NULL,
+                        (void (*)(void*, const char*))script_write_output, state);
+                    parsed = 1;
+                }
+                else if (script_stringcasecmp(type, "netmail") == 0)
+                {
+                    /* Disable More? prompts during composer BEFORE starting */
+                    composer_more_saved = state->more_override;
+                    state->more_override = 0;
+                    
+                    /* messagebase compose netmail [address] [name] */
+                    result = messagebase_composer_start_netmail(session,
+                        arg2_buf[0] != '\0' ? arg2_buf : NULL,
+                        arg1_buf[0] != '\0' ? arg1_buf : NULL,
+                        (void (*)(void*, const char*))script_write_output, state);
+                    parsed = 1;
+                }
+                else if (type[0] == '\0')
+                {
+                    /* No type specified - use current area */
+                    if (session->current_messagebase <= 0 || session->current_area <= 0)
+                    {
+                        script_write_output(state, "\r\n[Select a messagebase/area first, or use: compose private / compose netmail]\r\n");
+                        break;
+                    }
+                    
+                    /* Disable More? prompts during composer BEFORE starting */
+                    composer_more_saved = state->more_override;
+                    state->more_override = 0;
+                    
+                    result = messagebase_composer_start_post(session, 
+                        (void (*)(void*, const char*))script_write_output, state);
+                    parsed = 1;
+                }
+                else
+                {
+                    script_write_output(state, "\r\n[Usage: messagebase compose [private [user] | netmail [addr] [name]]]\r\n");
                     break;
                 }
 
-                messagebase_composer_start_post(session, (void (*)(void*, const char*))script_write_output, state);
-
-                state->input_echo = 1;
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
+                if (parsed && result)
                 {
-                    state->input_buffer[0] = '\0';
+                    state->input_echo = 1;
+                    state->input_length = 0;
+                    if (state->input_buffer != NULL)
+                    {
+                        state->input_buffer[0] = '\0';
+                    }
+                    state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                    return;
                 }
-                state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
-                return;
             }
             else if (script_stringcasecmp(subcmd, "reset") == 0)
             {
@@ -3891,116 +4148,6 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 snprintf(msg, sizeof(msg), "\r\n[Unknown messagebase command: %s]\r\n", subcmd);
                 script_write_output(state, msg);
             }
-        }
-        break;
-
-        case SCRIPT_CMD_SENDMAIL:
-        {
-            const char *username_raw = instruction->arg1;
-            const char *subject_raw = instruction->arg2;
-            const char *body_raw = instruction->arg3;
-            char username[64], subject[256], body[2048];
-            messagebase_session *session = NULL;
-
-            if (username_raw == NULL || subject_raw == NULL || body_raw == NULL)
-            {
-                script_write_output(state, "\r\n[Usage: sendmail <username> <subject> <body>]\r\n");
-                break;
-            }
-
-            /* Expand macros */
-            script_expand_macros(state, username_raw, username, sizeof(username));
-            script_expand_macros(state, subject_raw, subject, sizeof(subject));
-            script_expand_macros(state, body_raw, body, sizeof(body));
-            script_translate_escapes(body);
-
-            /* Get session */
-            if (state->host.get_messagebase_session != NULL)
-            {
-                session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-            }
-
-            if (session == NULL)
-            {
-                script_write_output(state, "\r\n[Messagebase not available]\r\n");
-                break;
-            }
-
-            /* Update session access */
-            if (state->host.get_user_accesslevel != NULL)
-            {
-                int level = state->host.get_user_accesslevel(state->host.context);
-                const char *keys = NULL;
-                int user_id = 0;
-                if (state->host.get_user_keys != NULL)
-                {
-                    keys = state->host.get_user_keys(state->host.context);
-                }
-                if (state->host.get_user_id != NULL)
-                {
-                    user_id = state->host.get_user_id(state->host.context);
-                }
-                messagebase_session_set_access(session, user_id, level, keys, NULL);
-            }
-
-            messagebase_send_private(session, username, subject, body,
-                                     (void (*)(void*, const char*))script_write_output, state);
-        }
-        break;
-
-        case SCRIPT_CMD_SENDNETMAIL:
-        {
-            const char *address_raw = instruction->arg1;
-            const char *name_raw = instruction->arg2;
-            const char *subject_raw = instruction->arg3;
-            const char *body_raw = instruction->arg4;
-            char address[64], name[64], subject[256], body[2048];
-            messagebase_session *session = NULL;
-
-            if (address_raw == NULL || subject_raw == NULL || body_raw == NULL)
-            {
-                script_write_output(state, "\r\n[Usage: sendnetmail <address> <name> <subject> <body>]\r\n");
-                break;
-            }
-
-            /* Expand macros */
-            script_expand_macros(state, address_raw, address, sizeof(address));
-            script_expand_macros(state, name_raw != NULL ? name_raw : "User", name, sizeof(name));
-            script_expand_macros(state, subject_raw, subject, sizeof(subject));
-            script_expand_macros(state, body_raw, body, sizeof(body));
-            script_translate_escapes(body);
-
-            /* Get session */
-            if (state->host.get_messagebase_session != NULL)
-            {
-                session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-            }
-
-            if (session == NULL)
-            {
-                script_write_output(state, "\r\n[Messagebase not available]\r\n");
-                break;
-            }
-
-            /* Update session access */
-            if (state->host.get_user_accesslevel != NULL)
-            {
-                int level = state->host.get_user_accesslevel(state->host.context);
-                const char *keys = NULL;
-                int user_id = 0;
-                if (state->host.get_user_keys != NULL)
-                {
-                    keys = state->host.get_user_keys(state->host.context);
-                }
-                if (state->host.get_user_id != NULL)
-                {
-                    user_id = state->host.get_user_id(state->host.context);
-                }
-                messagebase_session_set_access(session, user_id, level, keys, NULL);
-            }
-
-            messagebase_send_netmail(session, address, name, subject, body,
-                                     (void (*)(void*, const char*))script_write_output, state);
         }
         break;
 
@@ -4614,7 +4761,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 last_scan_time = user_stats->lastscan;
             }
 
-            script_write_output(state, "\r\n\033[1;36mScanning for new messages and files...\033[0m\r\n\r\n");
+            script_write_output(state, "\r\n\033[1;33mScanning for new messages and files...\033[0m\r\n");
 
             /* Get sessions */
             if (state->host.get_messagebase_session != NULL)
@@ -4848,10 +4995,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
 
             /* Summary */
-            script_write_output(state, "\r\n");
             if (new_messages == 0 && new_files == 0)
             {
-                script_write_output(state, "\033[1;30mNo new messages or files since your last scan.\033[0m\r\n");
+                script_write_output(state, "\r\n\033[1;32mNo new messages or files since your last scan.\033[0m\r\n");
             }
             else
             {

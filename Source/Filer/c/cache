@@ -242,6 +242,18 @@ int filebase_cache_add_base(const FILEBASE_RECORD *record)
         return 0;
     }
 
+    /* Check if this base already exists in cache */
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (filebase_bases[i].valid && 
+            filebase_bases[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            filebase_bases[i].record = *record;
+            return 1;
+        }
+    }
+
     /* Find empty slot */
     for (i = 0; i < CACHE_MAX_BASES; i++)
     {
@@ -414,6 +426,19 @@ int filebase_cache_add_area(int base_id, const FILEBASE_AREA_RECORD *record)
         return 0;
     }
 
+    /* Check if this area already exists in cache */
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (filebase_areas[i].valid && 
+            filebase_areas[i].base_id == base_id &&
+            filebase_areas[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            filebase_areas[i].record = *record;
+            return 1;
+        }
+    }
+
     for (i = 0; i < CACHE_MAX_AREAS; i++)
     {
         if (!filebase_areas[i].valid)
@@ -572,6 +597,19 @@ int filebase_cache_add_file(int base_id, const FILE_RECORD *record)
     if (record == NULL)
     {
         return 0;
+    }
+
+    /* Check if this file already exists in cache */
+    for (i = 0; i < CACHE_MAX_FILES; i++)
+    {
+        if (filebase_files[i].valid && 
+            filebase_files[i].base_id == base_id &&
+            filebase_files[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            filebase_files[i].record = *record;
+            return 1;
+        }
     }
 
     for (i = 0; i < CACHE_MAX_FILES; i++)
@@ -816,6 +854,18 @@ int messagebase_cache_add_base(const MESSAGEBASE_RECORD *record)
         return 0;
     }
 
+    /* Check if this base already exists in cache */
+    for (i = 0; i < CACHE_MAX_BASES; i++)
+    {
+        if (messagebase_bases[i].valid && 
+            messagebase_bases[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            messagebase_bases[i].record = *record;
+            return 1;
+        }
+    }
+
     for (i = 0; i < CACHE_MAX_BASES; i++)
     {
         if (!messagebase_bases[i].valid)
@@ -987,6 +1037,19 @@ int messagebase_cache_add_area(int base_id, const MESSAGEBASE_AREA *record)
         return 0;
     }
 
+    /* Check if this area already exists in cache */
+    for (i = 0; i < CACHE_MAX_AREAS; i++)
+    {
+        if (messagebase_areas[i].valid && 
+            messagebase_areas[i].base_id == base_id &&
+            messagebase_areas[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            messagebase_areas[i].record = *record;
+            return 1;
+        }
+    }
+
     for (i = 0; i < CACHE_MAX_AREAS; i++)
     {
         if (!messagebase_areas[i].valid)
@@ -1145,6 +1208,19 @@ int messagebase_cache_add_message(int base_id, const MESSAGE_RECORD *record)
     if (record == NULL)
     {
         return 0;
+    }
+
+    /* Check if this message already exists in cache */
+    for (i = 0; i < CACHE_MAX_MESSAGES; i++)
+    {
+        if (messagebase_messages[i].valid && 
+            messagebase_messages[i].base_id == base_id &&
+            messagebase_messages[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            messagebase_messages[i].record = *record;
+            return 1;
+        }
     }
 
     for (i = 0; i < CACHE_MAX_MESSAGES; i++)
@@ -1458,6 +1534,18 @@ int userdb_cache_add_user(const USER_RECORD *record)
     if (record == NULL)
     {
         return 0;
+    }
+
+    /* Check if this user already exists in cache */
+    for (i = 0; i < CACHE_MAX_USERS; i++)
+    {
+        if (userdb_users[i].valid && 
+            userdb_users[i].record.id == record->id)
+        {
+            /* Already exists - update it instead */
+            userdb_users[i].record = *record;
+            return 1;
+        }
     }
 
     /* Find empty slot */

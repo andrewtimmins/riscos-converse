@@ -2,7 +2,6 @@
     detectansi ansi 3000
     cls
     doing `Logging on...`
-    type `<Converse$Dir>.BBS.ANSI.Welcome`
-    pos 2 17
+    type `<Converse$Dir>.BBS.Login`
     logon
 }

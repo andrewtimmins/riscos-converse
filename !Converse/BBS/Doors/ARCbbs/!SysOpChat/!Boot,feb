@@ -1,7 +1,0 @@
-| !Boot file for SysOpChat
-|
-Set SysOpChat$Dir <Obey$Dir>
-
-IconSprites <SysOpChat$Dir>.!Sprites
-
-||ÿ

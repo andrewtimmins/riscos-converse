@@ -384,6 +384,7 @@ static void *script_host_get_messagebase_session(void *context);
 static int script_host_get_user_accesslevel(void *context);
 static int script_host_get_user_sysop(void *context);
 static const char *script_host_get_user_keys(void *context);
+static const char *script_host_get_user_realname(void *context);
 static int script_host_filebase_download(void *context, int base_id, int file_id);
 static int script_host_authenticate_user(void *context, const char *username, const char *password, int *auth_result);
 static void script_host_start_postlogon(void *context);
@@ -608,6 +609,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_user_accesslevel = script_host_get_user_accesslevel;
         host.get_user_sysop = script_host_get_user_sysop;
         host.get_user_keys = script_host_get_user_keys;
+        host.get_user_realname = script_host_get_user_realname;
         host.filebase_download = script_host_filebase_download;
         host.authenticate_user = script_host_authenticate_user;
         host.start_postlogon = script_host_start_postlogon;
@@ -3398,6 +3400,12 @@ static const char *script_host_get_user_keys(void *context)
 {
     line_task_state *state = (line_task_state *)context;
     return (state != NULL) ? state->user_keys : "";
+}
+
+static const char *script_host_get_user_realname(void *context)
+{
+    line_task_state *state = (line_task_state *)context;
+    return (state != NULL) ? state->user_realname : "";
 }
 
 static int script_host_filebase_download(void *context, int base_id, int file_id)

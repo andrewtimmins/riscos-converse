@@ -1,3 +1,0 @@
-Set NextCall$Dir <Obey$Dir>
-WimpSlot -min 32K -max 32K
-IF "%0"="-door" THEN /<NextCall$Dir>.!RunImage %*0 ELSE /<NextCall$Dir>.!RunImage -door 0 1 1 1

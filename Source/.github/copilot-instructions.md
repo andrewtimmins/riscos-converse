@@ -124,7 +124,7 @@ The workspace includes `SharedLibs` containing:
   - **Carrier Detection**: Serial lines detect carrier via DCD (bit 3 of modem status). When carrier drops, the line is disconnected and the port is reinitialized for the next connection.
 
 - **LineTask / Script Engine**:
-  - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions.
+  - Scripts live under `<Converse$Dir>.BBS` and are parsed/executed by `LineTask/c/script`. Use backtick quoting for multi-word literals and `%{macro}` for runtime substitutions. Comments use C-style `/* comment */` syntax (NOT semicolons).
   - The interpreter exposes host callbacks for time, line info, doors, disconnect, and **`DOING <text>`**, which emits message `0x5AA01` so the server can show per-line activity (text is capped to ~96 bytes). `DOING` accepts macros/escapes; send an empty string to reset to the default "no activity" label.
   - **Authentication**: The `LOGON` script command prompts for username/password and authenticates via Filer SWI 0x5AA41. On success, it stores user_id, access_level, and keys in the task state, updates the Support module line state, and sends a `MESSAGE_LINE_USER` (0x5AA05) Wimp message to update the Server's status window.
   - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
