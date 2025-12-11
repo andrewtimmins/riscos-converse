@@ -398,6 +398,9 @@ static const script_user_stats *script_host_get_user_stats(void *context);
 static const script_user_flags *script_host_get_user_flags(void *context);
 static void script_host_start_chat_pager(void *context, const char *reason);
 static void script_host_update_lastscan(void *context, time_t new_lastscan);
+static int script_host_create_user(void *context, const char *username, const char *password,
+                                   const char *realname, const char *email);
+static int script_host_check_username_available(void *context, const char *username);
 static void log_line_event(int line_id, const char *message);
 static void send_user_message(int line_id, const char *real_name);
 static void perform_session_disconnect(line_task_state *state);
@@ -623,6 +626,8 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.get_user_flags = script_host_get_user_flags;
         host.start_chat_pager = script_host_start_chat_pager;
         host.update_lastscan = script_host_update_lastscan;
+        host.create_user = script_host_create_user;
+        host.check_username_available = script_host_check_username_available;
         script_initialise(&state->script, &host);
     }
 
@@ -5143,6 +5148,166 @@ static void script_host_update_lastscan(void *context, time_t new_lastscan)
     /* Update the local cached copy so subsequent saves include the new value */
     state->user_stats.lastscan = new_lastscan;
     debug_printf("script_host_update_lastscan: updated to %ld", (long)new_lastscan);
+}
+
+/*
+ * Check if a username is available (not already taken).
+ * Returns 1 if available, 0 if taken.
+ */
+static int script_host_check_username_available(void *context, const char *username)
+{
+    _kernel_swi_regs regs;
+    
+    (void)context;
+    
+    if (username == NULL || username[0] == '\0')
+    {
+        return 0;
+    }
+    
+    /* Call Filer SWI to find username */
+    regs.r[0] = 7;  /* FILER_USERDB_CMD_FIND_USERNAME */
+    regs.r[1] = (int)username;
+    
+    if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL)
+    {
+        /* SWI error - assume not available for safety */
+        return 0;
+    }
+    
+    /* If r0 is 0, username was not found (available) */
+    /* If r0 is non-zero, username exists (not available) */
+    return (regs.r[0] == 0) ? 1 : 0;
+}
+
+/*
+ * Create a new user account.
+ * Returns the new user_id on success, 0 on failure.
+ */
+static int script_host_create_user(void *context, const char *username, const char *password,
+                                   const char *realname, const char *email)
+{
+    _kernel_swi_regs regs;
+    line_task_state *state = (line_task_state *)context;
+    
+    /* Build a USER_RECORD on the stack */
+    /* We need a structure matching the Filer's USER_RECORD */
+    struct {
+        int id;
+        char username[32];
+        char realname[64];
+        char email[64];
+        char password[32];
+        char keys[128];
+        char userdir[256];
+        /* USER_FLAGS (76 bytes based on struct) */
+        int deleted;
+        int ansi;
+        int more;
+        int lines;
+        int cls;
+        int sysop;
+        int cli;
+        int registered;
+        int expert;
+        int lockedout;
+        int nolimit;
+        int invisible;
+        int userdir_flag;
+        int chataccess;
+        int resettime;
+        int accesslevel;
+        int ratios;
+        int maxtime;
+        int defaultprotocol;
+        /* USER_HISTORY (16 bytes) */
+        int messagebase;
+        int messagebasearea;
+        int filebase;
+        int filebasearea;
+        /* USER_STATS (32 bytes) */
+        time_t lastlogon;
+        time_t lastscan;
+        int calls;
+        int todaytime;
+        int uploadskb;
+        int downloadskb;
+        int uploads;
+        int downloads;
+    } user_record;
+    
+    if (username == NULL || password == NULL || realname == NULL)
+    {
+        return 0;
+    }
+    
+    /* Zero out the record */
+    memset(&user_record, 0, sizeof(user_record));
+    
+    /* Fill in the user data */
+    user_record.id = 0;  /* 0 means assign next available ID */
+    strncpy(user_record.username, username, sizeof(user_record.username) - 1);
+    strncpy(user_record.realname, realname, sizeof(user_record.realname) - 1);
+    if (email != NULL)
+    {
+        strncpy(user_record.email, email, sizeof(user_record.email) - 1);
+    }
+    strncpy(user_record.password, password, sizeof(user_record.password) - 1);
+    
+    /* Set reasonable defaults for a new user */
+    user_record.deleted = 0;
+    user_record.ansi = 1;           /* Assume ANSI terminal */
+    user_record.more = 1;           /* Enable more prompts */
+    user_record.lines = 24;         /* Standard screen height */
+    user_record.cls = 1;            /* Allow screen clearing */
+    user_record.sysop = 0;          /* Not a sysop */
+    user_record.cli = 0;            /* No CLI access */
+    user_record.registered = 1;     /* Is registered */
+    user_record.expert = 0;         /* Not expert mode */
+    user_record.lockedout = 0;      /* Not locked out */
+    user_record.nolimit = 0;        /* Has time limits */
+    user_record.invisible = 0;      /* Visible */
+    user_record.userdir_flag = 0;   /* No user directory */
+    user_record.chataccess = 0;     /* Normal chat access */
+    user_record.resettime = 0;      /* Don't reset time */
+    user_record.accesslevel = 10;   /* Default access level for new users */
+    user_record.ratios = 0;         /* No ratio enforcement */
+    user_record.maxtime = 60;       /* 60 minutes per day */
+    user_record.defaultprotocol = 5; /* ZMODEM */
+    
+    /* Stats */
+    user_record.lastlogon = time(NULL);
+    user_record.lastscan = time(NULL);
+    user_record.calls = 0;
+    
+    /* Call Filer SWI to add the user */
+    regs.r[0] = 0;  /* FILER_USERDB_CMD_ADD */
+    regs.r[1] = (int)&user_record;
+    
+    if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL)
+    {
+        debug_printf("script_host_create_user: SWI error");
+        return 0;
+    }
+    
+    /* r0 contains the new user ID, or 0/-1 on failure */
+    if (regs.r[0] <= 0)
+    {
+        debug_printf("script_host_create_user: add failed, r0=%d", regs.r[0]);
+        return 0;
+    }
+    
+    debug_printf("script_host_create_user: created user %s with id %d", username, regs.r[0]);
+    
+    /* Log the new user registration */
+    if (state != NULL)
+    {
+        char log_msg[128];
+        snprintf(log_msg, sizeof(log_msg), "New user registered: %s (%s)", username, realname);
+        log_line_event(state->line_id, log_msg);
+    }
+    
+    return regs.r[0];
 }
 
 static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref)

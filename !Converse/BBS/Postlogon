@@ -1,9 +1,10 @@
 {
-/* Run login scan on entry */
-loginscan
-anykey
+   cls
+   fgbg 7 0
+   loginscan
+   anykey
 
-goto main_menu
+   Goto main_menu
 
 label main_menu
     cls

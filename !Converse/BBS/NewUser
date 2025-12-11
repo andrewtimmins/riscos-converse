@@ -1,8 +1,18 @@
 {
     cls
-    doing `New User...`
+    doing `New User Registration`
+    
     fgbg 7 0
-    print `Not implemented yet.\n\n`
-    pause 1500
-    logoff
+    print `\r\n`
+    fg 6
+    print `=== New User Registration ===\r\n\r\n`
+    fg 7
+    print `Welcome! Please answer the following questions to create\r\n`
+    print `your account. Press ENTER with no input to cancel.\r\n\r\n`
+    
+    newuser
+    
+    /* Return to prelogon after a short delay so user can log in */
+    pause 3000
+    script `<Converse$Dir>.BBS.Prelogon`
 }

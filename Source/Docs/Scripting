@@ -461,6 +461,25 @@ User Authentication
     - On success, runs postlogon script
     - Sets user_id, access_level, keys in session state
 
+`NEWUSER`
+    Initiates new user registration. Guides the user through account creation
+    with the following prompts:
+    
+    1. Username - Must be 3-31 characters, checked for availability
+    2. Password - Must be 4-31 characters, no echo
+    3. Confirm Password - Must match first entry
+    4. Real Name - Must be 2-63 characters
+    5. Email - Optional, max 63 characters
+    6. Confirmation - Y/N to create the account
+    
+    After confirmation:
+    - Creates user record via Filer module
+    - Sets sensible defaults (ANSI, ZMODEM, 60 min/day)
+    - Logs the registration
+    - Returns to login prompt on completion
+    
+    Empty username cancels registration immediately.
+
 `LOGOFF`
     Ends the session and disconnects the caller.
 
@@ -756,7 +775,9 @@ Complete alphabetical list of all script commands:
 | LOGON | User | Authenticate user |
 | MESSAGEBASE | Messagebase | Messagebase operations |
 | MOD | Math | Integer modulo |
+| MORE | Output | Toggle More prompts |
 | MUL | Math | Integer multiplication |
+| NEWUSER | User | New user registration |
 | ONLINE | Status | List connected users |
 | OSCLI | System | Execute CLI command |
 | PAUSE | Flow | Delay execution |

@@ -79,6 +79,11 @@ typedef struct script_host
     const script_user_flags *(*get_user_flags)(void *context);
     /* Update lastscan timestamp - called after LOGINSCAN completes */
     void (*update_lastscan)(void *context, time_t new_lastscan);
+    /* Create new user - returns user_id on success, 0 on failure */
+    int (*create_user)(void *context, const char *username, const char *password,
+                       const char *realname, const char *email);
+    /* Check if username is available - returns 1 if available, 0 if taken */
+    int (*check_username_available)(void *context, const char *username);
 } script_host;
 
 typedef enum
@@ -98,6 +103,13 @@ typedef enum
     SCRIPT_STATUS_WAIT_MORE,
     SCRIPT_STATUS_WAIT_MB_SELECT,
     SCRIPT_STATUS_WAIT_MB_AREA_SELECT,
+    /* New user registration states */
+    SCRIPT_STATUS_WAIT_NEWUSER_USERNAME,
+    SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD,
+    SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2,
+    SCRIPT_STATUS_WAIT_NEWUSER_REALNAME,
+    SCRIPT_STATUS_WAIT_NEWUSER_EMAIL,
+    SCRIPT_STATUS_WAIT_NEWUSER_CONFIRM,
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
 } script_status;
@@ -148,6 +160,7 @@ typedef enum
     SCRIPT_CMD_STD,
     SCRIPT_CMD_READLINE,
     SCRIPT_CMD_YESNO,
+    SCRIPT_CMD_NEWUSER,
     /* Loop commands */
     SCRIPT_CMD_FOR,
     SCRIPT_CMD_ENDFOR,
@@ -240,6 +253,11 @@ typedef struct script_state
     int more_line_count;            /* Current line count since last reset */
     int more_screen_lines;          /* Lines per screen (from user settings, default 24) */
     char *more_pending_text;        /* Text waiting to be output after More? response */
+    /* New user registration state */
+    char newuser_username[32];
+    char newuser_password[32];
+    char newuser_realname[64];
+    char newuser_email[64];
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);
