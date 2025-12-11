@@ -130,6 +130,7 @@ static void config_set_defaults(void)
     snprintf(config_data.lockedout, sizeof(config_data.lockedout), "<Converse$Dir>.BBS.Lockedout");
     snprintf(config_data.closedsys, sizeof(config_data.closedsys), "<Converse$Dir>.BBS.ClosedSys");
     snprintf(config_data.aftermail, sizeof(config_data.aftermail), "<Converse$Dir>.BBS.AfterMail");
+    config_data.more[0] = '\0';  /* No default more file */
 }
 
 static char config_value_buffer[CONFIG_VALUE_BUFFER];
@@ -243,6 +244,10 @@ static const char *config_get_value(const char *key)
     if (config_key_match(key, CONFIG_KEY_AFTERMAIL))
     {
         return config_data.aftermail;
+    }
+    if (config_key_match(key, CONFIG_KEY_MORE))
+    {
+        return config_data.more;
     }
 
     return NULL;
@@ -571,6 +576,19 @@ static void config_set_value(const char *key, const char *value)
         else
         {
             config_data.aftermail[0] = '\0';
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_MORE))
+    {
+        if (value != NULL)
+        {
+            snprintf(config_data.more, sizeof(config_data.more), "%s", value);
+        }
+        else
+        {
+            config_data.more[0] = '\0';
         }
         return;
     }

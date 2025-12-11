@@ -16,14 +16,15 @@ needlogin   yes
 closed      no
 pager       yes
 
-ftnmail     no
-webserver   no
+ftnmail     yes
+webserver   yes
 
 anykey      <Converse$Dir>.Resources.System.AnyKey
 protocol    <Converse$Dir>.Resources.System.Protocol
 search      <Converse$Dir>.Resources.System.Search
 timeup      <Converse$Dir>.Resources.System.TimeUp
 inactive    <Converse$Dir>.Resources.System.Inactive
+more        <Converse$Dir>.Resources.System.More
 
 prelogon    <Converse$Dir>.BBS.Prelogon
 postlogon   <Converse$Dir>.BBS.Postlogon

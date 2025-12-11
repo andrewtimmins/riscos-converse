@@ -659,6 +659,11 @@ static void support_push_config(void)
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
 	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"more";
+	regs.r[2] = (int)system_configuration[0].more;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"chatstart";
 	regs.r[2] = (int)system_configuration[0].chatstart;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
@@ -2723,6 +2728,11 @@ void load_system_config(void)
 			strncpy(system_configuration[0].anykey, temporary_line, sizeof(system_configuration[0].anykey) - 1);
 			system_configuration[0].anykey[sizeof(system_configuration[0].anykey) - 1] = '\0';
 		}
+		if (strcmp(config_line,"more")==0)
+		{
+			strncpy(system_configuration[0].more, temporary_line, sizeof(system_configuration[0].more) - 1);
+			system_configuration[0].more[sizeof(system_configuration[0].more) - 1] = '\0';
+		}
 		if (strcmp(config_line,"chatstart")==0)
 		{
 			strncpy(system_configuration[0].chatstart, temporary_line, sizeof(system_configuration[0].chatstart) - 1);
@@ -2794,6 +2804,7 @@ void load_system_config(void)
 	sanitize_string(system_configuration[0].ftnmail);
 	sanitize_string(system_configuration[0].webserver);
 	sanitize_string(system_configuration[0].anykey);
+	sanitize_string(system_configuration[0].more);
 	sanitize_string(system_configuration[0].chatstart);
 	sanitize_string(system_configuration[0].chatend);
 	sanitize_string(system_configuration[0].prelogon);

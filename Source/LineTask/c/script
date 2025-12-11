@@ -124,6 +124,7 @@ static int script_handle_embedded_command_as_output(script_state *state, const c
 static void script_save_user_history(script_state *state);
 static int script_evaluate_condition(script_state *state, const char *condition_expr);
 static void script_reset_loop_state(void);
+static int script_count_newlines(const char *text);
 
 void script_initialise(script_state *state, const script_host *host)
 {
@@ -161,6 +162,7 @@ void script_initialise(script_state *state, const script_host *host)
     state->more_override = -1;
     state->more_line_count = 0;
     state->more_screen_lines = 24;
+    state->more_pending_text = NULL;
 }
 
 void script_dispose(script_state *state)
@@ -219,6 +221,9 @@ void script_dispose(script_state *state)
     state->input_buffer = NULL;
     state->input_capacity = 0;
     state->input_length = 0;
+
+    free(state->more_pending_text);
+    state->more_pending_text = NULL;
 
     memset(state, 0, sizeof(*state));
 }
@@ -314,6 +319,8 @@ void script_reset_session(script_state *state)
     state->more_override = -1;
     state->more_line_count = 0;
     state->more_screen_lines = 24;
+    free(state->more_pending_text);
+    state->more_pending_text = NULL;
 }
 
 void script_process(script_state *state)
@@ -412,11 +419,24 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             /* User wants to stop - disable more for this session */
             state->more_override = 0;
             state->more_line_count = 0;
+            /* Discard pending text */
+            free(state->more_pending_text);
+            state->more_pending_text = NULL;
         }
         else
         {
             /* Continue - reset line counter for next page */
             state->more_line_count = 0;
+            
+            /* Output the pending text that triggered the More? prompt */
+            if (state->more_pending_text != NULL && state->host.write_text != NULL)
+            {
+                /* Output pending text directly (don't re-check for more, we just reset) */
+                state->host.write_text(state->host.context, state->more_pending_text);
+                state->more_line_count = script_count_newlines(state->more_pending_text);
+                free(state->more_pending_text);
+                state->more_pending_text = NULL;
+            }
         }
         
         state->status = SCRIPT_STATUS_RUNNING;
@@ -6223,52 +6243,91 @@ static int script_more_active(script_state *state)
 }
 
 /*
- * Count newlines in text and update line counter.
- * Returns 1 if we hit the line limit and should pause, 0 otherwise.
+ * Count newlines in text WITHOUT updating line counter.
+ * Returns the count of newlines in the text.
  */
-static int script_count_lines(script_state *state, const char *text)
+static int script_count_newlines(const char *text)
 {
     const char *p;
-    int screen_lines;
+    int count = 0;
     
-    screen_lines = script_more_active(state);
-    if (screen_lines == 0)
+    if (text == NULL)
     {
-        return 0;  /* More prompts not active */
+        return 0;
     }
     
-    /* Count newlines in the text */
     for (p = text; *p != '\0'; p++)
     {
         if (*p == '\n')
         {
-            state->more_line_count++;
+            count++;
         }
     }
     
-    /* Check if we've hit the limit (leave 1 line for the prompt) */
-    if (state->more_line_count >= screen_lines - 1)
-    {
-        return 1;  /* Pause needed */
-    }
-    
-    return 0;
+    return count;
 }
 
+/*
+ * Write output text, handling More? prompt if needed.
+ * Checks BEFORE outputting to avoid scrolling past the pause point.
+ */
 static void script_write_output(script_state *state, const char *text)
 {
-    if (state != NULL && state->host.write_text != NULL && text != NULL)
+    int screen_lines;
+    int pending_lines;
+    
+    if (state == NULL || state->host.write_text == NULL || text == NULL)
     {
-        state->host.write_text(state->host.context, text);
-        
-        /* Check if we need to pause for "More?" prompt */
-        if (script_count_lines(state, text))
-        {
-            /* Output the More? prompt and pause */
-            state->host.write_text(state->host.context, "\r\n\033[7mMore?\033[0m ");
-            state->status = SCRIPT_STATUS_WAIT_MORE;
-        }
+        return;
     }
+    
+    /* Check if more prompts are active */
+    screen_lines = script_more_active(state);
+    
+    if (screen_lines == 0)
+    {
+        /* More prompts disabled - just output directly */
+        state->host.write_text(state->host.context, text);
+        return;
+    }
+    
+    /* Count how many lines this text would add */
+    pending_lines = script_count_newlines(text);
+    
+    /* Check if outputting this would exceed the limit BEFORE we output */
+    if (state->more_line_count + pending_lines >= screen_lines - 1)
+    {
+        /* We would exceed - save text for later and show More? prompt */
+        free(state->more_pending_text);
+        state->more_pending_text = script_duplicate_string(text);
+        
+        /* Display configured more file if available, otherwise use default text */
+        if (state->host.get_more_file != NULL)
+        {
+            const char *more_file = state->host.get_more_file(state->host.context);
+            if (more_file != NULL && more_file[0] != '\0')
+            {
+                script_display_file(state, more_file, 1);
+            }
+            else
+            {
+                /* No file configured - use default */
+                state->host.write_text(state->host.context, "\033[7mMore?\033[0m ");
+            }
+        }
+        else
+        {
+            /* No callback - use default */
+            state->host.write_text(state->host.context, "\033[7mMore?\033[0m ");
+        }
+        
+        state->status = SCRIPT_STATUS_WAIT_MORE;
+        return;
+    }
+    
+    /* Safe to output - update line count and write */
+    state->more_line_count += pending_lines;
+    state->host.write_text(state->host.context, text);
 }
 
 static void script_set_variable_value(script_state *state, const char *name, const char *value)

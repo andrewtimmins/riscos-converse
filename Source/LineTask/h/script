@@ -70,6 +70,8 @@ typedef struct script_host
     void (*start_chat_pager)(void *context, const char *reason);
     /* Get the configured anykey file path */
     const char *(*get_anykey_file)(void *context);
+    /* Get the configured more prompt file path */
+    const char *(*get_more_file)(void *context);
     /* Get user statistics */
     const script_user_stats *(*get_user_stats)(void *context);
     /* Get user flags */
@@ -236,6 +238,7 @@ typedef struct script_state
     int more_override;              /* -1 = use user setting, 0 = disabled, 1 = enabled */
     int more_line_count;            /* Current line count since last reset */
     int more_screen_lines;          /* Lines per screen (from user settings, default 24) */
+    char *more_pending_text;        /* Text waiting to be output after More? response */
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);

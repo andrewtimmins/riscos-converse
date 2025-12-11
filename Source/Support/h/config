@@ -47,6 +47,7 @@ typedef enum
 #define CONFIG_KEY_LOCKEDOUT     "lockedout"
 #define CONFIG_KEY_CLOSEDSYS     "closedsys"
 #define CONFIG_KEY_AFTERMAIL     "aftermail"
+#define CONFIG_KEY_MORE          "more"
 
 /* BBS configuration structure */
 typedef struct
@@ -76,6 +77,7 @@ typedef struct
     char lockedout[CONFIG_PATH_LEN];
     char closedsys[CONFIG_PATH_LEN];
     char aftermail[CONFIG_PATH_LEN];
+    char more[CONFIG_PATH_LEN];
 } BBS_CONFIG;
 
 /* Initialisation and finalisation */

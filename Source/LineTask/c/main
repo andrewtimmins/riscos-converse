@@ -326,6 +326,7 @@ static int config_get_botstopper_enabled(void);
 static const char *config_get_prelogon_script(void);
 static const char *config_get_postlogon_script(void);
 static const char *config_get_anykey_file(void);
+static const char *config_get_more_file(void);
 static const char *config_get_newuser_script(void);
 static const char *config_get_sysop_name(void);
 static const char *lineconfig_get_hello(int line_id);
@@ -388,6 +389,7 @@ static int script_host_authenticate_user(void *context, const char *username, co
 static void script_host_start_postlogon(void *context);
 static void script_host_start_newuser(void *context);
 static const char *script_host_get_anykey_file(void *context);
+static const char *script_host_get_more_file(void *context);
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
 static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
 static int script_host_get_user_id(void *context);
@@ -611,6 +613,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.start_postlogon = script_host_start_postlogon;
         host.start_newuser = script_host_start_newuser;
         host.get_anykey_file = script_host_get_anykey_file;
+        host.get_more_file = script_host_get_more_file;
         host.start_transfer = script_host_start_transfer;
         host.start_receive_transfer = script_host_start_receive_transfer;
         host.get_user_id = script_host_get_user_id;
@@ -2418,6 +2421,24 @@ static const char *config_get_anykey_file(void)
 }
 
 /*
+ * Get the more prompt file path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_more_file(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"more";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
  * Get the newuser script path from config.
  * Returns pointer to static string or NULL if not configured.
  */
@@ -3662,6 +3683,11 @@ static void script_host_start_newuser(void *context)
 static const char *script_host_get_anykey_file(void *context)
 {
     return config_get_anykey_file();
+}
+
+static const char *script_host_get_more_file(void *context)
+{
+    return config_get_more_file();
 }
 
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol)
