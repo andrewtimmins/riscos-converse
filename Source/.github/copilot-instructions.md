@@ -129,7 +129,30 @@ The workspace includes `SharedLibs` containing:
   - **Authentication**: The `LOGON` script command prompts for username/password and authenticates via Filer SWI 0x5AA41. On success, it stores user_id, access_level, and keys in the task state, updates the Support module line state, and sends a `MESSAGE_LINE_USER` (0x5AA05) Wimp message to update the Server's status window.
   - **ONLINE command**: Shows all connected users with real name, online time, and activity. Queries Support module for line state and Filer userdb for user details. Sysops are tagged with `[SYSOP]`.
   - **Filebase Support** (`LineTask/c/filebase`): Provides `FILEBASE` script command for browsing/downloading files. Uses Filer SWIs at 0x5AA43. Commands: `list`, `select <id>`, `areas`, `area <id>`, `files`, `info <file_id>`, `download <file_id>`, `reset`. Access controlled by user level and keys.
-  - **Messagebase Support** (`LineTask/c/messagebase`): Provides `MESSAGEBASE` script command for reading and posting messages. Uses Filer SWIs at 0x5AA42. Commands: `list`, `select <id>`, `areas`, `area <id>`, `messages`, `read [id]`, `info <id>`, `post`, `reset`. Supports local message areas, private user mail, FTN echomail, and FTN netmail. ANSI message viewer with paged display and navigation prompts. Message composer with To, Subject, Body input phases. Access controlled by user level, keys, and message type (private messages only visible to sender/recipient).
+  - **Messagebase Support** (`LineTask/c/messagebase`): Provides `MESSAGEBASE` script command for reading and posting messages. Uses Filer SWIs at 0x5AA42. Commands: `list`, `select <id>`, `areas`, `area <id>`, `messages`, `read [id]`, `info <id>`, `compose`, `inbox`, `reset`. Supports local message areas, private user mail, FTN echomail, and FTN netmail. Access controlled by user level, keys, and area type.
+  - **Continuous Message Reader**: The `messagebase messages` command enters a continuous reader (like ArmBBS) instead of showing a table listing. Starts at the newest unread message or first message if all read. Messages are marked as read automatically when viewed. Header format:
+    ```
+    Area    : General Discussion (003)
+    Message : #514320 (Read 86 times, 191 bytes)
+    Date    : 25 Jun 23 21:00:12
+    From    : Username
+    To      : All
+    Subject : Test Subject
+    ```
+    Navigation keys:
+    - Enter/Space/N: Next message (in current direction)
+    - F: Set direction to Forward
+    - B: Set direction to Backward  
+    - C: Re-display current message
+    - S: Go to Start of area (first message)
+    - E: Go to End of area (last message)
+    - +: Next area in messagebase
+    - -: Previous area in messagebase
+    - R: Reply (public)
+    - P: Private reply
+    - A: Abort (return to menu)
+  - **Private Inbox**: The `messagebase inbox` command auto-selects the Private area (areatype 4) and enters the continuous reader. Saves/restores the user's previous messagebase/area selection when done.
+  - **Area Type Filtering**: Private (areatype 4) and Netmail (areatype 2) areas only show messages where `receivedby == user_id`. This creates a personal inbox - users only see mail addressed to them, not mail they sent or mail for others. Public/Local (areatype 0) and Echo (areatype 1) areas show all messages to everyone.
   - **Direct Mail Commands**: `SENDMAIL <username> <subject> <body>` sends a private message to a local user (requires Private area configured). `SENDNETMAIL <address> <name> <subject> <body>` queues a netmail to an FTN address for export (requires Netmail area configured). Both commands support macro expansion and backtick quoting. Use `\r\n` in body for line breaks. Netmail is exported when the FTN mailer runs Scan.
   - **File Transfer** (`LineTask/c/transfer`): Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM, YMODEM-G, and ZMODEM protocols for file downloads and uploads. Non-blocking state machine design integrates with Pipes module for I/O. The `SENDFILE <file_id> [protocol]` and `RECEIVEFILE <path> [protocol]` script commands initiate transfers. Protocol values: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM. YMODEM includes block 0 header with filename/size and batch mode support. ZMODEM features: 32-bit CRC, ZDLE escape encoding, hex (ZHEX) and binary (ZBIN32) frame headers, streaming data with subpacket framing (ZCRCG/ZCRCE/ZCRCQ/ZCRCW), auto-start detection via ZRQINIT, and crash recovery via ZRPOS repositioning. During active transfers, the `transfer_active` flag is set in Support module line state to prevent idle timeout disconnection.
   - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.

@@ -544,29 +544,67 @@ Messagebase Commands
     - `select <id>` — Selects a messagebase
     - `areas` — Lists areas in selected messagebase
     - `area <id>` — Selects an area (0 = all messages)
-    - `messages` — Lists messages in current selection
-    - `read [id]` — Opens message viewer (or first unread)
+    - `messages` — Enters continuous message reader
+    - `read [id]` — Opens message viewer at specific ID (or newest unread)
     - `info <id>` — Shows message details
-    - `post` — Starts message composer
+    - `compose` — Starts message composer
+    - `compose private [user]` — Compose private mail (auto-finds Private area)
+    - `compose netmail [addr] [name]` — Compose netmail (auto-finds Netmail area)
+    - `inbox` — Reads private inbox (auto-selects Private area, restores on exit)
     - `reset` — Clears selection
 
-    Area types determine posting behaviour:
-    - LOCAL — Local-only messages
-    - ECHO — FTN echomail (exported to uplink)
-    - NETMAIL — FTN netmail (requires destination address)
-    - OTHER — Private user-to-user mail (local only)
+    Area types determine behaviour:
+    - LOCAL (0) — Local-only messages, visible to all
+    - ECHO (1) — FTN echomail, visible to all, exported to uplinks
+    - NETMAIL (2) — FTN netmail, only visible to recipient (receivedby filter)
+    - JUNK (3) — Junk/bad messages
+    - PRIVATE (4) — Private user-to-user mail, only visible to recipient
 
-    The message viewer displays messages with ANSI formatting:
-    - Header shows From, To, Subject, Date
-    - Body is paginated (press Enter for more)
-    - Navigation: [N]ext, [P]rev, [R]eply, [Q]uit
+    **Continuous Message Reader**
+    The `messages` command enters a continuous reader (like ArmBBS) instead
+    of showing a table listing. It starts at the newest unread message or
+    first message if all are read. Messages are marked as read automatically.
 
-    The message composer prompts for:
-    - To (for private/netmail areas)
-    - FTN address (for netmail only, e.g., 1:234/567)
-    - Subject line
-    - Body text (line by line, blank line to finish)
-    - Confirmation before posting
+    Header format:
+        Area    : General Discussion (003)
+        Message : #514320 (Read 86 times, 191 bytes)
+        Date    : 25 Jun 23 21:00:12
+        From    : Username
+        To      : All
+        Subject : Test Subject
+
+    Navigation keys:
+        Enter/Space/N  Next message (in current direction)
+        F              Set direction to Forward
+        B              Set direction to Backward
+        C              Re-display current message
+        S              Go to Start of area (first message)
+        E              Go to End of area (last message)
+        +              Next area in messagebase
+        -              Previous area in messagebase
+        R              Reply (public)
+        P              Private reply
+        A              Abort (return to menu)
+
+    The direction indicator in the prompt shows current reading direction:
+        Dir: >>    (reading forward)
+        Dir: <<    (reading backward)
+
+    **Private Inbox**
+    The `inbox` command provides a quick way to read private mail:
+    - Auto-finds the Private (areatype 4) area
+    - Saves the user's current messagebase/area selection
+    - Enters the continuous reader
+    - Restores the previous selection when user aborts
+
+    **Area Type Filtering**
+    Private (areatype 4) and Netmail (areatype 2) areas filter messages so
+    users only see mail addressed to them (receivedby == user_id). This
+    creates a personal inbox effect. Users cannot see mail sent to others
+    or mail they sent (which appears in the recipient's inbox instead).
+    
+    Public/Local (areatype 0) and Echo (areatype 1) areas show all messages
+    to everyone, even if a "To:" field is specified.
 
     Example:
         messagebase list
@@ -574,7 +612,7 @@ Messagebase Commands
         messagebase areas
         messagebase area 3
         messagebase messages
-        messagebase read 1
+        messagebase inbox
         messagebase compose
 
 Direct Mail Commands
