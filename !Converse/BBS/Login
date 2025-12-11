@@ -1,20 +1,18 @@
-{fgbg 7 0,bold 1}                                     ___
-                                  .-`| _/-.
-       The Plasma Sphere BBS     /--\\/  _/\      Fidonet#2:250/219.0
-          Home of ArmBBS        |/\_ \._/__ |             2:250/222.0
-      Over 7182 files (328MB)   |  /\/ \   \|            2:250/2000.0
-          24 hours a day         \/  /  |  /     tpsphere.demon.co.uk
-                                  `-/___|-`
+{fgbg 0 0,cls,bold 1}
+{fg 3} _____ _          __   __    _ _              _____             _
+{fg 3}|_   _| |_  ___   \ \ / /___| | |_____ __ __ |_   _|__  __ _ __| |_ ___ _ _
+{fg 3}  | | | ' \/ -_)   \ V / -_)  | / _ \ V  V /   | |/ _ \/ _` (_-<  _/ -_) '_|
+{fg 3}  |_| |_||_\___|    |_|\___|__|_\___/\_/\_/    |_|\___/\__,_/__/\__\___|_|
 
-{fg 2} Using {fg 5}ArmBBS{fg 2} on a {fg 6,flash 1}34MB RISC OS 3.7 Acorn Risc PC 700: {fg 2}200 D-MIPS @ 202MHz!{flash 0,fg 2}
+{fg 7,cll, bold 0}
+{fg 7}A retro BBS for fans of classic computing, Acorn machines, and the
+good old days of dial-up. Whether you're into Amstrad, Commodore, Sinclair,
+or just love that 8-bit / 16-bit nostalgia - you've found your people.
 
-{fg 3} 40MB of Symphony modules and 58MB+ of MIDI files online in filebases 4 & 5
+{fg 3}*{fg 7} Chat with enthusiasts across {fg 5}six FidoNet-style networks{fg 7}
+{fg 3}*{fg 7} Download software, demos, and utilities for retro platforms
+{fg 3}*{fg 7} Play classic door games - text adventures, puzzles, and more
+{fg 3}*{fg 7} Join a friendly community that remembers when BBSing was an art
 
-{fg 2} * With 45 minutes UPS protection against power cuts - TPS stays online! *
-
-{fg 6} Running on an SP_Dual dual 230.4Kbps serial port card from The Serial Port.
-{fg 2} And V.Everything modems thanks to Hawkastle Ltd (01784 449991).
-
-{fg 7} New users welcome, enter your full name (like 'John Smith') to log on.
-
-{fg 1} For a free browse around the system, log on as 'Guest'. There's no password.{fgbg 7 0,cll}
+{fg 6}Connected to: {fg 7}Fidonet {fg 3}|{fg 7} CNet {fg 3}|{fg 7} PiNet {fg 3}|{fg 7} RetroNet {fg 3}|{fg 7} HobbyNet {fg 3}|{fg 7} AmigaNet
+{fgbg 7 0,cll}
