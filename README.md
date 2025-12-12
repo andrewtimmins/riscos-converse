@@ -2,7 +2,7 @@
 
 **The modern multi-line bulletin board system for RISC OS.**
 
-Converse brings the classic BBS experience to your Archimedes, A7000, RiscPC, or Raspberry Pi running RISC OS. Whether you're building a retro computing community, hosting file archives, or connecting with FidoNet networks worldwide, Converse provides everything you need in a native RISC OS application.
+Converse brings the classic BBS experience to your RISC OS machine. Whether you're building a retro computing community, hosting file archives, or connecting with FidoNet networks worldwide, Converse provides everything you need in a native RISC OS application.
 
 ---
 
