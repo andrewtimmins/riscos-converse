@@ -544,21 +544,23 @@ void ansiterm_process_byte(ansiterm_state *term, unsigned char byte)
             break;
 
         case 10:
-            term->cursor_y++;
-            if (term->cursor_y >= ANSITERM_ROWS)
-            {
-                ansiterm_scroll_up(term, 1);
-                term->cursor_y = ANSITERM_ROWS - 1;
-            }
-            break;
-
         case 11:
-            if (term->cursor_y > 0)
-                term->cursor_y--;
-            break;
-
         case 12:
-            ansiterm_clear(term);
+            /* LF, VT, FF (treated as LF in reference for movement, but FF usually cls) */
+            /* Reference pchar.c treats 12 as CLS if allowed */
+            if (byte == 12)
+            {
+               ansiterm_clear(term);
+            }
+            else
+            {
+                term->cursor_y++;
+                if (term->cursor_y >= ANSITERM_ROWS)
+                {
+                    ansiterm_scroll_up(term, 1);
+                    term->cursor_y = ANSITERM_ROWS - 1;
+                }
+            }
             break;
 
         case 13:

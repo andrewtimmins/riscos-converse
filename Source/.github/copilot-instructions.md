@@ -17,13 +17,19 @@ The active TODO list for this project is in `TODO` at the workspace root. Check 
   - **Filenames**: Case-insensitive but case-preserving.
 
 ## Libraries
-The workspace includes `SharedLibs` containing:
-- **CLib**: Standard C library (RISC OS implementation).
-- **OSLib**: High-level C wrappers for RISC OS SWIs. Prefer `oslib/*.h` over raw `_kernel_swi` where possible, but `kernel.h` is used for module entry points.
-- **DeskLib**: Wimp/Desktop library (`Desk/*`).
-- **TCPIPLibs**: BSD-style socket library.
+The workspace includes `Reference/` containing:
+- **CLib** (`Reference/CLib`): Standard C library headers (`h/`) and objects (`o/`).
+- **OSLib** (`Reference/OSLib`): High-level C wrappers for RISC OS SWIs (`oslib/h/oslib`). Prefer `oslib/*.h` over raw `_kernel_swi` where possible.
+- **DeskLib** (`Reference/Desk`): Wimp/Desktop library (`Desk/h`).
+- **TCPIPLibs** (`Reference/TCPIPLibs`): BSD-style socket library (including `sys/`, `netinet/`, `arpa/`, etc.).
 
-**Rule**: Do not reference the `SharedLibs` file paths in code. Use standard include directives (e.g., `#include "kernel.h"`, `#include "oslib/osfile.h"`).
+**Rule**: Do not reference the `Reference` file paths in code. Use standard include directives (e.g., `#include "kernel.h"`, `#include "oslib/osfile.h"`, `#include "Desk/Icon.h"`, `#include "sys/socket.h"`).
+
+## Reference Material
+The workspace `Reference/` directory contains source code for legacy RISC OS applications. Use these as a reference for protocol implementation, reverse-engineering legacy behaviors, or understanding RISC OS idioms:
+- **Reference/Code/ARCbbs**: Original source for ARCbbs. Critical for `ARCbbsDoors` emulator accuracy.
+- **Reference/Code/!ArmBBS**: Another major RISC OS BBS reference.
+- **Reference/Code/BinkD**: Reference for BinkP/FTN implementation.
 
 ## Module Architecture
 - **Structure**:
@@ -184,20 +190,29 @@ The workspace includes `SharedLibs` containing:
   - **User History Persistence**: When a user selects a filebase/messagebase/area via script commands, the selection is automatically saved to their `USER_HISTORY` record in the userdb. On next login, these selections are restored to the session state automatically.
   - **Conditional Operators**: IF command supports `==`, `!=` (string), `>`, `<`, `>=`, `<=` (numeric). Both operands are macro-expanded. Compound conditions supported with `&&` (AND) and `||` (OR): `if %{day} == 25 && %{month} == 12 goto christmas`.
 
-- **LineTask / Terminal (`ansiterm`)**:
-  - **Architecture**: The `ansiterm` module implements a custom ANSI terminal emulator. It maintains a grid of cells and handles rendering to a RISC OS window.
-  - **Terminal Dimensions**: Standard 80x25 character grid (defined in `LineTask/h/ansiterm`):
-    - `ANSITERM_COLS` = 80, `ANSITERM_ROWS` = 25
-    - `ANSITERM_CHAR_WIDTH` = 16, `ANSITERM_CHAR_HEIGHT` = 32 (OS units per cell)
-    - `ANSITERM_WIDTH` = 1280, `ANSITERM_HEIGHT` = 800 (total OS units)
-  - **Window Opening**: The `show_main_window()` function opens the terminal at full 80x25 size, centered on screen. It calculates screen dimensions via `OS_ReadModeVariable` and explicitly sets the visible area to match the terminal extent, rather than relying on template defaults.
-  - **Cell Structure**: `ansiterm_cell` uses a 16-bit attribute field (`unsigned short attr`) to support standard colors (FG/BG) plus a **Flash** bit (bit 8).
-  - **Blinking Text**: The `ansiterm_blink()` function toggles the visibility of flashing characters. It uses an optimized row-scanning approach to only invalidate/redraw rows containing flashing characters, preventing full-window flicker. This is driven by a 0.5s timer in `main.c`.
-  - **Sysop Snoop**: The terminal window mirrors the user's session.
-    - **Output**: `pipes_output_write_string` feeds all data sent to the user (scripts, files, menus) into the local terminal emulator.
-    - **Input**: `handle_plain_server_byte` echoes user input to the local terminal.
-    - **Sysop Input**: `handle_terminal_key` injects local keystrokes into the input stream (local echo handled by `pipes_output_write_string` when the server echoes it back, or locally if needed).
-  - **Focus**: The terminal window automatically claims input focus (`Wimp_SetCaretPosition`) when opened via the "View" button in the Server.
+  - **LineTask / Terminal (`ansiterm`)**:
+    - **Architecture**: The `ansiterm` module implements a custom ANSI terminal emulator. It maintains a grid of cells and handles rendering to a RISC OS window.
+    - **Terminal Dimensions**: Standard 80x25 character grid (defined in `LineTask/h/ansiterm`):
+      - `ANSITERM_COLS` = 80, `ANSITERM_ROWS` = 25
+      - `ANSITERM_CHAR_WIDTH` = 16, `ANSITERM_CHAR_HEIGHT` = 32 (OS units per cell)
+      - `ANSITERM_WIDTH` = 1280, `ANSITERM_HEIGHT` = 800 (total OS units)
+    - **Window Opening**: The `show_main_window()` function opens the terminal at full 80x25 size, centered on screen. It calculates screen dimensions via `OS_ReadModeVariable` and explicitly sets the visible area to match the terminal extent, rather than relying on template defaults.
+    - **Cell Structure**: `ansiterm_cell` uses a 16-bit attribute field (`unsigned short attr`) to support standard colors (FG/BG) plus a **Flash** bit (bit 8).
+    - **Blinking Text**: The `ansiterm_blink()` function toggles the visibility of flashing characters. It uses an optimized row-scanning approach to only invalidate/redraw rows containing flashing characters, preventing full-window flicker. This is driven by a 0.5s timer in `main.c`.
+    - **Control Characters**: Strictly matches ArmBBS reference handling:
+      - `BS` (8): Backspaces, clamping at column 0.
+      - `TAB` (9): Jumps to next 8-char tabstop, clamping at column 79.
+      - `LF` (10) / `VT` (11): Moves cursor down, scrolling if at bottom.
+      - `FF` (12): Triggers Clear Screen (`ansiterm_clear`) if byte is exactly 12, otherwise treats as line feed.
+      - `CR` (13): Returns cursor to column 0.
+    - **ANSI Support**: Robust `ESC[...]` parser.
+      - `ESC[m` and `ESC[0m` correctly trigger full attribute reset.
+      - Supports cursor movement (`A`,`B`,`C`,`D`,`H`,`f`), clearing (`J`,`K`), scrolling (`L`,`M`), and device status (`6n`).
+    - **Sysop Snoop**: The terminal window mirrors the user's session.
+      - **Output**: `pipes_output_write_string` feeds all data sent to the user (scripts, files, menus) into the local terminal emulator.
+      - **Input**: `handle_plain_server_byte` echoes user input to the local terminal.
+      - **Sysop Input**: `handle_terminal_key` injects local keystrokes into the input stream (local echo handled by `pipes_output_write_string` when the server echoes it back, or locally if needed).
+    - **Focus**: The terminal window automatically claims input focus (`Wimp_SetCaretPosition`) when opened via the "View" button in the Server.
 
 - **LineTask / Script Call Stack**:
   - **Purpose**: Supports `SCRIPT` command for subscript nesting up to 8 levels deep.
