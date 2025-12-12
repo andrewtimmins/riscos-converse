@@ -1,0 +1,156 @@
+{
+   /* Messagebase Test Menu */
+   /* Called from main Postlogon menu */
+
+label messagebase_menu
+    script `<Converse$Dir>.BBS.Header`
+    bold
+    print `                           :: Messagebase Menu ::\r\n`
+    std
+    print `\r\n`
+    print `  Current Selection:\r\n`
+    print `    Messagebase: %{messagebasename} (ID: %{messagebaseid})\r\n`
+    print `    Area:        %{messagebaseareaname} (ID: %{messagebaseareaid})\r\n`
+    print `\r\n`
+    bold
+    print `  Navigation                        Compose & Other\r\n`
+    std
+    print `    [1] List/Select Messagebases     [P] Post New Message\r\n`
+    print `    [2] List/Select Areas            [M] Send Private Mail\r\n`
+    print `    [3] Reset Selection              [N] Send Netmail (FTN)\r\n`
+    print `    [4] Read Messages                [S] Scan for New\r\n`
+    print `    [5] Message Info                 [I] Read Inbox\r\n`
+    print `                                     [Q] Return to Main\r\n`
+    print `\r\n`
+    print `  Choice: `
+    prompt choice char echo
+
+    if choice == `1` goto select_base
+    if choice == `2` goto select_area
+    if choice == `3` goto reset_selection
+    if choice == `4` goto read_messages
+    if choice == `5` goto message_info
+    if choice == `p` goto post_message
+    if choice == `P` goto post_message
+    if choice == `m` goto send_mail
+    if choice == `M` goto send_mail
+    if choice == `n` goto send_netmail
+    if choice == `N` goto send_netmail
+    if choice == `s` goto login_scan
+    if choice == `S` goto login_scan
+    if choice == `i` goto read_inbox
+    if choice == `I` goto read_inbox
+    if choice == `q` goto quit_menu
+    if choice == `Q` goto quit_menu
+
+    print `\r\n\r\n[Invalid choice]\r\n`
+    anykey
+    goto messagebase_menu
+
+/* List/select a messagebase */
+label select_base
+    messagebase list
+    goto messagebase_menu
+
+/* List/select an area */
+label select_area
+    messagebase areas
+    goto messagebase_menu
+
+/* Reset selection */
+label reset_selection
+    messagebase reset
+    anykey
+    goto messagebase_menu
+
+/* Read messages in continuous reader */
+label read_messages
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto messagebase_menu
+    end if
+    if %{messagebaseareaid} == 0 then
+        print `[Select an area first]\r\n`
+        anykey
+        goto messagebase_menu
+    end if
+    doing `Reading messages...`
+    more 0
+    messagebase messages
+    more 1
+    doing
+    anykey
+    goto messagebase_menu
+
+/* Show message info */
+label message_info
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto messagebase_menu
+    end if
+    print `Enter message ID: `
+    readline msg_id
+    if msg_id == `` goto messagebase_menu
+    messagebase info %{msg_id}
+    print `\r\n`
+    anykey
+    goto messagebase_menu
+
+/* Post a new message */
+label post_message
+    print `\r\n\r\n`
+    if %{messagebaseid} == 0 then
+        print `[Select a messagebase first]\r\n`
+        anykey
+        goto messagebase_menu
+    end if
+    if %{messagebaseareaid} == 0 then
+        print `[Select an area first]\r\n`
+        anykey
+        goto messagebase_menu
+    end if
+    doing `Composing message...`
+    messagebase compose
+    doing
+    goto messagebase_menu
+
+/* Send private mail to a local user */
+label send_mail
+    doing `Composing private mail...`
+    messagebase compose private
+    doing
+    goto messagebase_menu
+
+/* Send FTN netmail */
+label send_netmail
+    doing `Composing netmail...`
+    messagebase compose netmail
+    doing
+    goto messagebase_menu
+
+/* Scan for new messages/files */
+label login_scan
+    print `\r\n`
+    loginscan
+    anykey
+    goto messagebase_menu
+
+/* Read private inbox */
+label read_inbox
+    print `\r\n`
+    doing `Reading inbox...`
+    more 0
+    messagebase inbox
+    more 1
+    doing
+    anykey
+    goto messagebase_menu
+
+/* Return to main menu */
+label quit_menu
+    return
+}

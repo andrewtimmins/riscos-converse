@@ -929,6 +929,7 @@ static int filebase_update_base_record(const FILEBASE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(FILEBASE_DB_TEMP_PATH);
         return 0;
       }
       updated = 1;
@@ -939,9 +940,19 @@ static int filebase_update_base_record(const FILEBASE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(FILEBASE_DB_TEMP_PATH);
         return 0;
       }
     }
+  }
+
+  /* Check for read errors before trusting the copy */
+  if (ferror(source))
+  {
+    fclose(source);
+    fclose(temp);
+    remove(FILEBASE_DB_TEMP_PATH);
+    return 0;
   }
 
   fclose(source);
@@ -954,7 +965,11 @@ static int filebase_update_base_record(const FILEBASE_RECORD *record)
   }
 
   remove(FILEBASE_DB_PATH);
-  rename(FILEBASE_DB_TEMP_PATH, FILEBASE_DB_PATH);
+  if (rename(FILEBASE_DB_TEMP_PATH, FILEBASE_DB_PATH) != 0)
+  {
+    remove(FILEBASE_DB_TEMP_PATH);
+    return 0;
+  }
   return 1;
 }
 
@@ -1041,6 +1056,15 @@ static int filebase_store_area_record(int base_id, const FILEBASE_AREA_RECORD *r
         remove(temp_path);
         return 0;
       }
+    }
+
+    /* Check for read errors before trusting the copy */
+    if (ferror(source))
+    {
+      fclose(source);
+      fclose(temp);
+      remove(temp_path);
+      return 0;
     }
 
     fclose(source);
@@ -1249,6 +1273,7 @@ static int filebase_update_file_record(int base_id, const FILE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(temp_path);
         return 0;
       }
       updated = 1;
@@ -1259,9 +1284,19 @@ static int filebase_update_file_record(int base_id, const FILE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(temp_path);
         return 0;
       }
     }
+  }
+
+  /* Check for read errors before trusting the copy */
+  if (ferror(source))
+  {
+    fclose(source);
+    fclose(temp);
+    remove(temp_path);
+    return 0;
   }
 
   fclose(source);
@@ -1274,7 +1309,11 @@ static int filebase_update_file_record(int base_id, const FILE_RECORD *record)
   }
 
   remove(source_path);
-  rename(temp_path, source_path);
+  if (rename(temp_path, source_path) != 0)
+  {
+    remove(temp_path);
+    return 0;
+  }
   return 1;
 }
 

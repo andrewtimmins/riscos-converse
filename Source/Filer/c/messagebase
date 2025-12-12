@@ -1114,6 +1114,7 @@ static int messagebase_update_base_record(const MESSAGEBASE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(MESSAGEBASE_DB_TEMP_PATH);
         return 0;
       }
       updated = 1;
@@ -1124,9 +1125,19 @@ static int messagebase_update_base_record(const MESSAGEBASE_RECORD *record)
       {
         fclose(source);
         fclose(temp);
+        remove(MESSAGEBASE_DB_TEMP_PATH);
         return 0;
       }
     }
+  }
+
+  /* Check for read errors - don't replace database if source had read errors */
+  if (ferror(source))
+  {
+    fclose(source);
+    fclose(temp);
+    remove(MESSAGEBASE_DB_TEMP_PATH);
+    return 0;
   }
 
   fclose(source);
@@ -1139,7 +1150,11 @@ static int messagebase_update_base_record(const MESSAGEBASE_RECORD *record)
   }
 
   remove(MESSAGEBASE_DB_PATH);
-  rename(MESSAGEBASE_DB_TEMP_PATH, MESSAGEBASE_DB_PATH);
+  if (rename(MESSAGEBASE_DB_TEMP_PATH, MESSAGEBASE_DB_PATH) != 0)
+  {
+    /* Rename failed - temp file still exists, original is gone */
+    return 0;
+  }
   return 1;
 }
 
@@ -1262,6 +1277,15 @@ static int messagebase_store_area_record(int base_id, const MESSAGEBASE_AREA *re
         remove(temp_path);
         return 0;
       }
+    }
+
+    /* Check for read error before trusting the copy */
+    if (ferror(source))
+    {
+      fclose(source);
+      fclose(temp);
+      remove(temp_path);
+      return 0;
     }
 
     fclose(source);
@@ -1435,6 +1459,7 @@ static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *
       {
         fclose(source);
         fclose(temp);
+        remove(temp_path);
         return 0;
       }
       updated = 1;
@@ -1445,9 +1470,20 @@ static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *
       {
         fclose(source);
         fclose(temp);
+        remove(temp_path);
         return 0;
       }
     }
+  }
+
+  /* Check for read errors - don't replace database if source had read errors */
+  if (ferror(source))
+  {
+    debug_printf("update_message_record: read error on source");
+    fclose(source);
+    fclose(temp);
+    remove(temp_path);
+    return 0;
   }
 
   fclose(source);

@@ -717,6 +717,11 @@ static void support_push_config(void)
 	regs.r[1] = (int)"aftermail";
 	regs.r[2] = (int)system_configuration[0].aftermail;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"protocol";
+	regs.r[2] = (int)system_configuration[0].protocol;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 }
 
 static void support_push_line_config(int line_id)
@@ -2788,6 +2793,11 @@ void load_system_config(void)
 			strncpy(system_configuration[0].aftermail, temporary_line, sizeof(system_configuration[0].aftermail) - 1);
 			system_configuration[0].aftermail[sizeof(system_configuration[0].aftermail) - 1] = '\0';
 		}
+		if (strcmp(config_line,"protocol")==0)
+		{
+			strncpy(system_configuration[0].protocol, temporary_line, sizeof(system_configuration[0].protocol) - 1);
+			system_configuration[0].protocol[sizeof(system_configuration[0].protocol) - 1] = '\0';
+		}
 	}
 
 	fclose(system_config);
@@ -2816,6 +2826,7 @@ void load_system_config(void)
 	sanitize_string(system_configuration[0].lockedout);
 	sanitize_string(system_configuration[0].closedsys);
 	sanitize_string(system_configuration[0].aftermail);
+	sanitize_string(system_configuration[0].protocol);
 }
 
 void load_line_config(void)

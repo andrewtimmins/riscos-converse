@@ -286,9 +286,22 @@ The script engine supports structured iteration with FOR and WHILE loops:
 Output
 ~~~~~~
 `PRINT <text>`
-    Sends text to the caller. Supports macros and escape sequences
-    (`\r`, `\n`, `\t`, `\\`). Example:
+    Sends text to the caller. Supports macros and escape sequences.
+    
+    Recognized escape sequences:
+    - `\r\n` or `\n` — carriage return + line feed (newline)
+    - `\r` — carriage return only
+    - `\t` — tab character
+    - `\\` — literal backslash
+    - `` \` `` — literal backtick (for use inside backtick-quoted strings)
+    
+    Unrecognized escape sequences are preserved literally. This means
+    backslashes in ASCII art (like `\_/` or `\|/`) are output unchanged,
+    making it safe to include ANSI artwork in print statements.
+    
+    Example:
         print `Welcome to Converse, line %{line}!\r\n`
+        print `  \_O_/  <- ASCII art backslashes preserved\r\n`
 
 `TYPE <filename>`
     Streams a text/ANSI file to the caller. Example:

@@ -162,7 +162,7 @@ void log_line_header(int line_id)
         return;
     }
 
-    sprintf(log_file_name, "%s%d", LINELOG, line_id);
+    snprintf(log_file_name, sizeof(log_file_name), "%s%d", LINELOG, line_id);
 
     /* Open handle if not already open */
     if (log_line_handles[line_id] == NULL)
@@ -207,7 +207,7 @@ void log_system(char *log_entry)
     t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
-    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+    snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_system_handle, "%s", timestamped_log_entry);
     fflush(log_system_handle);
@@ -237,7 +237,7 @@ void log_line(int line_id, char *log_entry)
     t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
-    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+    snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_line_handles[line_id], "%s", timestamped_log_entry);
     fflush(log_line_handles[line_id]);
@@ -278,7 +278,7 @@ void log_call(int line_id, int user_id, int status_id)
     }
 
     strftime(timestamp, sizeof(timestamp)-1, "%d/%m/%Y,%H:%M:%S", t);
-    sprintf(timestamped_log_entry, "%s,%d,%d,%s\n", timestamp, line_id, user_id, status);
+    snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s,%d,%d,%s\n", timestamp, line_id, user_id, status);
     
     fprintf(log_call_handle, "%s", timestamped_log_entry);
     fflush(log_call_handle);
@@ -302,7 +302,7 @@ void log_ftn(char *log_entry)
     t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
-    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+    snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_ftn_handle, "%s", timestamped_log_entry);
     fflush(log_ftn_handle);
@@ -324,7 +324,7 @@ void log_web(char *log_entry)
     t = localtime(&now);
 
     strftime(timestamp, sizeof(timestamp)-1, "| %d/%m/%Y | %H:%M:%S", t);
-    sprintf(timestamped_log_entry, "%s | %s\n", timestamp, log_entry);
+    snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_web_handle, "%s", timestamped_log_entry);
     fflush(log_web_handle);

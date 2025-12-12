@@ -58,6 +58,9 @@ static int script_loop_counter = 0;
 /* Preserve user "more" preference while composer runs */
 static int composer_more_saved = -1;
 
+/* Preserve user "more" preference during protocol selection */
+static int protocol_more_saved = -1;
+
 typedef struct script_buffer
 {
     char *data;
@@ -102,6 +105,7 @@ static void script_send_clear_screen(script_state *state);
 static void script_send_clear_to_eol(script_state *state);
 static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
 static void script_display_file(script_state *state, const char *source, int trim_newlines);
+static void script_start_receive_transfer(script_state *state, int protocol);
 static void script_buffer_init(script_buffer *buffer);
 static void script_buffer_free(script_buffer *buffer);
 static void script_buffer_clear(script_buffer *buffer);
@@ -324,6 +328,11 @@ void script_reset_session(script_state *state)
     state->more_screen_lines = 24;
     free(state->more_pending_text);
     state->more_pending_text = NULL;
+    state->pending_upload_filename[0] = '\0';
+    state->pending_upload_description[0] = '\0';
+    state->pending_upload_filebase = 0;
+    state->pending_upload_area = 0;
+    state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
 }
 
 void script_process(script_state *state)
@@ -405,6 +414,12 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         state->status != SCRIPT_STATUS_WAIT_MORE &&
         state->status != SCRIPT_STATUS_WAIT_MB_SELECT &&
         state->status != SCRIPT_STATUS_WAIT_MB_AREA_SELECT &&
+        state->status != SCRIPT_STATUS_WAIT_FB_SELECT &&
+        state->status != SCRIPT_STATUS_WAIT_FB_AREA_SELECT &&
+        state->status != SCRIPT_STATUS_WAIT_FB_BROWSE &&
+        state->status != SCRIPT_STATUS_WAIT_PROTOCOL &&
+        state->status != SCRIPT_STATUS_WAIT_UPLOAD_FILENAME &&
+        state->status != SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION &&
         state->status != SCRIPT_STATUS_WAIT_NEWUSER_USERNAME &&
         state->status != SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD &&
         state->status != SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2 &&
@@ -714,6 +729,25 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                         }
                         return 1;
 
+                    case VIEWER_ACTION_SEARCH:
+                        /* Start search - switch to line input for search term */
+                        messagebase_viewer_start_search(session,
+                                                         (void (*)(void*, const char*))script_write_output, state);
+                        state->input_echo = 1;
+                        state->input_length = 0;
+                        if (state->input_buffer != NULL)
+                        {
+                            state->input_buffer[0] = '\0';
+                        }
+                        state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                        return 1;
+
+                    case VIEWER_ACTION_EXIT_SEARCH:
+                        /* Exit search mode - stay in viewer */
+                        messagebase_viewer_exit_search_mode(session,
+                                                             (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
                     case VIEWER_ACTION_QUIT:
                     default:
                         /* Quit viewer - return to script */
@@ -780,6 +814,72 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
         return 1;
     }
 
+    if (state->status == SCRIPT_STATUS_WAIT_FB_BROWSE)
+    {
+        /* Check if filebase browser is active and handle input */
+        if (state->host.get_filebase_session != NULL)
+        {
+            filebase_session *session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            if (session != NULL && filebase_viewer_is_active(session))
+            {
+                int action = filebase_viewer_handle_input(session, (char)byte,
+                                                          (void (*)(void*, const char*))script_write_output, state);
+
+                switch (action)
+                {
+                    case FILEVIEWER_ACTION_CONTINUE:
+                        /* Stay in browser, waiting for more input */
+                        return 1;
+
+                    case FILEVIEWER_ACTION_NEXT:
+                        filebase_viewer_goto_next(session,
+                                                  (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case FILEVIEWER_ACTION_PREV:
+                        filebase_viewer_goto_prev(session,
+                                                  (void (*)(void*, const char*))script_write_output, state);
+                        return 1;
+
+                    case FILEVIEWER_ACTION_DOWNLOAD:
+                        /* Download action - save context and prompt for protocol */
+                        state->pending_download_file_id = session->viewer.file_id;
+                        state->pending_download_filebase = session->current_filebase;
+                        state->is_browser_download = 1;
+                        
+                        /* Show protocol selection prompt */
+                        script_write_output(state, "\r\n\r\n");
+                        script_write_output(state, "Protocol: \033[1;37m[\033[1;32mZ\033[1;37m]modem  "
+                                                   "[\033[1;33mY\033[1;37m]modem  "
+                                                   "[\033[1;33mG\033[1;37m]-Ymodem  "
+                                                   "[\033[1;32mX\033[1;37m]modem  "
+                                                   "[\033[1;32m1\033[1;37m]k-Xmodem  "
+                                                   "[\033[1;31mA\033[1;37m]bort : \033[1;31m");
+                        
+                        state->status = SCRIPT_STATUS_WAIT_PROTOCOL;
+                        return 1;
+
+                    case FILEVIEWER_ACTION_QUIT:
+                        /* Quit browser - return to script */
+                        filebase_viewer_close(session);
+                        state->status = SCRIPT_STATUS_RUNNING;
+                        script_process(state);
+                        return 1;
+
+                    case FILEVIEWER_ACTION_INVALID:
+                    default:
+                        /* Invalid input - already handled by viewer */
+                        return 1;
+                }
+            }
+        }
+
+        /* If we get here without active browser, return to script */
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
     if (state->status == SCRIPT_STATUS_WAIT_INPUT_LINE)
     {
         /* Ignore LF - we complete on CR */
@@ -795,6 +895,41 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             if (state->input_echo && state->host.write_text != NULL)
             {
                 state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Check if messagebase viewer is in search mode */
+            if (state->host.get_messagebase_session != NULL)
+            {
+                messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+                if (session != NULL && messagebase_viewer_is_active(session))
+                {
+                    if (session->viewer.phase == MESSAGE_VIEW_SEARCH_INPUT)
+                    {
+                        /* Perform the search with the entered term */
+                        messagebase_viewer_do_search(session, state->input_buffer,
+                                                      (void (*)(void*, const char*))script_write_output, state);
+                        state->input_length = 0;
+                        if (state->input_buffer != NULL)
+                        {
+                            state->input_buffer[0] = '\0';
+                        }
+
+                        /* Check result - if phase is IDLE, search was cancelled from script context */
+                        if (session->viewer.phase == MESSAGE_VIEW_IDLE)
+                        {
+                            /* Came from script command, search cancelled/no results - resume script */
+                            state->status = SCRIPT_STATUS_RUNNING;
+                            script_process(state);
+                            return 1;
+                        }
+                        else
+                        {
+                            /* Viewer is active (showing first result or was already in viewer) */
+                            state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+                            return 1;
+                        }
+                    }
+                }
             }
 
             /* Check if messagebase composer is active and handle input there */
@@ -832,6 +967,7 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             }
 
             script_set_variable_value(state, state->input_target, state->input_buffer);
+            state->more_line_count = 0;  /* Reset line count after input to prevent spurious More prompts */
             state->status = SCRIPT_STATUS_RUNNING;
             script_process(state);
             return 1;
@@ -1071,6 +1207,541 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
             }
         }
         return 1;
+    }
+
+    /* Handle filebase selection input */
+    if (state->status == SCRIPT_STATUS_WAIT_FB_SELECT)
+    {
+        /* Ignore LF */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Empty input = cancel */
+            if (state->input_length == 0)
+            {
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Try to select the filebase */
+            {
+                int base_id = atoi(state->input_buffer);
+                filebase_session *session = NULL;
+                LINETASK_FILEBASE_RECORD record;
+
+                if (state->host.get_filebase_session != NULL)
+                {
+                    session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                }
+
+                if (session != NULL && base_id > 0)
+                {
+                    if (filebase_get_info(base_id, &record))
+                    {
+                        if (filebase_check_access(record.accesslevel, record.keys,
+                                                   session->user_accesslevel, session->user_keys))
+                        {
+                            char msg[128];
+                            session->current_filebase = base_id;
+                            session->current_area = 0;
+                            script_save_user_history(state);
+                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
+                            script_write_output(state, msg);
+                        }
+                        else
+                        {
+                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+                        }
+                    }
+                    else
+                    {
+                        script_write_output(state, "\033[1;31m[Filebase not found]\033[0m\r\n");
+                    }
+                }
+                else if (base_id <= 0 && state->input_length > 0)
+                {
+                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+                }
+            }
+
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        }
+
+        /* Handle backspace */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Accumulate input */
+        if (state->input_length + 1 < state->input_capacity)
+        {
+            state->input_buffer[state->input_length++] = (char)byte;
+            if (state->host.write_text != NULL)
+            {
+                char echo[2] = { (char)byte, '\0' };
+                state->host.write_text(state->host.context, echo);
+            }
+        }
+        return 1;
+    }
+
+    /* Handle filebase area selection input */
+    if (state->status == SCRIPT_STATUS_WAIT_FB_AREA_SELECT)
+    {
+        /* Ignore LF */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Empty input = cancel */
+            if (state->input_length == 0)
+            {
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Try to select the area */
+            {
+                int area_id = atoi(state->input_buffer);
+                filebase_session *session = NULL;
+                LINETASK_FILEBASE_AREA_RECORD area_record;
+
+                if (state->host.get_filebase_session != NULL)
+                {
+                    session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                }
+
+                if (session != NULL && area_id >= 0)
+                {
+                    if (area_id == 0)
+                    {
+                        /* Select root/all files */
+                        session->current_area = 0;
+                        script_save_user_history(state);
+                        script_write_output(state, "\033[1;32mSelected: [All Files]\033[0m\r\n");
+                    }
+                    else if (filebase_get_area_info(session->current_filebase, area_id, &area_record))
+                    {
+                        if (filebase_check_access(area_record.accesslevel, area_record.keys,
+                                                   session->user_accesslevel, session->user_keys))
+                        {
+                            char msg[128];
+                            session->current_area = area_id;
+                            script_save_user_history(state);
+                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
+                            script_write_output(state, msg);
+                        }
+                        else
+                        {
+                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+                        }
+                    }
+                    else
+                    {
+                        script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
+                    }
+                }
+                else if (state->input_length > 0)
+                {
+                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+                }
+            }
+
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        }
+
+        /* Handle backspace */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Accumulate input */
+        if (state->input_length + 1 < state->input_capacity)
+        {
+            state->input_buffer[state->input_length++] = (char)byte;
+            if (state->host.write_text != NULL)
+            {
+                char echo[2] = { (char)byte, '\0' };
+                state->host.write_text(state->host.context, echo);
+            }
+        }
+        return 1;
+    }
+
+    /* Handle upload filename input */
+    if (state->status == SCRIPT_STATUS_WAIT_UPLOAD_FILENAME)
+    {
+        /* Handle backspace (ASCII 8 or 127) */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Ignore LF if we just processed CR */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Check for empty filename - abort */
+            if (state->input_length == 0)
+            {
+                /* Restore More state */
+                if (protocol_more_saved != -1)
+                {
+                    state->more_override = protocol_more_saved;
+                    protocol_more_saved = -1;
+                }
+                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+                script_write_output(state, "[Aborted]\r\n");
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+
+            /* Store the filename */
+            strncpy(state->pending_upload_filename, state->input_buffer, sizeof(state->pending_upload_filename) - 1);
+            state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
+
+            debug_printf("RECEIVEFILE: captured filename '%s'\n", state->pending_upload_filename);
+
+            /* Prompt for description - use direct write to bypass More handling */
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "Enter description (optional): ");
+            }
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
+            {
+                state->input_buffer[0] = '\0';
+            }
+            state->input_echo = 1;
+            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_DESCRIPTION;
+            state->status = SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION;
+            return 1;
+        }
+
+        /* Accumulate filename character */
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        if (state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        return 1;
+    }
+
+    /* Handle upload description input */
+    if (state->status == SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION)
+    {
+        /* Handle backspace (ASCII 8 or 127) */
+        if (byte == 8 || byte == 127)
+        {
+            if (state->input_length > 0)
+            {
+                state->input_length--;
+                state->input_buffer[state->input_length] = '\0';
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\b \b");
+                }
+            }
+            return 1;
+        }
+
+        /* Ignore LF if we just processed CR */
+        if (byte == '\n')
+        {
+            return 1;
+        }
+
+        /* CR triggers end of input */
+        if (byte == '\r')
+        {
+            state->input_buffer[state->input_length] = '\0';
+            if (state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\r\n");
+            }
+
+            /* Store description (may be empty) */
+            if (state->input_length > 0)
+            {
+                strncpy(state->pending_upload_description, state->input_buffer, sizeof(state->pending_upload_description) - 1);
+                state->pending_upload_description[sizeof(state->pending_upload_description) - 1] = '\0';
+            }
+            else
+            {
+                state->pending_upload_description[0] = '\0';
+            }
+
+            debug_printf("RECEIVEFILE: captured description '%s'\n",
+                         state->pending_upload_description);
+
+            /* Show protocol prompt - read file directly to bypass script processing */
+            {
+                const char *protocol_file = NULL;
+                int showed_file = 0;
+                
+                if (state->host.get_protocol_file != NULL)
+                {
+                    protocol_file = state->host.get_protocol_file(state->host.context);
+                }
+                
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "\r\n");
+                }
+                
+                /* Display protocol file via script parser so embedded formatting works */
+                if (protocol_file != NULL && protocol_file[0] != '\0')
+                {
+                    debug_printf("RECEIVEFILE: showing protocol file '%s'\n", protocol_file);
+                    script_display_file(state, protocol_file, 0);
+                    showed_file = 1;
+                }
+                
+                /* Only show hardcoded prompt if no file was displayed */
+                if (!showed_file && state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, 
+                        "Protocol: [Z]modem  [Y]modem  [G]-Ymodem  [X]modem  [1]k-Xmodem  [A]bort : ");
+                }
+            }
+            
+            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_PROTOCOL;
+            state->status = SCRIPT_STATUS_WAIT_PROTOCOL;
+            return 1;
+        }
+
+        /* Accumulate description character */
+        if (state->input_length + 1 >= state->input_capacity)
+        {
+            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+            char *resized = (char *)realloc(state->input_buffer, new_capacity);
+            if (resized == NULL)
+            {
+                script_set_error(state, "Out of memory expanding input buffer");
+                state->status = SCRIPT_STATUS_ERROR;
+                return 0;
+            }
+            state->input_buffer = resized;
+            state->input_capacity = new_capacity;
+        }
+
+        state->input_buffer[state->input_length++] = (char)byte;
+        if (state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        return 1;
+    }
+
+    /* Handle protocol selection input */
+    if (state->status == SCRIPT_STATUS_WAIT_PROTOCOL)
+    {
+        int protocol = -1;
+        
+        /* Map key to protocol */
+        switch (byte)
+        {
+            case 'z':
+            case 'Z':
+                protocol = 5;  /* ZMODEM */
+                break;
+            case 'y':
+            case 'Y':
+                protocol = 3;  /* YMODEM */
+                break;
+            case 'g':
+            case 'G':
+                protocol = 4;  /* YMODEM-G */
+                break;
+            case 'x':
+            case 'X':
+                protocol = 1;  /* XMODEM-CRC */
+                break;
+            case '1':
+                protocol = 2;  /* XMODEM-1K */
+                break;
+            case 'a':
+            case 'A':
+            case 27:  /* ESC */
+                /* Abort - restore More state first */
+                if (protocol_more_saved != -1)
+                {
+                    state->more_override = protocol_more_saved;
+                    protocol_more_saved = -1;
+                }
+                
+                /* Check if aborting a browser download */
+                if (state->is_browser_download)
+                {
+                    state->is_browser_download = 0;
+                    state->pending_download_file_id = 0;
+                    state->pending_download_filebase = 0;
+                    script_write_output(state, "\r\n[Aborted]\r\n");
+                    state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
+                    return 1;
+                }
+                
+                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+                script_write_output(state, "\r\n[Aborted]\r\n");
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            default:
+                /* Ignore invalid keys */
+                return 1;
+        }
+        
+        /* Restore More state before starting transfer */
+        if (protocol_more_saved != -1)
+        {
+            state->more_override = protocol_more_saved;
+            protocol_more_saved = -1;
+        }
+        
+        /* Echo the selection */
+        if (state->host.write_text != NULL)
+        {
+            char echo[2] = { (char)byte, '\0' };
+            state->host.write_text(state->host.context, echo);
+        }
+        
+        /* Check if this is a download from browser or an upload */
+        if (state->is_browser_download)
+        {
+            /* Download: save values before clearing state */
+            int download_file_id = state->pending_download_file_id;
+            int download_filebase = state->pending_download_filebase;
+            
+            script_write_output(state, "\r\n");
+            
+            /* Clear download state */
+            state->is_browser_download = 0;
+            state->pending_download_file_id = 0;
+            state->pending_download_filebase = 0;
+            
+            /* Execute file transfer */
+            {
+                filebase_session *fb_session = NULL;
+                if (state->host.get_filebase_session != NULL)
+                {
+                    fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                }
+                
+                if (fb_session != NULL && state->host.start_transfer != NULL)
+                {
+                    if (state->host.start_transfer(state->host.context, 
+                                                   download_filebase, 
+                                                   download_file_id,
+                                                   protocol))
+                    {
+                        state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+                        return 1;
+                    }
+                    else
+                    {
+                        script_write_output(state, "\r\n[Download failed to start]\r\n");
+                    }
+                }
+                else
+                {
+                    script_write_output(state, "\r\n[Download not available]\r\n");
+                }
+            }
+            
+            /* Return to browser */
+            state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
+            return 1;
+        }
+        else
+        {
+            /* Upload: start receive transfer */
+            script_start_receive_transfer(state, protocol);
+            return 1;
+        }
     }
 
     /* Handle LOGON username input */
@@ -3224,14 +3895,15 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
     if (script_stringcasecmp(token, "receivefile") == 0)
     {
         /* RECEIVEFILE <filename> [protocol]
-         * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g (default: xmodem-crc)
+         * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g, zmodem
+         * If protocol omitted, user is prompted to select
          */
         char *filename_str = strtok(NULL, " \t");
         char *protocol_str = strtok(NULL, " \t");
 
         instruction->type = SCRIPT_CMD_RECEIVEFILE;
         instruction->arg1 = script_duplicate_string(filename_str != NULL ? filename_str : "");
-        instruction->arg2 = script_duplicate_string(protocol_str != NULL ? protocol_str : "xmodem-crc");
+        instruction->arg2 = script_duplicate_string(protocol_str != NULL ? protocol_str : "");
         return 1;
     }
 
@@ -4581,6 +5253,74 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 messagebase_show_message_info(session, msg_id,
                                               (void (*)(void*, const char*))script_write_output, state);
             }
+            else if (script_stringcasecmp(subcmd, "search") == 0)
+            {
+                /* messagebase search [base] [area]
+                 * If base/area provided, select them first
+                 * Then prompt for search term
+                 */
+                int base_id = 0;
+                int area_id = 0;
+
+                if (arg != NULL && *arg != '\0')
+                {
+                    char temp_arg[128];
+                    char *tok;
+                    strncpy(temp_arg, arg, sizeof(temp_arg) - 1);
+                    temp_arg[sizeof(temp_arg) - 1] = '\0';
+
+                    tok = strtok(temp_arg, " \t");
+                    if (tok != NULL)
+                    {
+                        base_id = atoi(tok);
+                        tok = strtok(NULL, " \t");
+                        if (tok != NULL)
+                        {
+                            area_id = atoi(tok);
+                        }
+                    }
+                }
+
+                /* Select base/area if provided */
+                if (base_id > 0)
+                {
+                    session->current_messagebase = base_id;
+                    if (area_id > 0)
+                    {
+                        session->current_area = area_id;
+                    }
+                }
+
+                /* Check we have a base and area selected */
+                if (session->current_messagebase <= 0)
+                {
+                    script_write_output(state, "\r\n[Select a messagebase first, or use: messagebase search <base> <area>]\r\n");
+                    break;
+                }
+                if (session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n[Select an area first, or use: messagebase search <base> <area>]\r\n");
+                    break;
+                }
+
+                /* Initialize viewer state for search (not viewing a message yet) */
+                session->viewer.phase = MESSAGE_VIEW_IDLE;
+                session->viewer.message_id = 0;
+
+                /* Start the search prompt */
+                messagebase_viewer_start_search(session,
+                                                 (void (*)(void*, const char*))script_write_output, state);
+
+                /* Switch to line input for search term */
+                state->input_echo = 1;
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                return;
+            }
             else
             {
                 char msg[128];
@@ -5549,8 +6289,22 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
             if (script_stringcasecmp(subcmd, "list") == 0)
             {
-                /* List available filebases */
-                filebase_list_bases(session, (void (*)(void*, const char*))script_write_output, state);
+                /* List available filebases - clear screen and prompt for selection */
+                int saved_more = state->more_override;
+                state->more_override = 0;  /* Disable More during list */
+                state->more_line_count = 0;  /* Reset line count */
+                state->host.write_text(state->host.context, "\033[2J\033[H");  /* Clear screen */
+                filebase_list_bases(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
+                state->more_override = saved_more;
+                /* Prompt for selection */
+                state->host.write_text(state->host.context, "\r\nEnter filebase number to access: ");
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_FB_SELECT;
+                return;
             }
             else if (script_stringcasecmp(subcmd, "select") == 0)
             {
@@ -5595,8 +6349,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
             else if (script_stringcasecmp(subcmd, "areas") == 0)
             {
-                /* List areas in current filebase */
-                filebase_list_areas(session, (void (*)(void*, const char*))script_write_output, state);
+                /* List areas in current filebase - clear screen and prompt for selection */
+                if (session->current_filebase <= 0)
+                {
+                    script_write_output(state, "[Select a filebase first]\r\n");
+                    break;
+                }
+                state->more_line_count = 0;  /* Reset line count */
+                state->host.write_text(state->host.context, "\033[2J\033[H");  /* Clear screen */
+                filebase_list_areas(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
+                /* Prompt for selection */
+                state->host.write_text(state->host.context, "\r\nEnter area number to access: ");
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->status = SCRIPT_STATUS_WAIT_FB_AREA_SELECT;
+                return;
             }
             else if (script_stringcasecmp(subcmd, "area") == 0)
             {
@@ -5654,6 +6424,17 @@ static void script_execute_instruction(script_state *state, script_instruction *
             {
                 /* List files in current filebase/area */
                 filebase_list_files(session, (void (*)(void*, const char*))script_write_output, state);
+            }
+            else if (script_stringcasecmp(subcmd, "browse") == 0)
+            {
+                /* Enter continuous file browser */
+                /* Disable More? prompts during browser */
+                state->more_override = 0;
+                
+                if (filebase_enter_browser(session, (void (*)(void*, const char*))script_write_output, state))
+                {
+                    state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
+                }
             }
             else if (script_stringcasecmp(subcmd, "info") == 0)
             {
@@ -5907,30 +6688,102 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_RECEIVEFILE:
         {
-            /* RECEIVEFILE <filename> [protocol]
+            /* RECEIVEFILE [filename] [protocol]
              * Receives a file upload using the current filebase.
-             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g
+             * If filename omitted, prompts for filename and description.
+             * If protocol omitted, shows protocol selection prompt.
+             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g, zmodem
              */
             const char *filename_str = instruction->arg1;
             const char *protocol_str = instruction->arg2;
             char expanded_filename[128];
             char expanded_proto[32];
-            char temp_path[300];
-            int protocol = 1; /* Default to XMODEM-CRC */
+            int protocol = -1; /* -1 means prompt user */
             filebase_session *session = NULL;
-            int line_id = 0;
+            
+            debug_printf("RECEIVEFILE: entered command handler (arg1=%s, arg2=%s, stage=%d)\n",
+                         filename_str ? filename_str : "(null)",
+                         protocol_str ? protocol_str : "(null)",
+                         state->pending_upload_stage);
 
-            /* Expand macros in arguments */
-            if (filename_str != NULL)
+            /* Get filebase session first - needed for all paths */
+            if (state->host.get_filebase_session != NULL)
             {
-                script_expand_macros(state, filename_str, expanded_filename, sizeof(expanded_filename));
-            }
-            else
-            {
-                expanded_filename[0] = '\0';
+                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
             }
 
-            if (protocol_str != NULL)
+            if (session == NULL || session->current_filebase <= 0)
+            {
+                script_write_output(state, "\r\n[No filebase selected]\r\n");
+                break;
+            }
+
+            /* Store filebase/area info for later */
+            state->pending_upload_filebase = session->current_filebase;
+            state->pending_upload_area = session->current_area;
+
+            if (state->pending_upload_stage != SCRIPT_UPLOAD_STAGE_NONE)
+            {
+                debug_printf("RECEIVEFILE: metadata collection already active (stage=%d)\n",
+                             state->pending_upload_stage);
+                return;
+            }
+
+            /* Check for filename argument - treat empty string same as NULL */
+            expanded_filename[0] = '\0';
+            if (filename_str != NULL && filename_str[0] != '\0')
+            {
+                /* Strip any leading/trailing whitespace that might be leftover */
+                const char *start = filename_str;
+                while (*start == ' ' || *start == '\t') start++;
+                
+                if (*start != '\0')
+                {
+                    script_expand_macros(state, start, expanded_filename, sizeof(expanded_filename));
+                }
+            }
+
+            /* If no filename provided in script, prompt user and let wait handlers chain */
+            if (expanded_filename[0] == '\0')
+            {
+                /* Disable More prompt during upload flow */
+                protocol_more_saved = state->more_override;
+                state->more_override = 0;
+                state->more_line_count = 0;
+                
+                /* Clear pending state */
+                state->pending_upload_filename[0] = '\0';
+                state->pending_upload_description[0] = '\0';
+                
+                /* Prompt for filename - wait handlers will prompt for description + protocol */
+                if (state->host.write_text != NULL)
+                {
+                    state->host.write_text(state->host.context, "Enter filename for upload: ");
+                }
+
+                debug_printf("RECEIVEFILE: prompting for filename (filebase=%d, area=%d)\n",
+                             state->pending_upload_filebase, state->pending_upload_area);
+                
+                /* Set up input buffer for filename */
+                state->input_length = 0;
+                if (state->input_buffer != NULL)
+                {
+                    state->input_buffer[0] = '\0';
+                }
+                state->input_echo = 1;
+                
+                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_FILENAME;
+                state->status = SCRIPT_STATUS_WAIT_UPLOAD_FILENAME;
+                /* Return here - the filename wait handler will prompt for description */
+                return;
+            }
+
+            /* Have filename - store it */
+            strncpy(state->pending_upload_filename, expanded_filename, sizeof(state->pending_upload_filename) - 1);
+            state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
+
+            /* Check for protocol */
+            if (protocol_str != NULL && protocol_str[0] != '\0')
             {
                 script_expand_macros(state, protocol_str, expanded_proto, sizeof(expanded_proto));
                 
@@ -5960,75 +6813,41 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 }
             }
 
-            if (expanded_filename[0] == '\0')
+            /* If protocol specified, start transfer immediately (skip prompts) */
+            if (protocol >= 0)
             {
-                script_write_output(state, "\r\n[No filename specified]\r\n");
-                break;
+                state->pending_upload_description[0] = '\0';
+                script_start_receive_transfer(state, protocol);
+                return;
             }
 
-            /* Get filebase session */
-            if (state->host.get_filebase_session != NULL)
+            /* No protocol - the filename is provided, so skip to description prompt */
+            /* The filename handler would have done this, but we already have the filename */
+            /* Disable More prompt during upload flow */
+            protocol_more_saved = state->more_override;
+            state->more_override = 0;
+            state->more_line_count = 0;
+            
+            /* Prompt for description - use direct write to bypass More handling */
+            if (state->host.write_text != NULL)
             {
-                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                state->host.write_text(state->host.context, "Enter description (optional): ");
             }
 
-            if (session == NULL || session->current_filebase <= 0)
+            debug_printf("RECEIVEFILE: waiting for description for '%s'\n",
+                         state->pending_upload_filename);
+            
+            /* Set up input buffer for description */
+            state->input_length = 0;
+            if (state->input_buffer != NULL)
             {
-                script_write_output(state, "\r\n[No filebase selected]\r\n");
-                break;
+                state->input_buffer[0] = '\0';
             }
-
-            /* Check write access to current area */
-            /* For now, any logged-in user with access can upload */
-
-            /* Get line ID for temp file naming */
-            if (state->host.get_line_id != NULL)
-            {
-                line_id = state->host.get_line_id(state->host.context);
-            }
-
-            /* Store upload metadata in script variables for post-transfer registration */
-            script_set_variable_value(state, "_upload_filebase", "");
-            script_set_variable_value(state, "_upload_area", "");
-            script_set_variable_value(state, "_upload_filename", expanded_filename);
-            {
-                char num_buf[16];
-                snprintf(num_buf, sizeof(num_buf), "%d", session->current_filebase);
-                script_set_variable_value(state, "_upload_filebase", num_buf);
-                snprintf(num_buf, sizeof(num_buf), "%d", session->current_area);
-                script_set_variable_value(state, "_upload_area", num_buf);
-            }
-
-            /* Build temp path */
-            filebase_get_temp_upload_path(session->current_filebase, line_id, temp_path, sizeof(temp_path));
-
-            /* Initiate receive transfer via host callback */
-            if (state->host.start_receive_transfer != NULL)
-            {
-                char msg[256];
-                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
-                const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
-
-                snprintf(msg, sizeof(msg), 
-                         "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"
-                         "Start your sender now...\033[0m\r\n",
-                         expanded_filename, proto_name);
-                script_write_output(state, msg);
-
-                if (state->host.start_receive_transfer(state->host.context, temp_path, protocol))
-                {
-                    state->status = SCRIPT_STATUS_WAIT_TRANSFER;
-                    return;
-                }
-                else
-                {
-                    script_write_output(state, "\r\n\033[1;31m[Receive failed to start]\033[0m\r\n");
-                }
-            }
-            else
-            {
-                script_write_output(state, "\r\n[File receive not available]\r\n");
-            }
+            state->input_echo = 1;
+            
+            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_DESCRIPTION;
+            state->status = SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION;
+            return;
         }
         break;
 
@@ -6762,7 +7581,10 @@ static void script_translate_escapes(char *text)
                         break;
                 case 't': text[write_index++] = '\t'; break;
                 case '\\': text[write_index++] = '\\'; break;
+                case '`': text[write_index++] = '`'; break;
                 default:
+                    /* Unknown escape - preserve the backslash */
+                    text[write_index++] = '\\';
                     text[write_index++] = next;
                     break;
             }
@@ -7422,6 +8244,76 @@ static void script_display_file(script_state *state, const char *source, int tri
     }
 
     free(buffer);
+}
+
+/*
+ * Start a receive transfer using the pending upload info stored in state.
+ * Called when protocol is selected (either from command or from prompt).
+ */
+static void script_start_receive_transfer(script_state *state, int protocol)
+{
+    char temp_path[300];
+    int line_id = 0;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+
+    /* Get line ID for temp file naming */
+    if (state->host.get_line_id != NULL)
+    {
+        line_id = state->host.get_line_id(state->host.context);
+    }
+
+    /* Store upload metadata in script variables for post-transfer registration */
+    script_set_variable_value(state, "_upload_filebase", "");
+    script_set_variable_value(state, "_upload_area", "");
+    script_set_variable_value(state, "_upload_filename", state->pending_upload_filename);
+    script_set_variable_value(state, "_upload_description", state->pending_upload_description);
+    {
+        char num_buf[16];
+        snprintf(num_buf, sizeof(num_buf), "%d", state->pending_upload_filebase);
+        script_set_variable_value(state, "_upload_filebase", num_buf);
+        snprintf(num_buf, sizeof(num_buf), "%d", state->pending_upload_area);
+        script_set_variable_value(state, "_upload_area", num_buf);
+    }
+
+    /* Build temp path */
+    filebase_get_temp_upload_path(state->pending_upload_filebase, line_id, temp_path, sizeof(temp_path));
+
+    /* Initiate receive transfer via host callback */
+    if (state->host.start_receive_transfer != NULL)
+    {
+        char msg[256];
+        const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
+        const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
+
+        snprintf(msg, sizeof(msg), 
+                 "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"
+                 "Start your sender now...\033[0m\r\n",
+                 state->pending_upload_filename, proto_name);
+        script_write_output(state, msg);
+
+        if (state->host.start_receive_transfer(state->host.context, temp_path, protocol))
+        {
+            state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+            return;
+        }
+        else
+        {
+            script_write_output(state, "\r\n\033[1;31m[Receive failed to start]\033[0m\r\n");
+        }
+    }
+    else
+    {
+        script_write_output(state, "\r\n[File receive not available]\r\n");
+    }
+    
+    /* On failure, continue script */
+    state->status = SCRIPT_STATUS_RUNNING;
 }
 
 static char *script_duplicate_range(const char *source, size_t length)

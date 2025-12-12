@@ -7,6 +7,8 @@
 #ifndef LINETASK_FILEBASE_H
 #define LINETASK_FILEBASE_H
 
+#include <time.h>
+
 /* Filer module SWI base */
 #define FILER_SWI_BASE           0x5AA40
 #define SWI_FILER_FILEBASE       (FILER_SWI_BASE + 3)
@@ -42,7 +44,7 @@ typedef struct
     char filebasedir[FB_MAX_DIR];
 } LINETASK_FILEBASE_RECORD;
 
-/* Filebase area record structure */
+/* Filebase area record structure - must match Filer FILEBASE_AREA_RECORD */
 typedef struct
 {
     int id;
@@ -50,9 +52,10 @@ typedef struct
     int accesslevel;
     char keys[FB_MAX_KEYS];
     char name[FB_MAX_NAME];
+    char tag[FB_MAX_NAME];              /* FTN file echo tag - must match Filer struct */
 } LINETASK_FILEBASE_AREA_RECORD;
 
-/* File record structure */
+/* File record structure - must match Filer FILE_RECORD exactly */
 typedef struct
 {
     int id;
@@ -63,11 +66,52 @@ typedef struct
     char keys[FB_MAX_KEYS];
     char name[FB_MAX_NAME];
     int uploadedby;
-    long uploaddate;
+    time_t uploaddate;              /* Must be time_t to match Filer */
     char description[FB_MAX_DESC];
     long filesize;
     int downloads;
 } LINETASK_FILE_RECORD;
+
+/* File viewer phases */
+#define FILE_VIEW_IDLE           0
+#define FILE_VIEW_DISPLAY        1
+#define FILE_VIEW_PROMPT         2
+
+/* Reading directions */
+#define FILE_READER_DIR_FORWARD       0
+#define FILE_READER_DIR_BACKWARD      1
+
+/* Viewer action codes */
+#define FILEVIEWER_ACTION_CONTINUE   0
+#define FILEVIEWER_ACTION_NEXT       1
+#define FILEVIEWER_ACTION_PREV       2
+#define FILEVIEWER_ACTION_DOWNLOAD   3
+#define FILEVIEWER_ACTION_QUIT       4
+#define FILEVIEWER_ACTION_INVALID    -1
+
+/* Maximum search results */
+#define MAX_FILE_SEARCH_RESULTS  256
+
+/* File viewer state */
+typedef struct
+{
+    int phase;                      /* Viewing phase */
+    int file_id;                    /* Current file ID */
+    int reading_direction;          /* Forward/backward */
+    int file_position;              /* Position in list (1-based) */
+    int total_files;                /* Total accessible files */
+    
+    /* Search mode support */
+    int search_mode;                /* In search mode? */
+    int search_results[MAX_FILE_SEARCH_RESULTS];  /* Matching file IDs */
+    int search_result_count;        /* Number of results */
+    int search_result_index;        /* Current result index */
+    char search_term[128];          /* Search term */
+    
+    /* Saved state for area switching */
+    int saved_filebase;             /* Saved filebase when switching areas */
+    int saved_area;                 /* Saved area when switching areas */
+} filebase_viewer;
 
 /* Session filebase state */
 typedef struct
@@ -76,6 +120,7 @@ typedef struct
     int current_area;               /* Currently selected area ID (0 = root) */
     int user_accesslevel;           /* User's access level for filtering */
     char user_keys[FB_MAX_KEYS];    /* User's access keys for filtering */
+    filebase_viewer viewer;         /* Continuous file viewer state */
 } filebase_session;
 
 /* Initialise filebase session state */
@@ -130,5 +175,79 @@ int filebase_check_access(int required_level, const char *required_keys,
 /* Format helpers */
 void filebase_format_size(long bytes, char *buffer, int buffer_size);
 void filebase_format_date(long timestamp, char *buffer, int buffer_size);
+
+/* Continuous file browser functions */
+int filebase_enter_browser(filebase_session *session,
+                           void (*output)(void *ctx, const char *text),
+                           void *ctx);
+
+int filebase_viewer_init(filebase_session *session, int file_id);
+int filebase_viewer_close(filebase_session *session);
+int filebase_viewer_is_active(filebase_session *session);
+
+int filebase_viewer_show_file(filebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int filebase_viewer_show_prompt(filebase_session *session,
+                                void (*output)(void *ctx, const char *text),
+                                void *ctx);
+
+int filebase_viewer_handle_input(filebase_session *session, char input,
+                                 void (*output)(void *ctx, const char *text),
+                                 void *ctx);
+
+/* Navigation functions */
+int filebase_viewer_goto_next(filebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int filebase_viewer_goto_prev(filebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int filebase_viewer_goto_start(filebase_session *session,
+                               void (*output)(void *ctx, const char *text),
+                               void *ctx);
+
+int filebase_viewer_goto_end(filebase_session *session,
+                             void (*output)(void *ctx, const char *text),
+                             void *ctx);
+
+int filebase_viewer_show_current(filebase_session *session,
+                                 void (*output)(void *ctx, const char *text),
+                                 void *ctx);
+
+int filebase_viewer_next_area(filebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int filebase_viewer_prev_area(filebase_session *session,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+/* Search functions */
+int filebase_viewer_start_search(filebase_session *session,
+                                 void (*output)(void *ctx, const char *text),
+                                 void *ctx);
+
+int filebase_viewer_do_search(filebase_session *session,
+                              const char *term,
+                              void (*output)(void *ctx, const char *text),
+                              void *ctx);
+
+int filebase_viewer_exit_search_mode(filebase_session *session,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx);
+
+/* Helper functions */
+int filebase_get_next_file_id(filebase_session *session, int current_id);
+int filebase_get_prev_file_id(filebase_session *session, int current_id);
+int filebase_get_first_file_id(filebase_session *session);
+int filebase_get_last_file_id(filebase_session *session);
+int filebase_count_files(filebase_session *session);
+int filebase_get_file_position(filebase_session *session, int file_id);
+int filebase_get_next_area_id(filebase_session *session);
+int filebase_get_prev_area_id(filebase_session *session);
 
 #endif

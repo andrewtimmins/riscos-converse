@@ -327,6 +327,7 @@ static const char *config_get_prelogon_script(void);
 static const char *config_get_postlogon_script(void);
 static const char *config_get_anykey_file(void);
 static const char *config_get_more_file(void);
+static const char *config_get_protocol_file(void);
 static const char *config_get_newuser_script(void);
 static const char *config_get_sysop_name(void);
 static const char *lineconfig_get_hello(int line_id);
@@ -391,6 +392,7 @@ static void script_host_start_postlogon(void *context);
 static void script_host_start_newuser(void *context);
 static const char *script_host_get_anykey_file(void *context);
 static const char *script_host_get_more_file(void *context);
+static const char *script_host_get_protocol_file(void *context);
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol);
 static int script_host_start_receive_transfer(void *context, const char *temp_path, int protocol);
 static int script_host_get_user_id(void *context);
@@ -619,6 +621,7 @@ static void initialise_task_state(line_task_state *state, int argc, char **argv)
         host.start_newuser = script_host_start_newuser;
         host.get_anykey_file = script_host_get_anykey_file;
         host.get_more_file = script_host_get_more_file;
+        host.get_protocol_file = script_host_get_protocol_file;
         host.start_transfer = script_host_start_transfer;
         host.start_receive_transfer = script_host_start_receive_transfer;
         host.get_user_id = script_host_get_user_id;
@@ -1108,6 +1111,22 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
                 /* Check if this was a receive (upload) transfer */
                 if (state->xfer_session.direction == TRANSFER_DIR_RECEIVE)
                 {
+                    /* Format size nicely */
+                    char size_str[32];
+                    long bytes = state->xfer_session.bytes_transferred;
+                    if (bytes >= 1048576)  /* 1 MB */
+                    {
+                        snprintf(size_str, sizeof(size_str), "%.1f MB", (double)bytes / 1048576.0);
+                    }
+                    else if (bytes >= 1024)  /* 1 KB */
+                    {
+                        snprintf(size_str, sizeof(size_str), "%.1f KB", (double)bytes / 1024.0);
+                    }
+                    else
+                    {
+                        snprintf(size_str, sizeof(size_str), "%ld bytes", bytes);
+                    }
+                    
                     /* Update user stats for upload */
                     if (state->user_id > 0)
                     {
@@ -1120,6 +1139,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
                     const char *fb_str = script_get_variable(&state->script, "_upload_filebase");
                     const char *area_str = script_get_variable(&state->script, "_upload_area");
                     const char *filename = script_get_variable(&state->script, "_upload_filename");
+                    const char *description = script_get_variable(&state->script, "_upload_description");
                     int base_id = fb_str ? atoi(fb_str) : 0;
                     int area_id = area_str ? atoi(area_str) : 0;
                     
@@ -1129,7 +1149,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
                             base_id, area_id,
                             state->xfer_session.upload_path,
                             filename,
-                            NULL,  /* No description for now */
+                            description,  /* Now using the user's description */
                             state->user_id,
                             0,     /* Default access level */
                             NULL   /* No keys required */
@@ -1139,22 +1159,29 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref)
                         {
                             char msg[256];
                             snprintf(msg, sizeof(msg),
-                                "\r\n\033[1;32mUpload complete! File ID: %d\033[0m\r\n", file_id);
+                                "\r\n\033[1;32mUpload complete! %s received (File ID: %d)\033[0m\r\n", 
+                                size_str, file_id);
                             pipes_output_write_string(state->line_id, msg);
                             
-                            snprintf(msg, sizeof(msg), "Upload registered: %s (file_id=%d)", filename, file_id);
+                            snprintf(msg, sizeof(msg), "Upload registered: %s (file_id=%d, %s)", 
+                                     filename, file_id, size_str);
                             log_line_event(state->line_id, msg);
                         }
                         else
                         {
-                            pipes_output_write_string(state->line_id,
-                                "\r\n\033[1;33mFile received but registration failed.\033[0m\r\n");
+                            char msg[256];
+                            snprintf(msg, sizeof(msg),
+                                "\r\n\033[1;33mFile received (%s) but registration failed.\033[0m\r\n",
+                                size_str);
+                            pipes_output_write_string(state->line_id, msg);
                         }
                     }
                     else
                     {
-                        pipes_output_write_string(state->line_id,
-                            "\r\n\033[1;32mFile received.\033[0m\r\n");
+                        char msg[128];
+                        snprintf(msg, sizeof(msg),
+                            "\r\n\033[1;32mFile received (%s).\033[0m\r\n", size_str);
+                        pipes_output_write_string(state->line_id, msg);
                     }
                 }
                 else
@@ -2446,6 +2473,24 @@ static const char *config_get_more_file(void)
 }
 
 /*
+ * Get the protocol prompt file path from config.
+ * Returns pointer to static string or NULL if not configured.
+ */
+static const char *config_get_protocol_file(void)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = 0;  /* CONFIG_REASON_GET */
+    regs.r[1] = (int)"protocol";
+    if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return NULL;
+    }
+
+    return (const char *)regs.r[0];
+}
+
+/*
  * Get the newuser script path from config.
  * Returns pointer to static string or NULL if not configured.
  */
@@ -3701,6 +3746,11 @@ static const char *script_host_get_anykey_file(void *context)
 static const char *script_host_get_more_file(void *context)
 {
     return config_get_more_file();
+}
+
+static const char *script_host_get_protocol_file(void *context)
+{
+    return config_get_protocol_file();
 }
 
 static int script_host_start_transfer(void *context, int base_id, int file_id, int protocol)

@@ -16,6 +16,9 @@
 #include "messagebase.h"
 #include "debug.h"
 
+/* Safety limit for enumeration loops to prevent infinite loops on corrupted data */
+#define MAX_ENUM_ITERATIONS 100000
+
 /* ******************************************************************************************************************************************************** */
 /* Session Management                                                                                                                                       */
 /* ******************************************************************************************************************************************************** */
@@ -285,19 +288,19 @@ int messagebase_can_read_message(messagebase_session *session, const LINETASK_ME
     /* Check area type - Private and Netmail areas only show messages for this user */
     area_type = messagebase_get_area_type(session, session->current_area);
     
-    /* Private area (areatype 4): only show messages received by this user */
+    /* Private area (areatype 4): only show messages received by or sent by this user */
     if (area_type == 4)
     {
-        if (msg->receivedby != session->user_id)
+        if (msg->receivedby != session->user_id && msg->sentby != session->user_id)
         {
             return 0;
         }
     }
     
-    /* Netmail area (areatype 2): only show messages received by this user */
+    /* Netmail area (areatype 2): only show messages received by or sent by this user */
     if (area_type == 2)
     {
-        if (msg->receivedby != session->user_id)
+        if (msg->receivedby != session->user_id && msg->sentby != session->user_id)
         {
             return 0;
         }
@@ -611,8 +614,8 @@ int messagebase_list_bases(messagebase_session *session,
     int count = 0;          /* entries stored for display */
     int total_count = 0;    /* total entries enumerated */
     int index = 0;
-    /* Collect entries to render side-by-side */
-    #define MAX_MB_ENTRIES 256
+    /* Collect entries to render side-by-side - limit to avoid stack overflow */
+    #define MAX_MB_ENTRIES 64
     struct mb_entry
     {
         int id;
@@ -977,6 +980,21 @@ int messagebase_show_message_info(messagebase_session *session,
             snprintf(from_name, sizeof(from_name), "User #%d", record.sentby);
         }
     }
+    else if (record.fromname[0] != '\0')
+    {
+        /* FTN message with name - show name and address if available */
+        if (record.orgaddr.zone > 0)
+        {
+            char addr_str[32];
+            messagebase_format_ftn_address(&record.orgaddr, addr_str, sizeof(addr_str));
+            snprintf(from_name, sizeof(from_name), "%s (%s)", record.fromname, addr_str);
+        }
+        else
+        {
+            strncpy(from_name, record.fromname, sizeof(from_name) - 1);
+            from_name[sizeof(from_name) - 1] = '\0';
+        }
+    }
     else if (record.orgaddr.zone > 0)
     {
         messagebase_format_ftn_address(&record.orgaddr, from_name, sizeof(from_name));
@@ -991,6 +1009,21 @@ int messagebase_show_message_info(messagebase_session *session,
         if (!messagebase_lookup_user_by_id(record.receivedby, to_name, sizeof(to_name)))
         {
             snprintf(to_name, sizeof(to_name), "User #%d", record.receivedby);
+        }
+    }
+    else if (record.toname[0] != '\0')
+    {
+        /* FTN message with name - show name and address if available */
+        if (record.dstaddr.zone > 0)
+        {
+            char addr_str[32];
+            messagebase_format_ftn_address(&record.dstaddr, addr_str, sizeof(addr_str));
+            snprintf(to_name, sizeof(to_name), "%s (%s)", record.toname, addr_str);
+        }
+        else
+        {
+            strncpy(to_name, record.toname, sizeof(to_name) - 1);
+            to_name[sizeof(to_name) - 1] = '\0';
         }
     }
     else if (record.dstaddr.zone > 0)
@@ -1075,6 +1108,12 @@ int messagebase_viewer_close(messagebase_session *session)
     session->viewer.body_size = 0;
     session->viewer.current_line = 0;
 
+    /* Clear search mode state */
+    session->viewer.search_mode = 0;
+    session->viewer.search_result_count = 0;
+    session->viewer.search_result_index = 0;
+    session->viewer.search_term[0] = '\0';
+
     return 1;
 }
 
@@ -1136,8 +1175,18 @@ int messagebase_viewer_show_header(messagebase_session *session,
     }
     else if (record_ptr->fromname[0] != '\0')
     {
-        strncpy(from_name, record_ptr->fromname, sizeof(from_name) - 1);
-        from_name[sizeof(from_name) - 1] = '\0';
+        /* FTN message with name - show name and address if available */
+        if (record_ptr->orgaddr.zone > 0)
+        {
+            char addr_str[32];
+            messagebase_format_ftn_address(&record_ptr->orgaddr, addr_str, sizeof(addr_str));
+            snprintf(from_name, sizeof(from_name), "%s (%s)", record_ptr->fromname, addr_str);
+        }
+        else
+        {
+            strncpy(from_name, record_ptr->fromname, sizeof(from_name) - 1);
+            from_name[sizeof(from_name) - 1] = '\0';
+        }
     }
     else if (record_ptr->orgaddr.zone > 0)
     {
@@ -1158,8 +1207,18 @@ int messagebase_viewer_show_header(messagebase_session *session,
     }
     else if (record_ptr->toname[0] != '\0')
     {
-        strncpy(to_name, record_ptr->toname, sizeof(to_name) - 1);
-        to_name[sizeof(to_name) - 1] = '\0';
+        /* FTN message with name - show name and address if available */
+        if (record_ptr->dstaddr.zone > 0)
+        {
+            char addr_str[32];
+            messagebase_format_ftn_address(&record_ptr->dstaddr, addr_str, sizeof(addr_str));
+            snprintf(to_name, sizeof(to_name), "%s (%s)", record_ptr->toname, addr_str);
+        }
+        else
+        {
+            strncpy(to_name, record_ptr->toname, sizeof(to_name) - 1);
+            to_name[sizeof(to_name) - 1] = '\0';
+        }
     }
     else if (record_ptr->dstaddr.zone > 0)
     {
@@ -1355,6 +1414,17 @@ int messagebase_viewer_show_prompt(messagebase_session *session,
 
     /* Full navigation prompt matching screenshot style */
     output(ctx, "\r\n");
+
+    /* Show search mode indicator if active */
+    if (session->viewer.search_mode)
+    {
+        snprintf(line, sizeof(line),
+                 "\033[1;44;37m SEARCH: Result %d of %d for '%s' \033[0m\r\n",
+                 session->viewer.search_result_index + 1,
+                 session->viewer.search_result_count,
+                 session->viewer.search_term);
+        output(ctx, line);
+    }
     
     /* Line 1: Basic navigation */
     snprintf(line, sizeof(line),
@@ -1370,10 +1440,19 @@ int messagebase_viewer_show_prompt(messagebase_session *session,
              dir_str);
     output(ctx, line);
     
-    /* Line 3: Area switching and abort */
-    snprintf(line, sizeof(line),
-             "           [\033[1;33m+\033[0m] Next area  [\033[1;33m-\033[0m] Previous area  "
-             "[\033[1;31mA\033[0m]bort  Select: ");
+    /* Line 3: Area switching, search/exit and abort */
+    if (session->viewer.search_mode)
+    {
+        snprintf(line, sizeof(line),
+                 "           [\033[1;33m+\033[0m] Next area  [\033[1;33m-\033[0m] Previous area  "
+                 "[\033[1;33mX\033[0m] Exit search  [\033[1;31mA\033[0m]bort  Select: ");
+    }
+    else
+    {
+        snprintf(line, sizeof(line),
+                 "           [\033[1;33m+\033[0m] Next area  [\033[1;33m-\033[0m] Previous area  "
+                 "[\033[1;33mZ\033[0m] Search  [\033[1;31mA\033[0m]bort  Select: ");
+    }
     output(ctx, line);
 
     return more;
@@ -1500,6 +1579,28 @@ int messagebase_viewer_handle_input(messagebase_session *session, char input,
             /* Previous area */
             return VIEWER_ACTION_PREV_AREA;
 
+        case 'z':
+        case 'Z':
+        case '/':
+            /* Search - but if already in search mode, treat Z as exit */
+            if (session->viewer.search_mode)
+            {
+                return VIEWER_ACTION_EXIT_SEARCH;
+            }
+            return VIEWER_ACTION_SEARCH;
+
+        case 'x':
+        case 'X':
+            /* Exit search mode (only when in search mode) */
+            if (session->viewer.search_mode)
+            {
+                return VIEWER_ACTION_EXIT_SEARCH;
+            }
+            /* If not in search mode, treat as invalid key */
+            output(ctx, "\r\n");
+            messagebase_viewer_show_prompt(session, output, ctx);
+            return VIEWER_ACTION_CONTINUE;
+
         case 'a':
         case 'A':
         case 'q':
@@ -1529,6 +1630,38 @@ int messagebase_viewer_goto_next(messagebase_session *session,
         return 0;
     }
 
+    /* In search mode, navigate through search results instead of all messages */
+    if (session->viewer.search_mode)
+    {
+        int next_idx = session->viewer.search_result_index + 1;
+        
+        if (next_idx >= session->viewer.search_result_count)
+        {
+            output(ctx, "\r\n\r\n[No more search results.]\r\n");
+            messagebase_viewer_show_prompt(session, output, ctx);
+            return 1;  /* Stay in viewer */
+        }
+
+        next_id = session->viewer.search_results[next_idx];
+
+        if (!messagebase_get_message_info(session->current_messagebase, next_id, &msg_record))
+        {
+            output(ctx, "\r\n[Error getting message.]\r\n");
+            messagebase_viewer_close(session);
+            return 0;
+        }
+
+        session->viewer.search_result_index = next_idx;
+        session->viewer.message_position = messagebase_get_message_position(session, next_id);
+        messagebase_viewer_init(session, next_id);
+        messagebase_mark_as_read(session, next_id);
+        messagebase_viewer_show_header(session, output, ctx);
+        messagebase_viewer_show_body(session, output, ctx);
+        messagebase_viewer_show_prompt(session, output, ctx);
+        return 1;
+    }
+
+    /* Normal navigation - go to next message in area */
     next_id = messagebase_get_next_message_id(session, session->viewer.message_id);
     if (next_id <= 0)
     {
@@ -1573,6 +1706,38 @@ int messagebase_viewer_goto_prev(messagebase_session *session,
         return 0;
     }
 
+    /* In search mode, navigate through search results instead of all messages */
+    if (session->viewer.search_mode)
+    {
+        int prev_idx = session->viewer.search_result_index - 1;
+        
+        if (prev_idx < 0)
+        {
+            output(ctx, "\r\n[No previous search results.]\r\n");
+            messagebase_viewer_show_prompt(session, output, ctx);
+            return 1;  /* Stay in viewer */
+        }
+
+        prev_id = session->viewer.search_results[prev_idx];
+
+        if (!messagebase_get_message_info(session->current_messagebase, prev_id, &msg_record))
+        {
+            output(ctx, "\r\n[Error getting message.]\r\n");
+            messagebase_viewer_close(session);
+            return 0;
+        }
+
+        session->viewer.search_result_index = prev_idx;
+        session->viewer.message_position = messagebase_get_message_position(session, prev_id);
+        messagebase_viewer_init(session, prev_id);
+        messagebase_mark_as_read(session, prev_id);
+        messagebase_viewer_show_header(session, output, ctx);
+        messagebase_viewer_show_body(session, output, ctx);
+        messagebase_viewer_show_prompt(session, output, ctx);
+        return 1;
+    }
+
+    /* Normal navigation - go to previous message in area */
     prev_id = messagebase_get_prev_message_id(session, session->viewer.message_id);
     if (prev_id <= 0)
     {
@@ -1865,6 +2030,289 @@ int messagebase_mark_as_read(messagebase_session *session, int message_id)
     return messagebase_update_message(session->current_messagebase, &msg_record);
 }
 
+/* ============================================================
+ * MESSAGE SEARCH
+ * ============================================================ */
+
+/* Case-insensitive substring search */
+static int str_contains_ci(const char *haystack, const char *needle)
+{
+    const char *h, *n;
+    size_t needle_len, haystack_len;
+    size_t i;
+
+    if (haystack == NULL || needle == NULL || *needle == '\0')
+    {
+        return 0;
+    }
+
+    needle_len = strlen(needle);
+    haystack_len = strlen(haystack);
+
+    if (needle_len > haystack_len)
+    {
+        return 0;
+    }
+
+    for (i = 0; i <= haystack_len - needle_len; i++)
+    {
+        h = haystack + i;
+        n = needle;
+        while (*n != '\0')
+        {
+            char hc = (*h >= 'A' && *h <= 'Z') ? (*h + 32) : *h;
+            char nc = (*n >= 'A' && *n <= 'Z') ? (*n + 32) : *n;
+            if (hc != nc)
+            {
+                break;
+            }
+            h++;
+            n++;
+        }
+        if (*n == '\0')
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Start the search prompt */
+int messagebase_viewer_start_search(messagebase_session *session,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx)
+{
+    if (session == NULL || output == NULL)
+    {
+        return 0;
+    }
+
+    /* Clear search state */
+    session->viewer.search_mode = 0;
+    session->viewer.search_term[0] = '\0';
+    session->viewer.search_result_count = 0;
+    session->viewer.search_result_index = 0;
+
+    output(ctx, "\r\n\r\n\033[1;36mSearch for:\033[0m ");
+    session->viewer.phase = MESSAGE_VIEW_SEARCH_INPUT;
+
+    return 1;
+}
+
+/* Perform the actual search across messages in current area.
+ * In continuous reader mode: finds all matches, enters search_mode, shows first result.
+ * Navigation (N/P) will cycle through search_results instead of all messages. */
+int messagebase_viewer_do_search(messagebase_session *session,
+                                  const char *term,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx)
+{
+    _kernel_swi_regs regs;
+    LINETASK_MESSAGE_RECORD *msg_ptr;
+    LINETASK_MESSAGE_RECORD first_msg;
+    int index;
+    char from_name[MAX_FROM_NAME];
+    char msg_line[256];
+    int was_in_viewer;
+    int first_id;
+
+    if (session == NULL || output == NULL)
+    {
+        return 0;
+    }
+
+    /* Track if we were already in viewer (have a message) or came from script */
+    was_in_viewer = (session->viewer.message_id > 0);
+
+    /* Cancel search if term is empty */
+    if (term == NULL || *term == '\0')
+    {
+        output(ctx, "\r\n[Search cancelled]\r\n");
+        if (was_in_viewer)
+        {
+            session->viewer.phase = MESSAGE_VIEW_PROMPT;
+            messagebase_viewer_show_prompt(session, output, ctx);
+        }
+        else
+        {
+            session->viewer.phase = MESSAGE_VIEW_IDLE;
+        }
+        return 0;
+    }
+
+    /* Store search term - sanitize control characters to prevent terminal corruption */
+    {
+        char *dst = session->viewer.search_term;
+        const char *src = term;
+        int i = 0;
+        while (*src != '\0' && i < MAX_SEARCH_TERM - 1)
+        {
+            /* Skip control characters except space */
+            if (*src >= 32 || *src == '\t')
+            {
+                *dst++ = *src;
+                i++;
+            }
+            src++;
+        }
+        *dst = '\0';
+    }
+    session->viewer.search_result_count = 0;
+
+    output(ctx, "\r\n\r\n\033[1;33mSearching...\033[0m\r\n");
+
+    /* Enumerate messages in current area and search */
+    index = 0;
+    while (session->viewer.search_result_count < MAX_SEARCH_RESULTS)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+        regs.r[1] = session->current_messagebase;
+        regs.r[2] = session->current_area;
+        regs.r[3] = index;
+
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] == 0 || regs.r[0] == -1)
+        {
+            break;  /* No more messages */
+        }
+
+        msg_ptr = (LINETASK_MESSAGE_RECORD *)regs.r[0];
+
+        /* Skip deleted messages */
+        if (msg_ptr->deleted)
+        {
+            index++;
+            continue;
+        }
+
+        /* Check access */
+        if (!messagebase_can_read_message(session, msg_ptr))
+        {
+            index++;
+            continue;
+        }
+
+        /* Search in subject */
+        if (str_contains_ci(msg_ptr->subject, term))
+        {
+            session->viewer.search_results[session->viewer.search_result_count] = msg_ptr->id;
+            session->viewer.search_result_count++;
+            index++;
+            continue;
+        }
+
+        /* Get sender name and search in it */
+        from_name[0] = '\0';
+        if (msg_ptr->sentby > 0)
+        {
+            messagebase_lookup_user_by_id(msg_ptr->sentby, from_name, sizeof(from_name));
+        }
+        else if (msg_ptr->fromname[0] != '\0')
+        {
+            strncpy(from_name, msg_ptr->fromname, sizeof(from_name) - 1);
+            from_name[sizeof(from_name) - 1] = '\0';
+        }
+
+        if (str_contains_ci(from_name, term))
+        {
+            session->viewer.search_results[session->viewer.search_result_count] = msg_ptr->id;
+            session->viewer.search_result_count++;
+        }
+
+        index++;
+    }
+
+    if (session->viewer.search_result_count == 0)
+    {
+        snprintf(msg_line, sizeof(msg_line), "\r\n\033[1;31mNo messages found matching '%s'\033[0m\r\n", term);
+        output(ctx, msg_line);
+        if (was_in_viewer)
+        {
+            session->viewer.phase = MESSAGE_VIEW_PROMPT;
+            messagebase_viewer_show_prompt(session, output, ctx);
+        }
+        else
+        {
+            session->viewer.phase = MESSAGE_VIEW_IDLE;
+        }
+        return 0;
+    }
+
+    /* Enter search mode - navigation will use search results */
+    session->viewer.search_mode = 1;
+    session->viewer.search_result_index = 0;
+
+    snprintf(msg_line, sizeof(msg_line), "\r\n\033[1;32mFound %d message%s matching '%s'\033[0m\r\n",
+             session->viewer.search_result_count,
+             session->viewer.search_result_count == 1 ? "" : "s",
+             term);
+    output(ctx, msg_line);
+    output(ctx, "\033[1;33mPress X to exit search mode and return to normal navigation.\033[0m\r\n");
+
+    /* Show the first search result */
+    first_id = session->viewer.search_results[0];
+
+    if (!messagebase_get_message_info(session->current_messagebase, first_id, &first_msg))
+    {
+        output(ctx, "\r\n[Error getting message.]\r\n");
+        session->viewer.search_mode = 0;
+        session->viewer.phase = MESSAGE_VIEW_IDLE;
+        return 0;
+    }
+
+    /* Update total messages count if not already set */
+    if (session->viewer.total_messages <= 0)
+    {
+        session->viewer.total_messages = messagebase_count_messages(session);
+    }
+
+    /* Update position tracking */
+    session->viewer.message_position = messagebase_get_message_position(session, first_id);
+
+    /* Show the message - enter continuous reader */
+    messagebase_viewer_init(session, first_id);
+    messagebase_mark_as_read(session, first_id);
+    messagebase_viewer_show_header(session, output, ctx);
+    messagebase_viewer_show_body(session, output, ctx);
+    messagebase_viewer_show_prompt(session, output, ctx);
+
+    return 1;
+}
+
+/* Exit search mode and return to normal navigation */
+int messagebase_viewer_exit_search_mode(messagebase_session *session,
+                                         void (*output)(void *ctx, const char *text),
+                                         void *ctx)
+{
+    if (session == NULL)
+    {
+        return 0;
+    }
+
+    if (!session->viewer.search_mode)
+    {
+        /* Not in search mode, nothing to do */
+        return 0;
+    }
+
+    session->viewer.search_mode = 0;
+    session->viewer.search_result_count = 0;
+    session->viewer.search_result_index = 0;
+    session->viewer.search_term[0] = '\0';
+
+    if (output != NULL)
+    {
+        output(ctx, "\r\n\033[1;32m[Exited search mode - normal navigation restored]\033[0m\r\n");
+        messagebase_viewer_show_prompt(session, output, ctx);
+    }
+
+    return 1;
+}
+
 /* Start reply to current message being viewed */
 int messagebase_viewer_start_reply(messagebase_session *session,
                                     void (*output)(void *ctx, const char *text),
@@ -2131,6 +2579,16 @@ void messagebase_editor_show_intro(messagebase_session *session,
     }
 
     output(ctx, "\r\n\033[1;32mConverse LineEd: Press <ESC> or *enter* /? or /h for help (000 = line number)\033[0m\r\n\r\n");
+
+    /* If we have pre-populated lines (e.g., quoted text), display them */
+    if (session != NULL && session->composer.body_lines > 0)
+    {
+        char line_info[80];
+        snprintf(line_info, sizeof(line_info),
+                 "\033[1;33m[%d lines pre-filled - use /l to list, /d to delete]\033[0m\r\n\r\n",
+                 session->composer.body_lines);
+        output(ctx, line_info);
+    }
 }
 
 void messagebase_editor_list_lines(messagebase_session *session,
@@ -2193,7 +2651,8 @@ int messagebase_editor_delete_lines(messagebase_session *session,
     /* Shift lines up */
     for (i = from_line; i + count < session->composer.body_lines; i++)
     {
-        strncpy(session->composer.body[i], session->composer.body[i + count], MAX_LINE_WIDTH);
+        strncpy(session->composer.body[i], session->composer.body[i + count], MAX_LINE_WIDTH - 1);
+        session->composer.body[i][MAX_LINE_WIDTH - 1] = '\0';
     }
 
     session->composer.body_lines -= count;
@@ -2235,7 +2694,8 @@ int messagebase_editor_insert_line(messagebase_session *session,
     /* Shift lines down to make room */
     for (i = session->composer.body_lines; i > at_line; i--)
     {
-        strncpy(session->composer.body[i], session->composer.body[i - 1], MAX_LINE_WIDTH);
+        strncpy(session->composer.body[i], session->composer.body[i - 1], MAX_LINE_WIDTH - 1);
+        session->composer.body[i][MAX_LINE_WIDTH - 1] = '\0';
     }
 
     /* Insert new line */
@@ -2559,7 +3019,8 @@ int messagebase_composer_start_post(messagebase_session *session,
     /* For echomail/local, default To is "All" */
     if (!session->composer.is_private)
     {
-        strncpy(session->composer.to_name, "All", sizeof(session->composer.to_name));
+        strncpy(session->composer.to_name, "All", sizeof(session->composer.to_name) - 1);
+        session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
     }
 
     /* Clear screen and paint a blue banner on the first line */
@@ -2574,6 +3035,158 @@ int messagebase_composer_start_post(messagebase_session *session,
     return 1;
 }
 
+/* Load original message body and add quoted lines to composer */
+static int messagebase_quote_original(messagebase_session *session,
+                                       int base_id, int message_id,
+                                       const char *from_name,
+                                       time_t sent_time)
+{
+    char buffer[VIEWER_LINE_BUFFER_SIZE];
+    char line[MAX_LINE_WIDTH];
+    char quoted_line[MAX_LINE_WIDTH];
+    struct tm *tm_ptr;
+    long offset = 0;
+    long bytes_to_read;
+    int bytes_read;
+    int line_pos = 0;
+    int i;
+
+    if (session == NULL || base_id <= 0 || message_id <= 0)
+    {
+        return 0;
+    }
+
+    /* Add attribution line */
+    tm_ptr = localtime(&sent_time);
+    if (tm_ptr != NULL && from_name != NULL && from_name[0] != '\0')
+    {
+        snprintf(quoted_line, sizeof(quoted_line),
+                 "%s wrote on %02d/%02d/%02d:",
+                 from_name,
+                 tm_ptr->tm_mday, tm_ptr->tm_mon + 1, (tm_ptr->tm_year % 100));
+    }
+    else if (from_name != NULL && from_name[0] != '\0')
+    {
+        snprintf(quoted_line, sizeof(quoted_line), "%s wrote:", from_name);
+    }
+    else
+    {
+        strncpy(quoted_line, "Original message:", sizeof(quoted_line) - 1);
+        quoted_line[sizeof(quoted_line) - 1] = '\0';
+    }
+
+    if (session->composer.body_lines < MAX_COMPOSER_LINES)
+    {
+        strncpy(session->composer.body[session->composer.body_lines],
+                quoted_line, MAX_LINE_WIDTH - 1);
+        session->composer.body[session->composer.body_lines][MAX_LINE_WIDTH - 1] = '\0';
+        session->composer.body_lines++;
+    }
+
+    /* Add empty line after attribution */
+    if (session->composer.body_lines < MAX_COMPOSER_LINES)
+    {
+        session->composer.body[session->composer.body_lines][0] = '\0';
+        session->composer.body_lines++;
+    }
+
+    /* Get the body size from message info */
+    {
+        _kernel_swi_regs regs;
+        LINETASK_MESSAGE_RECORD *msg_ptr;
+
+        regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO;
+        regs.r[1] = base_id;
+        regs.r[2] = message_id;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            return session->composer.body_lines;
+        }
+        msg_ptr = (LINETASK_MESSAGE_RECORD *)regs.r[0];
+
+        /* Download and quote body - limit to half of max lines for reply space */
+        while (offset < msg_ptr->bodysize &&
+               session->composer.body_lines < (MAX_COMPOSER_LINES / 2))
+        {
+            bytes_to_read = msg_ptr->bodysize - offset;
+            if (bytes_to_read > VIEWER_LINE_BUFFER_SIZE - 1)
+            {
+                bytes_to_read = VIEWER_LINE_BUFFER_SIZE - 1;
+            }
+
+            bytes_read = messagebase_download_block(base_id, message_id,
+                                                     buffer, offset, (int)bytes_to_read);
+            if (bytes_read <= 0)
+            {
+                break;
+            }
+
+            for (i = 0; i < bytes_read &&
+                 session->composer.body_lines < (MAX_COMPOSER_LINES / 2); i++)
+            {
+                char ch = buffer[i];
+
+                if (ch == '\n' || ch == '\r')
+                {
+                    line[line_pos] = '\0';
+
+                    /* Build quoted line with "> " prefix */
+                    snprintf(quoted_line, sizeof(quoted_line), "> %s", line);
+                    strncpy(session->composer.body[session->composer.body_lines],
+                            quoted_line, MAX_LINE_WIDTH - 1);
+                    session->composer.body[session->composer.body_lines][MAX_LINE_WIDTH - 1] = '\0';
+                    session->composer.body_lines++;
+                    line_pos = 0;
+
+                    /* Skip LF after CR */
+                    if (ch == '\r' && i + 1 < bytes_read && buffer[i + 1] == '\n')
+                    {
+                        i++;
+                    }
+                }
+                else if (line_pos < MAX_LINE_WIDTH - 4) /* Leave room for "> " prefix */
+                {
+                    line[line_pos++] = ch;
+                }
+                else
+                {
+                    /* Line too long - wrap */
+                    line[line_pos] = '\0';
+                    snprintf(quoted_line, sizeof(quoted_line), "> %s", line);
+                    strncpy(session->composer.body[session->composer.body_lines],
+                            quoted_line, MAX_LINE_WIDTH - 1);
+                    session->composer.body[session->composer.body_lines][MAX_LINE_WIDTH - 1] = '\0';
+                    session->composer.body_lines++;
+                    line_pos = 0;
+                    line[line_pos++] = ch;
+                }
+
+                offset++;
+            }
+        }
+
+        /* Handle final line if any */
+        if (line_pos > 0 && session->composer.body_lines < (MAX_COMPOSER_LINES / 2))
+        {
+            line[line_pos] = '\0';
+            snprintf(quoted_line, sizeof(quoted_line), "> %s", line);
+            strncpy(session->composer.body[session->composer.body_lines],
+                    quoted_line, MAX_LINE_WIDTH - 1);
+            session->composer.body[session->composer.body_lines][MAX_LINE_WIDTH - 1] = '\0';
+            session->composer.body_lines++;
+        }
+    }
+
+    /* Add blank line before reply text */
+    if (session->composer.body_lines < MAX_COMPOSER_LINES)
+    {
+        session->composer.body[session->composer.body_lines][0] = '\0';
+        session->composer.body_lines++;
+    }
+
+    return session->composer.body_lines;
+}
+
 int messagebase_composer_start_reply(messagebase_session *session,
                                       int message_id,
                                       void (*output)(void *ctx, const char *text),
@@ -2583,6 +3196,7 @@ int messagebase_composer_start_reply(messagebase_session *session,
     LINETASK_MESSAGE_RECORD *msg_ptr;
     LINETASK_MESSAGEBASE_AREA_RECORD *area_ptr;
     char from_name[MAX_FROM_NAME];
+    time_t original_sent;
 
     if (session == NULL || output == NULL)
     {
@@ -2629,6 +3243,9 @@ int messagebase_composer_start_reply(messagebase_session *session,
 
     messagebase_composer_init(session, message_id);
 
+    /* Update current_area to match the message's area - critical for send */
+    session->current_area = msg_ptr->messagebaseareaid;
+
     /* Store area info in composer state */
     session->composer.area_type = area_ptr->areatype;
     session->composer.area_id = msg_ptr->messagebaseareaid;
@@ -2647,13 +3264,26 @@ int messagebase_composer_start_reply(messagebase_session *session,
         {
             snprintf(from_name, sizeof(from_name), "User #%d", msg_ptr->sentby);
         }
-        strncpy(session->composer.to_name, from_name, sizeof(session->composer.to_name));
+        strncpy(session->composer.to_name, from_name, sizeof(session->composer.to_name) - 1);
+        session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
         session->composer.to_user_id = msg_ptr->sentby;
     }
     else if (msg_ptr->orgaddr.zone > 0)
     {
-        messagebase_format_ftn_address(&msg_ptr->orgaddr, from_name, sizeof(from_name));
-        strncpy(session->composer.to_name, from_name, sizeof(session->composer.to_name));
+        /* FTN message - use fromname if available, otherwise format address */
+        if (msg_ptr->fromname[0] != '\0')
+        {
+            strncpy(from_name, msg_ptr->fromname, sizeof(from_name) - 1);
+            from_name[sizeof(from_name) - 1] = '\0';
+            strncpy(session->composer.to_name, msg_ptr->fromname, sizeof(session->composer.to_name) - 1);
+            session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
+        }
+        else
+        {
+            messagebase_format_ftn_address(&msg_ptr->orgaddr, from_name, sizeof(from_name));
+            strncpy(session->composer.to_name, from_name, sizeof(session->composer.to_name) - 1);
+            session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
+        }
         memcpy(&session->composer.to_ftn_address, &msg_ptr->orgaddr, sizeof(LINETASK_FTN_ADDRESS));
         /* Store address as string for netmail */
         if (session->composer.is_netmail)
@@ -2665,18 +3295,29 @@ int messagebase_composer_start_reply(messagebase_session *session,
     }
     else
     {
-        strncpy(session->composer.to_name, "Unknown", sizeof(session->composer.to_name));
+        strncpy(from_name, "Unknown", sizeof(from_name) - 1);
+        from_name[sizeof(from_name) - 1] = '\0';
+        strncpy(session->composer.to_name, "Unknown", sizeof(session->composer.to_name) - 1);
+        session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
     }
+
+    /* Capture sent time for attribution line */
+    original_sent = (msg_ptr->sent > 0) ? msg_ptr->sent : msg_ptr->imported;
 
     if (strncmp(msg_ptr->subject, "Re: ", 4) == 0)
     {
-        strncpy(session->composer.subject, msg_ptr->subject, sizeof(session->composer.subject));
+        strncpy(session->composer.subject, msg_ptr->subject, sizeof(session->composer.subject) - 1);
+        session->composer.subject[sizeof(session->composer.subject) - 1] = '\0';
     }
     else
     {
         snprintf(session->composer.subject, sizeof(session->composer.subject),
                  "Re: %s", msg_ptr->subject);
     }
+
+    /* Quote original message body */
+    messagebase_quote_original(session, session->current_messagebase, message_id,
+                               from_name, original_sent);
 
     /* Clear screen and paint a blue banner on the first line */
     output(ctx, "\033[2J\033[H\033[44;37m Reply to Message \033[K\033[0m\r\n\r\n");
@@ -2728,7 +3369,8 @@ int messagebase_composer_handle_line(messagebase_session *session,
                 /* For non-private areas, empty To: means "All" */
                 if (!session->composer.is_private)
                 {
-                    strncpy(session->composer.to_name, "All", sizeof(session->composer.to_name));
+                    strncpy(session->composer.to_name, "All", sizeof(session->composer.to_name) - 1);
+                    session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
                     output(ctx, "All\r\n");
                     output(ctx, "\033[1;33mSubject :\033[0m ");
                     session->composer.phase = MESSAGE_COMPOSE_SUBJECT;
@@ -2758,6 +3400,7 @@ int messagebase_composer_handle_line(messagebase_session *session,
                     int to_user_id = 0;
                     if (messagebase_lookup_user_by_name(line, &to_user_id) && to_user_id > 0)
                     {
+                        char found_msg[128];
                         session->composer.to_user_id = to_user_id;
                         /* Look up their real name for display */
                         char realname[MAX_FROM_NAME];
@@ -2766,8 +3409,12 @@ int messagebase_composer_handle_line(messagebase_session *session,
                             strncpy(session->composer.to_name, realname, sizeof(session->composer.to_name) - 1);
                             session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
                         }
+                        /* Show confirmation of found user */
+                        snprintf(found_msg, sizeof(found_msg), "\r\n\033[1;32m%s (#%d)\033[0m\r\n",
+                                 session->composer.to_name, to_user_id);
+                        output(ctx, found_msg);
                         /* Prompt for subject */
-                        output(ctx, "\r\n\033[1;33mSubject :\033[0m ");
+                        output(ctx, "\033[1;33mSubject :\033[0m ");
                         session->composer.phase = MESSAGE_COMPOSE_SUBJECT;
                     }
                     else
@@ -2794,10 +3441,16 @@ int messagebase_composer_handle_line(messagebase_session *session,
             /* Validate FTN address */
             if (messagebase_parse_ftn_address(line, &session->composer.to_ftn_address))
             {
+                char addr_msg[128];
                 strncpy(session->composer.to_address_str, line, sizeof(session->composer.to_address_str) - 1);
                 session->composer.to_address_str[sizeof(session->composer.to_address_str) - 1] = '\0';
+                /* Show confirmation of validated address */
+                snprintf(addr_msg, sizeof(addr_msg), "\r\n\033[1;32m%s at %s\033[0m\r\n",
+                         session->composer.to_name[0] ? session->composer.to_name : "User",
+                         session->composer.to_address_str);
+                output(ctx, addr_msg);
                 /* Prompt for subject */
-                output(ctx, "\r\n\033[1;33mSubject :\033[0m ");
+                output(ctx, "\033[1;33mSubject :\033[0m ");
                 session->composer.phase = MESSAGE_COMPOSE_SUBJECT;
             }
             else
@@ -2878,7 +3531,10 @@ int messagebase_composer_handle_line(messagebase_session *session,
                 session->composer.editor_line < session->composer.body_lines)
             {
                 /* Insert mode - insert at current position */
-                messagebase_editor_insert_line(session, session->composer.editor_line, line);
+                if (!messagebase_editor_insert_line(session, session->composer.editor_line, line))
+                {
+                    output(ctx, "\r\n\033[1;31m[Maximum lines reached - use /s to save]\033[0m\r\n");
+                }
             }
             else if (session->composer.editor_line < session->composer.body_lines)
             {
@@ -2889,10 +3545,13 @@ int messagebase_composer_handle_line(messagebase_session *session,
             else
             {
                 /* Append mode */
-                messagebase_composer_add_line(session, line);
+                if (!messagebase_composer_add_line(session, line))
+                {
+                    output(ctx, "\r\n\033[1;31m[Maximum lines reached - use /s to save]\033[0m\r\n");
+                }
             }
             
-            session->composer.editor_line++;
+            session->composer.editor_line++;;
             messagebase_editor_show_prompt(session, output, ctx);
             return 1;
 
@@ -3087,10 +3746,25 @@ int messagebase_composer_show_preview(messagebase_session *session,
 
     output(ctx, "\r\n\033[1;44;37m Message Preview \033[0m\r\n\r\n");
 
-    snprintf(line, sizeof(line), "\033[1;36mTo:\033[0m      %s\r\n", session->composer.to_name);
+    /* Show To field with FTN address if netmail */
+    if (session->composer.is_netmail && session->composer.to_address_str[0])
+    {
+        snprintf(line, sizeof(line), "\033[1;36mTo:\033[0m      %s (%s)\r\n", 
+                 session->composer.to_name, session->composer.to_address_str);
+    }
+    else if (session->composer.to_user_id > 0)
+    {
+        snprintf(line, sizeof(line), "\033[1;36mTo:\033[0m      %s (#%d)\r\n", 
+                 session->composer.to_name, session->composer.to_user_id);
+    }
+    else
+    {
+        snprintf(line, sizeof(line), "\033[1;36mTo:\033[0m      %s\r\n", session->composer.to_name);
+    }
     output(ctx, line);
 
-    snprintf(line, sizeof(line), "\033[1;36mSubject:\033[0m %s\r\n", session->composer.subject);
+    snprintf(line, sizeof(line), "\033[1;36mSubject:\033[0m %s\r\n", 
+             session->composer.subject[0] ? session->composer.subject : "(No subject)");
     output(ctx, line);
 
     output(ctx, "\033[1;30m");
@@ -3160,7 +3834,7 @@ int messagebase_composer_send(messagebase_session *session,
     time(&now);
     memset(&msg, 0, sizeof(msg));
     msg.messagebaseid = session->current_messagebase;
-    msg.messagebaseareaid = session->current_area;
+    msg.messagebaseareaid = session->composer.area_id;  /* Use composer's cached area, not session->current_area */
     msg.type = session->composer.is_ftn ?
                (session->composer.is_private ? 2 : 1) :
                (session->composer.is_private ? 3 : 0);
@@ -3168,12 +3842,15 @@ int messagebase_composer_send(messagebase_session *session,
     msg.accesslevel = 0;
     msg.exported = 0;  /* Not yet exported */
     strncpy(msg.subject, session->composer.subject, sizeof(msg.subject) - 1);
+    msg.subject[sizeof(msg.subject) - 1] = '\0';
     msg.sentby = session->user_id;
     msg.receivedby = session->composer.to_user_id;
 
     /* Set from/to names for FTN messages */
     strncpy(msg.fromname, session->user_realname, sizeof(msg.fromname) - 1);
+    msg.fromname[sizeof(msg.fromname) - 1] = '\0';
     strncpy(msg.toname, session->composer.to_name, sizeof(msg.toname) - 1);
+    msg.toname[sizeof(msg.toname) - 1] = '\0';
 
     if (session->composer.to_ftn_address.zone > 0)
     {
@@ -3182,6 +3859,9 @@ int messagebase_composer_send(messagebase_session *session,
 
     msg.sent = now;
     msg.bodysize = body_len;
+
+    debug_printf("composer_send: base=%d area=%d to_user=%d type=%d", 
+                 msg.messagebaseid, msg.messagebaseareaid, msg.receivedby, msg.type);
 
     /* Begin upload - pass message template */
     regs.r[0] = FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD;
@@ -3838,6 +4518,7 @@ int messagebase_composer_start_private(messagebase_session *session,
         if (messagebase_lookup_user_by_name(to_username, &to_user_id) && to_user_id > 0)
         {
             char realname[MAX_FROM_NAME];
+            char found_msg[128];
             if (messagebase_lookup_user_by_id(to_user_id, realname, sizeof(realname)))
             {
                 strncpy(session->composer.to_name, realname, sizeof(session->composer.to_name) - 1);
@@ -3849,8 +4530,13 @@ int messagebase_composer_start_private(messagebase_session *session,
             session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
             session->composer.to_user_id = to_user_id;
 
-            /* Show header with cursor on subject */
-            messagebase_composer_show_header(session, output, ctx, 2);
+            /* Show confirmation of found user */
+            snprintf(found_msg, sizeof(found_msg), "\033[1;33mTo      :\033[0m \033[1;32m%s (#%d)\033[0m\r\n",
+                     session->composer.to_name, to_user_id);
+            output(ctx, found_msg);
+
+            /* Prompt for subject */
+            output(ctx, "\033[1;33mSubject :\033[0m ");
             session->composer.phase = MESSAGE_COMPOSE_SUBJECT;
         }
         else

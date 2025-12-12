@@ -1,0 +1,56 @@
+{
+   /* Main Menu */
+   /* Called from Postlogon after login scan */
+
+label main_menu
+    script `<Converse$Dir>.BBS.Header`
+    bold
+    print `                               .:: Main Menu ::.\r\n`
+    std
+    print `\r\n`
+    print `    [M] Messagebase \r\n`
+    print `    [F] Filebase \r\n`
+    print `    [S] Scan for New Content\r\n`
+    print `    [Q] Quit / Logoff\r\n`
+    print `\r\n`
+    print `  Choice: `
+    prompt choice char echo
+
+    if choice == `m` goto messagebase
+    if choice == `M` goto messagebase
+    if choice == `f` goto filebase
+    if choice == `F` goto filebase
+    if choice == `s` goto login_scan
+    if choice == `S` goto login_scan
+    if choice == `q` goto quit
+    if choice == `Q` goto quit
+
+    print `\r\n\r\n[Invalid choice]\r\n`
+    anykey
+    goto main_menu
+
+/* Messagebase tester submenu */
+label messagebase
+    script `<Converse$Dir>.BBS.Messagebase`
+    goto main_menu
+
+/* Filebase tester submenu */
+label filebase
+    script `<Converse$Dir>.BBS.Filebase`
+    goto main_menu
+
+/* Scan for new content */
+label login_scan
+    print `\r\n`
+    loginscan
+    anykey
+    goto main_menu
+
+/* Quit */
+label quit
+    print `\r\n\r\n`
+    bold
+    print `Goodbye!\r\n`
+    std
+    logoff
+}

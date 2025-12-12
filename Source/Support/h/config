@@ -48,6 +48,7 @@ typedef enum
 #define CONFIG_KEY_CLOSEDSYS     "closedsys"
 #define CONFIG_KEY_AFTERMAIL     "aftermail"
 #define CONFIG_KEY_MORE          "more"
+#define CONFIG_KEY_PROTOCOL      "protocol"
 
 /* BBS configuration structure */
 typedef struct
@@ -78,6 +79,7 @@ typedef struct
     char closedsys[CONFIG_PATH_LEN];
     char aftermail[CONFIG_PATH_LEN];
     char more[CONFIG_PATH_LEN];
+    char protocol[CONFIG_PATH_LEN];
 } BBS_CONFIG;
 
 /* Initialisation and finalisation */

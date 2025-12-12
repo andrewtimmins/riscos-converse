@@ -108,6 +108,7 @@
         char lockedout[256];
         char closedsys[256];
         char aftermail[256];
+        char protocol[256];
     } system_components;
 
     /* Icon text buffers for dynamic line icons */

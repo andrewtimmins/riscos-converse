@@ -88,6 +88,8 @@
 #define VIEWER_ACTION_PREV_AREA     8
 #define VIEWER_ACTION_CURRENT       9
 #define VIEWER_ACTION_PRIVATE_REPLY 10
+#define VIEWER_ACTION_SEARCH        11
+#define VIEWER_ACTION_EXIT_SEARCH   12
 #define VIEWER_ACTION_INVALID       (-1)
 
 /* Reading direction */
@@ -100,7 +102,8 @@ typedef enum
     MESSAGE_VIEW_IDLE = 0,
     MESSAGE_VIEW_HEADER,
     MESSAGE_VIEW_BODY,
-    MESSAGE_VIEW_PROMPT
+    MESSAGE_VIEW_PROMPT,
+    MESSAGE_VIEW_SEARCH_INPUT       /* Awaiting search term input */
 } message_view_phase;
 
 /* Composer phase enum */
@@ -170,7 +173,12 @@ typedef struct
     char fromname[36];      /* FTN sender name */
     char toname[36];        /* FTN recipient name */
     int exported;           /* 0=not exported, 1=exported to outbound */
+    unsigned short flags;   /* Message routing flags (MSG_FLAG_*) */
 } LINETASK_MESSAGE_RECORD;
+
+/* Maximum search results */
+#define MAX_SEARCH_RESULTS          20
+#define MAX_SEARCH_TERM             64
 
 /* Message viewer state */
 typedef struct
@@ -188,6 +196,13 @@ typedef struct
     int times_read;             /* Times this message has been read */
     int saved_messagebase;      /* Saved messagebase selection (for inbox command) */
     int saved_area;             /* Saved area selection (for inbox command) */
+
+    /* Search state */
+    int search_mode;                                /* 1 = navigating within search results */
+    char search_term[MAX_SEARCH_TERM];              /* Current search term */
+    int search_results[MAX_SEARCH_RESULTS];         /* Message IDs of search results */
+    int search_result_count;                        /* Number of results found */
+    int search_result_index;                        /* Current position in search results (0-based) */
 } message_viewer_state;
 
 /* Message composer state */
@@ -325,6 +340,18 @@ int messagebase_viewer_start_private_reply(messagebase_session *session,
                                             void (*output)(void *ctx, const char *text),
                                             void *ctx);
 int messagebase_mark_as_read(messagebase_session *session, int message_id);
+
+/* Message Search */
+int messagebase_viewer_start_search(messagebase_session *session,
+                                     void (*output)(void *ctx, const char *text),
+                                     void *ctx);
+int messagebase_viewer_do_search(messagebase_session *session,
+                                  const char *term,
+                                  void (*output)(void *ctx, const char *text),
+                                  void *ctx);
+int messagebase_viewer_exit_search_mode(messagebase_session *session,
+                                         void (*output)(void *ctx, const char *text),
+                                         void *ctx);
 
 /* ******************************************************************************************************************************************************** */
 /* Message Composer                                                                                                                                         */
