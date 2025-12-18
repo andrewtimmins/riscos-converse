@@ -3,20 +3,27 @@
    /* Called from Postlogon after login scan */
 
 label main_menu
+    doing `Main menu...`
     script `<Converse$Dir>.BBS.Header`
     bold
     fgbg 7 4
-    print `                                .:: Main Menu ::.`,cll
-    std
-    print `\r\n\r\n`
-    print `    [M] Messagebase \r\n`
-    print `    [F] Filebase \r\n`
-    print `    [S] Scan for New Content\r\n`
-    print `    [C] Chat to Sysop\n\n`
-    print ``
-    print `    [Q] Quit / Logoff\r\n`
+    print `                               .:: Main Menu ::.`,cll
     print `\r\n`
+    fgbg 7 1
+    print `                           Time is: %{hour}:%{minute} - Line #%{line}`,cll
+    print `\r\n\r\n\r\n`
+    std
+    print `      [F] Filebase                                [M] Messagebase\r\n`
+    print `\r\n`
+    print `      [C] Chat to Sysop                           [O] Who's Online\n\n`
+    print `\r\n`
+    print `      [D] Doors / Utils / Games                   [S] Scan for New Content\r\n`
+    print `\r\n\r\n`
+    print `      [Q] Quit / Logoff\r\n`
+    print `\r\n`
+    pos 0 24
     print `  Choice: `
+    pos 11 24
     prompt choice char echo
 
     if choice == `m` goto messagebase
@@ -29,9 +36,12 @@ label main_menu
     if choice == `Q` goto quit
     if choice == `C` goto chat
     if choice == `c` goto chat
+    if choice == `O` goto online
+    if choice == `o` goto online
 
-    print `\r\n\r\n[Invalid choice]\r\n`
-    anykey
+    pos 11 24
+    print `Invalid choice...`
+    pause 250
     goto main_menu
 
 /* Messagebase tester submenu */
@@ -46,14 +56,24 @@ label filebase
 
 /* Scan for new content */
 label login_scan
-    print `\r\n`
+    cls
+    doing `Scanning new content...`
     loginscan
+    anykey
+    goto main_menu
+
+/* Online */
+label online
+    doing `Seeing who's online...`
+    cls
+    online
     anykey
     goto main_menu
 
 /* Chat */
 label chat
-    print `\n\n`
+    doing `Chatting to sysop...`
+    cls
     sysopchat
     anykey
     goto main_menu

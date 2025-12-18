@@ -2281,7 +2281,7 @@ static int script_push_call_stack(script_state *state)
     frame->labels = state->labels;
     frame->label_count = state->label_count;
     frame->label_capacity = state->label_capacity;
-    frame->return_pc = state->program_counter + 1;  /* Return to instruction after 'script' command */
+    frame->return_pc = state->program_counter;  /* Return to instruction after 'script' command (PC already incremented) */
     
     state->call_depth++;
     
@@ -6382,6 +6382,36 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         {
             const char *keys = state->host.get_user_keys != NULL ? state->host.get_user_keys(state->host.context) : "";
             replacement = (keys != NULL) ? keys : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "username") == 0)
+        {
+            const char *uname = state->host.get_user_username != NULL ? state->host.get_user_username(state->host.context) : "";
+            replacement = (uname != NULL) ? uname : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "realname") == 0)
+        {
+            const char *rname = state->host.get_user_realname != NULL ? state->host.get_user_realname(state->host.context) : "";
+            replacement = (rname != NULL) ? rname : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "bbsname") == 0)
+        {
+            const char *cfg = state->host.get_config != NULL ? state->host.get_config(state->host.context, "bbs_name") : NULL;
+            replacement = (cfg != NULL) ? cfg : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "sysopname") == 0)
+        {
+            const char *cfg = state->host.get_config != NULL ? state->host.get_config(state->host.context, "sysop_name") : NULL;
+            replacement = (cfg != NULL) ? cfg : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "hostname") == 0)
+        {
+            const char *cfg = state->host.get_config != NULL ? state->host.get_config(state->host.context, "hostname") : NULL;
+            replacement = (cfg != NULL) ? cfg : "";
+        }
+        else if (state != NULL && script_stringcasecmp(macro_name, "contact") == 0)
+        {
+            const char *cfg = state->host.get_config != NULL ? state->host.get_config(state->host.context, "contact") : NULL;
+            replacement = (cfg != NULL) ? cfg : "";
         }
         /* User stats macros */
         else if (state != NULL && script_stringcasecmp(macro_name, "lastlogon") == 0)

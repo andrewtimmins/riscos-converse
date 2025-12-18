@@ -7,19 +7,20 @@
 
 #include "structs.h"
 
-/* Maximum cache sizes - adjust based on expected usage */
-#define CACHE_MAX_BASES         32
-#define CACHE_MAX_AREAS         256
-#define CACHE_MAX_FILES         4096
-#define CACHE_MAX_MESSAGES      8192
-#define CACHE_MAX_USERS         512
+/* Maximum cache sizes - keep small to fit in RMA static data
+ * Total static data should be < 128KB for module compatibility on older systems */
+#define CACHE_MAX_BASES         8
+#define CACHE_MAX_AREAS         16
+#define CACHE_MAX_FILES         64
+#define CACHE_MAX_MESSAGES      64
+#define CACHE_MAX_USERS         16
 
 /* Hash table sizes (prime numbers for better distribution) */
-#define CACHE_HASH_BASES        37
-#define CACHE_HASH_AREAS        257
-#define CACHE_HASH_FILES        4099
-#define CACHE_HASH_MESSAGES     8209
-#define CACHE_HASH_USERS        521
+#define CACHE_HASH_BASES        11
+#define CACHE_HASH_AREAS        17
+#define CACHE_HASH_FILES        67
+#define CACHE_HASH_MESSAGES     67
+#define CACHE_HASH_USERS        17
 
 /* Invalid index marker for hash chains */
 #define CACHE_HASH_EMPTY        (-1)

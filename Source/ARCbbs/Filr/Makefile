@@ -39,14 +39,14 @@ clean:
 	@echo Cleaned
 
 # Dynamic dependencies:
-o.debug:	c.debug
-o.debug:	C:h.kernel
-o.debug:	C:h.swis
-o.debug:	h.debug
-o.filerHdr:	cmhg.filerHdr
 o.filer:	c.filer
 o.filer:	C:h.kernel
 o.filer:	C:h.swis
 o.filer:	h.filer
 o.filer:	C:h.kernel
 o.filer:	h.debug
+o.debug:	c.debug
+o.debug:	C:h.kernel
+o.debug:	C:h.swis
+o.debug:	h.debug
+o.filerHdr:	cmhg.filerHdr

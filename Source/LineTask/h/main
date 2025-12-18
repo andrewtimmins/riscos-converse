@@ -120,6 +120,7 @@ typedef struct user_session
     int accesslevel;
     int sysop;
     char keys[128];
+    char username[32];
     char realname[64];
     script_user_stats stats;
     script_user_flags flags;

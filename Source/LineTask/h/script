@@ -54,6 +54,8 @@ typedef struct script_host
     int (*get_user_sysop)(void *context);
     const char *(*get_user_keys)(void *context);
     const char *(*get_user_realname)(void *context);
+    const char *(*get_user_username)(void *context);
+    const char *(*get_config)(void *context, const char *key);
     int (*filebase_download)(void *context, int base_id, int file_id);
     /* Messagebase callbacks */
     void *(*get_messagebase_session)(void *context);
