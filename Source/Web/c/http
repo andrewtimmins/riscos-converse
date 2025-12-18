@@ -33,6 +33,7 @@
 /* Forward declarations */
 static const char *local_strnstr(const char *haystack, const char *needle, size_t len);
 static int strcasecmp(const char *s1, const char *s2);
+static int strncasecmp(const char *s1, const char *s2, size_t n);
 
 /* ******************************************************************************************************************************************************** */
 /* HTTP Parsing                                                                                                                                             */
@@ -107,6 +108,99 @@ int http_parse_request(const char *buffer, int len, HTTP_REQUEST *req)
         req->version[i++] = *p++;
     }
     req->version[i] = '\0';
+
+    /* Skip to next line */
+    while (p < end && (*p == '\r' || *p == '\n'))
+    {
+        p++;
+    }
+
+    /* Parse headers */
+    while (p < end)
+    {
+        const char *header_end;
+        const char *colon;
+        
+        /* Find end of this header line */
+        header_end = p;
+        while (header_end < end && *header_end != '\r' && *header_end != '\n')
+        {
+            header_end++;
+        }
+        
+        /* Empty line = end of headers */
+        if (header_end == p)
+        {
+            /* Skip CRLF */
+            while (p < end && (*p == '\r' || *p == '\n'))
+            {
+                p++;
+            }
+            /* Remainder is body */
+            if (p < end)
+            {
+                req->body = (char *)p;
+                req->body_len = (int)(end - p);
+            }
+            break;
+        }
+        
+        /* Find colon */
+        colon = p;
+        while (colon < header_end && *colon != ':')
+        {
+            colon++;
+        }
+        
+        if (colon < header_end)
+        {
+            size_t name_len = (size_t)(colon - p);
+            const char *value = colon + 1;
+            size_t value_len;
+            
+            /* Skip leading whitespace in value */
+            while (value < header_end && (*value == ' ' || *value == '\t'))
+            {
+                value++;
+            }
+            value_len = (size_t)(header_end - value);
+            
+            /* Check for known headers (case-insensitive) */
+            if (name_len == 6 && strncasecmp(p, "Cookie", 6) == 0)
+            {
+                if (value_len >= sizeof(req->cookie))
+                {
+                    value_len = sizeof(req->cookie) - 1;
+                }
+                strncpy(req->cookie, value, value_len);
+                req->cookie[value_len] = '\0';
+            }
+            else if (name_len == 14 && strncasecmp(p, "Content-Length", 14) == 0)
+            {
+                req->content_length = atol(value);
+            }
+            else if (name_len == 12 && strncasecmp(p, "Content-Type", 12) == 0)
+            {
+                if (value_len >= sizeof(req->content_type))
+                {
+                    value_len = sizeof(req->content_type) - 1;
+                }
+                strncpy(req->content_type, value, value_len);
+                req->content_type[value_len] = '\0';
+            }
+        }
+        
+        /* Move to next line - skip exactly one line ending (CRLF or LF) */
+        p = header_end;
+        if (p < end && *p == '\r')
+        {
+            p++;
+        }
+        if (p < end && *p == '\n')
+        {
+            p++;
+        }
+    }
 
     debug_printf("HTTP: Parsed %s %s %s\n", req->method, req->path, req->version);
 
@@ -243,20 +337,44 @@ const char *http_status_text(int status)
 
 int http_send_headers(int socket, int status, const char *content_type, long content_length)
 {
-    char buffer[512];
+    return http_send_headers_with_cookie(socket, status, content_type, content_length, NULL);
+}
+
+int http_send_headers_with_cookie(int socket, int status, const char *content_type,
+                                  long content_length, const char *set_cookie)
+{
+    char buffer[768];
     int len;
     int sent;
 
-    len = snprintf(buffer, sizeof(buffer),
-        "HTTP/1.0 %d %s\r\n"
-        "Content-Type: %s\r\n"
-        "Content-Length: %ld\r\n"
-        "Connection: close\r\n"
-        "Server: ConverseWeb/1.0\r\n"
-        "\r\n",
-        status, http_status_text(status),
-        content_type,
-        content_length);
+    if (set_cookie != NULL && set_cookie[0] != '\0')
+    {
+        len = snprintf(buffer, sizeof(buffer),
+            "HTTP/1.0 %d %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %ld\r\n"
+            "Set-Cookie: %s\r\n"
+            "Connection: close\r\n"
+            "Server: ConverseWeb/1.0\r\n"
+            "\r\n",
+            status, http_status_text(status),
+            content_type,
+            content_length,
+            set_cookie);
+    }
+    else
+    {
+        len = snprintf(buffer, sizeof(buffer),
+            "HTTP/1.0 %d %s\r\n"
+            "Content-Type: %s\r\n"
+            "Content-Length: %ld\r\n"
+            "Connection: close\r\n"
+            "Server: ConverseWeb/1.0\r\n"
+            "\r\n",
+            status, http_status_text(status),
+            content_type,
+            content_length);
+    }
 
     if (len < 0 || len >= (int)sizeof(buffer))
     {
@@ -267,6 +385,51 @@ int http_send_headers(int socket, int status, const char *content_type, long con
     if (sent != len)
     {
         debug_printf("HTTP: Failed to send headers, wrote %d of %d\n", sent, len);
+        return -1;
+    }
+
+    return sent;
+}
+
+int http_send_redirect(int socket, const char *location, const char *set_cookie)
+{
+    char buffer[768];
+    int len;
+    int sent;
+
+    if (set_cookie != NULL && set_cookie[0] != '\0')
+    {
+        len = snprintf(buffer, sizeof(buffer),
+            "HTTP/1.0 302 Found\r\n"
+            "Location: %s\r\n"
+            "Set-Cookie: %s\r\n"
+            "Connection: close\r\n"
+            "Server: ConverseWeb/1.0\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n",
+            location, set_cookie);
+    }
+    else
+    {
+        len = snprintf(buffer, sizeof(buffer),
+            "HTTP/1.0 302 Found\r\n"
+            "Location: %s\r\n"
+            "Connection: close\r\n"
+            "Server: ConverseWeb/1.0\r\n"
+            "Content-Length: 0\r\n"
+            "\r\n",
+            location);
+    }
+
+    if (len < 0 || len >= (int)sizeof(buffer))
+    {
+        return -1;
+    }
+
+    sent = socketwrite(socket, buffer, len);
+    if (sent != len)
+    {
+        debug_printf("HTTP: Failed to send redirect, wrote %d of %d\n", sent, len);
         return -1;
     }
 
@@ -534,8 +697,8 @@ int http_build_filepath(const char *docroot, const char *request_path,
     *dst++ = '.';
     remaining--;
 
-    /* Convert path: / becomes . */
-    while (*src && remaining > 1)
+    /* Convert path: / becomes ., stop at ? (query string) */
+    while (*src && *src != '?' && remaining > 1)
     {
         if (*src == '/')
         {
@@ -579,4 +742,423 @@ static int strcasecmp(const char *s1, const char *s2)
         s2++;
     }
     return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+/* Case-insensitive string comparison with length limit */
+static int strncasecmp(const char *s1, const char *s2, size_t n)
+{
+    while (n > 0 && *s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+        n--;
+    }
+    if (n == 0)
+    {
+        return 0;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* URL Decoding                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static int hex_digit_value(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+void http_url_decode(char *str)
+{
+    char *src = str;
+    char *dst = str;
+    
+    while (*src != '\0')
+    {
+        if (*src == '+')
+        {
+            *dst++ = ' ';
+            src++;
+        }
+        else if (*src == '%' && src[1] != '\0' && src[2] != '\0')
+        {
+            int h1 = hex_digit_value(src[1]);
+            int h2 = hex_digit_value(src[2]);
+            if (h1 >= 0 && h2 >= 0)
+            {
+                *dst++ = (char)((h1 << 4) | h2);
+                src += 3;
+            }
+            else
+            {
+                *dst++ = *src++;
+            }
+        }
+        else
+        {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+}
+
+int http_parse_form_field(const char *body, int body_len, const char *name,
+                          char *value, size_t value_size)
+{
+    const char *p = body;
+    const char *end = body + body_len;
+    size_t name_len = strlen(name);
+    
+    if (body == NULL || name == NULL || value == NULL || value_size == 0)
+    {
+        return 0;
+    }
+    
+    value[0] = '\0';
+    
+    while (p < end)
+    {
+        /* Check if this field matches */
+        if ((size_t)(end - p) > name_len && 
+            strncmp(p, name, name_len) == 0 && 
+            p[name_len] == '=')
+        {
+            const char *val_start = p + name_len + 1;
+            const char *val_end = val_start;
+            size_t val_len;
+            
+            /* Find end of value (& or end of string) */
+            while (val_end < end && *val_end != '&')
+            {
+                val_end++;
+            }
+            
+            val_len = (size_t)(val_end - val_start);
+            if (val_len >= value_size)
+            {
+                val_len = value_size - 1;
+            }
+            
+            strncpy(value, val_start, val_len);
+            value[val_len] = '\0';
+            
+            /* URL decode the value */
+            http_url_decode(value);
+            
+            return 1;
+        }
+        
+        /* Skip to next field */
+        while (p < end && *p != '&')
+        {
+            p++;
+        }
+        if (p < end)
+        {
+            p++;  /* Skip the & */
+        }
+    }
+    
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Multipart Form Data Parsing                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if Content-Type indicates multipart/form-data
+ */
+int http_is_multipart(const char *content_type)
+{
+    if (content_type == NULL)
+    {
+        return 0;
+    }
+    return (strncasecmp(content_type, "multipart/form-data", 19) == 0);
+}
+
+/*
+ * Extract boundary string from Content-Type header
+ */
+int http_get_multipart_boundary(const char *content_type, char *boundary, size_t boundary_size)
+{
+    const char *p;
+    const char *end;
+    size_t len;
+    
+    if (content_type == NULL || boundary == NULL || boundary_size < 2)
+    {
+        return 0;
+    }
+    
+    /* Look for "boundary=" */
+    p = strstr(content_type, "boundary=");
+    if (p == NULL)
+    {
+        return 0;
+    }
+    
+    p += 9;  /* Skip "boundary=" */
+    
+    /* Skip optional quotes */
+    if (*p == '"')
+    {
+        p++;
+        end = strchr(p, '"');
+        if (end == NULL)
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        /* Find end of boundary (semicolon, space, or end of string) */
+        end = p;
+        while (*end != '\0' && *end != ';' && *end != ' ' && *end != '\t' && *end != '\r' && *end != '\n')
+        {
+            end++;
+        }
+    }
+    
+    len = (size_t)(end - p);
+    if (len == 0 || len >= boundary_size)
+    {
+        return 0;
+    }
+    
+    strncpy(boundary, p, len);
+    boundary[len] = '\0';
+    
+    return 1;
+}
+
+/*
+ * Find a pattern in binary data (like memmem)
+ */
+static const char *find_binary(const char *haystack, size_t haystack_len,
+                               const char *needle, size_t needle_len)
+{
+    const char *end;
+    
+    if (needle_len > haystack_len)
+    {
+        return NULL;
+    }
+    
+    end = haystack + haystack_len - needle_len + 1;
+    
+    while (haystack < end)
+    {
+        if (memcmp(haystack, needle, needle_len) == 0)
+        {
+            return haystack;
+        }
+        haystack++;
+    }
+    
+    return NULL;
+}
+
+/*
+ * Parse Content-Disposition header to extract name and filename
+ */
+static void parse_content_disposition(const char *header, const char *header_end,
+                                      char *name, size_t name_size,
+                                      char *filename, size_t filename_size)
+{
+    const char *p;
+    const char *val_start;
+    const char *val_end;
+    size_t len;
+    
+    name[0] = '\0';
+    filename[0] = '\0';
+    
+    /* Look for name="..." */
+    p = strstr(header, "name=\"");
+    if (p != NULL && p < header_end)
+    {
+        p += 6;
+        val_start = p;
+        while (p < header_end && *p != '"')
+        {
+            p++;
+        }
+        val_end = p;
+        len = (size_t)(val_end - val_start);
+        if (len >= name_size)
+        {
+            len = name_size - 1;
+        }
+        strncpy(name, val_start, len);
+        name[len] = '\0';
+    }
+    
+    /* Look for filename="..." */
+    p = strstr(header, "filename=\"");
+    if (p != NULL && p < header_end)
+    {
+        p += 10;
+        val_start = p;
+        while (p < header_end && *p != '"')
+        {
+            p++;
+        }
+        val_end = p;
+        len = (size_t)(val_end - val_start);
+        if (len >= filename_size)
+        {
+            len = filename_size - 1;
+        }
+        strncpy(filename, val_start, len);
+        filename[len] = '\0';
+    }
+}
+
+/*
+ * Parse a single multipart part
+ * Returns pointer to position after this part (start of next boundary), or NULL
+ */
+const char *http_parse_multipart_part(const char *body, const char *body_end,
+                                      const char *boundary, HTTP_MULTIPART_PART *part)
+{
+    char full_boundary[HTTP_MAX_BOUNDARY + 4];
+    size_t boundary_len;
+    const char *part_start;
+    const char *headers_end;
+    const char *data_start;
+    const char *part_end;
+    const char *next_boundary;
+    const char *p;
+    
+    if (body == NULL || body_end == NULL || boundary == NULL || part == NULL)
+    {
+        return NULL;
+    }
+    
+    /* Clear part structure */
+    memset(part, 0, sizeof(HTTP_MULTIPART_PART));
+    
+    /* Build full boundary with leading -- */
+    snprintf(full_boundary, sizeof(full_boundary), "--%s", boundary);
+    boundary_len = strlen(full_boundary);
+    
+    /* Find start of this part (boundary line) */
+    part_start = find_binary(body, (size_t)(body_end - body), full_boundary, boundary_len);
+    if (part_start == NULL)
+    {
+        return NULL;
+    }
+    
+    /* Check if this is the closing boundary (ends with --) */
+    if (part_start + boundary_len + 2 <= body_end &&
+        part_start[boundary_len] == '-' && part_start[boundary_len + 1] == '-')
+    {
+        /* End of multipart data */
+        return NULL;
+    }
+    
+    /* Skip past boundary and CRLF */
+    part_start += boundary_len;
+    while (part_start < body_end && (*part_start == '\r' || *part_start == '\n'))
+    {
+        part_start++;
+    }
+    
+    /* Find end of headers (blank line) */
+    headers_end = find_binary(part_start, (size_t)(body_end - part_start), "\r\n\r\n", 4);
+    if (headers_end == NULL)
+    {
+        /* Try LF only */
+        headers_end = find_binary(part_start, (size_t)(body_end - part_start), "\n\n", 2);
+        if (headers_end == NULL)
+        {
+            return NULL;
+        }
+        data_start = headers_end + 2;
+    }
+    else
+    {
+        data_start = headers_end + 4;
+    }
+    
+    /* Parse headers in this part */
+    p = part_start;
+    while (p < headers_end)
+    {
+        const char *line_end = p;
+        while (line_end < headers_end && *line_end != '\r' && *line_end != '\n')
+        {
+            line_end++;
+        }
+        
+        /* Check for Content-Disposition */
+        if (strncasecmp(p, "Content-Disposition:", 20) == 0)
+        {
+            parse_content_disposition(p + 20, line_end,
+                                     part->name, sizeof(part->name),
+                                     part->filename, sizeof(part->filename));
+        }
+        /* Check for Content-Type */
+        else if (strncasecmp(p, "Content-Type:", 13) == 0)
+        {
+            const char *val = p + 13;
+            size_t val_len;
+            
+            while (val < line_end && (*val == ' ' || *val == '\t'))
+            {
+                val++;
+            }
+            val_len = (size_t)(line_end - val);
+            if (val_len >= sizeof(part->content_type))
+            {
+                val_len = sizeof(part->content_type) - 1;
+            }
+            strncpy(part->content_type, val, val_len);
+            part->content_type[val_len] = '\0';
+        }
+        
+        /* Move to next line */
+        p = line_end;
+        while (p < headers_end && (*p == '\r' || *p == '\n'))
+        {
+            p++;
+        }
+    }
+    
+    /* Find the next boundary to determine data end */
+    next_boundary = find_binary(data_start, (size_t)(body_end - data_start),
+                               full_boundary, boundary_len);
+    if (next_boundary == NULL)
+    {
+        return NULL;
+    }
+    
+    /* Data ends before the boundary (minus CRLF) */
+    part_end = next_boundary;
+    if (part_end > data_start && *(part_end - 1) == '\n')
+    {
+        part_end--;
+    }
+    if (part_end > data_start && *(part_end - 1) == '\r')
+    {
+        part_end--;
+    }
+    
+    part->data = data_start;
+    part->data_len = (int)(part_end - data_start);
+    
+    /* Return pointer to next boundary for continued parsing */
+    return next_boundary;
 }

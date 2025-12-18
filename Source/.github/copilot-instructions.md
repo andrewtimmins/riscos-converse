@@ -162,7 +162,7 @@ The workspace `Reference/` directory contains source code for legacy RISC OS app
   - **Private Inbox**: The `messagebase inbox` command auto-selects the Private area (areatype 4) and enters the continuous reader. Saves/restores the user's previous messagebase/area selection when done.
   - **Area Type Filtering**: Private (areatype 4) and Netmail (areatype 2) areas only show messages where `receivedby == user_id`. This creates a personal inbox - users only see mail addressed to them, not mail they sent or mail for others. Public/Local (areatype 0) and Echo (areatype 1) areas show all messages to everyone.
   - **Direct Mail Commands**: `SENDMAIL <username> <subject> <body>` sends a private message to a local user (requires Private area configured). `SENDNETMAIL <address> <name> <subject> <body>` queues a netmail to an FTN address for export (requires Netmail area configured). Both commands support macro expansion and backtick quoting. Use `\r\n` in body for line breaks. Netmail is exported when the FTN mailer runs Scan.
-  - **File Transfer** (`LineTask/c/transfer`): Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM, YMODEM-G, and ZMODEM protocols for file downloads and uploads. Non-blocking state machine design integrates with Pipes module for I/O. The `SENDFILE <file_id> [protocol]` and `RECEIVEFILE <path> [protocol]` script commands initiate transfers. Protocol values: 0=XMODEM, 1=XMODEM-CRC, 2=XMODEM-1K, 3=YMODEM, 4=YMODEM-G, 5=ZMODEM. YMODEM includes block 0 header with filename/size and batch mode support. ZMODEM features: 32-bit CRC, ZDLE escape encoding, hex (ZHEX) and binary (ZBIN32) frame headers, streaming data with subpacket framing (ZCRCG/ZCRCE/ZCRCQ/ZCRCW), auto-start detection via ZRQINIT, and crash recovery via ZRPOS repositioning. During active transfers, the `transfer_active` flag is set in Support module line state to prevent idle timeout disconnection.
+  - **File Transfers**: See "File Transfer System" section below for full architecture. Script commands: `SENDFILE <file_id> [protocol]` for downloads, `RECEIVEFILE [filename] [protocol]` for uploads. Currently implements XMODEM-CRC. The `transfer_active` flag in Support module prevents idle timeout during transfers.
   - **Math Commands**: `ADD`, `SUB`, `MUL`, `DIV`, `MOD` perform integer arithmetic. Syntax: `add result op1 op2`. Division/modulo by zero returns 0.
   - **Random Numbers**: `RANDOM result min max` generates integer in [min, max] range inclusive.
   - **String Operations**: `STRLEN result source` stores length of source variable's value. `HASKEY result key` checks if user has access key.
@@ -491,8 +491,14 @@ void log_ftn(char *entry);
   - 5 (DownloadBlock): R1=ID, R2=ItemID, R3=Buf, R4=Off, R5=Len
   - 6 (StoreArea): R1=ID, R2=AreaRecord -> R0=AreaID
   - 7 (AreaInfo): R1=ID, R2=AreaID -> R0=AreaRecordPtr
+  - 8 (EnumerateBases): R1=Index -> R0=RecordPtr or -1
+  - 9 (EnumerateAreas): R1=BaseID, R2=Index -> R0=AreaRecordPtr or -1
+  - 10 (EnumerateMessages): R1=BaseID, R2=AreaID (0=all), R3=Index -> R0=RecordPtr or -1
+  - 11 (MessageInfo): R1=BaseID, R2=MsgID -> R0=RecordPtr
+  - 12 (SaveMessageRecord): R1=BaseID, R2=RecordPtr -> R0=Success(1)/Failure(0)
   - 13 (FindUnexported): R1=BaseID, R2=AreaID, R3=Buffer, R4=MaxCount -> R0=Count
   - 14 (MarkExported): R1=BaseID, R2=MsgID -> R0=Success(1)/Failure(0)
+  - 15 (EndUpload): R1=BaseID, R2=MsgID -> R0=0 (flushes/closes cached file handle)
 - **Filebase (0x5AA43)**:
   - 0 (Create): R1=BaseRecord -> R0=ID
   - 1 (Update): R1=ID, R2=BaseRecord
@@ -502,6 +508,11 @@ void log_ftn(char *entry);
   - 5 (DownloadBlock): R1=ID, R2=ItemID, R3=Buf, R4=Off, R5=Len
   - 6 (StoreArea): R1=ID, R2=AreaRecord -> R0=AreaID
   - 7 (AreaInfo): R1=ID, R2=AreaID -> R0=AreaRecordPtr
+  - 8 (EnumerateBases): R1=Index -> R0=RecordPtr or -1
+  - 9 (EnumerateAreas): R1=BaseID, R2=Index -> R0=AreaRecordPtr or -1
+  - 10 (EnumerateFiles): R1=BaseID, R2=AreaID (0=all), R3=Index -> R0=RecordPtr or -1
+  - 11 (FileInfo): R1=BaseID, R2=FileID -> R0=RecordPtr
+  - 12 (EndUpload): R1=BaseID, R2=FileID -> R0=0 (flushes/closes cached file handle)
 - **Statistics (0x5AA44)**:
   - 0 (ReadCallTotals): Returns the persisted system call count in R0. The value lives in `<Converse$Dir>.Resources.CallCount`; the module auto-creates this file with `0` if it is missing.
   - 1 (WriteCallTotals): R1=New total. Persists the value back to `CallCount` and returns 0 on success, -1 on failure. Logging SWI reason 2 automatically increments this total after each call entry.
@@ -897,70 +908,166 @@ if (use_26bit && is_aemulor_loaded())
 }
 ```
 
-## File Transfer Protocol Implementation Details
+## File Transfer System
 
-### Architecture Overview
-File transfers are implemented in `LineTask/c/transfer` and `LineTask/h/transfer`. The design is a non-blocking state machine that integrates with the Pipes module for I/O and the Filer module for file access.
+### Overview
+The file transfer system enables users to download files from filebases and upload files to the BBS using standard protocols. The implementation spans multiple modules with careful handling of telnet binary transparency.
 
-**Key Functions:**
-- `filebase_download_block()` - Read file data from Filer (NOT `filebase_read_block`)
-- `filebase_get_file_size()` - Get file size before transfer
-- `pipe_write_byte()` / `pipe_read_byte()` - Single byte I/O via Pipes SWIs
-- `pipe_write_block()` - Block write to output pipe
-- `pipe_bytes_available()` / `pipe_space_available()` - Check pipe status
-- `transfer_set_timeout()` / `transfer_timeout_expired()` - Timeout management
-- `transfer_get_time()` - Returns OS_ReadMonotonicTime in centiseconds
-- `set_transfer_state()` - Notify Support module (field 5) that transfer is active
+**Current Status:**
+- ✅ XMODEM-CRC: Fully implemented and working (downloads and uploads)
+- 🔲 XMODEM (checksum): Not yet implemented
+- 🔲 XMODEM-1K: Not yet implemented  
+- 🔲 YMODEM: Not yet implemented
+- 🔲 YMODEM-G: Not yet implemented
+- 🔲 ZMODEM: Not yet implemented
 
-### Protocol Enum (`transfer_protocol`)
+### Architecture
+
+**Components:**
+| Module | File | Purpose |
+|--------|------|---------|
+| LineTask | `c/xmodem` | XMODEM protocol state machine |
+| LineTask | `c/transfer` | Transfer session management, file I/O |
+| LineTask | `c/script` | SENDFILE/RECEIVEFILE command handlers |
+| LineTask | `c/main` | Host callbacks, transfer initiation |
+| Server | `c/main` | Telnet IAC handling, socket↔pipe pumping |
+| Support | SWI 0x5AA81 | `transfer_active` flag (field 5) |
+| Filer | SWI 0x5AA43 | File data read/write via reason 5 |
+
+**Data Flow (Download):**
+```
+Filer DB → transfer.c → xmodem.c → Pipes Output → Server pump → Socket
+                                                      ↓
+                                            IAC doubling (0xFF → 0xFF 0xFF)
+```
+
+**Data Flow (Upload):**
+```
+Socket → Server pump → Pipes Input → xmodem.c → transfer.c → Temp File → Filer DB
+              ↓
+    IAC un-doubling (0xFF 0xFF → 0xFF)
+```
+
+### CRITICAL: Telnet Binary Transparency
+
+File transfers over telnet require special handling of the IAC byte (0xFF). This is the **most important implementation detail** and the cause of many subtle bugs.
+
+#### The Problem
+Telnet uses 0xFF (IAC - Interpret As Command) as an escape byte. When binary file data contains 0xFF:
+- **Without handling**: The telnet client/server interprets it as a command, corrupting data
+- **Result**: CRC mismatches, transfer failures, data corruption
+
+#### The Solution
+
+**OUTPUT (Downloads - BBS → User):**
+In `Server/c/main` function `pump_pipe_to_socket()`:
+- Every 0xFF byte must be doubled to 0xFF 0xFF before sending to socket
+- The user's terminal un-doubles them automatically
+- Buffer must be 2x size to handle worst case (all 0xFF data)
+
 ```c
-typedef enum {
-    TRANSFER_PROTO_XMODEM,      /* 0 - Basic XMODEM with checksum */
-    TRANSFER_PROTO_XMODEM_CRC,  /* 1 - XMODEM with CRC-16 */
-    TRANSFER_PROTO_XMODEM_1K,   /* 2 - XMODEM with 1K blocks */
-    TRANSFER_PROTO_YMODEM,      /* 3 - YMODEM with batch support */
-    TRANSFER_PROTO_YMODEM_G,    /* 4 - YMODEM-G streaming */
-    TRANSFER_PROTO_ZMODEM       /* 5 - ZMODEM full implementation */
-} transfer_protocol;
+/* In pump_pipe_to_socket() */
+if (transfer_active)
+{
+    /* Double all IAC (0xFF) bytes for telnet transparency */
+    for (i = 0; i < copied; i++)
+    {
+        unsigned char byte = (unsigned char)buffer[i];
+        send_buffer[send_len++] = byte;
+        if (byte == 0xFF)
+        {
+            send_buffer[send_len++] = 0xFF;  /* Double it */
+        }
+    }
+}
 ```
 
-### XMODEM Implementation
+**INPUT (Uploads - User → BBS):**
+In `Server/c/main` function `pump_socket_to_pipe()`:
+- User's terminal doubles 0xFF bytes when sending binary data
+- We must un-double them: 0xFF 0xFF → single 0xFF
+- Must NOT strip NUL bytes (normal telnet filter does this)
 
-#### Constants
 ```c
-#define XMODEM_SOH              0x01    /* Start of 128-byte block */
-#define XMODEM_STX              0x02    /* Start of 1024-byte block */
-#define XMODEM_EOT              0x04    /* End of transmission */
-#define XMODEM_ACK              0x06    /* Acknowledge */
-#define XMODEM_NAK              0x15    /* Negative acknowledge */
-#define XMODEM_CAN              0x18    /* Cancel transfer */
-#define XMODEM_CTRLZ            0x1A    /* Padding byte (EOF in CP/M) */
-#define XMODEM_CRC_START        'C'     /* CRC mode request */
+/* Binary-safe IAC un-doubling for file transfers */
+static int telnet_undouble_iac(char *buffer, int length)
+{
+    int read_index = 0;
+    int write_index = 0;
 
-#define XMODEM_BLOCK_SIZE       128     /* Standard block size */
-#define XMODEM_1K_BLOCK_SIZE    1024    /* Extended block size */
-#define XMODEM_MAX_RETRIES      10      /* Max retry attempts per block */
-#define XMODEM_START_RETRIES    6       /* Max start sequence retries */
-#define XMODEM_TIMEOUT_MS       10000   /* 10 second timeout */
-#define XMODEM_START_TIMEOUT_MS 60000   /* 60 second initial timeout */
+    while (read_index < length)
+    {
+        unsigned char byte = (unsigned char)buffer[read_index++];
+
+        if (byte == 0xFF && read_index < length && 
+            (unsigned char)buffer[read_index] == 0xFF)
+        {
+            read_index++;  /* Skip the doubled byte */
+        }
+
+        buffer[write_index++] = (char)byte;
+    }
+
+    return write_index;
+}
 ```
 
-#### Block Format
+**Usage in pump_socket_to_pipe():**
+```c
+if (transfer_active)
+{
+    read_bytes = telnet_undouble_iac(buffer, read_bytes);
+}
+else
+{
+    read_bytes = telnet_filter_input(socket, buffer, read_bytes);
+}
 ```
-[SOH/STX] [Block#] [255-Block#] [Data (128/1024 bytes)] [Checksum/CRC]
+
+#### Why Two Different Functions?
+
+| Function | Used When | Strips NUL | Handles IAC | Handles Commands |
+|----------|-----------|------------|-------------|------------------|
+| `telnet_filter_input()` | Normal text mode | Yes | Yes | Yes |
+| `telnet_undouble_iac()` | File transfers | No | Yes | No |
+
+Binary files often contain NUL (0x00) bytes. The normal telnet filter strips these (telnet sends CR-NUL for plain carriage return). For file transfers, we must preserve all bytes.
+
+### XMODEM-CRC Implementation
+
+**Source Files:**
+- `LineTask/c/xmodem` - Protocol state machine
+- `LineTask/h/xmodem` - Constants and structures
+
+#### Protocol Constants
+```c
+#define XMODEM_SOH          0x01    /* Start of 128-byte block */
+#define XMODEM_STX          0x02    /* Start of 1024-byte block (1K) */
+#define XMODEM_EOT          0x04    /* End of transmission */
+#define XMODEM_ACK          0x06    /* Acknowledge */
+#define XMODEM_NAK          0x15    /* Negative acknowledge */
+#define XMODEM_CAN          0x18    /* Cancel transfer */
+#define XMODEM_CTRLZ        0x1A    /* Padding byte */
+
+#define XMODEM_BLOCK_SIZE   128     /* Standard block size */
+#define XMODEM_MAX_RETRIES  10      /* Retries per block */
 ```
-- SOH (0x01) = 128-byte block, STX (0x02) = 1024-byte block
-- Block# starts at 1, wraps at 255 back to 0
-- Complement byte is `255 - Block#`
-- Checksum: Simple sum of data bytes (mod 256)
-- CRC-16: Polynomial 0x1021 (CCITT), sent MSB first
+
+#### Block Format (133 bytes for CRC mode)
+```
+[SOH] [Block#] [~Block#] [128 data bytes] [CRC-Hi] [CRC-Lo]
+  1      1         1           128            1        1
+```
+
+- Block# starts at 1, wraps at 256 back to 0
+- ~Block# is 255 - Block# (complement for validation)
+- CRC-16: Polynomial 0x1021 (CCITT), init=0, sent MSB first
 
 #### CRC-16 Calculation
 ```c
-/* Precomputed CRC-16 table for polynomial 0x1021 */
-static const uint16_t crc16_table[256];
+static const uint16_t crc16_table[256]; /* Precomputed */
 
-uint16_t transfer_crc16(const uint8_t *data, int length)
+uint16_t xmodem_crc16(const uint8_t *data, int length)
 {
     uint16_t crc = 0;
     while (length--) {
@@ -970,359 +1077,162 @@ uint16_t transfer_crc16(const uint8_t *data, int length)
 }
 ```
 
-#### Send State Machine
+#### Send State Machine (Downloads)
 ```
-XFER_SEND_WAIT_START    → Wait for 'C' (CRC) or NAK (checksum)
-XFER_SEND_BLOCK         → Send: SOH/STX + block# + ~block# + data + checksum/CRC
-XFER_SEND_WAIT_ACK      → Wait for ACK/NAK
-  - ACK: Advance to next block or EOT
-  - NAK: Retransmit current block
-XFER_SEND_EOT           → Send EOT (0x04)
-XFER_SEND_WAIT_EOT_ACK  → Wait for final ACK
-XFER_COMPLETE           → Done
-```
-
-#### Receive State Machine
-```
-XFER_RECV_SEND_START    → Send 'C' (CRC mode) or NAK (checksum mode)
-XFER_RECV_WAIT_BLOCK    → Wait for SOH/STX/EOT
-XFER_RECV_READ_BLOCK    → Read block# + ~block# + data + checksum/CRC
-  - Validate block number and checksum/CRC
-XFER_RECV_SEND_ACK      → Send ACK, write data to file
-XFER_RECV_SEND_NAK      → Send NAK on error
-  - On EOT: Send ACK, complete
-XFER_COMPLETE           → Done
+XMODEM_STATE_WAIT_START     Wait for 'C' (CRC mode) from receiver
+XMODEM_STATE_SEND_BLOCK     Build and send packet
+XMODEM_STATE_WAIT_ACK       Wait for ACK (advance) or NAK (retry)
+XMODEM_STATE_SEND_EOT       Send EOT after last block
+XMODEM_STATE_WAIT_EOT_ACK   Wait for final ACK
+XMODEM_STATE_COMPLETE       Transfer done
+XMODEM_STATE_ERROR          Transfer failed
 ```
 
-#### Protocol Detection
-- Receiver sends 'C' for CRC mode, NAK (0x15) for checksum mode
-- Sender detects based on first received byte
-- XMODEM-1K: Sender can use STX for 1024-byte blocks, receiver must handle both
-
-### YMODEM Implementation
-
-#### Differences from XMODEM
-- **Block 0 Header**: Contains filename and file size before data
-- **Batch Mode**: Can transfer multiple files in sequence
-- **1K Blocks**: Uses STX/1024-byte blocks by default
-- **Empty Block 0**: Signals end of batch
-
-#### Block 0 Format
+#### Receive State Machine (Uploads)
 ```
-[filename]\0[size in ASCII] [mod_time in octal]\0...
-```
-Example: `test.txt\0123456 12345678901\0`
-- Filename is null-terminated
-- File size in ASCII decimal
-- Optional: modification time in octal (Unix timestamp)
-- Remainder padded with nulls
-
-#### YMODEM Send Flow
-```
-1. Wait for 'C' from receiver
-2. Send Block 0 (header with filename/size)
-3. Wait for ACK + 'C'
-4. Send data blocks (1-N)
-5. Send EOT
-6. Wait for NAK, send EOT again, wait for ACK
-7. For batch: Wait for 'C', send empty Block 0, wait for ACK
+XMODEM_STATE_SEND_START     Send 'C' to request CRC mode
+XMODEM_STATE_WAIT_BLOCK     Wait for SOH/EOT
+XMODEM_STATE_READ_BLOCK     Read remaining 132 bytes
+XMODEM_STATE_VALIDATE       Check block# and CRC
+XMODEM_STATE_SEND_ACK       ACK good block, write to file
+XMODEM_STATE_SEND_NAK       NAK bad block for retry
+XMODEM_STATE_COMPLETE       EOT received, transfer done
+XMODEM_STATE_ERROR          Transfer failed
 ```
 
-#### YMODEM Receive Flow
-```
-1. Send 'C' to request header
-2. Receive Block 0, extract filename/size
-3. ACK + send 'C' to request data
-4. Receive data blocks, write to file
-5. On EOT: NAK once, then ACK
-6. Send 'C' for next file or receive empty Block 0 (end batch)
-```
+#### Key Implementation Functions
 
-#### YMODEM-G (Streaming Mode)
-- Receiver sends 'G' instead of 'C'
-- Sender does not wait for per-block ACKs
-- Streams blocks continuously
-- Any error = abort (no retransmission)
-- Much faster but requires reliable link
-
-#### Key YMODEM Functions
 ```c
-/* Build YMODEM block 0 header */
-static int ymodem_build_header(uint8_t *buffer, const char *filename, 
-                               long filesize, int block_size);
+/* Initialize send transfer */
+int xmodem_start_send(int line, int filebase_id, int file_id,
+                      const char *filename, xmodem_session *session);
 
-/* Parse received block 0 */
-static int ymodem_parse_block0(const uint8_t *data, int data_len,
-                               char *filename, long *filesize, time_t *modtime);
+/* Initialize receive transfer */
+int xmodem_start_receive(int line, const char *dest_path,
+                         xmodem_session *session);
 
-/* Send functions */
-int transfer_start_send_ymodem(int line, transfer_protocol protocol,
-                               int filebase_id, int file_id,
-                               const char *filename, transfer_session *session);
+/* Poll state machine (called from main loop) */
+int xmodem_poll_send(xmodem_session *session);
+int xmodem_poll_receive(xmodem_session *session);
 
-/* Receive functions */
-int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
-                                  const char *upload_dir, transfer_session *session);
+/* Check if transfer complete */
+int xmodem_is_complete(xmodem_session *session);
+int xmodem_is_error(xmodem_session *session);
 ```
 
-#### YMODEM State Machine States
-**Send states:**
+### Script Commands
+
+#### SENDFILE (Downloads)
+```
+sendfile <file_id> [protocol]
+```
+- `file_id`: File ID from current filebase selection
+- `protocol`: `xmodem`, `xmodem-crc` (default), `xmodem-1k`, `ymodem`, `ymodem-g`, `zmodem`
+
+**Implementation (`LineTask/c/script`):**
+1. Parse file_id and protocol from arguments
+2. Call `state->host.start_transfer(line, protocol, file_id)` callback
+3. Set `state->status = SCRIPT_STATUS_WAIT_TRANSFER`
+4. Script execution pauses until transfer completes
+
+#### RECEIVEFILE (Uploads)
+```
+receivefile [filename] [protocol]
+```
+Three modes based on arguments provided:
+- No arguments: Prompt for filename, description, and protocol
+- Protocol only: Prompt for filename and description
+- Filename and protocol: Prompt for description only
+
+**Implementation:**
+1. Determine which arguments are provided
+2. Set `input_context` to `CTX_UPLOAD_FILE`, `CTX_UPLOAD_DESC`, or `CTX_PROTOCOL`
+3. Collect missing information via prompts
+4. Call `state->host.start_receive_transfer()` callback
+5. On completion, file is moved from temp location to filebase
+
+### Transfer Session Management
+
+**Session Structure (`LineTask/h/transfer`):**
 ```c
-XFER_SEND_WAIT_START        /* Wait for 'C' */
-XFER_SEND_HEADER_BLOCK      /* Send block 0 (filename/size) */
-XFER_SEND_WAIT_HEADER_ACK   /* Wait for ACK + 'C' */
-XFER_SEND_BLOCK             /* Send data blocks */
-XFER_SEND_WAIT_ACK          /* Wait for ACK */
-XFER_SEND_EOT               /* Send EOT */
-XFER_SEND_WAIT_EOT_ACK      /* Wait for EOT ACK */
-XFER_SEND_END_BATCH         /* Send empty block 0 */
-XFER_SEND_WAIT_END_BATCH_ACK /* Wait for final ACK */
+typedef struct {
+    int line;                   /* Line number */
+    int protocol;               /* Protocol enum value */
+    int filebase_id;            /* Filebase for download/upload */
+    int file_id;                /* File ID (downloads) */
+    char filename[256];         /* Display filename */
+    char temp_path[256];        /* Temp file path (uploads) */
+    char description[256];      /* File description (uploads) */
+    long file_size;             /* Total bytes */
+    long bytes_transferred;     /* Progress */
+    int state;                  /* Protocol state machine state */
+    int block_number;           /* Current block */
+    int retry_count;            /* Retries for current block */
+    int use_crc;                /* Using CRC mode (vs checksum) */
+    uint8_t buffer[1024];       /* Block buffer */
+    int buffer_pos;             /* Position in buffer */
+    unsigned long timeout;      /* Timeout timestamp */
+} transfer_session;
 ```
 
-**Receive states:**
+**Temp File Paths:**
+- Uploads go to: `<Converse$Dir>.Temp.Upload_<line>_<timestamp>`
+- On success: Moved to filebase via Filer SWI
+- On failure: Deleted
+
+### Support Module Integration
+
+**transfer_active Flag (SWI 0x5AA81, field 5):**
+- Set to 1 when transfer starts
+- Set to 0 when transfer completes/fails
+- Prevents idle timeout during transfers
+- Controls telnet IAC handling in Server
+
 ```c
-XFER_RECV_SEND_START        /* Send 'C' or 'G' */
-XFER_RECV_WAIT_HEADER       /* Wait for block 0 */
-XFER_RECV_READ_HEADER       /* Read block 0 data */
-XFER_RECV_ACK_HEADER        /* ACK header, send 'C' */
-XFER_RECV_WAIT_BLOCK        /* Wait for data block */
-XFER_RECV_READ_BLOCK        /* Read block data */
-XFER_RECV_SEND_ACK          /* Send ACK */
-XFER_RECV_SEND_NAK          /* Send NAK */
-```
-
-#### Session Fields for YMODEM
-```c
-int is_ymodem;                      /* Flag: using YMODEM protocol */
-int ymodem_g;                       /* Flag: YMODEM-G streaming mode */
-int header_sent;                    /* Flag: block 0 already sent */
-int ymodem_batch_complete;          /* Flag: end-of-batch reached */
-char ymodem_filename[128];          /* Filename from/for block 0 */
-```
-
-### ZMODEM Implementation
-
-#### Constants (in `LineTask/h/transfer`)
-```c
-/* Frame types */
-#define ZRQINIT     0   /* Request receiver init */
-#define ZRINIT      1   /* Receiver init */
-#define ZSINIT      2   /* Sender init */
-#define ZACK        3   /* Acknowledge */
-#define ZFILE       4   /* File info */
-#define ZSKIP       5   /* Skip file */
-#define ZNAK        6   /* NAK - retry */
-#define ZABORT      7   /* Abort */
-#define ZFIN        8   /* Finish session */
-#define ZRPOS       9   /* Resume position */
-#define ZDATA       10  /* Data packet follows */
-#define ZEOF        11  /* End of file */
-#define ZFERR       12  /* File error */
-#define ZCRC        13  /* CRC request */
-#define ZCHALLENGE  14  /* Challenge */
-#define ZCOMPL      15  /* Complete */
-#define ZCAN        16  /* Cancel */
-
-/* Subpacket frame endings */
-#define ZCRCE       'h'  /* CRC next, end of frame */
-#define ZCRCG       'i'  /* CRC next, frame continues */
-#define ZCRCQ       'j'  /* CRC next, frame continues, ZACK expected */
-#define ZCRCW       'k'  /* CRC next, ZACK expected, end frame */
-
-/* Escape characters */
-#define ZPAD        '*'  /* Padding before header */
-#define ZDLE        0x18 /* Data link escape */
-#define ZDLEE       0x58 /* Escaped ZDLE */
-#define ZBIN        'A'  /* Binary header (CRC-16) */
-#define ZHEX        'B'  /* Hex header */
-#define ZBIN32      'C'  /* Binary header (CRC-32) */
-
-/* Receiver capability flags */
-#define CANFDX      0x01 /* Full duplex */
-#define CANOVIO     0x02 /* Can overlap I/O */
-#define CANBRK      0x04 /* Can send break */
-#define CANCRY      0x08 /* Can encrypt */
-#define CANLZW      0x10 /* Can LZW compress */
-#define CANFC32     0x20 /* Can use CRC-32 */
-#define ESCCTL      0x40 /* Escape control chars */
-#define ESC8        0x80 /* Escape 8-bit chars */
-
-/* Timeouts */
-#define ZMODEM_HEADER_TIMEOUT   10000  /* 10 seconds */
-#define ZMODEM_DATA_TIMEOUT     15000  /* 15 seconds */
-#define ZMODEM_MAX_BLOCK        1024   /* Max data block size */
-```
-
-#### State Machine States
-**Send states (BBS → User download):**
-```c
-ZFER_SEND_ZRQINIT       /* Sending ZRQINIT to initiate */
-ZFER_SEND_WAIT_ZRINIT   /* Waiting for receiver's ZRINIT */
-ZFER_SEND_ZFILE         /* Sending ZFILE header */
-ZFER_SEND_WAIT_ZRPOS    /* Waiting for ZRPOS position */
-ZFER_SEND_ZDATA         /* Sending ZDATA header */
-ZFER_SEND_DATA          /* Streaming data subpackets */
-ZFER_SEND_ZEOF          /* Sending ZEOF */
-ZFER_SEND_WAIT_ZEOF_ACK /* Waiting for ZEOF acknowledgement */
-ZFER_SEND_ZFIN          /* Sending ZFIN */
-ZFER_SEND_WAIT_ZFIN_ACK /* Waiting for receiver's ZFIN */
-ZFER_SEND_OO            /* Sending "OO" final bytes */
-```
-
-**Receive states (User → BBS upload):**
-```c
-ZFER_RECV_WAIT_ZRQINIT  /* Waiting for sender's ZRQINIT */
-ZFER_RECV_SEND_ZRINIT   /* Sending our ZRINIT */
-ZFER_RECV_WAIT_ZFILE    /* Waiting for ZFILE header */
-ZFER_RECV_SEND_ZRPOS    /* Sending ZRPOS to request data */
-ZFER_RECV_WAIT_ZDATA    /* Waiting for ZDATA header */
-ZFER_RECV_DATA          /* Receiving streaming data */
-ZFER_RECV_WAIT_ZEOF     /* Waiting for ZEOF */
-ZFER_RECV_SEND_ZRINIT_NEXT /* Sending ZRINIT for next file */
-ZFER_RECV_WAIT_ZFIN     /* Waiting for sender's ZFIN */
-ZFER_RECV_SEND_ZFIN     /* Sending our ZFIN response */
-```
-
-#### Session Fields (in `transfer_session`)
-```c
-int is_zmodem;              /* Flag: using ZMODEM protocol */
-uint32_t zmodem_crc32;      /* Running CRC-32 value */
-int zmodem_escctl;          /* Flag: escape control chars */
-uint8_t zmodem_rxflags[4];  /* Received header flags */
-uint8_t zmodem_rx_hdr[4];   /* Received header data */
-uint8_t zmodem_rx_buf[2048];/* Receive buffer */
-int zmodem_rx_state;        /* Header parser state */
-int zmodem_zdle_pending;    /* ZDLE escape pending flag */
-long zmodem_txpos;          /* Transmit file position */
-long zmodem_rxpos;          /* Receive file position */
-int zmodem_window_count;    /* Bytes since last ZACK */
-```
-
-#### CRC-32 Implementation
-Uses reflected polynomial 0xEDB88320 with 256-entry lookup table:
-```c
-static const uint32_t crc32_table[256] = { /* precomputed */ };
-
-uint32_t transfer_crc32(const uint8_t *data, int len)
+/* Set transfer active */
+void set_transfer_state(int line, int active)
 {
-    uint32_t crc = 0xFFFFFFFF;
-    while (len--) {
-        crc = crc32_table[(crc ^ *data++) & 0xFF] ^ (crc >> 8);
-    }
-    return crc ^ 0xFFFFFFFF;
+    _kernel_swi_regs regs;
+    regs.r[0] = 0;  /* Set reason */
+    regs.r[1] = line;
+    regs.r[2] = 5;  /* Field: transfer_active */
+    regs.r[3] = active;
+    _kernel_swi(0x5AA81, &regs, &regs);
 }
 ```
 
-#### Key Helper Functions
-```c
-/* Check if byte needs ZDLE escaping */
-static int zmodem_needs_escape(uint8_t byte, int escctl);
+### Adding New Protocols (YMODEM/ZMODEM)
 
-/* Write byte with ZDLE escaping */
-static int zmodem_write_escaped(transfer_session *session, uint8_t byte);
+When implementing additional protocols, follow this pattern:
 
-/* Send hex header (for negotiation) */
-static int zmodem_send_hex_header(transfer_session *session, int type,
-                                   uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3);
+1. **Create protocol source file** (e.g., `LineTask/c/ymodem`)
+2. **Implement state machine** with poll function
+3. **Handle telnet transparency** - IAC is already handled in Server
+4. **Add to script command** - Update protocol parsing in `script.c`
+5. **Add host callbacks** - Update `main.c` transfer initiation
 
-/* Send binary32 header (for data transfer) */
-static int zmodem_send_bin32_header(transfer_session *session, int type,
-                                     uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3);
+**YMODEM Differences from XMODEM:**
+- Block 0 contains filename and size (null-terminated string)
+- Uses 1K blocks (STX instead of SOH) by default
+- Batch mode: multiple files, empty block 0 ends batch
+- Receiver sends ACK + 'C' after block 0
 
-/* Send position header (ZRPOS, ZACK, etc.) */
-static int zmodem_send_pos_header(transfer_session *session, int type, long pos);
+**ZMODEM Differences:**
+- Streaming protocol (no per-block ACK)
+- 32-bit CRC
+- ZDLE escape encoding for control characters
+- Auto-start with ZRQINIT
+- Crash recovery via ZRPOS
 
-/* Send data subpacket with frame ending */
-static int zmodem_send_data_subpacket(transfer_session *session,
-                                       const uint8_t *data, int len, int frameend);
+### Common Pitfalls
 
-/* Parse received hex header */
-static int zmodem_parse_hex_header(transfer_session *session,
-                                    const uint8_t *buf, int len);
-
-/* Get position from received header */
-static long zmodem_get_header_pos(transfer_session *session);
-
-/* Receive and parse header (returns frame type or -1) */
-static int zmodem_receive_header(transfer_session *session);
-```
-
-#### Protocol Flow
-
-**Send (Download from BBS):**
-1. Send `ZRQINIT` hex header
-2. Wait for receiver's `ZRINIT` (get capabilities)
-3. Send `ZFILE` with filename/size in data subpacket
-4. Wait for `ZRPOS` (receiver requests position)
-5. Send `ZDATA` header with position
-6. Stream data subpackets (ZCRCG for continuation, ZCRCE for end)
-7. Send `ZEOF` with final position
-8. Wait for receiver's `ZRINIT` (ready for next file)
-9. Send `ZFIN` (no more files)
-10. Wait for receiver's `ZFIN`
-11. Send "OO" and complete
-
-**Receive (Upload to BBS):**
-1. Wait for sender's `ZRQINIT`
-2. Send `ZRINIT` with capabilities (CANFDX | CANOVIO | CANFC32)
-3. Wait for `ZFILE` header, parse filename/size
-4. Send `ZRPOS 0` to request from start
-5. Wait for `ZDATA` header
-6. Receive streaming data, handle ZDLE escaping
-7. On `ZEOF`, send `ZRINIT` for next file
-8. Wait for sender's `ZFIN`
-9. Send `ZFIN` response
-10. Complete
-
-#### Important Implementation Notes
-
-1. **Use `filebase_download_block()` not `filebase_read_block()`** - The Filer module function for reading file data is `filebase_download_block()`.
-
-2. **Use `transfer_timeout_expired()` not `transfer_check_timeout()`** - The timeout check function is `transfer_timeout_expired()`.
-
-3. **ZDLE Escape Handling**: Bytes that need escaping: ZDLE itself, XON (0x11), XOFF (0x13), XON|0x80, XOFF|0x80. When `escctl` flag set, also escape all control chars (< 0x20).
-
-4. **CRC-32 is sent LSB first** in binary headers.
-
-5. **Hex headers end with CR LF** and optional XON.
-
-6. **After ZEOF, receiver must wait for ZFIN**: The receiver sends `ZRINIT` after `ZEOF` but must then wait for the sender's `ZFIN` before sending its own `ZFIN` response. This was a bug that caused client hangs.
-
-### Script Command Integration
-
-**SENDFILE handler** (`LineTask/c/script`):
-- Parses protocol string: `xmodem`, `xmodem-crc`, `xmodem-1k`, `ymodem`, `ymodem-g`, `zmodem`
-- Maps to protocol numbers 0-5
-- Calls `state->host.start_transfer()` callback
-- Sets `state->status = SCRIPT_STATUS_WAIT_TRANSFER`
-
-**RECEIVEFILE handler** (`LineTask/c/script`):
-- Same protocol parsing
-- `proto_names[]` array must include all 6 protocols for display
-- Bounds check must be `protocol <= 5` not `protocol <= 4`
-
-**Host callbacks** (`LineTask/c/main`):
-- `script_host_start_transfer()` - Maps protocol to enum, calls appropriate start function
-- `script_host_start_receive_transfer()` - Same for uploads
-- Both check for `protocol == 5` to call ZMODEM-specific start functions
-
-### BBS Script Updates
-
-The `BBS/Filebase` script provides the user menu:
-- Option [6] = ZMODEM (recommended)
-- Default protocol changed from YMODEM to ZMODEM
-- Added `dl_zmodem` and `ul_zmodem` labels
-
-```
-print `  [6] ZMODEM (recommended)\r\n`
-...
-if proto_choice == `6` goto dl_zmodem
-...
-label dl_zmodem
-doing `Downloading file...`
-sendfile `%{file_id}` zmodem
-goto download_done
-```
+1. **Forgetting IAC handling**: Binary transfers WILL fail without proper 0xFF handling
+2. **Stripping NUL bytes**: Use `telnet_undouble_iac()` not `telnet_filter_input()` during transfers
+3. **Buffer sizing**: Output buffer needs 2x size for IAC doubling worst case
+4. **Timeout handling**: Use `OS_ReadMonotonicTime` (centiseconds), not `time()`
+5. **Block number wrapping**: Block# goes 1,2,...,255,0,1,... (wraps at 256)
+6. **CRC byte order**: XMODEM CRC is sent MSB first (high byte, then low byte)
+7. **Padding**: Last block padded with CTRL-Z (0x1A) if file size not multiple of 128
 
 ## Web Server Module
 
@@ -1482,13 +1392,52 @@ Create files in `<Converse$Dir>.Web`:
 The FTN Mailer (`FTN/`) implements FidoNet Technology Network (FTN) mail exchange. It consists of:
 - **Mailer** (`FTN/c/mailer`): Wimp application, BinkP sessions, event handling
 - **BinkP** (`FTN/c/binkp`): BinkP protocol implementation for sessions
-- **Tosser** (`FTN/c/tosser`): Inbound packet processing, echomail/netmail tossing
+- **Tosser** (`FTN/c/tosser`): Inbound packet processing, echomail/netmail tossing, arcmail extraction
 - **Scanner** (`FTN/c/scanner`): Outbound message scanning and routing
-- **Packer** (`FTN/c/packer`): Outbound packet creation
+- **Packer** (`FTN/c/packer`): Outbound packet creation, arcmail bundling
 - **Queue** (`FTN/c/queue`): Outbound file queue management
 - **TIC** (`FTN/c/tic`): TIC file processing for file distribution
 - **FREQ** (`FTN/c/freq`): File request processing
 - **EchoFix** (`FTN/c/echofix`): AreaFix/FileFix subscription management
+- **Unzip** (`FTN/c/unzip`): ZIP/DEFLATE extraction for inbound arcmail
+- **Zip** (`FTN/c/zip`): ZIP/DEFLATE compression for outbound arcmail
+
+### Arcmail (ZIP) Support
+The FTN module includes native ZIP/DEFLATE compression and decompression for handling arcmail bundles.
+
+**Inbound Arcmail (Extraction):**
+- Tosser automatically detects arcmail files by extension: `.mo0`-`.su9` (FTN day codes) and `.zip`
+- Uses `unzip.c` to extract contained `.pkt` files
+- Extracted packets are processed normally, then the arcmail is moved to Processed/
+- Supports DEFLATE compression (method 8) and Store (method 0)
+
+**Outbound Arcmail (Creation):**
+- `packer_create_arcmail()` compresses a single packet into an arcmail bundle
+- `packer_create_arcmail_multi()` bundles multiple packets into one archive
+- Uses DEFLATE with fixed Huffman codes for good compression/speed balance
+- Day-of-week extensions: `mo0`-`su9` cycling through 0-9
+
+**ZIP Functions (`FTN/h/unzip`, `FTN/h/zip`):**
+```c
+/* Extraction */
+int unzip_open(UNZIP_ARCHIVE *archive, const char *path);
+void unzip_close(UNZIP_ARCHIVE *archive);
+int unzip_get_entry(UNZIP_ARCHIVE *archive, int index, UNZIP_ENTRY *entry);
+int unzip_extract_entry(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry, const char *dest_path);
+int unzip_extract_to_memory(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry, unsigned char *buffer, unsigned long size);
+int unzip_is_zip_file(const char *path);
+
+/* Creation */
+int zip_create(ZIP_ARCHIVE *archive, const char *path);
+int zip_add_file(ZIP_ARCHIVE *archive, const char *src_path, const char *arc_name, int compress);
+int zip_add_memory(ZIP_ARCHIVE *archive, const unsigned char *data, unsigned long len, const char *arc_name, int compress);
+int zip_close(ZIP_ARCHIVE *archive);
+void zip_abort(ZIP_ARCHIVE *archive);
+
+/* Arcmail helpers (packer.h) */
+int packer_create_arcmail(const char *packet_path, const FTN_ADDR *dest_addr);
+int packer_create_arcmail_multi(const char **packet_paths, int count, const FTN_ADDR *dest_addr);
+```
 
 ### Echomail Group Filtering
 Areas can be assigned to groups (e.g., "A", "B", "C") and uplinks specify which groups they carry. When scanning outbound echomail, messages are only routed to uplinks whose groups overlap with the area's groups.

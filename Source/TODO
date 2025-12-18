@@ -1,0 +1,202 @@
+LineTask Code Analysis and Refactoring TODO
+============================================
+
+CRITICAL ARCHITECTURAL ISSUES
+=============================
+
+1. Monolithic God-Object Design (COMPLETED)
+--------------------------------------------
+The `line_task_state` struct in main.c has been decomposed into typed sub-structs:
+- door_riscbbs_state riscbbs - RiscBBS door handling
+- door_arcbbs_state arcbbs - ARCbbs door handling  
+- door_native_state native - ConverseDoors handling
+- botstopper_state_t botstopper - Anti-bot challenge
+- user_session user - User info and session state
+- chat_state chat - Sysop chat functionality
+- io_buffers pending - Pending write recovery
+
+References updated from state->field to state->substruct.field throughout.
+
+
+2. State Machine Explosion (SIGNIFICANTLY IMPROVED)
+----------------------------------------------------
+The unified input system replaced 25+ separate WAIT_* states with a single
+SCRIPT_STATUS_WAIT_INPUT that handles:
+- Character/line input modes via input_mode field
+- Echo/noecho via input_echo flag
+- Timeout via input_deadline
+- Target variable via input_target
+
+Remaining specialized states are legitimately different (WAIT_DOOR, WAIT_SLEEP,
+WAIT_CHAT, WAIT_TRANSFER, etc.) and don't handle user input.
+
+Further consolidation possible but diminishing returns.
+
+
+3. Massive Input Handler (COMPLETED)
+-------------------------------------
+Replaced the massive guard condition with the unified input system.
+script_handle_user_byte() now uses a single SCRIPT_STATUS_WAIT_INPUT check.
+
+Input handling consolidated into:
+- script_begin_input() to start input collection
+- script_complete_input() to finish and process
+- input_mode (char/line), input_echo, input_deadline fields
+
+SCRIPT ENGINE ISSUES
+====================
+
+7. 9,000 Line Script Parser
+---------------------------
+script.c is doing way too much:
+- Tokenization and parsing
+- Macro expansion
+- Variable management
+- Instruction execution
+- Input handling for 15+ different contexts
+- Filebase browser integration
+- Messagebase browser integration
+- New user registration flow
+- Loop handling (FOR/WHILE)
+- Call stack management
+- More prompt handling
+
+ACTION: Split into 10+ separate files.
+
+
+8. Hardcoded Command Execution
+------------------------------
+script_execute_instruction() is a massive switch statement with 50+ cases starting 
+at line 4200. Each command is handled inline with no abstraction.
+
+ACTION: Replace with command registry pattern.
+
+
+9. Tight Coupling to Host Callbacks
+-----------------------------------
+The script_host struct has 30+ callbacks (script.h lines 37-87):
+  write_text, launch_riscbbs_door, launch_arcbbs_door, launch_door,
+  report_time, report_line_info, request_disconnect, force_disconnect,
+  report_activity, report_online_users, get_line_id, get_task_handle,
+  get_filebase_session, get_user_accesslevel, get_user_sysop, get_user_keys,
+  get_user_realname, filebase_download, get_messagebase_session,
+  authenticate_user, start_postlogon, start_newuser,
+  get_user_id, start_chat_pager, get_anykey_file,
+  get_more_file, get_protocol_file, get_user_stats, get_user_flags,
+  update_lastscan, create_user, check_username_available...
+
+This is a leaky abstraction - the script engine knows too much about the host.
+
+ACTION: Group callbacks into service interfaces.
+
+
+MAIN MODULE ISSUES
+==================
+
+10. 5,900 Lines of Callbacks
+----------------------------
+main.c is dominated by:
+- 40+ script_host_* callback functions
+- Door handling (RiscBBS, ARCbbs, ConverseDoors)
+- Chat handling
+- Terminal handling
+- Botstopper handling
+- Stream processing
+
+ACTION: Extract into separate handler modules.
+
+
+11. Inconsistent SWI Definitions
+--------------------------------
+SWI numbers are defined multiple times with no central swis.h for the project.
+
+ACTION: Create shared h/swis header file.
+
+
+12. Global State Anti-Pattern
+-----------------------------
+Static globals scattered throughout:
+  static line_task_state task_state;
+  static Desk_window_handle main_window_handle;
+  static Desk_window_handle maininfo_window_handle;
+  // ... 6 more window handles
+  static script_if_block script_if_stack[16];
+  static int script_if_depth = 0;
+  static script_loop_block script_loop_stack[16];
+  static int script_loop_depth = 0;
+
+ACTION: Consolidate into proper context structures.
+
+
+RECOMMENDED REFACTORING PHASES
+==============================
+
+Phase 1: Decompose Files (IN PROGRESS)
+---------------------------------------
+| New File            | Responsibility                          | Status    |
+|---------------------|----------------------------------------|-----------|
+| c/script_parse      | Tokenization, parsing, instruction building | TODO      |
+| c/script_exec       | Instruction execution switch            | TODO      |
+| c/script_io         | Input handling and output buffering     | TODO      |
+| c/script_vars       | Variable and macro management           | TODO      |
+| c/door_arcbbs       | ARCbbs door handling                    | TODO      |
+| c/door_native       | Converse Doors handling                  | TODO      |
+| c/door_riscbbs      | RiscBBS door handling                  | TODO      |
+| c/chat              | Sysop chat (currently mixed in main)    | TODO      |
+
+
+
+Phase 2: State Machine Refactor
+-------------------------------
+Replace the 25-state enum with nested state machines:
+
+  typedef struct {
+      input_state input;       /* IDLE, WAIT_CHAR, WAIT_LINE */
+      auth_state auth;         /* IDLE, USERNAME, PASSWORD */
+      newuser_state newuser;   /* IDLE, USERNAME, PASSWORD, ... */
+  } script_substates;
+
+
+Phase 3: Abstract I/O Layer
+---------------------------
+Create a consistent pipe abstraction:
+
+  typedef struct {
+      int (*bytes_available)(int line);
+      int (*read_byte)(int line);      /* Returns byte or -1 */
+      int (*read_block)(int line, uint8_t *buf, int max);
+      int (*write_byte)(int line, uint8_t byte);
+      int (*write_block)(int line, const uint8_t *buf, int len);
+      int (*space_available)(int line);
+  } pipe_ops;
+
+
+Phase 4: Command Registry Pattern
+---------------------------------
+Replace giant switch with function table:
+
+  typedef struct {
+      const char *name;
+      script_command_type type;
+      int (*execute)(script_state *state, script_instruction *instr);
+  } script_command_handler;
+
+  static script_command_handler command_table[] = {
+      { "print", SCRIPT_CMD_PRINT, cmd_print },
+      { "goto",  SCRIPT_CMD_GOTO,  cmd_goto },
+      /* ... */
+  };
+
+
+IMMEDIATE BUGS TO FIX
+=====================
+
+[ ] Inconsistent return value semantics across I/O functions
+
+
+NOTES
+=====
+
+Created: 2025-12-14
+This codebase needs significant refactoring to be maintainable. 
+The current design adds complexity with every feature.

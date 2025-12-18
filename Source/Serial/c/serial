@@ -490,8 +490,15 @@ static void serial_scan_for_ring(int line_index)
 
                 if (line->ring_count >= rings_needed)
                 {
+                    serialstatus_update_line(line_index, "Answering...");
                     serial_send_command(line_index, (line->answer[0] != '\0') ? line->answer : "ATA");
                     line->ring_count = 0;
+                }
+                else
+                {
+                    char ring_status[32];
+                    snprintf(ring_status, sizeof(ring_status), "Ringing (%d/%d)", line->ring_count, rings_needed);
+                    serialstatus_update_line(line_index, ring_status);
                 }
             }
         }
@@ -756,12 +763,14 @@ void serial_poll(int line_index)
         /* Rising edge - new connection */
         line->carrier_detect = 1;
         serial_handle_connect(line_index);
+        serialstatus_update_line(line_index, "Connected");
     }
     else if (!carrier && line->carrier_detect)
     {
         /* Falling edge - disconnection */
         line->carrier_detect = 0;
         serial_handle_disconnect(line_index);
+        serialstatus_update_line(line_index, "Idle");
     }
 
     if (line->carrier_detect)
@@ -804,6 +813,11 @@ void serial_init_all(void)
             if (serial_lines[i].driver != NULL)
             {
                 serial_init_port(i);
+                serialstatus_update_line(i, "Idle");
+            }
+            else
+            {
+                serialstatus_update_line(i, "No driver");
             }
         }
     }

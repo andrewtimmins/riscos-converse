@@ -1,0 +1,117 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - ZIP Archive Extraction                                                                                                                      */
+/*                                                                                                                                                          */
+/* Provides extraction of PKZIP archives for FTN arcmail bundles.                                                                                           */
+/* Supports: Store (no compression) and Deflate (method 8)                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef UNZIP_H
+#define UNZIP_H
+
+/* Maximum path length for extracted files */
+#define UNZIP_MAX_PATH          256
+#define UNZIP_MAX_FILENAME      64
+
+/* Error codes */
+#define UNZIP_OK                0
+#define UNZIP_ERR_OPEN          -1      /* Cannot open archive */
+#define UNZIP_ERR_FORMAT        -2      /* Invalid ZIP format */
+#define UNZIP_ERR_CRC           -3      /* CRC mismatch */
+#define UNZIP_ERR_UNSUPPORTED   -4      /* Unsupported compression method */
+#define UNZIP_ERR_WRITE         -5      /* Cannot write output file */
+#define UNZIP_ERR_MEMORY        -6      /* Memory allocation failed */
+#define UNZIP_ERR_INFLATE       -7      /* Decompression error */
+
+/* ZIP compression methods we support */
+#define ZIP_METHOD_STORE        0       /* No compression */
+#define ZIP_METHOD_DEFLATE      8       /* Deflate algorithm */
+
+/* ZIP file entry information */
+typedef struct
+{
+    char filename[UNZIP_MAX_FILENAME];
+    unsigned long compressed_size;
+    unsigned long uncompressed_size;
+    unsigned long crc32;
+    int method;                         /* Compression method */
+    unsigned long local_header_offset;  /* Offset to local file header */
+} UNZIP_ENTRY;
+
+/* ZIP archive handle */
+typedef struct
+{
+    char path[UNZIP_MAX_PATH];
+    void *fp;                           /* FILE* */
+    int entry_count;
+    unsigned long cd_offset;            /* Central directory offset */
+    unsigned long cd_size;              /* Central directory size */
+} UNZIP_ARCHIVE;
+
+/* ******************************************************************************************************************************************************** */
+/* Archive Operations                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Open a ZIP archive for reading.
+ * Returns UNZIP_OK on success, error code on failure.
+ */
+int unzip_open(UNZIP_ARCHIVE *archive, const char *path);
+
+/*
+ * Close a ZIP archive.
+ */
+void unzip_close(UNZIP_ARCHIVE *archive);
+
+/*
+ * Get the number of entries in the archive.
+ */
+int unzip_get_entry_count(UNZIP_ARCHIVE *archive);
+
+/*
+ * Get information about an entry by index (0-based).
+ * Returns UNZIP_OK on success, error code on failure.
+ */
+int unzip_get_entry(UNZIP_ARCHIVE *archive, int index, UNZIP_ENTRY *entry);
+
+/*
+ * Find an entry by filename (case-insensitive).
+ * Returns entry index (0+) on success, -1 if not found.
+ */
+int unzip_find_entry(UNZIP_ARCHIVE *archive, const char *filename);
+
+/*
+ * Extract an entry to a file.
+ * Returns UNZIP_OK on success, error code on failure.
+ */
+int unzip_extract_entry(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry, const char *dest_path);
+
+/*
+ * Extract an entry to memory buffer.
+ * buffer must be at least entry->uncompressed_size bytes.
+ * Returns UNZIP_OK on success, error code on failure.
+ */
+int unzip_extract_to_memory(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry,
+                             unsigned char *buffer, unsigned long buffer_size);
+
+/* ******************************************************************************************************************************************************** */
+/* Convenience Functions                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Extract all files from archive to a directory.
+ * Returns number of files extracted, or negative error code.
+ */
+int unzip_extract_all(const char *archive_path, const char *dest_dir);
+
+/*
+ * Check if a file appears to be a ZIP archive.
+ * Returns 1 if ZIP signature found, 0 otherwise.
+ */
+int unzip_is_zip_file(const char *path);
+
+/*
+ * Get error message for error code.
+ */
+const char *unzip_error_string(int error);
+
+#endif /* UNZIP_H */

@@ -5,9 +5,10 @@
 label filebase_menu
     script `<Converse$Dir>.BBS.Header`
     bold
-    print `                            :: Filebase Menu ::\r\n`
+    fgbg 7 4
+    print `                                .:: Filebase Menu ::.`,cll
     std
-    print `\r\n`
+    print `\r\n\r\n`
     print `  Current Selection:\r\n`
     print `    Filebase: %{filebasename} (ID: %{filebaseid})\r\n`
     print `    Area:     %{filebaseareaname} (ID: %{filebaseareaid})\r\n`

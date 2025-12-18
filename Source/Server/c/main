@@ -139,6 +139,7 @@ static void telnet_advertise_capabilities(int socket);
 static void pump_socket_to_pipe(int line_id, int socket);
 static void pump_pipe_to_socket(int line_id, int socket);
 static int telnet_filter_input(int socket, char *buffer, int length);
+static int telnet_undouble_iac(char *buffer, int length);
 
 /* String sanitization - strips leading/trailing whitespace and control chars */
 static void sanitize_string(char *str)
@@ -2174,6 +2175,7 @@ static void pipes_send_control_command(int line_id, char command)
 static void pump_socket_to_pipe(int line_id, int socket)
 {
 	int iteration = 0;
+	int transfer_active = support_get_transfer_active(line_id);
 
 	while (iteration < 4)
 	{
@@ -2189,6 +2191,10 @@ static void pump_socket_to_pipe(int line_id, int socket)
 
 		if (used_bytes >= PIPES_BUFFER_CAPACITY)
 		{
+			if (transfer_active)
+			{
+				debug_printf("pump_in: pipe full, cannot read\n");
+			}
 			return;
 		}
 
@@ -2204,11 +2210,42 @@ static void pump_socket_to_pipe(int line_id, int socket)
 			return;
 		}
 
-		read_bytes = telnet_filter_input(socket, buffer, read_bytes);
+		/* Debug: show raw bytes received during transfer */
+		if (transfer_active && read_bytes > 0)
+		{
+			debug_printf("pump_in: line %d recv %d bytes, first 10: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+			             line_id, read_bytes,
+			             read_bytes > 0 ? (unsigned char)buffer[0] : 0,
+			             read_bytes > 1 ? (unsigned char)buffer[1] : 0,
+			             read_bytes > 2 ? (unsigned char)buffer[2] : 0,
+			             read_bytes > 3 ? (unsigned char)buffer[3] : 0,
+			             read_bytes > 4 ? (unsigned char)buffer[4] : 0,
+			             read_bytes > 5 ? (unsigned char)buffer[5] : 0,
+			             read_bytes > 6 ? (unsigned char)buffer[6] : 0,
+			             read_bytes > 7 ? (unsigned char)buffer[7] : 0,
+			             read_bytes > 8 ? (unsigned char)buffer[8] : 0,
+			             read_bytes > 9 ? (unsigned char)buffer[9] : 0);
+		}
+
+		/* During binary file transfers, only un-double IAC (preserve NUL bytes).
+		 * During normal text mode, use full telnet filtering (strips NUL, handles commands). */
+		if (transfer_active)
+		{
+			read_bytes = telnet_undouble_iac(buffer, read_bytes);
+		}
+		else
+		{
+			read_bytes = telnet_filter_input(socket, buffer, read_bytes);
+		}
 		if (read_bytes <= 0)
 		{
 			iteration++;
 			continue;
+		}
+
+		if (transfer_active)
+		{
+			debug_printf("pump_in: after filter %d bytes, writing to pipe\n", read_bytes);
 		}
 
 		int offset = 0;
@@ -2263,31 +2300,80 @@ static void pump_pipe_to_socket(int line_id, int socket)
 	while (loops < 4)
 	{
 		char buffer[PIPE_TRANSFER_CHUNK];
+		char send_buffer[PIPE_TRANSFER_CHUNK * 2];  /* Worst case: all 0xFF bytes doubled */
 		int copied = pipes_output_read_block(line_id, buffer, PIPE_TRANSFER_CHUNK);
 		int offset = 0;
+		int send_len;
+		int transfer_active = support_get_transfer_active(line_id);
 
 		if (copied <= 0)
 		{
 			return;
 		}
 
-		while (offset < copied)
+		/* Debug: show first few bytes being sent during transfer */
+		if (transfer_active && copied > 0)
 		{
-			int written = socketwrite(socket, buffer + offset, copied - offset);
+			debug_printf("pump: line %d raw %d bytes, first 10: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+			             line_id, copied,
+			             (unsigned char)buffer[0], (unsigned char)buffer[1], 
+			             (unsigned char)buffer[2], (unsigned char)buffer[3],
+			             (unsigned char)buffer[4], (unsigned char)buffer[5],
+			             (unsigned char)buffer[6], (unsigned char)buffer[7],
+			             (unsigned char)buffer[8], (unsigned char)buffer[9]);
+		}
+		
+		/* Telnet IAC (0xFF) doubling for binary data.
+		 * Over telnet, 0xFF is the IAC command prefix. To send a literal 0xFF,
+		 * we must send 0xFF 0xFF. We do this during transfers to prevent the 
+		 * receiving terminal from interpreting binary data as telnet commands. */
+		{
+			int i;
+			send_len = 0;
+			for (i = 0; i < copied; i++)
+			{
+				unsigned char byte = (unsigned char)buffer[i];
+				send_buffer[send_len++] = byte;
+				if (byte == 0xFF)
+				{
+					/* Double the 0xFF byte for telnet transparency */
+					send_buffer[send_len++] = 0xFF;
+				}
+			}
+		}
+		
+		if (transfer_active && send_len != copied)
+		{
+			debug_printf("pump: IAC doubled %d -> %d bytes\n", copied, send_len);
+		}
+
+		while (offset < send_len)
+		{
+			int written = socketwrite(socket, send_buffer + offset, send_len - offset);
 			if (written <= 0)
 			{
 				/* Socket blocked - save remaining data to pending buffer */
-				int remaining = copied - offset;
-				if (remaining > 0 && remaining <= PIPE_TRANSFER_CHUNK)
+				int remaining = send_len - offset;
+				if (remaining > 0 && remaining <= PIPE_TRANSFER_CHUNK * 2)
 				{
 					memcpy(line_configuration[line_id].pending_buffer, 
-					       buffer + offset, remaining);
+					       send_buffer + offset, remaining);
 					line_configuration[line_id].pending_offset = 0;
 					line_configuration[line_id].pending_length = remaining;
+				}
+				if (transfer_active)
+				{
+					debug_printf("pump: socket blocked, saved %d bytes to pending\n", remaining);
 				}
 				return;
 			}
 			offset += written;
+		}
+		
+		/* Debug: confirm all bytes were sent during transfer */
+		if (transfer_active)
+		{
+			debug_printf("pump: successfully wrote %d bytes to socket\n", send_len);
 		}
 
 		line_configuration[line_id].last_activity = clock();
@@ -2444,6 +2530,29 @@ static void telnet_handle_option(int socket, unsigned char command, unsigned cha
 		default:
 			break;
 	}
+}
+
+/* Binary-safe IAC un-doubling for file transfers.
+ * Converts 0xFF 0xFF back to 0xFF, preserves all other bytes including NUL. */
+static int telnet_undouble_iac(char *buffer, int length)
+{
+	int read_index = 0;
+	int write_index = 0;
+
+	while (read_index < length)
+	{
+		unsigned char byte = (unsigned char)buffer[read_index++];
+
+		if (byte == 0xFF && read_index < length && (unsigned char)buffer[read_index] == 0xFF)
+		{
+			/* IAC IAC -> single IAC */
+			read_index++;
+		}
+
+		buffer[write_index++] = (char)byte;
+	}
+
+	return write_index;
 }
 
 static int telnet_filter_input(int socket, char *buffer, int length)

@@ -35,13 +35,14 @@ The FTN mailer consists of several components:
   mailer.c   - Main application, Wimp interface, session management
   binkp.c    - BinkP protocol implementation
   queue.c    - Outbound queue management (BSO structure)
-  tosser.c   - Inbound packet processing
+  tosser.c   - Inbound packet processing, arcmail extraction
   scanner.c  - Outbound message scanning and routing
-  packer.c   - Outbound packet creation
+  packer.c   - Outbound packet creation, arcmail bundling
   tic.c      - TIC file processing for file distribution
   freq.c     - FREQ (File Request) handling
   crypt.c    - Session encryption (Roger Schlafly algorithm)
-  compress.c - Compression stubs (for future zlib/bzip2 support)
+  unzip.c    - ZIP archive extraction (DEFLATE decompression)
+  zip.c      - ZIP archive creation (DEFLATE compression)
   timer.c    - Timer utilities for polling
 
 The mailer communicates with other Converse modules:
@@ -308,13 +309,71 @@ Activation:
 
 Compression (Stub)
 ------------------
-Compression support (GZ/BZ2) is stubbed out pending availability of
+Stream compression support (GZ/BZ2) is stubbed out pending availability of
 zlib/bzip2 libraries for RISC OS. The framework is in place:
-  - GZ (type 1) - GZip/deflate compression
-  - BZ2 (type 2) - BZip2 compression
+  - GZ (type 1) - GZip/deflate stream compression
+  - BZ2 (type 2) - BZip2 stream compression
 
-When compression is negotiated, the compress.c stubs log a message
+When stream compression is negotiated, the compress.c stubs log a message
 indicating compression is not available and pass data through unchanged.
+
+Note: Arcmail (ZIP file) compression IS fully supported - see below.
+
+
+Arcmail Support
+---------------
+The mailer includes native ZIP file support for handling arcmail bundles.
+Arcmail is the traditional FTN method of bundling multiple packets into
+a single compressed file for more efficient transfer.
+
+Inbound Arcmail (Extraction):
+  The tosser automatically detects and extracts arcmail bundles when
+  scanning the inbound directory. Supported file extensions:
+  
+  - .mo0 through .mo9  (Monday)
+  - .tu0 through .tu9  (Tuesday)
+  - .we0 through .we9  (Wednesday)
+  - .th0 through .th9  (Thursday)
+  - .fr0 through .fr9  (Friday)
+  - .sa0 through .sa9  (Saturday)
+  - .su0 through .su9  (Sunday)
+  - .zip              (Generic ZIP files)
+
+  Processing flow:
+  1. Tosser scans zone inbound directory
+  2. Arcmail files are detected by extension
+  3. ZIP archive is opened and scanned for .pkt files
+  4. Each .pkt file is extracted to a temp directory
+  5. Extracted packets are processed normally
+  6. Original arcmail is moved to Processed/ directory
+
+Outbound Arcmail (Creation):
+  The packer can compress outbound packets into arcmail bundles using
+  the following functions:
+
+  packer_create_arcmail(packet_path, dest_addr)
+    - Compresses a single packet into an arcmail bundle
+    - Original packet is deleted after successful compression
+    - Archive named with timestamp and day-of-week extension
+
+  packer_create_arcmail_multi(packet_paths, count, dest_addr)
+    - Bundles multiple packets into a single archive
+    - All original packets are deleted after compression
+    - More efficient for multiple packets to same destination
+
+Compression Method:
+  - Uses DEFLATE algorithm (RFC 1951)
+  - LZ77 with hash chain for pattern matching
+  - Fixed Huffman codes for good compression/speed balance
+  - Typical compression ratio: 50-70% for FTN packets
+  - Compatible with all standard ZIP tools
+
+Technical Details:
+  - unzip.c: Full DEFLATE decompressor implementation
+  - zip.c: DEFLATE compressor with LZ77 matching
+  - Store method (uncompressed) also supported
+  - CRC-32 verification on extraction
+  - No external library dependencies
 
 
 File Requests (FREQ)
@@ -353,7 +412,7 @@ If freqpath is not configured, all FREQ requests are denied.
 Version Information
 -------------------
 Current Version: 0.02
-Task Name: "Converse FTN"
+Task Name: "Mailer"
 Protocol: BinkP/1.1
 
 Compatibility:

@@ -1,0 +1,17 @@
+;Places Questions
+;
+;Format: Question number,Question,Answer A,Answer B,Answer C,Correct Answer
+;Max lengths
+;>.......................................................<
+;
+1,In which city is the bust of king Tuts,Rome,Cairo,Luxor,B
+2,Where is the sea of Tranquility,Sahara desert,Alaska,The Moon,C
+3,Which Yugoslave city's name means 'White city',Belgrade,Sarajevo,Split,A
+4,What stands on the cactus of Mexico's flag,A Hawk,A Cross,An Eagle,C
+5,Which is the busiest port in the world,Suez,Dover,Rotterdam,B
+6,Which planet's moons include Ganymede and Io,Jupiter,Uranus,Saturn,A
+7,How many Welsh cities are there,Three,Four,Five,A
+8,Which river once separated Buda and Pest,The Rhone,The Rhine,The Danube,C
+9,Which is Tibet's 'forbidden city',Hozan,Lhasa,Priet,B
+10,After which George was Georgia named,George Washington,George Michael,King George II,C
+;

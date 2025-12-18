@@ -6,10 +6,23 @@
 #define TEMPLATE_H
 
 #include <stddef.h>
+#include "session.h"
 
 /* Template tags */
-#define TEMPLATE_TAG_FILEBASE   "{{filebase}}"
-#define TEMPLATE_TAG_MESSAGEBASE "{{messagebase}}"
+#define TEMPLATE_TAG_FILEBASE       "{{filebase}}"
+#define TEMPLATE_TAG_MESSAGEBASE    "{{messagebase}}"
+#define TEMPLATE_TAG_BBSNAME        "{{bbsname}}"
+#define TEMPLATE_TAG_USERNAME       "{{username}}"
+#define TEMPLATE_TAG_REALNAME       "{{realname}}"
+#define TEMPLATE_TAG_LOGGEDIN       "{{loggedin}}"
+#define TEMPLATE_TAG_LOGGEDOUT      "{{loggedout}}"
+#define TEMPLATE_TAG_LOGINFORM      "{{loginform}}"
+#define TEMPLATE_TAG_UPLOADFORM     "{{uploadform}}"
+
+/* Set current session context for template processing
+ * session: pointer to session, or NULL if not logged in
+ */
+void template_set_session(WEB_SESSION *session);
 
 /* Process template content, expanding template tags
  * content: input content buffer

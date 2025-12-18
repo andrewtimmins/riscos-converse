@@ -49,14 +49,106 @@ Directory Paths
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
-badmail             <Converse$Dir>.FTN.Bad
 
   inbound   - Where incoming packets are stored after successful transfer
+              Each zone has subdirectories:
+                <zone>/         - Files awaiting processing
+                <zone>/Bad/     - Files that failed processing (CRC error, unknown area)
+                <zone>/Processed/ - Successfully imported files
+                <zone>/Temp/    - Partial transfers in progress
   outbound  - BSO outbound directory for mail to send
   netmail   - Netmail storage area
-  badmail   - Packets that failed processing
 
 These directories are created automatically if they don't exist.
+
+
+File Requests (FREQ)
+--------------------
+The mailer supports FTN file requests. Remote nodes can request files from
+your system during a BinkP session by sending M_GET commands with size=0.
+
+freqpath            <Converse$Dir>.FTN.Freq
+freqexec            
+
+  freqpath  - Directory containing files available for FREQ requests
+  freqexec  - Optional external FREQ processor command (not yet implemented)
+
+When a remote node requests a file, the mailer searches the freqpath directory
+for matching files. Wildcards (* and ?) are supported in request filenames.
+
+If freqpath is not configured, FREQ requests are denied.
+
+Example:
+  freqpath    <Converse$Dir>.FTN.Freq
+
+To make a file available for FREQ, simply copy it to the freqpath directory.
+Remote nodes can then request it by filename during a BinkP session.
+
+Creating File Requests:
+  To request a file from another node, use the FREQ window in the FTN mailer
+  (accessible via the Commands menu). This creates a .REQ file in the outbound
+  directory for the target address. When connecting to that node, the mailer
+  sends M_GET commands for each requested file.
+
+
+TIC File Distribution
+---------------------
+The mailer supports TIC file distribution for FTN file echo networks. TIC files
+accompany file transfers and contain metadata (filename, description, CRC, etc.)
+and distribution tracking (SEENBY, PATH).
+
+Inbound TIC Processing:
+  When TIC files are received (during toss or manual import), the mailer:
+  1. Parses the TIC file metadata
+  2. Verifies the file CRC if specified
+  3. Matches the area tag to a filebase area
+  4. Imports the file into the matched filebase area
+  5. Moves the TIC and file to Processed/ or Bad/ as appropriate
+
+  Files that fail processing (CRC mismatch, unknown area) are moved to Bad/.
+  Successfully imported files are moved to Processed/.
+
+Filebase Area Tags:
+  To receive TIC files into a filebase area, configure the area's 'tag' field
+  to match the FTN file echo tag:
+
+  filebase 1
+      name            Main Files
+      area 1
+          name        RISC OS Software
+          tag         RISCOS_SOFT
+      endarea
+      area 2
+          name        General Files
+          tag         GENERAL_FILES
+      endarea
+  endfilebase
+
+  When a TIC file is received with area "RISCOS_SOFT", it will be automatically
+  imported into filebase 1, area 1.
+
+Outbound TIC (Hatching):
+  To distribute a file from your filebase to downlinks, use the hatch
+  functionality (not yet implemented in CLI). This creates:
+  1. A TIC file with file metadata and your address in SEENBY/PATH
+  2. Queues both the file and TIC for sending to configured downlinks
+
+  Files are sent to uplinks whose groups match the area's groups.
+
+TIC File Format (for reference):
+  File        myfile.lha
+  Area        RISCOS_SOFT
+  Desc        A useful RISC OS application
+  Size        12345
+  CRC         12345678
+  Date        1234567890
+  Origin      2:2500/1.0
+  From        2:2500/0.0
+  To          2:2500/622.0
+  Seenby      2:2500/0.0
+  Seenby      2:2500/1.0
+  Path        2:2500/1.0
+  Pw          AreaPassword
 
 
 Packet Settings
@@ -65,6 +157,25 @@ Packet Settings
 max_packet_size     32768
 
   max_packet_size - Maximum size for outbound packets in bytes (default 32KB)
+
+
+Automatic Toss and Poll
+-----------------------
+The mailer can automatically toss inbound packets and poll uplinks on
+configurable intervals.
+
+tossinterval        300
+pollinterval        3600
+
+  tossinterval  - Seconds between automatic toss runs (0 = disabled)
+  pollinterval  - Seconds between automatic uplink polls (0 = disabled)
+
+Example:
+  tossinterval    300     ; Toss every 5 minutes
+  pollinterval    3600    ; Poll uplinks every hour
+
+The intervals are checked during null poll events. Setting either to 0
+disables that automatic operation (manual only via menu).
 
 
 Network Addresses
@@ -125,26 +236,47 @@ system that will forward mail for a particular network.
 
 uplink <id>
     address         <ftn_address>
+    host            <hostname_or_ip>
+    port            <port_number>
     network         <network_name>
     password        <session_password>
     groups          <area_groups>
+    alias           <alternate_address>
 enduplink
 
 Example - FidoNet uplink:
 
 uplink 1
     address         2:2500/0.0
+    host            hub.fidonet.example.org
+    port            24554
     network         Fidonet
     password        SecretPassword123
     groups          A,B,C
+    alias           2:2500/1.0
+    alias           2:2500/2.0
 enduplink
 
 Fields:
   id        - Unique identifier (1-8)
-  address   - FTN address of your uplink hub
+  address   - Primary FTN address of your uplink hub
+  host      - Hostname or IP address for outbound connections
+  port      - TCP port (default 24554)
   network   - Network this uplink serves
-  password  - BinkP session password (must match hub's configuration)
-  groups    - Echo area groups you receive (A-Z, as configured by your hub)
+  password  - BinkP session password (used for authentication and encryption)
+  groups    - Echo area groups to route to this uplink (A-Z, comma-separated)
+  alias     - Alternate addresses for this uplink (multiple allowed)
+
+Uplink Aliases:
+  FTN hubs often have multiple addresses (AKAs). When a hub connects or
+  reports a different address than configured, aliases help match it.
+  The mailer checks both the primary address and all aliases when
+  looking for files to send during a session.
+
+Group Filtering:
+  When scanning outbound echomail, messages are only routed to uplinks
+  whose groups overlap with the message area's groups. Empty groups on
+  either side means "match all".
 
 
 Multiple Networks
@@ -175,6 +307,8 @@ endaddress
 ; FidoNet uplink
 uplink 1
     address         2:2500/0.0
+    host            fido-hub.example.org
+    port            24554
     network         Fidonet
     password        FidoPassword
     groups          A,B
@@ -183,6 +317,8 @@ enduplink
 ; Private network hub
 uplink 2
     address         99:1/0.0
+    host            private-hub.local
+    port            24554
     network         MyNetwork
     password        PrivatePassword
     groups          A
@@ -251,9 +387,12 @@ Troubleshooting
 
 Security Notes
 --------------
-* Session passwords are transmitted in cleartext (or CRAM-MD5 if supported)
+* CRAM-MD5 authentication is used when supported by the remote system
+* Session encryption (CRYPT) is automatically enabled when both sides
+  support it and a password is configured - uses the session password
 * Store your configuration file with appropriate permissions
 * Consider using unique passwords for each uplink
+* Encryption uses Roger Schlafly's algorithm (same as BinkD)
 
 
 Complete Example Configuration
@@ -272,9 +411,13 @@ flags               CM,XA
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
-badmail             <Converse$Dir>.FTN.Bad
 
 max_packet_size     32768
+tossinterval        300
+pollinterval        3600
+
+; File request (FREQ) configuration
+freqpath            <Converse$Dir>.FTN.Freq
 
 ; My FidoNet node address
 address 1
@@ -291,9 +434,12 @@ endaddress
 ; My FidoNet hub
 uplink 1
     address         2:2500/0.0
+    host            fido-hub.example.org
+    port            24554
     network         Fidonet
     password        HubSessionPwd
     groups          A,B,C,D
+    alias           2:2500/1.0
 enduplink
 
 ; End of configuration

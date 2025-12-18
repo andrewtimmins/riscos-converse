@@ -1,0 +1,901 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - ZIP Archive Creation Implementation                                                                                                         */
+/*                                                                                                                                                          */
+/* Implements PKZIP creation with DEFLATE compression (RFC 1951).                                                                                           */
+/* Uses fixed Huffman codes for simplicity and speed - good compression                                                                                     */
+/* ratio for typical FTN packet data.                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "zip.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* ZIP File Format Constants                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define ZIP_LOCAL_HEADER_SIG        0x04034b50
+#define ZIP_CENTRAL_HEADER_SIG      0x02014b50
+#define ZIP_END_CENTRAL_SIG         0x06054b50
+
+#define ZIP_VERSION_NEEDED          20      /* 2.0 for DEFLATE */
+#define ZIP_VERSION_MADE_BY         20
+
+/* ******************************************************************************************************************************************************** */
+/* CRC-32 Table                                                                                                                                             */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned long crc32_table[256];
+static int crc32_table_init = 0;
+
+static void init_crc32_table(void)
+{
+    unsigned long c;
+    int n, k;
+
+    if (crc32_table_init) return;
+
+    for (n = 0; n < 256; n++)
+    {
+        c = (unsigned long)n;
+        for (k = 0; k < 8; k++)
+        {
+            if (c & 1)
+                c = 0xedb88320UL ^ (c >> 1);
+            else
+                c = c >> 1;
+        }
+        crc32_table[n] = c;
+    }
+    crc32_table_init = 1;
+}
+
+static unsigned long update_crc32(unsigned long crc, const unsigned char *buf, unsigned long len)
+{
+    unsigned long c = crc ^ 0xffffffffUL;
+
+    while (len--)
+    {
+        c = crc32_table[(c ^ *buf++) & 0xff] ^ (c >> 8);
+    }
+
+    return c ^ 0xffffffffUL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Little-Endian Writers                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+static void write_le16(unsigned char *p, unsigned int v)
+{
+    p[0] = (unsigned char)(v & 0xff);
+    p[1] = (unsigned char)((v >> 8) & 0xff);
+}
+
+static void write_le32(unsigned char *p, unsigned long v)
+{
+    p[0] = (unsigned char)(v & 0xff);
+    p[1] = (unsigned char)((v >> 8) & 0xff);
+    p[2] = (unsigned char)((v >> 16) & 0xff);
+    p[3] = (unsigned char)((v >> 24) & 0xff);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* DOS Date/Time Conversion                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+static void time_to_dos(time_t t, unsigned short *dos_date, unsigned short *dos_time)
+{
+    struct tm *tm;
+
+    if (t == 0)
+        t = time(NULL);
+
+    tm = localtime(&t);
+    if (tm == NULL)
+    {
+        *dos_date = 0x21;   /* 1 Jan 1980 */
+        *dos_time = 0;
+        return;
+    }
+
+    /* DOS date: bits 0-4 = day, 5-8 = month, 9-15 = year-1980 */
+    *dos_date = (unsigned short)(
+        (tm->tm_mday & 0x1f) |
+        (((tm->tm_mon + 1) & 0x0f) << 5) |
+        (((tm->tm_year - 80) & 0x7f) << 9)
+    );
+
+    /* DOS time: bits 0-4 = sec/2, 5-10 = min, 11-15 = hour */
+    *dos_time = (unsigned short)(
+        ((tm->tm_sec / 2) & 0x1f) |
+        ((tm->tm_min & 0x3f) << 5) |
+        ((tm->tm_hour & 0x1f) << 11)
+    );
+}
+
+/* ******************************************************************************************************************************************************** */
+/* DEFLATE Compression (RFC 1951)                                                                                                                           */
+/*                                                                                                                                                          */
+/* This implementation uses:                                                                                                                                */
+/* - Fixed Huffman codes (simpler, reasonable compression)                                                                                                  */
+/* - Simple LZ77 with hash chain for match finding                                                                                                          */
+/* - Suitable for FTN packet compression                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/* LZ77 parameters */
+#define DEFLATE_WINDOW_SIZE     32768   /* 32KB sliding window */
+#define DEFLATE_MAX_MATCH       258     /* Maximum match length */
+#define DEFLATE_MIN_MATCH       3       /* Minimum match length */
+#define DEFLATE_HASH_SIZE       32768   /* Hash table size */
+#define DEFLATE_HASH_SHIFT      5       /* Hash function shift */
+#define DEFLATE_MAX_CHAIN       64      /* Max hash chain length */
+
+/* Bit output buffer */
+typedef struct
+{
+    unsigned char *data;
+    unsigned long size;
+    unsigned long pos;
+    unsigned int bits;
+    int nbits;
+} BITSTREAM_OUT;
+
+static void bs_out_init(BITSTREAM_OUT *bs, unsigned char *data, unsigned long size)
+{
+    bs->data = data;
+    bs->size = size;
+    bs->pos = 0;
+    bs->bits = 0;
+    bs->nbits = 0;
+}
+
+static int bs_out_write_bits(BITSTREAM_OUT *bs, unsigned int value, int nbits)
+{
+    bs->bits |= (value << bs->nbits);
+    bs->nbits += nbits;
+
+    while (bs->nbits >= 8)
+    {
+        if (bs->pos >= bs->size)
+            return -1;
+        bs->data[bs->pos++] = (unsigned char)(bs->bits & 0xff);
+        bs->bits >>= 8;
+        bs->nbits -= 8;
+    }
+
+    return 0;
+}
+
+static int bs_out_flush(BITSTREAM_OUT *bs)
+{
+    if (bs->nbits > 0)
+    {
+        if (bs->pos >= bs->size)
+            return -1;
+        bs->data[bs->pos++] = (unsigned char)(bs->bits & 0xff);
+        bs->bits = 0;
+        bs->nbits = 0;
+    }
+    return 0;
+}
+
+/* Fixed Huffman code tables for encoding */
+
+/* Length code: 257-285 */
+static const struct { int base; int extra; } len_table[29] = {
+    {3,0},{4,0},{5,0},{6,0},{7,0},{8,0},{9,0},{10,0},
+    {11,1},{13,1},{15,1},{17,1},{19,2},{23,2},{27,2},{31,2},
+    {35,3},{43,3},{51,3},{59,3},{67,4},{83,4},{99,4},{115,4},
+    {131,5},{163,5},{195,5},{227,5},{258,0}
+};
+
+/* Distance code: 0-29 */
+static const struct { int base; int extra; } dist_table[30] = {
+    {1,0},{2,0},{3,0},{4,0},{5,1},{7,1},{9,2},{13,2},
+    {17,3},{25,3},{33,4},{49,4},{65,5},{97,5},{129,6},{193,6},
+    {257,7},{385,7},{513,8},{769,8},{1025,9},{1537,9},{2049,10},{3073,10},
+    {4097,11},{6145,11},{8193,12},{12289,12},{16385,13},{24577,13}
+};
+
+/* Get length code (257-285) from length (3-258) */
+static int get_length_code(int length)
+{
+    int i;
+    for (i = 0; i < 29; i++)
+    {
+        int next_base = (i < 28) ? len_table[i + 1].base : 259;
+        if (length < next_base)
+            return 257 + i;
+    }
+    return 285;
+}
+
+/* Get distance code (0-29) from distance (1-32768) */
+static int get_dist_code(int distance)
+{
+    int i;
+    for (i = 0; i < 30; i++)
+    {
+        int next_base = (i < 29) ? dist_table[i + 1].base : 32769;
+        if (distance < next_base)
+            return i;
+    }
+    return 29;
+}
+
+/* Fixed Huffman codes for literals/lengths (RFC 1951 section 3.2.6) */
+static int fixed_litlen_code(int symbol, int *nbits)
+{
+    if (symbol <= 143)
+    {
+        *nbits = 8;
+        return 0x30 + symbol;   /* 00110000 + symbol reversed */
+    }
+    else if (symbol <= 255)
+    {
+        *nbits = 9;
+        return 0x190 + (symbol - 144);
+    }
+    else if (symbol <= 279)
+    {
+        *nbits = 7;
+        return symbol - 256;
+    }
+    else
+    {
+        *nbits = 8;
+        return 0xC0 + (symbol - 280);
+    }
+}
+
+/* Reverse bits for Huffman code output */
+static unsigned int reverse_bits(unsigned int v, int nbits)
+{
+    unsigned int r = 0;
+    int i;
+    for (i = 0; i < nbits; i++)
+    {
+        r = (r << 1) | (v & 1);
+        v >>= 1;
+    }
+    return r;
+}
+
+/* Write a fixed Huffman literal/length code */
+static int write_fixed_litlen(BITSTREAM_OUT *bs, int symbol)
+{
+    int code, nbits;
+    code = fixed_litlen_code(symbol, &nbits);
+    return bs_out_write_bits(bs, reverse_bits(code, nbits), nbits);
+}
+
+/* Write a fixed Huffman distance code (5 bits, reversed) */
+static int write_fixed_dist(BITSTREAM_OUT *bs, int dist_code)
+{
+    return bs_out_write_bits(bs, reverse_bits(dist_code, 5), 5);
+}
+
+/* Hash function for LZ77 matching */
+static unsigned int hash_func(const unsigned char *p)
+{
+    return ((p[0] << (DEFLATE_HASH_SHIFT * 2)) ^
+            (p[1] << DEFLATE_HASH_SHIFT) ^
+            p[2]) & (DEFLATE_HASH_SIZE - 1);
+}
+
+/* Find best match using hash chain */
+static int find_match(const unsigned char *data, unsigned long data_len,
+                      unsigned long pos, int *head, int *prev,
+                      int *match_dist, int *match_len)
+{
+    unsigned int h;
+    int chain;
+    int best_len = 0;
+    int best_dist = 0;
+    int limit;
+    int cur;
+
+    *match_dist = 0;
+    *match_len = 0;
+
+    if (pos + DEFLATE_MIN_MATCH > data_len)
+        return 0;
+
+    h = hash_func(data + pos);
+
+    /* Search hash chain */
+    limit = (int)pos - DEFLATE_WINDOW_SIZE;
+    if (limit < 0) limit = 0;
+
+    chain = 0;
+    cur = head[h];
+
+    while (cur >= limit && chain < DEFLATE_MAX_CHAIN)
+    {
+        const unsigned char *p1 = data + pos;
+        const unsigned char *p2 = data + cur;
+        int len = 0;
+        int max_len = (int)(data_len - pos);
+
+        if (max_len > DEFLATE_MAX_MATCH)
+            max_len = DEFLATE_MAX_MATCH;
+
+        /* Quick check: first bytes must match */
+        if (p1[0] == p2[0] && p1[1] == p2[1] && p1[2] == p2[2])
+        {
+            len = 3;
+            while (len < max_len && p1[len] == p2[len])
+                len++;
+
+            if (len > best_len)
+            {
+                best_len = len;
+                best_dist = (int)(pos - cur);
+
+                if (best_len >= DEFLATE_MAX_MATCH)
+                    break;
+            }
+        }
+
+        cur = prev[cur & (DEFLATE_WINDOW_SIZE - 1)];
+        chain++;
+    }
+
+    if (best_len >= DEFLATE_MIN_MATCH)
+    {
+        *match_dist = best_dist;
+        *match_len = best_len;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Update hash chain */
+static void update_hash(const unsigned char *data, unsigned long data_len,
+                        unsigned long pos, int *head, int *prev)
+{
+    unsigned int h;
+
+    if (pos + DEFLATE_MIN_MATCH > data_len)
+        return;
+
+    h = hash_func(data + pos);
+    prev[pos & (DEFLATE_WINDOW_SIZE - 1)] = head[h];
+    head[h] = (int)pos;
+}
+
+/* DEFLATE compression using fixed Huffman codes */
+static int deflate_compress(const unsigned char *in, unsigned long in_len,
+                            unsigned char *out, unsigned long out_size,
+                            unsigned long *out_len)
+{
+    BITSTREAM_OUT bs;
+    int *head = NULL;
+    int *prev = NULL;
+    unsigned long pos;
+    int i;
+
+    if (in_len == 0)
+    {
+        /* Empty input - just write empty block */
+        bs_out_init(&bs, out, out_size);
+        bs_out_write_bits(&bs, 1, 1);   /* BFINAL = 1 */
+        bs_out_write_bits(&bs, 1, 2);   /* BTYPE = 01 (fixed Huffman) */
+        write_fixed_litlen(&bs, 256);   /* End of block */
+        bs_out_flush(&bs);
+        *out_len = bs.pos;
+        return ZIP_OK;
+    }
+
+    /* Allocate hash tables */
+    head = (int *)malloc(DEFLATE_HASH_SIZE * sizeof(int));
+    prev = (int *)malloc(DEFLATE_WINDOW_SIZE * sizeof(int));
+
+    if (head == NULL || prev == NULL)
+    {
+        if (head) free(head);
+        if (prev) free(prev);
+        return ZIP_ERR_MEMORY;
+    }
+
+    /* Initialize hash table */
+    for (i = 0; i < DEFLATE_HASH_SIZE; i++)
+        head[i] = -1;
+
+    bs_out_init(&bs, out, out_size);
+
+    /* Write block header: BFINAL=1, BTYPE=01 (fixed Huffman) */
+    if (bs_out_write_bits(&bs, 1, 1) < 0 ||
+        bs_out_write_bits(&bs, 1, 2) < 0)
+    {
+        free(head);
+        free(prev);
+        return ZIP_ERR_COMPRESS;
+    }
+
+    /* Compress data */
+    pos = 0;
+    while (pos < in_len)
+    {
+        int match_dist, match_len;
+
+        if (find_match(in, in_len, pos, head, prev, &match_dist, &match_len))
+        {
+            /* Output length/distance pair */
+            int len_code = get_length_code(match_len);
+            int len_idx = len_code - 257;
+            int dist_code = get_dist_code(match_dist);
+
+            /* Write length code */
+            if (write_fixed_litlen(&bs, len_code) < 0)
+            {
+                free(head);
+                free(prev);
+                return ZIP_ERR_COMPRESS;
+            }
+
+            /* Write length extra bits */
+            if (len_table[len_idx].extra > 0)
+            {
+                int extra_val = match_len - len_table[len_idx].base;
+                if (bs_out_write_bits(&bs, extra_val, len_table[len_idx].extra) < 0)
+                {
+                    free(head);
+                    free(prev);
+                    return ZIP_ERR_COMPRESS;
+                }
+            }
+
+            /* Write distance code */
+            if (write_fixed_dist(&bs, dist_code) < 0)
+            {
+                free(head);
+                free(prev);
+                return ZIP_ERR_COMPRESS;
+            }
+
+            /* Write distance extra bits */
+            if (dist_table[dist_code].extra > 0)
+            {
+                int extra_val = match_dist - dist_table[dist_code].base;
+                if (bs_out_write_bits(&bs, extra_val, dist_table[dist_code].extra) < 0)
+                {
+                    free(head);
+                    free(prev);
+                    return ZIP_ERR_COMPRESS;
+                }
+            }
+
+            /* Update hash for all matched positions */
+            for (i = 0; i < match_len; i++)
+            {
+                update_hash(in, in_len, pos + i, head, prev);
+            }
+            pos += match_len;
+        }
+        else
+        {
+            /* Output literal */
+            if (write_fixed_litlen(&bs, in[pos]) < 0)
+            {
+                free(head);
+                free(prev);
+                return ZIP_ERR_COMPRESS;
+            }
+            update_hash(in, in_len, pos, head, prev);
+            pos++;
+        }
+    }
+
+    /* Write end-of-block symbol */
+    if (write_fixed_litlen(&bs, 256) < 0)
+    {
+        free(head);
+        free(prev);
+        return ZIP_ERR_COMPRESS;
+    }
+
+    if (bs_out_flush(&bs) < 0)
+    {
+        free(head);
+        free(prev);
+        return ZIP_ERR_COMPRESS;
+    }
+
+    free(head);
+    free(prev);
+
+    *out_len = bs.pos;
+    return ZIP_OK;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* ZIP Archive Functions                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+int zip_create(ZIP_ARCHIVE *archive, const char *path)
+{
+    FILE *fp;
+
+    if (archive == NULL || path == NULL)
+        return ZIP_ERR_OPEN;
+
+    init_crc32_table();
+
+    memset(archive, 0, sizeof(ZIP_ARCHIVE));
+    strncpy(archive->path, path, sizeof(archive->path) - 1);
+
+    fp = fopen(path, "wb");
+    if (fp == NULL)
+    {
+        debug_printf("zip: Cannot create %s", path);
+        return ZIP_ERR_OPEN;
+    }
+
+    archive->fp = fp;
+    archive->entry_count = 0;
+    archive->current_offset = 0;
+
+    debug_printf("zip: Created %s", path);
+
+    return ZIP_OK;
+}
+
+static int write_local_header(ZIP_ARCHIVE *archive, ZIP_CD_ENTRY *entry)
+{
+    FILE *fp = (FILE *)archive->fp;
+    unsigned char hdr[30];
+    int name_len = strlen(entry->filename);
+
+    /* Signature */
+    write_le32(hdr, ZIP_LOCAL_HEADER_SIG);
+    /* Version needed */
+    write_le16(hdr + 4, ZIP_VERSION_NEEDED);
+    /* Flags */
+    write_le16(hdr + 6, 0);
+    /* Compression method */
+    write_le16(hdr + 8, entry->method);
+    /* DOS time/date */
+    write_le16(hdr + 10, entry->dos_time);
+    write_le16(hdr + 12, entry->dos_date);
+    /* CRC-32 */
+    write_le32(hdr + 14, entry->crc32);
+    /* Compressed size */
+    write_le32(hdr + 18, entry->compressed_size);
+    /* Uncompressed size */
+    write_le32(hdr + 22, entry->uncompressed_size);
+    /* Filename length */
+    write_le16(hdr + 26, name_len);
+    /* Extra field length */
+    write_le16(hdr + 28, 0);
+
+    if (fwrite(hdr, 1, 30, fp) != 30)
+        return ZIP_ERR_WRITE;
+
+    if (fwrite(entry->filename, 1, name_len, fp) != (size_t)name_len)
+        return ZIP_ERR_WRITE;
+
+    return ZIP_OK;
+}
+
+static int write_central_directory(ZIP_ARCHIVE *archive)
+{
+    FILE *fp = (FILE *)archive->fp;
+    unsigned char hdr[46];
+    unsigned char eocd[22];
+    unsigned long cd_start = archive->current_offset;
+    unsigned long cd_size;
+    int i;
+
+    /* Write central directory entries */
+    for (i = 0; i < archive->entry_count; i++)
+    {
+        ZIP_CD_ENTRY *entry = &archive->entries[i];
+        int name_len = strlen(entry->filename);
+
+        /* Signature */
+        write_le32(hdr, ZIP_CENTRAL_HEADER_SIG);
+        /* Version made by */
+        write_le16(hdr + 4, ZIP_VERSION_MADE_BY);
+        /* Version needed */
+        write_le16(hdr + 6, ZIP_VERSION_NEEDED);
+        /* Flags */
+        write_le16(hdr + 8, 0);
+        /* Compression method */
+        write_le16(hdr + 10, entry->method);
+        /* DOS time/date */
+        write_le16(hdr + 12, entry->dos_time);
+        write_le16(hdr + 14, entry->dos_date);
+        /* CRC-32 */
+        write_le32(hdr + 16, entry->crc32);
+        /* Compressed size */
+        write_le32(hdr + 20, entry->compressed_size);
+        /* Uncompressed size */
+        write_le32(hdr + 24, entry->uncompressed_size);
+        /* Filename length */
+        write_le16(hdr + 28, name_len);
+        /* Extra field length */
+        write_le16(hdr + 30, 0);
+        /* Comment length */
+        write_le16(hdr + 32, 0);
+        /* Disk number start */
+        write_le16(hdr + 34, 0);
+        /* Internal file attributes */
+        write_le16(hdr + 36, 0);
+        /* External file attributes */
+        write_le32(hdr + 38, 0);
+        /* Relative offset of local header */
+        write_le32(hdr + 42, entry->local_header_offset);
+
+        if (fwrite(hdr, 1, 46, fp) != 46)
+            return ZIP_ERR_WRITE;
+
+        if (fwrite(entry->filename, 1, name_len, fp) != (size_t)name_len)
+            return ZIP_ERR_WRITE;
+    }
+
+    cd_size = ftell(fp) - cd_start;
+
+    /* Write end of central directory record */
+    write_le32(eocd, ZIP_END_CENTRAL_SIG);
+    /* Disk number */
+    write_le16(eocd + 4, 0);
+    /* Disk with central directory */
+    write_le16(eocd + 6, 0);
+    /* Entries on this disk */
+    write_le16(eocd + 8, archive->entry_count);
+    /* Total entries */
+    write_le16(eocd + 10, archive->entry_count);
+    /* Central directory size */
+    write_le32(eocd + 12, cd_size);
+    /* Central directory offset */
+    write_le32(eocd + 16, cd_start);
+    /* Comment length */
+    write_le16(eocd + 20, 0);
+
+    if (fwrite(eocd, 1, 22, fp) != 22)
+        return ZIP_ERR_WRITE;
+
+    return ZIP_OK;
+}
+
+int zip_add_memory(ZIP_ARCHIVE *archive, const unsigned char *data,
+                   unsigned long data_len, const char *arc_name, int compress)
+{
+    FILE *fp;
+    ZIP_CD_ENTRY *entry;
+    unsigned char *compressed = NULL;
+    unsigned long compressed_len;
+    unsigned long crc;
+    int result;
+    char *p;
+
+    if (archive == NULL || arc_name == NULL || archive->fp == NULL)
+        return ZIP_ERR_OPEN;
+
+    if (archive->entry_count >= ZIP_MAX_ENTRIES)
+        return ZIP_ERR_FULL;
+
+    fp = (FILE *)archive->fp;
+    entry = &archive->entries[archive->entry_count];
+
+    /* Set up entry */
+    memset(entry, 0, sizeof(ZIP_CD_ENTRY));
+    strncpy(entry->filename, arc_name, sizeof(entry->filename) - 1);
+
+    /* Convert path separators to forward slashes for ZIP */
+    for (p = entry->filename; *p; p++)
+    {
+        if (*p == '.' || *p == '\\')
+            *p = '/';
+    }
+
+    entry->uncompressed_size = data_len;
+    entry->local_header_offset = archive->current_offset;
+    time_to_dos(0, &entry->dos_date, &entry->dos_time);
+
+    /* Calculate CRC */
+    crc = update_crc32(0, data, data_len);
+    entry->crc32 = crc;
+
+    /* Compress or store */
+    if (compress && data_len >= ZIP_COMPRESS_THRESHOLD)
+    {
+        unsigned long max_compressed = data_len + (data_len / 8) + 256;
+
+        compressed = (unsigned char *)malloc(max_compressed);
+        if (compressed == NULL)
+            return ZIP_ERR_MEMORY;
+
+        result = deflate_compress(data, data_len, compressed, max_compressed, &compressed_len);
+        if (result != ZIP_OK)
+        {
+            free(compressed);
+            return result;
+        }
+
+        /* Only use compressed if smaller */
+        if (compressed_len < data_len)
+        {
+            entry->method = ZIP_METHOD_DEFLATE;
+            entry->compressed_size = compressed_len;
+        }
+        else
+        {
+            free(compressed);
+            compressed = NULL;
+            entry->method = ZIP_METHOD_STORE;
+            entry->compressed_size = data_len;
+        }
+    }
+    else
+    {
+        entry->method = ZIP_METHOD_STORE;
+        entry->compressed_size = data_len;
+    }
+
+    /* Write local header */
+    result = write_local_header(archive, entry);
+    if (result != ZIP_OK)
+    {
+        if (compressed) free(compressed);
+        return result;
+    }
+
+    /* Write data */
+    if (entry->method == ZIP_METHOD_DEFLATE && compressed != NULL)
+    {
+        if (fwrite(compressed, 1, compressed_len, fp) != compressed_len)
+        {
+            free(compressed);
+            return ZIP_ERR_WRITE;
+        }
+        free(compressed);
+    }
+    else
+    {
+        if (data_len > 0 && fwrite(data, 1, data_len, fp) != data_len)
+            return ZIP_ERR_WRITE;
+    }
+
+    /* Update offset */
+    archive->current_offset = ftell(fp);
+    archive->entry_count++;
+
+    debug_printf("zip: Added %s (%lu -> %lu bytes, method %d)",
+                 entry->filename, entry->uncompressed_size,
+                 entry->compressed_size, entry->method);
+
+    return ZIP_OK;
+}
+
+int zip_add_file(ZIP_ARCHIVE *archive, const char *src_path,
+                 const char *arc_name, int compress)
+{
+    FILE *src;
+    unsigned char *data;
+    unsigned long file_size;
+    int result;
+    const char *name;
+
+    if (archive == NULL || src_path == NULL)
+        return ZIP_ERR_OPEN;
+
+    /* Determine archive name */
+    if (arc_name == NULL)
+    {
+        /* Use basename */
+        name = strrchr(src_path, '.');
+        if (name == NULL)
+            name = src_path;
+        else
+            name++;
+    }
+    else
+    {
+        name = arc_name;
+    }
+
+    /* Read source file */
+    src = fopen(src_path, "rb");
+    if (src == NULL)
+    {
+        debug_printf("zip: Cannot open source %s", src_path);
+        return ZIP_ERR_READ;
+    }
+
+    fseek(src, 0, SEEK_END);
+    file_size = ftell(src);
+    fseek(src, 0, SEEK_SET);
+
+    if (file_size == 0)
+    {
+        fclose(src);
+        return zip_add_memory(archive, NULL, 0, name, 0);
+    }
+
+    data = (unsigned char *)malloc(file_size);
+    if (data == NULL)
+    {
+        fclose(src);
+        return ZIP_ERR_MEMORY;
+    }
+
+    if (fread(data, 1, file_size, src) != file_size)
+    {
+        free(data);
+        fclose(src);
+        return ZIP_ERR_READ;
+    }
+
+    fclose(src);
+
+    result = zip_add_memory(archive, data, file_size, name, compress);
+    free(data);
+
+    return result;
+}
+
+int zip_close(ZIP_ARCHIVE *archive)
+{
+    int result;
+
+    if (archive == NULL || archive->fp == NULL)
+        return ZIP_ERR_OPEN;
+
+    result = write_central_directory(archive);
+
+    fclose((FILE *)archive->fp);
+    archive->fp = NULL;
+
+    if (result == ZIP_OK)
+    {
+        debug_printf("zip: Closed %s with %d entries", archive->path, archive->entry_count);
+    }
+
+    return result;
+}
+
+void zip_abort(ZIP_ARCHIVE *archive)
+{
+    if (archive == NULL)
+        return;
+
+    if (archive->fp != NULL)
+    {
+        fclose((FILE *)archive->fp);
+        archive->fp = NULL;
+    }
+
+    /* Delete partial file */
+    remove(archive->path);
+
+    debug_printf("zip: Aborted %s", archive->path);
+}
+
+int zip_compress_buffer(const unsigned char *in, unsigned long in_len,
+                        unsigned char *out, unsigned long out_size,
+                        unsigned long *out_len)
+{
+    return deflate_compress(in, in_len, out, out_size, out_len);
+}
+
+const char *zip_error_string(int error)
+{
+    switch (error)
+    {
+        case ZIP_OK:            return "OK";
+        case ZIP_ERR_OPEN:      return "Cannot open/create file";
+        case ZIP_ERR_WRITE:     return "Write error";
+        case ZIP_ERR_READ:      return "Read error";
+        case ZIP_ERR_MEMORY:    return "Memory allocation failed";
+        case ZIP_ERR_COMPRESS:  return "Compression error";
+        case ZIP_ERR_FULL:      return "Too many entries";
+        default:                return "Unknown error";
+    }
+}

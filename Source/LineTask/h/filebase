@@ -26,6 +26,7 @@
 #define FILEBASE_CMD_ENUMERATE_AREAS 9
 #define FILEBASE_CMD_ENUMERATE_FILES 10
 #define FILEBASE_CMD_FILE_INFO   11
+#define FILEBASE_CMD_END_UPLOAD  12
 
 /* Field sizes (must match Filer/h/structs) */
 #define FB_MAX_NAME              64
@@ -163,6 +164,7 @@ int filebase_begin_upload(int base_id, int area_id, const char *filename,
                           const char *description, int uploaded_by,
                           int accesslevel, const char *keys);
 int filebase_upload_block(int base_id, int file_id, const void *data, int length);
+int filebase_end_upload(int base_id, int file_id);
 int filebase_get_temp_upload_path(int base_id, int line, char *path, int path_size);
 int filebase_register_upload(int base_id, int area_id, const char *temp_path,
                              const char *filename, const char *description,

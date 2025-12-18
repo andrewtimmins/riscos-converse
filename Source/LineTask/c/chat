@@ -1,0 +1,1032 @@
+/*
+ * chat.c - Sysop chat functionality for LineTask
+ *
+ * Handles real-time chat between sysop and connected user.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "C:Desk.Core.h"
+#include "C:Desk.GFX.h"
+#include "C:Desk.Icon.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.Window.h"
+
+#include "chat.h"
+#include "debug.h"
+#include "iconnames.h"
+#include "main.h"
+#include "pipes.h"
+#include "script.h"
+
+/* ============================================================================
+ * CONSTANTS
+ * ============================================================================
+ */
+
+#define SWI_OS_READMONOTONICTIME 0x42
+
+/* ============================================================================
+ * STATIC VARIABLES
+ * ============================================================================
+ */
+
+static Desk_window_handle chat_window_handle = 0;
+static Desk_window_handle chatpager_window_handle = 0;
+static Desk_window_handle userchat_window_handle = 0;
+static Desk_window_handle sysopchat_window_handle = 0;
+
+/* ============================================================================
+ * FORWARD DECLARATIONS
+ * ============================================================================
+ */
+
+static int chatpane_current_index(const chat_pane_view *pane);
+static int chatpane_add_line(chat_pane_view *pane);
+static void chatpane_recalculate_longest(chat_pane_view *pane);
+static const char *chatpane_get_line(const chat_pane_view *pane, int row);
+static void chatpane_refresh_rectangle(chat_pane_view *pane,
+                                       Desk_window_redrawblock *redraw);
+static void chatpane_init(chat_pane_view *pane);
+static void chatpane_set_window(chat_pane_view *pane,
+                                Desk_window_handle window);
+static void chatpane_clear(chat_pane_view *pane);
+static void chatpane_append_char(chat_pane_view *pane, char ch);
+static void chatpane_backspace(chat_pane_view *pane);
+static void chatpane_newline(chat_pane_view *pane);
+static void chatpane_update_extent(chat_pane_view *pane);
+static void chatpane_force_redraw(chat_pane_view *pane);
+static void chatpane_scroll_to_bottom(chat_pane_view *pane);
+
+static void chat_beep(void);
+static void chat_update_user_timer(line_task_state *state,
+                                   const char *time_text);
+static void chat_draw_header(line_task_state *state, const char *timer_text);
+static void chat_setup_split_screen(line_task_state *state);
+static void chat_position_pane_window(Desk_window_handle pane,
+                                      Desk_icon_handle anchor_icon);
+static void chat_show_panes(line_task_state *state);
+static void chat_hide_panes(void);
+static void chat_send_sysop_char(line_task_state *state, char ch);
+
+/* External functions from main.c */
+extern void log_line_event(int line_id, const char *message);
+extern const char *config_get_sysop_name(void);
+
+/* ============================================================================
+ * PUBLIC FUNCTIONS
+ * ============================================================================
+ */
+
+void chat_set_window_handles(Desk_window_handle chat,
+                             Desk_window_handle chatpager,
+                             Desk_window_handle userchat,
+                             Desk_window_handle sysopchat) {
+  chat_window_handle = chat;
+  chatpager_window_handle = chatpager;
+  userchat_window_handle = userchat;
+  sysopchat_window_handle = sysopchat;
+}
+
+void chat_setup_pane_windows(line_task_state *state) {
+  if (state == NULL) {
+    return;
+  }
+
+  chatpane_set_window(&state->chat.user_pane, userchat_window_handle);
+  chatpane_set_window(&state->chat.sysop_pane, sysopchat_window_handle);
+}
+
+void chat_init(line_task_state *state) {
+  if (state == NULL) {
+    return;
+  }
+
+  chatpane_init(&state->chat.user_pane);
+  chatpane_init(&state->chat.sysop_pane);
+}
+
+void chat_reset_state(line_task_state *state) {
+  if (state == NULL) {
+    return;
+  }
+
+  state->chat.paging = Desk_bool_FALSE;
+  state->chat.active = Desk_bool_FALSE;
+  state->chat.pager_deadline = 0;
+  state->chat.next_beep = 0;
+  state->chat.reason[0] = '\0';
+  state->chat.user_buffer[0] = '\0';
+  state->chat.sysop_buffer[0] = '\0';
+  state->chat.user_len = 0;
+  state->chat.sysop_len = 0;
+  state->chat.user_row = CHAT_USER_START_ROW;
+  state->chat.sysop_row = CHAT_SYSOP_START_ROW;
+  state->chat.timer_start = 0;
+  state->chat.timer_last_seconds = -1;
+  chatpane_clear(&state->chat.user_pane);
+  chatpane_clear(&state->chat.sysop_pane);
+}
+
+/* ============================================================================
+ * CHAT PANE HELPERS
+ * ============================================================================
+ */
+
+static int chatpane_current_index(const chat_pane_view *pane) {
+  if (pane == NULL || pane->line_count <= 0) {
+    return -1;
+  }
+
+  return (pane->start_index + pane->line_count - 1) % CHAT_PANE_MAX_LINES;
+}
+
+static int chatpane_add_line(chat_pane_view *pane) {
+  int insert_index;
+
+  if (pane == NULL) {
+    return -1;
+  }
+
+  if (pane->line_count < CHAT_PANE_MAX_LINES) {
+    insert_index = (pane->start_index + pane->line_count) % CHAT_PANE_MAX_LINES;
+    pane->line_count++;
+  } else {
+    insert_index = pane->start_index;
+    if ((int)pane->line_lengths[insert_index] == pane->longest_length) {
+      pane->longest_valid = Desk_bool_FALSE;
+    }
+    pane->start_index = (pane->start_index + 1) % CHAT_PANE_MAX_LINES;
+  }
+
+  pane->line_lengths[insert_index] = 0;
+  pane->lines[insert_index][0] = '\0';
+  return insert_index;
+}
+
+static void chatpane_recalculate_longest(chat_pane_view *pane) {
+  int i;
+  int max_length = CHAT_PANE_MIN_COLUMNS;
+
+  if (pane == NULL) {
+    return;
+  }
+
+  for (i = 0; i < pane->line_count; i++) {
+    int index = (pane->start_index + i) % CHAT_PANE_MAX_LINES;
+    if ((int)pane->line_lengths[index] > max_length) {
+      max_length = pane->line_lengths[index];
+    }
+  }
+
+  pane->longest_length = max_length;
+  pane->longest_valid = Desk_bool_TRUE;
+}
+
+static const char *chatpane_get_line(const chat_pane_view *pane, int row) {
+  if (pane == NULL || row < 0 || row >= pane->line_count) {
+    return NULL;
+  }
+
+  return pane->lines[(pane->start_index + row) % CHAT_PANE_MAX_LINES];
+}
+
+static void chatpane_refresh_rectangle(chat_pane_view *pane,
+                                       Desk_window_redrawblock *redraw) {
+  int left;
+  int right;
+  int top;
+  int bottom;
+  int total_rows;
+
+  if (pane == NULL || redraw == NULL) {
+    return;
+  }
+
+  total_rows = pane->line_count;
+  if (total_rows <= 0) {
+    return;
+  }
+
+  left = (redraw->cliprect.min.x - redraw->rect.min.x + redraw->scroll.x) >>
+         CHAT_PANE_CHAR_WIDTH_SHIFT;
+  right = (redraw->cliprect.max.x - redraw->rect.min.x + redraw->scroll.x) >>
+          CHAT_PANE_CHAR_WIDTH_SHIFT;
+  top = (redraw->rect.max.y - redraw->cliprect.max.y - redraw->scroll.y + 1) >>
+        CHAT_PANE_CHAR_HEIGHT_SHIFT;
+  bottom =
+      (redraw->rect.max.y - redraw->cliprect.min.y - redraw->scroll.y + 1) >>
+      CHAT_PANE_CHAR_HEIGHT_SHIFT;
+
+  if (left < 0) {
+    left = 0;
+  }
+  if (right < 0) {
+    return;
+  }
+  if (top < 0) {
+    top = 0;
+  }
+  if (bottom >= total_rows) {
+    bottom = total_rows - 1;
+  }
+  if (bottom < top) {
+    return;
+  }
+
+  for (; top <= bottom; top++) {
+    const char *line = chatpane_get_line(pane, top);
+    int length;
+    int start_col;
+    int end_col;
+    int count;
+    char buffer[CHAT_PANE_LINE_CHARS];
+    int i;
+
+    if (line == NULL) {
+      continue;
+    }
+
+    length = (int)strlen(line);
+    if (length == 0) {
+      continue;
+    }
+
+    start_col = left;
+    end_col = right;
+    if (start_col < 0) {
+      start_col = 0;
+    }
+    if (end_col >= length) {
+      end_col = length - 1;
+    }
+
+    count = end_col - start_col + 1;
+    if (count <= 0) {
+      continue;
+    }
+    if (count >= CHAT_PANE_LINE_CHARS) {
+      count = CHAT_PANE_LINE_CHARS - 1;
+    }
+
+    for (i = 0; i < count; i++) {
+      char ch = line[start_col + i];
+      if ((unsigned char)ch < 32) {
+        ch = '.';
+      }
+      buffer[i] = ch;
+    }
+    buffer[count] = '\0';
+
+    Desk_GFX_Move(redraw->rect.min.x - redraw->scroll.x +
+                      (start_col << CHAT_PANE_CHAR_WIDTH_SHIFT),
+                  redraw->rect.max.y - redraw->scroll.y -
+                      (top << CHAT_PANE_CHAR_HEIGHT_SHIFT) - 1);
+    Desk_GFX_WriteN(buffer, count);
+  }
+}
+
+static void chatpane_init(chat_pane_view *pane) {
+  if (pane == NULL) {
+    return;
+  }
+
+  memset(pane, 0, sizeof(*pane));
+  pane->longest_length = CHAT_PANE_MIN_COLUMNS;
+  pane->longest_valid = Desk_bool_TRUE;
+  pane->follow_tail = Desk_bool_TRUE;
+  chatpane_add_line(pane);
+  chatpane_update_extent(pane);
+}
+
+static void chatpane_set_window(chat_pane_view *pane,
+                                Desk_window_handle window) {
+  if (pane == NULL) {
+    return;
+  }
+
+  pane->window = window;
+  chatpane_update_extent(pane);
+  chatpane_force_redraw(pane);
+}
+
+static void chatpane_clear(chat_pane_view *pane) {
+  if (pane == NULL) {
+    return;
+  }
+
+  pane->start_index = 0;
+  pane->line_count = 0;
+  pane->longest_length = CHAT_PANE_MIN_COLUMNS;
+  pane->longest_valid = Desk_bool_TRUE;
+  pane->follow_tail = Desk_bool_TRUE;
+  chatpane_add_line(pane);
+  chatpane_update_extent(pane);
+  chatpane_force_redraw(pane);
+}
+
+static void chatpane_append_char(chat_pane_view *pane, char ch) {
+  int index;
+  int length;
+
+  if (pane == NULL) {
+    return;
+  }
+
+  index = chatpane_current_index(pane);
+  if (index < 0) {
+    index = chatpane_add_line(pane);
+  }
+
+  length = pane->line_lengths[index];
+  if (length >= CHAT_PANE_LINE_CHARS - 1) {
+    index = chatpane_add_line(pane);
+    length = 0;
+  }
+
+  pane->lines[index][length++] = ch;
+  pane->lines[index][length] = '\0';
+  pane->line_lengths[index] = (uint16_t)length;
+
+  if (length > pane->longest_length) {
+    pane->longest_length = length;
+    pane->longest_valid = Desk_bool_TRUE;
+  }
+
+  chatpane_update_extent(pane);
+  chatpane_force_redraw(pane);
+  if (pane->follow_tail) {
+    chatpane_scroll_to_bottom(pane);
+  }
+}
+
+static void chatpane_backspace(chat_pane_view *pane) {
+  int index;
+  int length;
+
+  if (pane == NULL) {
+    return;
+  }
+
+  index = chatpane_current_index(pane);
+  if (index < 0) {
+    return;
+  }
+
+  length = pane->line_lengths[index];
+  if (length <= 0) {
+    return;
+  }
+
+  length--;
+  pane->lines[index][length] = '\0';
+  pane->line_lengths[index] = (uint16_t)length;
+
+  if (pane->longest_length == length + 1) {
+    pane->longest_valid = Desk_bool_FALSE;
+  }
+
+  chatpane_update_extent(pane);
+  chatpane_force_redraw(pane);
+}
+
+static void chatpane_newline(chat_pane_view *pane) {
+  if (pane == NULL) {
+    return;
+  }
+
+  chatpane_add_line(pane);
+  chatpane_update_extent(pane);
+  chatpane_force_redraw(pane);
+  if (pane->follow_tail) {
+    chatpane_scroll_to_bottom(pane);
+  }
+}
+
+static void chatpane_update_extent(chat_pane_view *pane) {
+  int width_cols;
+  int height_rows;
+
+  if (pane == NULL) {
+    return;
+  }
+
+  if (!pane->longest_valid) {
+    chatpane_recalculate_longest(pane);
+  }
+
+  width_cols = pane->longest_length;
+  height_rows = (pane->line_count > 0) ? pane->line_count : 1;
+
+  if (width_cols < CHAT_PANE_MIN_COLUMNS) {
+    width_cols = CHAT_PANE_MIN_COLUMNS;
+  }
+
+  pane->extent_min_x = 0;
+  pane->extent_min_y = -(height_rows * CHAT_PANE_CHAR_HEIGHT);
+  pane->extent_max_x = width_cols * CHAT_PANE_CHAR_WIDTH;
+  pane->extent_max_y = 0;
+
+  if (pane->window != 0) {
+    Desk_Window_SetExtent(pane->window, pane->extent_min_x, pane->extent_min_y,
+                          pane->extent_max_x, pane->extent_max_y);
+  }
+}
+
+static void chatpane_force_redraw(chat_pane_view *pane) {
+  if (pane == NULL || pane->window == 0) {
+    return;
+  }
+
+  Desk_Window_ForceRedraw(pane->window, pane->extent_min_x, pane->extent_min_y,
+                          pane->extent_max_x, pane->extent_max_y);
+}
+
+static void chatpane_scroll_to_bottom(chat_pane_view *pane) {
+  Desk_window_state state;
+  int extent_height;
+  int visible_height;
+  int desired_scroll;
+
+  if (pane == NULL || pane->window == 0) {
+    return;
+  }
+
+  Desk_Wimp_GetWindowState(pane->window, &state);
+
+  extent_height = -pane->extent_min_y;
+  visible_height =
+      state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+  desired_scroll = visible_height - extent_height;
+  if (desired_scroll > 0) {
+    desired_scroll = 0;
+  }
+
+  state.openblock.scroll.y = desired_scroll;
+  Desk_Wimp_OpenWindow(&state.openblock);
+}
+
+Desk_bool chat_handle_pane_redraw(Desk_event_pollblock *event, void *ref) {
+  chat_pane_view *pane = (chat_pane_view *)ref;
+  Desk_window_redrawblock redraw;
+  Desk_bool more;
+
+  if (pane == NULL || pane->window == 0) {
+    return Desk_bool_FALSE;
+  }
+
+  (void)event;
+
+  redraw.window = pane->window;
+  Desk_Wimp_RedrawWindow(&redraw, &more);
+  while (more) {
+    chatpane_refresh_rectangle(pane, &redraw);
+    Desk_Wimp_GetRectangle(&redraw, &more);
+  }
+
+  return Desk_bool_TRUE;
+}
+
+Desk_bool chat_handle_pane_scroll(Desk_event_pollblock *event, void *ref) {
+  chat_pane_view *pane = (chat_pane_view *)ref;
+
+  if (pane == NULL || pane->window == 0 || event == NULL) {
+    return Desk_bool_FALSE;
+  }
+
+  Desk_Wimp_OpenWindow(&event->data.scroll.openblock);
+  pane->follow_tail = Desk_bool_FALSE;
+  return Desk_bool_TRUE;
+}
+
+/* ============================================================================
+ * CHAT UI FUNCTIONS
+ * ============================================================================
+ */
+
+static void chat_beep(void) {
+  /* Send VDU 7 (bell) to the system */
+  _kernel_oswrch(7);
+}
+
+static void chat_update_user_timer(line_task_state *state,
+                                   const char *time_text) {
+  char label[64];
+  char buffer[128];
+  int timer_col;
+  int label_len;
+
+  if (state == NULL || time_text == NULL) {
+    return;
+  }
+
+  snprintf(label, sizeof(label), "Chatting for: %s", time_text);
+  label_len = (int)strlen(label);
+  timer_col = CHAT_MAX_COLS - label_len + 1;
+  if (timer_col < CHAT_HEADER_MARGIN_COL) {
+    timer_col = CHAT_HEADER_MARGIN_COL;
+  }
+
+  /* Save cursor, move to header, print timer, restore cursor */
+  snprintf(buffer, sizeof(buffer),
+           "\033[s\033[%d;%dH\033[44m\033[37m%s\033[0m\033[u", CHAT_HEADER_ROW,
+           timer_col, label);
+  pipes_write_string(state->line_id, buffer);
+}
+
+static void chat_draw_header(line_task_state *state, const char *timer_text) {
+  static const char header_text[] = "Sysop Chat - Press CTRL+C to finish.";
+  char buffer[256];
+  int i;
+
+  if (state == NULL) {
+    return;
+  }
+
+  pipes_write_string(state->line_id, "\033[1;1H\033[44m\033[37m");
+  for (i = 0; i < CHAT_MAX_COLS; i++) {
+    pipes_write_string(state->line_id, " ");
+  }
+
+  snprintf(buffer, sizeof(buffer), "\033[%d;%dH%s", CHAT_HEADER_ROW,
+           CHAT_HEADER_MARGIN_COL, header_text);
+  pipes_write_string(state->line_id, buffer);
+
+  chat_update_user_timer(state, timer_text);
+}
+
+static void chat_setup_split_screen(line_task_state *state) {
+  char buffer[256];
+
+  /* Clear screen */
+  pipes_write_string(state->line_id, "\033[2J");
+
+  /* Draw header */
+  chat_draw_header(state, CHAT_HEADER_TIMER_INIT);
+
+  /* Draw divider line at row 13 */
+  pipes_write_string(state->line_id, "\033[13;1H");
+  pipes_write_string(state->line_id, "\033[1;33m");
+  {
+    int i;
+    for (i = 0; i < CHAT_MAX_COLS; i++) {
+      pipes_write_string(state->line_id, "-");
+    }
+  }
+  pipes_write_string(state->line_id, "\033[0m");
+
+  /* Position cursor for user input area */
+  snprintf(buffer, sizeof(buffer), "\033[%d;1H", CHAT_USER_START_ROW);
+  pipes_write_string(state->line_id, buffer);
+  pipes_write_string(state->line_id, "\033[1;32mYou: \033[0m");
+
+  /* Position cursor for user typing */
+  snprintf(buffer, sizeof(buffer), "\033[%d;%dH", CHAT_USER_START_ROW,
+           CHAT_TEXT_COLUMN);
+  pipes_write_string(state->line_id, buffer);
+
+  /* Label sysop area */
+  snprintf(buffer, sizeof(buffer), "\033[%d;1H", CHAT_SYSOP_START_ROW);
+  pipes_write_string(state->line_id, buffer);
+  pipes_write_string(state->line_id, "\033[1;33mSysop: \033[0m");
+
+  /* Back to user area */
+  snprintf(buffer, sizeof(buffer), "\033[%d;%dH", CHAT_USER_START_ROW,
+           CHAT_TEXT_COLUMN);
+  pipes_write_string(state->line_id, buffer);
+}
+
+static void chat_position_pane_window(Desk_window_handle pane,
+                                      Desk_icon_handle anchor_icon) {
+  Desk_window_state chat_state;
+  Desk_window_state pane_state;
+  Desk_icon_block icon_block;
+  Desk_window_openblock open;
+  int width;
+  int height;
+  int anchor_x;
+  int anchor_y;
+
+  if (pane == 0 || chat_window_handle == 0) {
+    return;
+  }
+
+  Desk_Wimp_GetWindowState(chat_window_handle, &chat_state);
+  Desk_Wimp_GetWindowState(pane, &pane_state);
+  Desk_Wimp_GetIconState(chat_window_handle, anchor_icon, &icon_block);
+
+  width = pane_state.openblock.screenrect.max.x -
+          pane_state.openblock.screenrect.min.x;
+  height = pane_state.openblock.screenrect.max.y -
+           pane_state.openblock.screenrect.min.y;
+  if (width <= 0) {
+    width = icon_block.workarearect.max.x - icon_block.workarearect.min.x;
+  }
+  if (height <= 0) {
+    height = icon_block.workarearect.max.y - icon_block.workarearect.min.y;
+  }
+
+  anchor_x = icon_block.workarearect.min.x +
+             chat_state.openblock.screenrect.min.x -
+             chat_state.openblock.scroll.x + CHAT_PANE_X_OFFSET;
+  anchor_y = icon_block.workarearect.max.y +
+             chat_state.openblock.screenrect.max.y -
+             chat_state.openblock.scroll.y + CHAT_PANE_Y_OFFSET;
+
+  open.window = pane;
+  open.screenrect.min.x = anchor_x;
+  open.screenrect.max.x = anchor_x + width;
+  open.screenrect.max.y = anchor_y;
+  open.screenrect.min.y = anchor_y - height;
+  open.scroll.x = pane_state.openblock.scroll.x;
+  open.scroll.y = pane_state.openblock.scroll.y;
+  open.behind = chat_state.openblock.behind;
+
+  Desk_Wimp_OpenWindow(&open);
+}
+
+void chat_update_panes(line_task_state *state) {
+  if (state == NULL || state->chat.active == Desk_bool_FALSE) {
+    return;
+  }
+
+  if (userchat_window_handle != 0) {
+    chat_position_pane_window(userchat_window_handle, CHAT_USERCHAT);
+  }
+  if (sysopchat_window_handle != 0) {
+    chat_position_pane_window(sysopchat_window_handle, CHAT_SYSOPCHAT);
+  }
+}
+
+static void chat_show_panes(line_task_state *state) {
+  if (state == NULL) {
+    return;
+  }
+
+  chat_update_panes(state);
+  chatpane_scroll_to_bottom(&state->chat.user_pane);
+  chatpane_scroll_to_bottom(&state->chat.sysop_pane);
+}
+
+static void chat_hide_panes(void) {
+  if (userchat_window_handle != 0) {
+    Desk_Window_Hide(userchat_window_handle);
+  }
+  if (sysopchat_window_handle != 0) {
+    Desk_Window_Hide(sysopchat_window_handle);
+  }
+}
+
+/* ============================================================================
+ * CHAT SESSION FUNCTIONS
+ * ============================================================================
+ */
+
+void chat_start_pager(line_task_state *state, const char *reason) {
+  clock_t now;
+  _kernel_swi_regs regs;
+  char user_label[128];
+
+  if (state == NULL || reason == NULL) {
+    return;
+  }
+
+  /* Store reason */
+  strncpy(state->chat.reason, reason, sizeof(state->chat.reason) - 1);
+  state->chat.reason[sizeof(state->chat.reason) - 1] = '\0';
+
+  /* Get current monotonic time */
+  _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+  now = regs.r[0];
+
+  /* Set timeout (30 seconds = 3000 centiseconds) */
+  state->chat.pager_deadline = now + (CHAT_PAGER_TIMEOUT_SECS * 100);
+  state->chat.next_beep = now; /* Beep immediately */
+
+  /* Set window icons */
+  Desk_Icon_SetText(chatpager_window_handle, CHATPAGER_REASON,
+                    state->chat.reason);
+
+  /* Build user label prioritising the caller's real name */
+  if (state->user.realname[0] != '\0') {
+    snprintf(user_label, sizeof(user_label),
+             "%s is paging you for a chat about:", state->user.realname);
+  } else if (state->user.id > 0) {
+    snprintf(user_label, sizeof(user_label),
+             "User #%d on Line %d is paging you for a chat about:",
+             state->user.id, state->line_id);
+  } else {
+    snprintf(user_label, sizeof(user_label),
+             "Line %d (not logged in) is paging you for a chat about:",
+             state->line_id);
+  }
+  Desk_Icon_SetText(chatpager_window_handle, CHATPAGER_USER, user_label);
+
+  /* Open window centered */
+  Desk_Window_Show(chatpager_window_handle, Desk_open_CENTERED);
+
+  state->chat.paging = Desk_bool_TRUE;
+
+  /* Tell user to wait */
+  pipes_write_string(state->line_id,
+                     "\r\n\033[1;33mPaging sysop, please wait...\033[0m\r\n");
+
+  /* Set script status */
+  state->script.status = SCRIPT_STATUS_WAIT_CHAT;
+
+  log_line_event(state->line_id, "Sysop chat pager started");
+}
+
+void chat_close_pager(line_task_state *state, int accepted) {
+  if (state == NULL) {
+    return;
+  }
+
+  /* Hide pager window */
+  Desk_Window_Hide(chatpager_window_handle);
+  state->chat.paging = Desk_bool_FALSE;
+
+  if (accepted) {
+    /* Start chat session */
+    chat_start_session(state);
+  } else {
+    /* Rejected/timeout - sorry message */
+    pipes_write_string(state->line_id, "\r\n\033[1;31mSorry, the sysop is not "
+                                       "available right now.\033[0m\r\n\r\n");
+
+    /* Resume script */
+    state->script.status = SCRIPT_STATUS_RUNNING;
+    script_process(&state->script);
+
+    log_line_event(state->line_id, "Sysop chat pager timed out or ignored");
+  }
+}
+
+void chat_start_session(line_task_state *state) {
+  char user_label[128];
+  char sysop_label[128];
+  const char *sysop_name;
+
+  if (state == NULL) {
+    return;
+  }
+
+  /* Initialize chat buffers */
+  state->chat.user_buffer[0] = '\0';
+  state->chat.sysop_buffer[0] = '\0';
+  state->chat.user_len = 0;
+  state->chat.sysop_len = 0;
+  state->chat.user_row = CHAT_USER_START_ROW;
+  state->chat.sysop_row = CHAT_SYSOP_START_ROW;
+  chatpane_clear(&state->chat.user_pane);
+  chatpane_clear(&state->chat.sysop_pane);
+
+  /* Set up chat window icons */
+  if (state->user.realname[0] != '\0') {
+    snprintf(user_label, sizeof(user_label), "%s:", state->user.realname);
+  } else if (state->user.id > 0) {
+    snprintf(user_label, sizeof(user_label), "User #%d:", state->user.id);
+  } else {
+    snprintf(user_label, sizeof(user_label), "Line %d:", state->line_id);
+  }
+
+  sysop_name = config_get_sysop_name();
+  if (sysop_name != NULL && sysop_name[0] != '\0') {
+    snprintf(sysop_label, sizeof(sysop_label), "%s:", sysop_name);
+  } else {
+    snprintf(sysop_label, sizeof(sysop_label), "Sysop:");
+  }
+
+  Desk_Icon_SetText(chat_window_handle, CHAT_USER, user_label);
+  Desk_Icon_SetText(chat_window_handle, CHAT_SYSOP, sysop_label);
+  Desk_Icon_SetText(chat_window_handle, CHAT_SYSOPCHAT, "");
+  Desk_Icon_SetText(chat_window_handle, CHAT_CHAT, "");
+  Desk_Icon_SetText(chat_window_handle, CHAT_TIME, "00:00:00");
+
+  {
+    _kernel_swi_regs regs;
+
+    state->chat.timer_start = 0;
+    state->chat.timer_last_seconds = -1;
+    if (_kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs) == NULL) {
+      state->chat.timer_start = regs.r[0];
+    }
+  }
+
+  /* Open chat window */
+  Desk_Window_Show(chat_window_handle, Desk_open_CENTERED);
+
+  /* Place caret in sysop input field */
+  Desk_Icon_SetCaret(chat_window_handle, CHAT_CHAT);
+
+  state->chat.active = Desk_bool_TRUE;
+  chat_show_panes(state);
+
+  /* Set up split screen on user's terminal */
+  chat_setup_split_screen(state);
+
+  /* Position for user typing */
+  {
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "\033[%d;%dH", CHAT_USER_START_ROW,
+             CHAT_TEXT_COLUMN);
+    pipes_write_string(state->line_id, buffer);
+  }
+
+  log_line_event(state->line_id, "Sysop chat session started");
+}
+
+void chat_end_session(line_task_state *state) {
+  if (state == NULL || state->chat.active == Desk_bool_FALSE) {
+    return;
+  }
+
+  /* Hide chat window */
+  chat_hide_panes();
+  Desk_Window_Hide(chat_window_handle);
+  state->chat.active = Desk_bool_FALSE;
+  state->chat.timer_start = 0;
+  state->chat.timer_last_seconds = -1;
+  Desk_Icon_SetText(chat_window_handle, CHAT_TIME, "00:00:00");
+
+  /* Send goodbye to user */
+  pipes_write_string(state->line_id, "\033[2J\033[1;1H"); /* Clear screen */
+  pipes_write_string(
+      state->line_id,
+      "\r\n\033[1;36mChat session ended. Thank you!\033[0m\r\n\r\n");
+
+  /* Reset chat state */
+  chat_reset_state(state);
+
+  /* Resume script if it was waiting on the chat session or chat reason input */
+  if (state->script.status == SCRIPT_STATUS_WAIT_CHAT ||
+      (state->script.status == SCRIPT_STATUS_WAITING &&
+       state->script.input_context == SCRIPT_INPUT_CTX_CHAT_REASON)) {
+    state->script.status = SCRIPT_STATUS_RUNNING;
+    script_process(&state->script);
+  }
+
+  log_line_event(state->line_id, "Sysop chat session ended");
+}
+
+void chat_handle_user_byte(line_task_state *state, unsigned char byte) {
+  char buffer[64];
+
+  if (state == NULL) {
+    return;
+  }
+
+  /* CTRL+X or CTRL+C ends chat immediately */
+  if (byte == 0x18 || byte == 0x03) {
+    chat_end_session(state);
+    return;
+  }
+
+  /* Handle backspace */
+  if (byte == 8 || byte == 127) {
+    if (state->chat.user_len > 0) {
+      state->chat.user_len--;
+      state->chat.user_buffer[state->chat.user_len] = '\0';
+
+      /* Send backspace-space-backspace to user terminal */
+      pipes_write_string(state->line_id, "\b \b");
+      chatpane_backspace(&state->chat.user_pane);
+    }
+    return;
+  }
+
+  /* Handle CR - new line in user area */
+  if (byte == '\r') {
+    /* Move to next row in user area */
+    state->chat.user_row++;
+    if (state->chat.user_row > 23) /* Scroll would happen, cap it */
+    {
+      state->chat.user_row = 23;
+    }
+
+    /* Clear buffer for new line */
+    state->chat.user_buffer[0] = '\0';
+    state->chat.user_len = 0;
+
+    /* Send CRLF and move cursor back to chat column */
+    pipes_write_string(state->line_id, "\r\n");
+    chatpane_newline(&state->chat.user_pane);
+    snprintf(buffer, sizeof(buffer), "\033[%d;%dH", state->chat.user_row,
+             CHAT_TEXT_COLUMN);
+    pipes_write_string(state->line_id, buffer);
+    return;
+  }
+
+  /* Ignore LF */
+  if (byte == '\n') {
+    return;
+  }
+
+  /* Printable character */
+  if (byte >= 32 && byte < 127 &&
+      state->chat.user_len < (int)(sizeof(state->chat.user_buffer) - 1)) {
+    state->chat.user_buffer[state->chat.user_len++] = (char)byte;
+    state->chat.user_buffer[state->chat.user_len] = '\0';
+    chatpane_append_char(&state->chat.user_pane, (char)byte);
+
+    /* Echo to user terminal */
+    buffer[0] = (char)byte;
+    buffer[1] = '\0';
+    pipes_write_string(state->line_id, buffer);
+  }
+}
+
+static void chat_send_sysop_char(line_task_state *state, char ch) {
+  char buffer[64];
+
+  if (state->chat.sysop_len < (int)(sizeof(state->chat.sysop_buffer) - 1)) {
+    state->chat.sysop_buffer[state->chat.sysop_len++] = ch;
+    state->chat.sysop_buffer[state->chat.sysop_len] = '\0';
+
+    /* Save cursor, move to sysop area, print char, restore cursor */
+    snprintf(buffer, sizeof(buffer), "\033[s\033[%d;%dH%c\033[u",
+             state->chat.sysop_row,
+             CHAT_TEXT_COLUMN + state->chat.sysop_len - 1, ch);
+    pipes_write_string(state->line_id, buffer);
+    chatpane_append_char(&state->chat.sysop_pane, ch);
+  }
+}
+
+void chat_send_sysop_line(line_task_state *state, const char *text) {
+  size_t i;
+  size_t length;
+
+  if (state == NULL || text == NULL) {
+    return;
+  }
+
+  state->chat.sysop_buffer[0] = '\0';
+  state->chat.sysop_len = 0;
+
+  length = strlen(text);
+  if (length == 0) {
+    return;
+  }
+
+  for (i = 0; i < length; i++) {
+    chat_send_sysop_char(state, text[i]);
+  }
+
+  chatpane_newline(&state->chat.sysop_pane);
+}
+
+void chat_process(line_task_state *state) {
+  _kernel_swi_regs regs;
+  clock_t now;
+
+  if (state == NULL) {
+    return;
+  }
+
+  /* Get current time */
+  _kernel_swi(SWI_OS_READMONOTONICTIME, &regs, &regs);
+  now = regs.r[0];
+
+  /* Process pager timeout and beeps */
+  if (state->chat.paging) {
+    if (now >= state->chat.pager_deadline) {
+      chat_close_pager(state, 0);
+      return;
+    }
+
+    if (now >= state->chat.next_beep) {
+      chat_beep();
+      state->chat.next_beep = now + CHAT_BEEP_INTERVAL_CS;
+    }
+  }
+
+  /* Update chat timer display once per second */
+  if (state->chat.active && state->chat.timer_start != 0) {
+    clock_t elapsed_cs = now - state->chat.timer_start;
+    int elapsed_secs;
+
+    if (elapsed_cs < 0) {
+      elapsed_cs = 0;
+    }
+
+    elapsed_secs = (int)(elapsed_cs / 100);
+    if (elapsed_secs != state->chat.timer_last_seconds) {
+      char time_text[16];
+      int hours = elapsed_secs / 3600;
+      int minutes = (elapsed_secs / 60) % 60;
+      int seconds = elapsed_secs % 60;
+
+      snprintf(time_text, sizeof(time_text), "%02d:%02d:%02d", hours, minutes,
+               seconds);
+      Desk_Icon_SetText(chat_window_handle, CHAT_TIME, time_text);
+      chat_update_user_timer(state, time_text);
+      state->chat.timer_last_seconds = elapsed_secs;
+    }
+  }
+}

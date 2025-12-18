@@ -16,6 +16,7 @@
 #include "mailer.h"
 #include "queue.h"
 #include "echofix.h"
+#include "unzip.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
@@ -53,6 +54,7 @@ static int str_casecmp(const char *s1, const char *s2)
 #define MSGBASE_CMD_INFO            2
 #define MSGBASE_CMD_BEGIN_UPLOAD    3
 #define MSGBASE_CMD_UPLOAD_BLOCK    4
+#define MSGBASE_CMD_END_UPLOAD      15
 
 /* Support messagebase config commands */
 #define MSGBASE_CONFIG_GET_GLOBAL   0
@@ -1042,6 +1044,12 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
             _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
             
             free(full_msg);
+            
+            /* End upload - flush and close cached file handle */
+            regs.r[0] = MSGBASE_CMD_END_UPLOAD;
+            regs.r[1] = base_id;
+            regs.r[2] = message_id;
+            _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
         }
     }
     
@@ -1222,6 +1230,153 @@ int tosser_process_packet(const char *path)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Arcmail (ZIP) Processing                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if a file is an arcmail bundle based on extension.
+ * FTN arcmail extensions: .mo0-.su9, .mo-.su (day of week + digit)
+ * Also handles .zip extensions directly.
+ */
+static int is_arcmail_file(const char *filename)
+{
+    size_t len = strlen(filename);
+    const char *ext;
+    
+    if (len < 3)
+        return 0;
+    
+    ext = filename + len - 3;
+    
+    /* Check for ZIP extension */
+    if (str_casecmp(ext, "zip") == 0)
+        return 1;
+    
+    /* Check for FTN arcmail extensions: mo0-su9 */
+    if (len >= 3)
+    {
+        char day[3];
+        day[0] = tolower((unsigned char)ext[0]);
+        day[1] = tolower((unsigned char)ext[1]);
+        day[2] = '\0';
+        
+        /* Day codes: mo tu we th fr sa su */
+        if ((day[0] == 'm' && day[1] == 'o') ||
+            (day[0] == 't' && day[1] == 'u') ||
+            (day[0] == 'w' && day[1] == 'e') ||
+            (day[0] == 't' && day[1] == 'h') ||
+            (day[0] == 'f' && day[1] == 'r') ||
+            (day[0] == 's' && day[1] == 'a') ||
+            (day[0] == 's' && day[1] == 'u'))
+        {
+            /* Third char should be 0-9 */
+            if (ext[2] >= '0' && ext[2] <= '9')
+                return 1;
+        }
+    }
+    
+    return 0;
+}
+
+/*
+ * Extract arcmail bundle and process contained .pkt files.
+ * Returns number of messages processed from all packets.
+ */
+static int tosser_process_arcmail(const char *arc_path, const char *zone_path)
+{
+    UNZIP_ARCHIVE archive;
+    UNZIP_ENTRY entry;
+    int i;
+    int total_messages = 0;
+    int packets_found = 0;
+    
+    debug_printf("tosser: Processing arcmail: %s", arc_path);
+    
+    /* Check if it's a ZIP file */
+    if (!unzip_is_zip_file(arc_path))
+    {
+        debug_printf("tosser: Not a ZIP file: %s", arc_path);
+        return 0;
+    }
+    
+    if (unzip_open(&archive, arc_path) != UNZIP_OK)
+    {
+        mailer_log("Failed to open arcmail: %s", arc_path);
+        tosser_move_to_bad(arc_path);
+        return 0;
+    }
+    
+    /* Process each entry looking for .pkt files */
+    for (i = 0; i < archive.entry_count; i++)
+    {
+        if (unzip_get_entry(&archive, i, &entry) == UNZIP_OK)
+        {
+            size_t name_len = strlen(entry.filename);
+            
+            /* Check for .pkt extension (RISC OS style: ends in 'pkt') */
+            if (name_len >= 3 &&
+                str_casecmp(entry.filename + name_len - 3, "pkt") == 0)
+            {
+                char temp_path[TOSSER_MAX_PATH];
+                int result;
+                int messages;
+                
+                /* Extract to temp location in zone directory */
+                snprintf(temp_path, sizeof(temp_path), "%s.Temp.%s",
+                         zone_path, entry.filename);
+                
+                /* Create Temp directory if needed */
+                {
+                    char temp_dir[TOSSER_MAX_PATH];
+                    _kernel_swi_regs regs;
+                    
+                    snprintf(temp_dir, sizeof(temp_dir), "%s.Temp", zone_path);
+                    regs.r[0] = 8;  /* Create directory */
+                    regs.r[1] = (int)temp_dir;
+                    regs.r[4] = 0;
+                    _kernel_swi(OS_File, &regs, &regs);
+                }
+                
+                result = unzip_extract_entry(&archive, &entry, temp_path);
+                if (result == UNZIP_OK)
+                {
+                    packets_found++;
+                    tosser_report_status("Arcmail: %s", entry.filename);
+                    
+                    messages = tosser_process_packet(temp_path);
+                    if (messages > 0)
+                    {
+                        total_messages += messages;
+                    }
+                    /* Packet file is moved by tosser_process_packet */
+                }
+                else
+                {
+                    mailer_log("Failed to extract %s: %s",
+                               entry.filename, unzip_error_string(result));
+                }
+            }
+        }
+    }
+    
+    unzip_close(&archive);
+    
+    if (packets_found > 0)
+    {
+        mailer_log("Extracted %d packets from arcmail, %d messages",
+                   packets_found, total_messages);
+        tosser_move_to_processed(arc_path);
+    }
+    else
+    {
+        debug_printf("tosser: No packets found in arcmail: %s", arc_path);
+        tosser_move_to_processed(arc_path);  /* Still move it, just empty */
+    }
+    
+    return total_messages;
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Inbound Processing                                                                                                                                       */
 /* ******************************************************************************************************************************************************** */
 
@@ -1260,13 +1415,13 @@ static void tosser_process_zone_directory(const char *zone_path, int zone, void 
         if (regs.r[3] > 0)
         {
             size_t len = strlen(buffer);
+            char full_path[TOSSER_MAX_PATH];
+
+            snprintf(full_path, sizeof(full_path), "%s.%s", zone_path, buffer);
 
             if (len >= 3 && str_casecmp(buffer + len - 3, "pkt") == 0)
             {
-                char full_path[TOSSER_MAX_PATH];
                 int messages;
-
-                snprintf(full_path, sizeof(full_path), "%s.%s", zone_path, buffer);
 
                 tosser_report_status("Processing: %s", buffer);
 
@@ -1275,6 +1430,19 @@ static void tosser_process_zone_directory(const char *zone_path, int zone, void 
                 {
                     scan->messages += messages;
                     scan->packets++;
+                }
+            }
+            else if (is_arcmail_file(buffer))
+            {
+                int messages;
+
+                tosser_report_status("Arcmail: %s", buffer);
+
+                messages = tosser_process_arcmail(full_path, zone_path);
+                if (messages > 0)
+                {
+                    scan->messages += messages;
+                    /* Arcmail may contain multiple packets */
                 }
             }
         }

@@ -1,0 +1,334 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Session Module                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "session.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Session Storage                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+static WEB_SESSION sessions[SESSION_MAX];
+static int session_count = 0;
+
+/* ******************************************************************************************************************************************************** */
+/* Random Token Generation                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Generate a random hex token using OS_ReadMonotonicTime and simple mixing.
+ * Not cryptographically secure but sufficient for session tokens.
+ */
+static void generate_token(char *buffer, size_t len)
+{
+    static unsigned int seed = 0;
+    _kernel_swi_regs regs;
+    unsigned int mono_time;
+    size_t i;
+    
+    /* Get monotonic time for entropy */
+    if (_kernel_swi(0x42, &regs, &regs) == NULL)
+    {
+        mono_time = (unsigned int)regs.r[0];
+    }
+    else
+    {
+        mono_time = (unsigned int)time(NULL);
+    }
+    
+    /* Mix with previous seed */
+    if (seed == 0)
+    {
+        seed = mono_time ^ 0xDEADBEEF;
+    }
+    
+    for (i = 0; i < len; i++)
+    {
+        /* Simple LCG random number generator */
+        seed = seed * 1103515245 + 12345 + mono_time;
+        buffer[i] = "0123456789abcdef"[(seed >> 16) & 0x0F];
+    }
+    buffer[len] = '\0';
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Management                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+void session_initialise(void)
+{
+    memset(sessions, 0, sizeof(sessions));
+    session_count = 0;
+    debug_printf("Session: Initialised (%d slots)\n", SESSION_MAX);
+}
+
+void session_finalise(void)
+{
+    session_count = 0;
+    memset(sessions, 0, sizeof(sessions));
+    debug_printf("Session: Finalised\n");
+}
+
+WEB_SESSION *session_create(int user_id, const char *username, const char *realname,
+                            int access_level, int sysop, const char *keys)
+{
+    int i;
+    int slot = -1;
+    time_t now = time(NULL);
+    
+    /* Find a free slot */
+    for (i = 0; i < SESSION_MAX; i++)
+    {
+        if (!sessions[i].active)
+        {
+            slot = i;
+            break;
+        }
+    }
+    
+    /* No free slots - find oldest expired session */
+    if (slot < 0)
+    {
+        time_t oldest = now;
+        for (i = 0; i < SESSION_MAX; i++)
+        {
+            if (sessions[i].expires < oldest)
+            {
+                oldest = sessions[i].expires;
+                slot = i;
+            }
+        }
+    }
+    
+    if (slot < 0)
+    {
+        debug_printf("Session: No free slots available\n");
+        return NULL;
+    }
+    
+    /* Clear the slot */
+    memset(&sessions[slot], 0, sizeof(WEB_SESSION));
+    
+    /* Generate unique token */
+    generate_token(sessions[slot].token, SESSION_TOKEN_LEN);
+    
+    /* Populate session */
+    sessions[slot].active = 1;
+    sessions[slot].user_id = user_id;
+    
+    if (username != NULL)
+    {
+        strncpy(sessions[slot].username, username, sizeof(sessions[slot].username) - 1);
+    }
+    if (realname != NULL)
+    {
+        strncpy(sessions[slot].realname, realname, sizeof(sessions[slot].realname) - 1);
+    }
+    if (keys != NULL)
+    {
+        strncpy(sessions[slot].keys, keys, sizeof(sessions[slot].keys) - 1);
+    }
+    
+    sessions[slot].access_level = access_level;
+    sessions[slot].sysop = sysop;
+    sessions[slot].created = now;
+    sessions[slot].last_access = now;
+    sessions[slot].expires = now + SESSION_EXPIRY_SECS;
+    
+    session_count++;
+    
+    debug_printf("Session: Created session for user %s (token %s, slot %d)\n",
+                 username ? username : "?", sessions[slot].token, slot);
+    
+    return &sessions[slot];
+}
+
+WEB_SESSION *session_lookup(const char *token)
+{
+    int i;
+    time_t now;
+    
+    if (token == NULL || token[0] == '\0')
+    {
+        return NULL;
+    }
+    
+    now = time(NULL);
+    
+    for (i = 0; i < SESSION_MAX; i++)
+    {
+        if (sessions[i].active && strcmp(sessions[i].token, token) == 0)
+        {
+            /* Check expiry */
+            if (sessions[i].expires < now)
+            {
+                debug_printf("Session: Token %s expired\n", token);
+                sessions[i].active = 0;
+                session_count--;
+                return NULL;
+            }
+            
+            /* Update last access and extend expiry */
+            sessions[i].last_access = now;
+            sessions[i].expires = now + SESSION_EXPIRY_SECS;
+            
+            return &sessions[i];
+        }
+    }
+    
+    return NULL;
+}
+
+void session_destroy(const char *token)
+{
+    int i;
+    
+    if (token == NULL || token[0] == '\0')
+    {
+        return;
+    }
+    
+    for (i = 0; i < SESSION_MAX; i++)
+    {
+        if (sessions[i].active && strcmp(sessions[i].token, token) == 0)
+        {
+            debug_printf("Session: Destroyed session %s (user %s)\n",
+                         token, sessions[i].username);
+            sessions[i].active = 0;
+            session_count--;
+            return;
+        }
+    }
+}
+
+void session_cleanup(void)
+{
+    int i;
+    int cleaned = 0;
+    time_t now = time(NULL);
+    
+    for (i = 0; i < SESSION_MAX; i++)
+    {
+        if (sessions[i].active && sessions[i].expires < now)
+        {
+            debug_printf("Session: Cleaned up expired session %s\n", sessions[i].token);
+            sessions[i].active = 0;
+            session_count--;
+            cleaned++;
+        }
+    }
+    
+    if (cleaned > 0)
+    {
+        debug_printf("Session: Cleaned up %d expired sessions\n", cleaned);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Cookie Parsing                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int session_parse_cookie(const char *cookie_header, char *token_out, size_t token_size)
+{
+    const char *p;
+    const char *value_start;
+    const char *value_end;
+    size_t name_len;
+    size_t value_len;
+    
+    if (cookie_header == NULL || token_out == NULL || token_size == 0)
+    {
+        return 0;
+    }
+    
+    token_out[0] = '\0';
+    name_len = strlen(SESSION_COOKIE_NAME);
+    
+    p = cookie_header;
+    
+    while (*p != '\0')
+    {
+        /* Skip whitespace */
+        while (*p == ' ' || *p == '\t')
+        {
+            p++;
+        }
+        
+        /* Check for our cookie name */
+        if (strncmp(p, SESSION_COOKIE_NAME, name_len) == 0 && p[name_len] == '=')
+        {
+            value_start = p + name_len + 1;
+            value_end = value_start;
+            
+            /* Find end of value (semicolon or end of string) */
+            while (*value_end != '\0' && *value_end != ';' && *value_end != ' ')
+            {
+                value_end++;
+            }
+            
+            value_len = (size_t)(value_end - value_start);
+            if (value_len >= token_size)
+            {
+                value_len = token_size - 1;
+            }
+            
+            strncpy(token_out, value_start, value_len);
+            token_out[value_len] = '\0';
+            
+            return 1;
+        }
+        
+        /* Skip to next cookie */
+        while (*p != '\0' && *p != ';')
+        {
+            p++;
+        }
+        if (*p == ';')
+        {
+            p++;
+        }
+    }
+    
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Cookie Building                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void session_build_cookie(const WEB_SESSION *session, char *buffer, size_t buffer_size)
+{
+    if (session == NULL || buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+    
+    /* Build Set-Cookie header value */
+    /* Path=/ makes the cookie available site-wide */
+    /* HttpOnly prevents JavaScript access */
+    snprintf(buffer, buffer_size,
+             "%s=%s; Path=/; HttpOnly",
+             SESSION_COOKIE_NAME, session->token);
+}
+
+void session_build_clear_cookie(char *buffer, size_t buffer_size)
+{
+    if (buffer == NULL || buffer_size == 0)
+    {
+        return;
+    }
+    
+    /* Set cookie with empty value and past expiry to clear it */
+    snprintf(buffer, buffer_size,
+             "%s=; Path=/; HttpOnly; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+             SESSION_COOKIE_NAME);
+}

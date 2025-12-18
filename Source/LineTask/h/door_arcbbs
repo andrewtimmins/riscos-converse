@@ -1,0 +1,105 @@
+/*
+ * door_arcbbs.h - ARCbbsDoors emulator support for LineTask
+ *
+ * Handles legacy ARCbbs doors which communicate via SWIs and status byte polling.
+ * The protocol uses the ARCbbsDoors module (SWI chunk 0x41040):
+ *   1. LineTask sets status to door number (1-254) and launches door
+ *   2. Door polls ReadStatus looking for its door number
+ *   3. Door finds its number, writes 255 to accept
+ *   4. Door uses Input/Output SWIs for I/O
+ *   5. When door exits, it sets status to 0
+ */
+
+#ifndef DOOR_ARCBBS_H
+#define DOOR_ARCBBS_H
+
+#include "C:Desk.Core.h"
+#include <time.h>
+
+/* Forward declaration */
+struct line_task_state;
+
+/* ============================================================================
+ * CONSTANTS
+ * ============================================================================
+ */
+
+/* ARCbbsDoors emulator SWIs - matches original API */
+#define ARCBBS_SWI_BASE              0x41040
+#define SWI_ARCBBSDOORS_READSTATUS   (ARCBBS_SWI_BASE + 0)   /* ReadStatus */
+#define SWI_ARCBBSDOORS_WRITESTATUS  (ARCBBS_SWI_BASE + 1)   /* WriteStatus */
+/* SWIs 2-5 are SendRequest, GetReply, Reserved, Reserved */
+/* SWIs 6-11 are InputStatus, InputRead, OutputStatus, OutputWrite, ClearInput, ClearOutput */
+#define SWI_ARCBBSDOORS_HOSTWRITE    (ARCBBS_SWI_BASE + 12)  /* Extended: Host writes to door input */
+#define SWI_ARCBBSDOORS_HOSTREAD     (ARCBBS_SWI_BASE + 13)  /* Extended: Host reads from door output */
+#define SWI_ARCBBSDOORS_ACTIVATE     (ARCBBS_SWI_BASE + 14)  /* Extended: Activate line */
+#define SWI_ARCBBSDOORS_DEACTIVATE   (ARCBBS_SWI_BASE + 15)  /* Extended: Deactivate line */
+#define SWI_ARCBBSDOORS_HOSTWRITEBLOCK (ARCBBS_SWI_BASE + 16) /* Extended: Host writes block */
+#define SWI_ARCBBSDOORS_HOSTREADBLOCK  (ARCBBS_SWI_BASE + 17) /* Extended: Host reads block */
+
+/* ARCbbsDoors status byte values */
+#define ARCBBS_STATUS_IDLE           0
+#define ARCBBS_STATUS_ACTIVE         255
+
+/* Door request code - any value 1-254 can be used to indicate a door launch request */
+#define ARCBBS_STATUS_REQUEST        1
+
+/* Door timeout in clock ticks (5 seconds) */
+#ifndef CLOCKS_PER_SEC
+#define CLOCKS_PER_SEC 100
+#endif
+
+#define ARCBBS_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
+
+/* ============================================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================================
+ */
+
+/*
+ * Reset door state to inactive.
+ * Deactivates the line in the ARCbbsDoors module.
+ */
+void door_arcbbs_reset_state(struct line_task_state *state);
+
+/*
+ * Process door activity.
+ * Called from null poll handler.
+ * Bridges I/O between pipes and ARCbbsDoors module.
+ */
+void door_arcbbs_process(struct line_task_state *state);
+
+/*
+ * Close the door session with an optional message.
+ * Resets state and notifies script engine.
+ */
+void door_arcbbs_close_session(struct line_task_state *state, const char *message);
+
+/*
+ * Launch an ARCbbs door.
+ * Activates the line, sets status to door number, and starts the door task.
+ * If use_26bit is set, uses Aemulor to run legacy doors.
+ */
+void door_arcbbs_launch(struct line_task_state *state, int door_number, const char *command_line, int use_26bit);
+
+/*
+ * Write a single byte to the door's input buffer.
+ * Used for forwarding user keystrokes to the door.
+ * Returns 0 on success, -1 on failure.
+ */
+int door_arcbbs_write_input(int line_id, unsigned char byte);
+
+/* ============================================================================
+ * SWI WRAPPERS (for use by main.c if needed)
+ * ============================================================================
+ */
+
+int door_arcbbs_activate_line(int line_id);
+int door_arcbbs_deactivate_line(int line_id);
+int door_arcbbs_set_status(int line_id, unsigned char status);
+int door_arcbbs_get_status(int line_id);
+int door_arcbbs_write_input_block(int line_id, const unsigned char *data, int count);
+int door_arcbbs_read_output_block(int line_id, unsigned char *buffer, int max_count);
+int door_arcbbs_read_output(int line_id);
+
+#endif /* DOOR_ARCBBS_H */

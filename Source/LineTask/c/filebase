@@ -853,6 +853,27 @@ int filebase_upload_block(int base_id, int file_id, const void *data, int length
     return regs.r[0]; /* Returns bytes written or -1 on error */
 }
 
+int filebase_end_upload(int base_id, int file_id)
+{
+    _kernel_swi_regs regs;
+
+    if (base_id <= 0 || file_id <= 0)
+    {
+        return -1;
+    }
+
+    regs.r[0] = FILEBASE_CMD_END_UPLOAD;
+    regs.r[1] = base_id;
+    regs.r[2] = file_id;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
 int filebase_get_temp_upload_path(int base_id, int line, char *path, int path_size)
 {
     if (path == NULL || path_size <= 0)
@@ -920,6 +941,9 @@ int filebase_register_upload(int base_id, int area_id, const char *temp_path,
     }
 
     fclose(temp_file);
+
+    /* End upload - flush and close cached file handle */
+    filebase_end_upload(base_id, file_id);
 
     /* Remove temp file */
     remove(temp_path);

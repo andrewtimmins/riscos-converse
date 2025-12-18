@@ -66,6 +66,8 @@ static void pipes_swi_input_peek(_kernel_swi_regs *r);
 static void pipes_swi_output_peek(_kernel_swi_regs *r);
 static void pipes_swi_input_write_block(_kernel_swi_regs *r);
 static void pipes_swi_output_read_block(_kernel_swi_regs *r);
+static void pipes_swi_input_read_block(_kernel_swi_regs *r);
+static void pipes_swi_output_write_block(_kernel_swi_regs *r);
 static void pipes_dump_buffer_status(void);
 
 /* Internal helpers *************************************************************************************************/
@@ -254,6 +256,12 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
       break;
     case SWI_CONVERSE_OUTPUT_READ_BLOCK:
       pipes_swi_output_read_block(r);
+      break;
+    case SWI_CONVERSE_INPUT_READ_BLOCK:
+      pipes_swi_input_read_block(r);
+      break;
+    case SWI_CONVERSE_OUTPUT_WRITE_BLOCK:
+      pipes_swi_output_write_block(r);
       break;
     default:
       break;
@@ -824,6 +832,152 @@ static void pipes_swi_output_read_block(_kernel_swi_regs *r)
 
   record->output_tail = (uint32_t)((tail + requested) & PIPES_BUFFER_MASK);
   record->output_free += (uint32_t)requested;
+  pipes_update_watermarks(line);
+  r->r[0] = (int)requested;
+}
+
+/* ConversePipes_InputReadBlock (Slave reads block from input pipe)
+ *  In : R0 = line, R1 = pointer to destination buffer, R2 = requested count
+ * Out : R0 = bytes read (0..R2) or -1 when the line/pointer is invalid
+ * Notes: Slave-side block read from the host->slave input pipe.
+ */
+static void pipes_swi_input_read_block(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  uint8_t *target = (uint8_t *)r->r[1];
+  int request = r->r[2];
+  size_t requested;
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  size_t available;
+  size_t first;
+  size_t chunk;
+  size_t tail;
+
+  if (!pipes_is_valid_line(line) || target == NULL)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  if (request <= 0)
+  {
+    r->r[0] = (request == 0) ? 0 : -1;
+    return;
+  }
+
+  /* Clamp request to buffer size */
+  if (request > PIPES_BUFFER_SIZE)
+  {
+    request = PIPES_BUFFER_SIZE;
+  }
+
+  requested = (size_t)request;
+
+  record = pipes_line(line);
+  buffer = pipes_input_base(line);
+  available = (size_t)record->input_used;
+
+  if (available == 0)
+  {
+    r->r[0] = 0;
+    return;
+  }
+
+  if (requested > available)
+  {
+    requested = available;
+  }
+
+  tail = (size_t)record->input_tail;
+  first = PIPES_BUFFER_SIZE - tail;
+  if (first > requested)
+  {
+    first = requested;
+  }
+
+  memcpy(target, buffer + tail, first);
+  chunk = requested - first;
+  if (chunk > 0)
+  {
+    memcpy(target + first, buffer, chunk);
+  }
+
+  record->input_tail = (uint32_t)((tail + requested) & PIPES_BUFFER_MASK);
+  record->input_used -= (uint32_t)requested;
+  pipes_update_watermarks(line);
+  r->r[0] = (int)requested;
+}
+
+/* ConversePipes_OutputWriteBlock (Slave writes block to output pipe)
+ *  In : R0 = line, R1 = pointer to source buffer, R2 = requested count
+ * Out : R0 = bytes written (0..R2) or -1 when the line/pointer is invalid
+ * Notes: Slave-side block write to the slave->host output pipe.
+ */
+static void pipes_swi_output_write_block(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  const uint8_t *source = (const uint8_t *)r->r[1];
+  int request = r->r[2];
+  size_t requested;
+  converse_pipe_line *record;
+  uint8_t *buffer;
+  size_t free_space;
+  size_t first;
+  size_t chunk;
+  size_t head;
+
+  if (!pipes_is_valid_line(line) || source == NULL)
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  if (request <= 0)
+  {
+    r->r[0] = (request == 0) ? 0 : -1;
+    return;
+  }
+
+  /* Clamp request to buffer size */
+  if (request > PIPES_BUFFER_SIZE)
+  {
+    request = PIPES_BUFFER_SIZE;
+  }
+
+  requested = (size_t)request;
+
+  record = pipes_line(line);
+  buffer = pipes_output_base(line);
+  free_space = (size_t)record->output_free;
+
+  if (free_space == 0)
+  {
+    r->r[0] = 0;
+    return;
+  }
+
+  if (requested > free_space)
+  {
+    requested = free_space;
+  }
+
+  head = (size_t)record->output_head;
+  first = PIPES_BUFFER_SIZE - head;
+  if (first > requested)
+  {
+    first = requested;
+  }
+
+  memcpy(buffer + head, source, first);
+  chunk = requested - first;
+  if (chunk > 0)
+  {
+    memcpy(buffer, source + first, chunk);
+  }
+
+  record->output_head = (uint32_t)((head + requested) & PIPES_BUFFER_MASK);
+  record->output_free -= (uint32_t)requested;
   pipes_update_watermarks(line);
   r->r[0] = (int)requested;
 }

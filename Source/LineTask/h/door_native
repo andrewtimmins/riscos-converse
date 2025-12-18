@@ -1,0 +1,95 @@
+/*
+ * door_native.h - ConverseDoors (native door) support for LineTask
+ *
+ * Handles native Converse BBS doors which register via SWIs.
+ * The protocol uses the ConverseDoors module (SWI chunk 0x5AAC0):
+ *   1. Door calls Register SWI with line number
+ *   2. Host polls HostIsRegistered to detect door
+ *   3. Host uses HostWrite/HostRead for I/O
+ *   4. Door calls Deregister when done
+ */
+
+#ifndef DOOR_NATIVE_H
+#define DOOR_NATIVE_H
+
+#include "C:Desk.Core.h"
+#include <time.h>
+
+/* Forward declaration */
+struct line_task_state;
+
+/* ============================================================================
+ * CONSTANTS
+ * ============================================================================
+ */
+
+/* ConverseDoors SWIs (native door support) */
+#define CONVERSEDOORS_SWI_BASE           0x5AAC0
+#define SWI_CONVERSEDOORS_HOSTWRITE       (CONVERSEDOORS_SWI_BASE + 17)
+#define SWI_CONVERSEDOORS_HOSTREAD        (CONVERSEDOORS_SWI_BASE + 18)
+#define SWI_CONVERSEDOORS_HOSTISREGISTERED (CONVERSEDOORS_SWI_BASE + 19)
+#define SWI_CONVERSEDOORS_HOSTSETUSERINFO (CONVERSEDOORS_SWI_BASE + 20)
+
+/* Door timeout in clock ticks (5 seconds) */
+#ifndef CLOCKS_PER_SEC
+#define CLOCKS_PER_SEC 100
+#endif
+
+#define NATIVE_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
+
+/* ============================================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================================
+ */
+
+/*
+ * Reset door state to inactive.
+ * Clears pending buffers.
+ */
+void door_native_reset_state(struct line_task_state *state);
+
+/*
+ * Process door activity.
+ * Called from null poll handler.
+ * Bridges I/O between pipes and ConverseDoors module.
+ */
+void door_native_process(struct line_task_state *state);
+
+/*
+ * Close the door session with an optional message.
+ * Resets state and notifies script engine.
+ */
+void door_native_close_session(struct line_task_state *state, const char *message);
+
+/*
+ * Launch a native (ConverseDoors) door.
+ * Sets user info and starts the door task.
+ * If use_26bit is set, uses Aemulor to run legacy doors.
+ */
+void door_native_launch(struct line_task_state *state, const char *command_line, int use_26bit);
+
+/*
+ * Check if a door is registered for the given line.
+ * Returns 1 if registered, 0 otherwise.
+ */
+int door_native_is_registered(int line_id);
+
+/*
+ * Write data to the door's input buffer.
+ * Returns number of bytes written.
+ */
+int door_native_host_write(int line_id, const unsigned char *data, int len);
+
+/*
+ * Read data from the door's output buffer.
+ * Returns number of bytes read.
+ */
+int door_native_host_read(int line_id, unsigned char *buffer, int max_len);
+
+/*
+ * Set user info in the ConverseDoors module.
+ * Called before launching a door.
+ */
+void door_native_set_user_info(struct line_task_state *state);
+
+#endif /* DOOR_NATIVE_H */

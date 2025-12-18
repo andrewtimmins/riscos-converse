@@ -1,0 +1,150 @@
+/* ******************************************************************************************************************************************************** */
+/* XMODEM Protocol Implementation                                                                                                                             */
+/*                                                                                                                                                            */
+/* Implements XMODEM, XMODEM-CRC, and XMODEM-1K file transfer protocols.                                                                                      */
+/* This is called by the transfer dispatcher - do not use directly.                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_XMODEM_H
+#define LINETASK_XMODEM_H
+
+#include "transfer.h"
+
+/* ******************************************************************************************************************************************************** */
+/* XMODEM Protocol Constants                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+#define XMODEM_SOH          0x01    /* Start of 128-byte block header */
+#define XMODEM_STX          0x02    /* Start of 1024-byte block header */
+#define XMODEM_EOT          0x04    /* End of transmission */
+#define XMODEM_ACK          0x06    /* Acknowledge */
+#define XMODEM_NAK          0x15    /* Negative acknowledge */
+#define XMODEM_CAN          0x18    /* Cancel transfer */
+#define XMODEM_CTRLZ        0x1A    /* CP/M EOF padding */
+#define XMODEM_CRC_START    'C'     /* CRC mode request from receiver */
+
+#define XMODEM_BLOCK_128    128     /* Standard block size */
+#define XMODEM_BLOCK_1K     1024    /* Extended block size */
+
+#define XMODEM_MAX_ERRORS   10      /* Max consecutive errors */
+#define XMODEM_MAX_START    10      /* Max attempts waiting for start */
+#define XMODEM_MAX_EOT      5       /* Max EOT retries */
+
+/* Timeouts in centiseconds */
+#define XMODEM_TIMEOUT_START    6000    /* 60 seconds to start */
+#define XMODEM_TIMEOUT_BLOCK    1000    /* 10 seconds per block */
+#define XMODEM_TIMEOUT_ACK      300     /* 3 seconds for ACK */
+#define XMODEM_TIMEOUT_CHAR     100     /* 1 second between chars in block */
+
+/* ******************************************************************************************************************************************************** */
+/* XMODEM State Machine States                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+typedef enum
+{
+    /* Sending states */
+    XMODEM_SEND_WAIT_START,         /* Waiting for 'C' or NAK from receiver */
+    XMODEM_SEND_BLOCK,              /* Sending a data block */
+    XMODEM_SEND_WAIT_ACK,           /* Waiting for ACK/NAK */
+    XMODEM_SEND_EOT,                /* Sending EOT */
+    XMODEM_SEND_WAIT_EOT_ACK,       /* Waiting for EOT acknowledgement */
+    
+    /* Receiving states */
+    XMODEM_RECV_SEND_START,         /* Sending 'C' or NAK to initiate */
+    XMODEM_RECV_WAIT_HEADER,        /* Waiting for SOH/STX/EOT */
+    XMODEM_RECV_READ_BLOCK,         /* Reading block data */
+    XMODEM_RECV_VERIFY,             /* Verifying block checksum/CRC */
+    XMODEM_RECV_SEND_ACK,           /* Sending ACK */
+    XMODEM_RECV_SEND_NAK,           /* Sending NAK */
+    
+    /* Terminal states */
+    XMODEM_COMPLETE,                /* Transfer completed successfully */
+    XMODEM_ERROR                    /* Transfer failed */
+    
+} xmodem_state;
+
+/* ******************************************************************************************************************************************************** */
+/* XMODEM Protocol State Structure                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+typedef struct
+{
+    xmodem_state state;             /* Current state machine state */
+    
+    /* Mode flags */
+    int use_crc;                    /* 1 = CRC-16, 0 = checksum */
+    int use_1k;                     /* 1 = 1024-byte blocks allowed */
+    int block_size;                 /* Current block size (128 or 1024) */
+    
+    /* Block tracking */
+    int block_number;               /* Current block number (1-255, wraps) */
+    int expected_block;             /* Expected block number (for receive) */
+    int last_block_size;            /* Size of last block (may be partial) */
+    
+    /* Error tracking */
+    int consecutive_errors;         /* Consecutive error count */
+    int start_attempts;             /* Attempts waiting for start */
+    int eot_attempts;               /* EOT retry count */
+    
+    /* Block buffer */
+    uint8_t block_buffer[XMODEM_BLOCK_1K];  /* Block data buffer */
+    int buffer_pos;                 /* Position in block buffer */
+    int buffer_expected;            /* Expected bytes to read */
+    
+    /* CRC/checksum storage */
+    uint16_t received_crc;          /* Received CRC value */
+    uint8_t received_checksum;      /* Received checksum value */
+    int crc_bytes_read;             /* CRC bytes received (0, 1, or 2) */
+    
+    /* Received header bytes */
+    uint8_t received_block_num;     /* Block number from header */
+    uint8_t received_complement;    /* Block number complement from header */
+    int header_bytes_read;          /* Header bytes received (0, 1, or 2) */
+    
+    /* Sending state */
+    int bytes_in_block;             /* Actual data bytes in current block (for padding) */
+    int eof_reached;                /* End of file reached */
+    
+    /* CAN detection */
+    int can_count;                  /* Consecutive CAN bytes received */
+    
+} xmodem_protocol_state;
+
+/* ******************************************************************************************************************************************************** */
+/* Protocol API - Called by transfer.c                                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Initialise XMODEM send state.
+ * Allocates protocol state, sets initial state.
+ * Returns: 0 on success, -1 on error
+ */
+int xmodem_init_send(transfer_session *session);
+
+/*
+ * Initialise XMODEM receive state.
+ * Allocates protocol state, sets initial state.
+ * Returns: 0 on success, -1 on error
+ */
+int xmodem_init_receive(transfer_session *session);
+
+/*
+ * Poll the XMODEM state machine.
+ * Processes available pipe data and advances state.
+ * Returns: 1 if still active, 0 if complete/error
+ */
+int xmodem_poll(transfer_session *session);
+
+/*
+ * Clean up XMODEM state.
+ * Frees allocated protocol state.
+ */
+void xmodem_cleanup(transfer_session *session);
+
+/*
+ * Send CAN sequence to abort transfer.
+ * Sends multiple CAN bytes to ensure remote receives abort.
+ */
+void xmodem_send_cancel(transfer_session *session);
+
+#endif /* LINETASK_XMODEM_H */

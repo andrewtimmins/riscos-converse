@@ -1,0 +1,55 @@
+/* ******************************************************************************************************************************************************** */
+/* CRC Utility Module                                                                                                                                         */
+/*                                                                                                                                                            */
+/* CRC-16 (CCITT) and CRC-32 functions for use across LineTask.                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_CRC_H
+#define LINETASK_CRC_H
+
+#include <stdint.h>
+
+/* ******************************************************************************************************************************************************** */
+/* CRC-16 Functions (CCITT polynomial 0x1021)                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Calculate CRC-16 over a block of data.
+ * Uses CCITT polynomial 0x1021, initial value 0.
+ */
+uint16_t crc16(const uint8_t *data, int length);
+
+/*
+ * Update running CRC-16 with additional data.
+ * Pass previous CRC as first parameter, or 0 to start fresh.
+ */
+uint16_t crc16_update(uint16_t crc, const uint8_t *data, int length);
+
+/* ******************************************************************************************************************************************************** */
+/* CRC-32 Functions (polynomial 0xEDB88320, reflected)                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Calculate CRC-32 over a block of data.
+ * Uses polynomial 0xEDB88320 (reflected), initial value 0xFFFFFFFF.
+ * Returns final XOR'd value.
+ */
+uint32_t crc32(const uint8_t *data, int length);
+
+/*
+ * Update running CRC-32 with additional data.
+ * Pass previous CRC as first parameter (not XOR'd), or 0xFFFFFFFF to start fresh.
+ * Returns non-XOR'd value for chaining. XOR with 0xFFFFFFFF for final result.
+ */
+uint32_t crc32_update(uint32_t crc, const uint8_t *data, int length);
+
+/* ******************************************************************************************************************************************************** */
+/* Simple Checksum                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Calculate simple 8-bit checksum (sum of bytes mod 256).
+ */
+uint8_t checksum8(const uint8_t *data, int length);
+
+#endif /* LINETASK_CRC_H */

@@ -1,475 +1,49 @@
 /* ******************************************************************************************************************************************************** */
 /* LineTask File Transfer Module                                                                                                                              */
 /*                                                                                                                                                            */
-/* Implements XMODEM, XMODEM-CRC, XMODEM-1K, YMODEM and YMODEM-G file transfer protocols.                                                                     */
-/* Uses Pipes module for I/O and Filer module for file access.                                                                                                */
+/* Dispatcher and common utilities for file transfer protocols.                                                                                               */
+/* Protocol-specific code lives in separate files (xmodem.c, ymodem.c, zmodem.c).                                                                             */
 /* ******************************************************************************************************************************************************** */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "kernel.h"
-#include "swis.h"
+#include <kernel.h>
+#include <swis.h>
 
 #include "transfer.h"
-#include "filebase.h"
+#include "xmodem.h"
+#include "pipes.h"
+#include "crc.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
-/* SWI Definitions                                                                                                                                            */
+/* Support Module SWI Definitions (for transfer_active flag)                                                                                                  */
 /* ******************************************************************************************************************************************************** */
 
-#define SWI_PIPES_BASE              0x5AA00
-
-#define SWI_PIPES_INPUT_STATUS      (SWI_PIPES_BASE + 2)
-#define SWI_PIPES_INPUT_READ        (SWI_PIPES_BASE + 3)
-#define SWI_PIPES_OUTPUT_STATUS     (SWI_PIPES_BASE + 4)
-#define SWI_PIPES_OUTPUT_WRITE      (SWI_PIPES_BASE + 5)
-#define SWI_PIPES_INPUT_WRITE       (SWI_PIPES_BASE + 8)
-#define SWI_PIPES_OUTPUT_READ       (SWI_PIPES_BASE + 9)
-#define SWI_PIPES_INPUT_WRITE_BLOCK (SWI_PIPES_BASE + 0xD)
-#define SWI_PIPES_OUTPUT_READ_BLOCK (SWI_PIPES_BASE + 0xE)
-
-#define SWI_OS_ReadMonotonicTime    0x42
-
-/* File SWIs for upload handling */
-#define SWI_OS_Find                 0x0D
-#define SWI_OS_GBPB                 0x0C
-#define SWI_OS_Args                 0x09
-
-/* Support SWIs for line state */
-#define SWI_SUPPORT_LINE            0x5AA81
-#define LINE_REASON_SET             0
-#define LINE_FIELD_TRANSFER         5
+#define SWI_CONVERSEBBS_LINE            0x5AA81
+#define LINE_REASON_SET                 0
+#define LINE_FIELD_TRANSFER             5
 
 /* ******************************************************************************************************************************************************** */
-/* CRC Table                                                                                                                                                  */
+/* Filer SWI Definitions                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
 
-/* Precomputed CRC-16 table for polynomial 0x1021 (XMODEM/CCITT) */
-static const uint16_t crc16_table[256] = {
-    0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50A5, 0x60C6, 0x70E7,
-    0x8108, 0x9129, 0xA14A, 0xB16B, 0xC18C, 0xD1AD, 0xE1CE, 0xF1EF,
-    0x1231, 0x0210, 0x3273, 0x2252, 0x52B5, 0x4294, 0x72F7, 0x62D6,
-    0x9339, 0x8318, 0xB37B, 0xA35A, 0xD3BD, 0xC39C, 0xF3FF, 0xE3DE,
-    0x2462, 0x3443, 0x0420, 0x1401, 0x64E6, 0x74C7, 0x44A4, 0x5485,
-    0xA56A, 0xB54B, 0x8528, 0x9509, 0xE5EE, 0xF5CF, 0xC5AC, 0xD58D,
-    0x3653, 0x2672, 0x1611, 0x0630, 0x76D7, 0x66F6, 0x5695, 0x46B4,
-    0xB75B, 0xA77A, 0x9719, 0x8738, 0xF7DF, 0xE7FE, 0xD79D, 0xC7BC,
-    0x48C4, 0x58E5, 0x6886, 0x78A7, 0x0840, 0x1861, 0x2802, 0x3823,
-    0xC9CC, 0xD9ED, 0xE98E, 0xF9AF, 0x8948, 0x9969, 0xA90A, 0xB92B,
-    0x5AF5, 0x4AD4, 0x7AB7, 0x6A96, 0x1A71, 0x0A50, 0x3A33, 0x2A12,
-    0xDBFD, 0xCBDC, 0xFBBF, 0xEB9E, 0x9B79, 0x8B58, 0xBB3B, 0xAB1A,
-    0x6CA6, 0x7C87, 0x4CE4, 0x5CC5, 0x2C22, 0x3C03, 0x0C60, 0x1C41,
-    0xEDAE, 0xFD8F, 0xCDEC, 0xDDCD, 0xAD2A, 0xBD0B, 0x8D68, 0x9D49,
-    0x7E97, 0x6EB6, 0x5ED5, 0x4EF4, 0x3E13, 0x2E32, 0x1E51, 0x0E70,
-    0xFF9F, 0xEFBE, 0xDFDD, 0xCFFC, 0xBF1B, 0xAF3A, 0x9F59, 0x8F78,
-    0x9188, 0x81A9, 0xB1CA, 0xA1EB, 0xD10C, 0xC12D, 0xF14E, 0xE16F,
-    0x1080, 0x00A1, 0x30C2, 0x20E3, 0x5004, 0x4025, 0x7046, 0x6067,
-    0x83B9, 0x9398, 0xA3FB, 0xB3DA, 0xC33D, 0xD31C, 0xE37F, 0xF35E,
-    0x02B1, 0x1290, 0x22F3, 0x32D2, 0x4235, 0x5214, 0x6277, 0x7256,
-    0xB5EA, 0xA5CB, 0x95A8, 0x8589, 0xF56E, 0xE54F, 0xD52C, 0xC50D,
-    0x34E2, 0x24C3, 0x14A0, 0x0481, 0x7466, 0x6447, 0x5424, 0x4405,
-    0xA7DB, 0xB7FA, 0x8799, 0x97B8, 0xE75F, 0xF77E, 0xC71D, 0xD73C,
-    0x26D3, 0x36F2, 0x0691, 0x16B0, 0x6657, 0x7676, 0x4615, 0x5634,
-    0xD94C, 0xC96D, 0xF90E, 0xE92F, 0x99C8, 0x89E9, 0xB98A, 0xA9AB,
-    0x5844, 0x4865, 0x7806, 0x6827, 0x18C0, 0x08E1, 0x3882, 0x28A3,
-    0xCB7D, 0xDB5C, 0xEB3F, 0xFB1E, 0x8BF9, 0x9BD8, 0xABBB, 0xBB9A,
-    0x4A75, 0x5A54, 0x6A37, 0x7A16, 0x0AF1, 0x1AD0, 0x2AB3, 0x3A92,
-    0xFD2E, 0xED0F, 0xDD6C, 0xCD4D, 0xBDAA, 0xAD8B, 0x9DE8, 0x8DC9,
-    0x7C26, 0x6C07, 0x5C64, 0x4C45, 0x3CA2, 0x2C83, 0x1CE0, 0x0CC1,
-    0xEF1F, 0xFF3E, 0xCF5D, 0xDF7C, 0xAF9B, 0xBFBA, 0x8FD9, 0x9FF8,
-    0x6E17, 0x7E36, 0x4E55, 0x5E74, 0x2E93, 0x3EB2, 0x0ED1, 0x1EF0
-};
-
-/* ******************************************************************************************************************************************************** */
-/* CRC and Checksum Functions                                                                                                                                 */
-/* ******************************************************************************************************************************************************** */
-
-uint16_t transfer_crc16(const uint8_t *data, int length)
-{
-    uint16_t crc = 0;
-    int i;
-
-    for (i = 0; i < length; i++)
-    {
-        crc = (uint16_t)((crc << 8) ^ crc16_table[((crc >> 8) ^ data[i]) & 0xFF]);
-    }
-
-    return crc;
-}
-
-uint8_t transfer_checksum(const uint8_t *data, int length)
-{
-    uint8_t sum = 0;
-    int i;
-
-    for (i = 0; i < length; i++)
-    {
-        sum = (uint8_t)(sum + data[i]);
-    }
-
-    return sum;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* CRC-32 Table (ZMODEM polynomial 0xEDB88320, reflected)                                                                                                     */
-/* ******************************************************************************************************************************************************** */
-
-static const uint32_t crc32_table[256] = {
-    0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA, 0x076DC419, 0x706AF48F, 0xE963A535, 0x9E6495A3,
-    0x0EDB8832, 0x79DCB8A4, 0xE0D5E91E, 0x97D2D988, 0x09B64C2B, 0x7EB17CBD, 0xE7B82D07, 0x90BF1D91,
-    0x1DB71064, 0x6AB020F2, 0xF3B97148, 0x84BE41DE, 0x1ADAD47D, 0x6DDDE4EB, 0xF4D4B551, 0x83D385C7,
-    0x136C9856, 0x646BA8C0, 0xFD62F97A, 0x8A65C9EC, 0x14015C4F, 0x63066CD9, 0xFA0F3D63, 0x8D080DF5,
-    0x3B6E20C8, 0x4C69105E, 0xD56041E4, 0xA2677172, 0x3C03E4D1, 0x4B04D447, 0xD20D85FD, 0xA50AB56B,
-    0x35B5A8FA, 0x42B2986C, 0xDBBBC9D6, 0xACBCF940, 0x32D86CE3, 0x45DF5C75, 0xDCD60DCF, 0xABD13D59,
-    0x26D930AC, 0x51DE003A, 0xC8D75180, 0xBFD06116, 0x21B4F4B5, 0x56B3C423, 0xCFBA9599, 0xB8BDA50F,
-    0x2802B89E, 0x5F058808, 0xC60CD9B2, 0xB10BE924, 0x2F6F7C87, 0x58684C11, 0xC1611DAB, 0xB6662D3D,
-    0x76DC4190, 0x01DB7106, 0x98D220BC, 0xEFD5102A, 0x71B18589, 0x06B6B51F, 0x9FBFE4A5, 0xE8B8D433,
-    0x7807C9A2, 0x0F00F934, 0x9609A88E, 0xE10E9818, 0x7F6A0DBB, 0x086D3D2D, 0x91646C97, 0xE6635C01,
-    0x6B6B51F4, 0x1C6C6162, 0x856530D8, 0xF262004E, 0x6C0695ED, 0x1B01A57B, 0x8208F4C1, 0xF50FC457,
-    0x65B0D9C6, 0x12B7E950, 0x8BBEB8EA, 0xFCB9887C, 0x62DD1DDF, 0x15DA2D49, 0x8CD37CF3, 0xFBD44C65,
-    0x4DB26158, 0x3AB551CE, 0xA3BC0074, 0xD4BB30E2, 0x4ADFA541, 0x3DD895D7, 0xA4D1C46D, 0xD3D6F4FB,
-    0x4369E96A, 0x346ED9FC, 0xAD678846, 0xDA60B8D0, 0x44042D73, 0x33031DE5, 0xAA0A4C5F, 0xDD0D7CC9,
-    0x5005713C, 0x270241AA, 0xBE0B1010, 0xC90C2086, 0x5768B525, 0x206F85B3, 0xB966D409, 0xCE61E49F,
-    0x5EDEF90E, 0x29D9C998, 0xB0D09822, 0xC7D7A8B4, 0x59B33D17, 0x2EB40D81, 0xB7BD5C3B, 0xC0BA6CAD,
-    0xEDB88320, 0x9ABFB3B6, 0x03B6E20C, 0x74B1D29A, 0xEAD54739, 0x9DD277AF, 0x04DB2615, 0x73DC1683,
-    0xE3630B12, 0x94643B84, 0x0D6D6A3E, 0x7A6A5AA8, 0xE40ECF0B, 0x9309FF9D, 0x0A00AE27, 0x7D079EB1,
-    0xF00F9344, 0x8708A3D2, 0x1E01F268, 0x6906C2FE, 0xF762575D, 0x806567CB, 0x196C3671, 0x6E6B06E7,
-    0xFED41B76, 0x89D32BE0, 0x10DA7A5A, 0x67DD4ACC, 0xF9B9DF6F, 0x8EBEEFF9, 0x17B7BE43, 0x60B08ED5,
-    0xD6D6A3E8, 0xA1D1937E, 0x38D8C2C4, 0x4FDFF252, 0xD1BB67F1, 0xA6BC5767, 0x3FB506DD, 0x48B2364B,
-    0xD80D2BDA, 0xAF0A1B4C, 0x36034AF6, 0x41047A60, 0xDF60EFC3, 0xA867DF55, 0x316E8EEF, 0x4669BE79,
-    0xCB61B38C, 0xBC66831A, 0x256FD2A0, 0x5268E236, 0xCC0C7795, 0xBB0B4703, 0x220216B9, 0x5505262F,
-    0xC5BA3BBE, 0xB2BD0B28, 0x2BB45A92, 0x5CB36A04, 0xC2D7FFA7, 0xB5D0CF31, 0x2CD99E8B, 0x5BDEAE1D,
-    0x9B64C2B0, 0xEC63F226, 0x756AA39C, 0x026D930A, 0x9C0906A9, 0xEB0E363F, 0x72076785, 0x05005713,
-    0x95BF4A82, 0xE2B87A14, 0x7BB12BAE, 0x0CB61B38, 0x92D28E9B, 0xE5D5BE0D, 0x7CDCEFB7, 0x0BDBDF21,
-    0x86D3D2D4, 0xF1D4E242, 0x68DDB3F8, 0x1FDA836E, 0x81BE16CD, 0xF6B9265B, 0x6FB077E1, 0x18B74777,
-    0x88085AE6, 0xFF0F6A70, 0x66063BCA, 0x11010B5C, 0x8F659EFF, 0xF862AE69, 0x616BFFD3, 0x166CCF45,
-    0xA00AE278, 0xD70DD2EE, 0x4E048354, 0x3903B3C2, 0xA7672661, 0xD06016F7, 0x4969474D, 0x3E6E77DB,
-    0xAED16A4A, 0xD9D65ADC, 0x40DF0B66, 0x37D83BF0, 0xA9BCAE53, 0xDEBB9EC5, 0x47B2CF7F, 0x30B5FFE9,
-    0xBDBDF21C, 0xCABAC28A, 0x53B39330, 0x24B4A3A6, 0xBAD03605, 0xCDD706B3, 0x54DE5729, 0x23D967BF,
-    0xB3667A2E, 0xC4614AB8, 0x5D681B02, 0x2A6F2B94, 0xB40BBE37, 0xC30C8EA1, 0x5A05DF1B, 0x2D02EF8D
-};
-
-uint32_t transfer_crc32(uint32_t crc, const uint8_t *data, int length)
-{
-    int i;
-
-    for (i = 0; i < length; i++)
-    {
-        crc = crc32_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    }
-
-    return crc;
-}
-
-/*
- * Set the transfer_active flag in Support module line state.
- * This prevents the server from applying idle timeout during transfers.
- */
-static void set_transfer_state(int line, int active)
-{
-    _kernel_swi_regs regs;
-
-    regs.r[0] = LINE_REASON_SET;
-    regs.r[1] = line;
-    regs.r[2] = LINE_FIELD_TRANSFER;
-    regs.r[3] = active;
-    _kernel_swi(SWI_SUPPORT_LINE, &regs, &regs);
-}
-
-/* Forward declarations for ZMODEM state machines */
-static int poll_send_zmodem(transfer_session *session);
-static int poll_receive_zmodem(transfer_session *session);
-
-/* ******************************************************************************************************************************************************** */
-/* YMODEM Block 0 Helpers                                                                                                                                     */
-/* ******************************************************************************************************************************************************** */
-
-/*
- * Build YMODEM block 0 (header block) containing filename and file size.
- * Format: SOH/STX + 00 + FF + [filename\0][size in octal\0][modtime in octal\0] + padding + CRC
- * For end of batch, filename is empty.
- *
- * buffer      - Output buffer (must be at least XMODEM_MAX_BLOCK_SIZE + 5)
- * filename    - Filename to send (NULL or empty for end of batch)
- * filesize    - File size in bytes
- * modtime     - Modification time (0 if unknown)
- *
- * Returns: Total block length including header and CRC
- */
-static int ymodem_build_block0(uint8_t *buffer, const char *filename, long filesize, time_t modtime)
-{
-    int pos = 0;
-    int data_start;
-    int block_size;
-    uint16_t crc;
-
-    /* Use 128-byte block for header (standard practice) */
-    block_size = XMODEM_BLOCK_SIZE;
-
-    /* Block header */
-    buffer[pos++] = XMODEM_SOH;
-    buffer[pos++] = 0x00;  /* Block number 0 */
-    buffer[pos++] = 0xFF;  /* Inverse of block number */
-
-    data_start = pos;
-
-    /* If no filename, this is end-of-batch marker */
-    if (filename == NULL || filename[0] == '\0')
-    {
-        /* Empty block signals end of batch */
-        memset(&buffer[pos], 0, block_size);
-    }
-    else
-    {
-        int name_len;
-        int remaining;
-
-        /* Filename (null-terminated) */
-        name_len = strlen(filename);
-        if (name_len > 100) name_len = 100; /* Leave room for size/time */
-        memcpy(&buffer[pos], filename, name_len);
-        pos += name_len;
-        buffer[pos++] = '\0';
-
-        /* File size in decimal (some implementations use octal, but decimal is more common) */
-        pos += snprintf((char *)&buffer[pos], 20, "%ld", filesize);
-        buffer[pos++] = ' ';
-
-        /* Modification time in octal (optional, but good to include) */
-        if (modtime > 0)
-        {
-            pos += snprintf((char *)&buffer[pos], 20, "%lo", (unsigned long)modtime);
-        }
-
-        /* Pad with zeros */
-        remaining = block_size - (pos - data_start);
-        if (remaining > 0)
-        {
-            memset(&buffer[pos], 0, remaining);
-        }
-    }
-
-    pos = data_start + block_size;
-
-    /* Add CRC */
-    crc = transfer_crc16(&buffer[data_start], block_size);
-    buffer[pos++] = (uint8_t)(crc >> 8);
-    buffer[pos++] = (uint8_t)(crc & 0xFF);
-
-    return pos;
-}
-
-/*
- * Parse YMODEM block 0 to extract filename and file size.
- *
- * data        - Block 0 data (after SOH/STX and block numbers)
- * data_len    - Length of data (128 or 1024)
- * filename    - Output buffer for filename (should be >= 128 bytes)
- * filesize    - Output for file size
- * modtime     - Output for modification time (0 if not present)
- *
- * Returns: 1 if valid header with filename, 0 if end-of-batch (empty), -1 on error
- */
-static int ymodem_parse_block0(const uint8_t *data, int data_len, char *filename, long *filesize, time_t *modtime)
-{
-    int pos = 0;
-    int name_len;
-
-    if (filename == NULL || filesize == NULL)
-    {
-        return -1;
-    }
-
-    /* Check for empty block (end of batch) */
-    if (data[0] == '\0')
-    {
-        filename[0] = '\0';
-        *filesize = 0;
-        if (modtime) *modtime = 0;
-        return 0;
-    }
-
-    /* Extract filename (null-terminated) */
-    name_len = 0;
-    while (pos < data_len && data[pos] != '\0' && name_len < 127)
-    {
-        filename[name_len++] = data[pos++];
-    }
-    filename[name_len] = '\0';
-
-    /* Convert DOS filename (name.ext) to RISC OS format (nameext) by removing dots.
-     * e.g., "archive.zip" -> "archivezip", "file.txt" -> "filetxt" */
-    {
-        int i, j;
-        for (i = 0, j = 0; filename[i] != '\0'; i++)
-        {
-            if (filename[i] != '.')
-            {
-                filename[j++] = filename[i];
-            }
-        }
-        filename[j] = '\0';
-    }
-
-    if (pos >= data_len)
-    {
-        *filesize = 0;
-        if (modtime) *modtime = 0;
-        return 1;
-    }
-
-    /* Skip the null terminator */
-    pos++;
-
-    /* Parse file size (may be decimal or octal) */
-    *filesize = 0;
-    while (pos < data_len && data[pos] >= '0' && data[pos] <= '9')
-    {
-        *filesize = (*filesize * 10) + (data[pos] - '0');
-        pos++;
-    }
-
-    /* Skip space if present */
-    if (pos < data_len && data[pos] == ' ')
-    {
-        pos++;
-    }
-
-    /* Parse modification time (octal) - optional */
-    if (modtime)
-    {
-        *modtime = 0;
-        while (pos < data_len && data[pos] >= '0' && data[pos] <= '7')
-        {
-            *modtime = (*modtime * 8) + (data[pos] - '0');
-            pos++;
-        }
-    }
-
-    debug_printf("ymodem_parse_block0: filename='%s' size=%ld\n", filename, *filesize);
-    return 1;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Time Functions                                                                                                                                             */
-/* ******************************************************************************************************************************************************** */
-
-unsigned int transfer_get_time(void)
-{
-    _kernel_swi_regs regs;
-
-    if (_kernel_swi(SWI_OS_ReadMonotonicTime, &regs, &regs) != NULL)
-    {
-        return 0;
-    }
-
-    return (unsigned int)regs.r[0];
-}
-
-void transfer_set_timeout(transfer_session *session, unsigned int timeout_ms)
-{
-    /* Convert milliseconds to centiseconds */
-    unsigned int timeout_cs = timeout_ms / 10;
-    session->timeout_end = transfer_get_time() + timeout_cs;
-}
-
-int transfer_timeout_expired(transfer_session *session)
-{
-    unsigned int now = transfer_get_time();
-
-    /* Handle wraparound - if difference is huge, assume not expired */
-    if ((session->timeout_end - now) > 0x80000000U)
-    {
-        return 1; /* Timeout has passed */
-    }
-
-    return (now >= session->timeout_end) ? 1 : 0;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Pipe I/O Helpers                                                                                                                                           */
-/* ******************************************************************************************************************************************************** */
-
-static int pipe_bytes_available(int line)
-{
-    _kernel_swi_regs regs;
-
-    regs.r[0] = line;
-
-    if (_kernel_swi(SWI_PIPES_INPUT_STATUS, &regs, &regs) != NULL)
-    {
-        return 0;
-    }
-
-    return (regs.r[0] >= 0) ? regs.r[0] : 0;
-}
-
-static int pipe_read_byte(int line)
-{
-    _kernel_swi_regs regs;
-
-    regs.r[0] = line;
-
-    if (_kernel_swi(SWI_PIPES_INPUT_READ, &regs, &regs) != NULL)
-    {
-        return -1;
-    }
-
-    return regs.r[0];
-}
-
-static int pipe_space_available(int line)
-{
-    _kernel_swi_regs regs;
-
-    regs.r[0] = line;
-
-    if (_kernel_swi(SWI_PIPES_OUTPUT_STATUS, &regs, &regs) != NULL)
-    {
-        return 0;
-    }
-
-    return (regs.r[0] >= 0) ? regs.r[0] : 0;
-}
-
-static int pipe_write_byte(int line, uint8_t byte)
-{
-    _kernel_swi_regs regs;
-
-    regs.r[0] = line;
-    regs.r[1] = byte;
-
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL)
-    {
-        return -1;
-    }
-
-    return (regs.r[0] == 0) ? 0 : -1;
-}
-
-/*
- * Write a block of bytes to the output pipe (slave->host).
- * Uses byte-by-byte OutputWrite as there's no OutputWriteBlock SWI.
- * Returns number of bytes written, or -1 on error.
- */
-static int pipe_write_block(int line, const uint8_t *data, int length)
-{
-    int written = 0;
-
-    while (written < length)
-    {
-        if (pipe_write_byte(line, data[written]) != 0)
-        {
-            break;
-        }
-        written++;
-    }
-
-    return written;
-}
+#define SWI_CONVERSE_FILER_FILEBASE     0x5AA43
+
+#define FILER_FILEBASE_CMD_DOWNLOAD     5
+#define FILER_FILEBASE_CMD_FILE_INFO    11
+
+/* FILE_RECORD field offsets */
+#define FILE_RECORD_OFFSET_ID           0
+#define FILE_RECORD_OFFSET_FILEBASEID   4
+#define FILE_RECORD_OFFSET_AREAID       8
+#define FILE_RECORD_OFFSET_DELETED      12
+#define FILE_RECORD_OFFSET_ACCESSLEVEL  16
+#define FILE_RECORD_OFFSET_KEYS         20
+#define FILE_RECORD_OFFSET_NAME         148
+#define FILE_RECORD_OFFSET_DESCRIPTION  220
+#define FILE_RECORD_OFFSET_FILESIZE     476
 
 /* ******************************************************************************************************************************************************** */
 /* Module Initialisation                                                                                                                                      */
@@ -477,422 +51,329 @@ static int pipe_write_block(int line, const uint8_t *data, int length)
 
 void transfer_init(void)
 {
-    debug_printf("transfer_init: File transfer module initialised\n");
+    debug_printf("transfer: module initialised\n");
 }
 
 /* ******************************************************************************************************************************************************** */
-/* Session Management                                                                                                                                         */
+/* Transfer State Notification                                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
-static void session_reset(transfer_session *session)
+/*
+ * Notify the Support module that a transfer is active/inactive on this line.
+ * This tells the Server to skip telnet filtering during binary transfers.
+ */
+static void transfer_set_active_flag(int line, int active)
+{
+    _kernel_swi_regs regs;
+    
+    regs.r[0] = LINE_REASON_SET;
+    regs.r[1] = line;
+    regs.r[2] = LINE_FIELD_TRANSFER;
+    regs.r[3] = active;
+    _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+    
+    debug_printf("transfer: set transfer_active=%d for line %d\n", active, line);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Session Initialisation Helper                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+static void transfer_init_session(transfer_session *session)
 {
     memset(session, 0, sizeof(transfer_session));
     session->state = XFER_IDLE;
-    session->block_size = XMODEM_BLOCK_SIZE;
+    session->result = XFER_RESULT_OK;
 }
 
-int transfer_is_active(transfer_session *session)
+/* ******************************************************************************************************************************************************** */
+/* Start Sending (Download to User)                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+int transfer_start_send(transfer_session *session, int line,
+                        transfer_protocol protocol, int filebase_id, int file_id)
 {
+    _kernel_swi_regs regs;
+    char *record_ptr;
+    
     if (session == NULL)
-    {
-        return 0;
-    }
-
-    return session->active;
-}
-
-int transfer_get_progress(transfer_session *session)
-{
-    if (session == NULL || session->file_size <= 0)
     {
         return -1;
     }
-
-    if (session->bytes_transferred >= session->file_size)
+    
+    transfer_init_session(session);
+    
+    session->line = line;
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_SEND;
+    session->filebase_id = filebase_id;
+    session->file_id = file_id;
+    
+    /* Query file info from Filer */
+    regs.r[0] = FILER_FILEBASE_CMD_FILE_INFO;
+    regs.r[1] = filebase_id;
+    regs.r[2] = file_id;
+    
+    if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
     {
-        return 100;
+        snprintf(session->error_msg, sizeof(session->error_msg), "File database error");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return -1;
     }
-
-    return (int)((session->bytes_transferred * 100) / session->file_size);
-}
-
-void transfer_get_status(transfer_session *session, char *buffer, int buffer_size)
-{
-    const char *state_str;
-    int progress;
-
-    if (session == NULL || buffer == NULL || buffer_size <= 0)
+    
+    if (regs.r[0] == -1 || regs.r[0] == 0)
     {
-        return;
+        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return -1;
     }
-
-    switch (session->state)
+    
+    record_ptr = (char *)regs.r[0];
+    
+    /* Check if file is deleted */
+    if (*(int *)(record_ptr + FILE_RECORD_OFFSET_DELETED) != 0)
     {
-        case XFER_IDLE:
-            state_str = "Idle";
+        snprintf(session->error_msg, sizeof(session->error_msg), "File has been deleted");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return -1;
+    }
+    
+    /* Extract file info */
+    strncpy(session->filename, record_ptr + FILE_RECORD_OFFSET_NAME, TRANSFER_MAX_FILENAME - 1);
+    session->filename[TRANSFER_MAX_FILENAME - 1] = '\0';
+    session->file_size = *(long *)(record_ptr + FILE_RECORD_OFFSET_FILESIZE);
+    
+    debug_printf("transfer: starting send of '%s' (%ld bytes) via protocol %d\n",
+                 session->filename, session->file_size, protocol);
+    
+    /* Initialise protocol-specific state */
+    switch (protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+        case TRANSFER_PROTO_XMODEM_CRC:
+        case TRANSFER_PROTO_XMODEM_1K:
+            if (xmodem_init_send(session) != 0)
+            {
+                return -1;
+            }
             break;
-        case XFER_INIT:
-            state_str = "Initialising";
-            break;
-        case XFER_SEND_WAIT_START:
-            state_str = "Waiting for receiver";
-            break;
-        case XFER_SEND_HEADER_BLOCK:
-        case XFER_SEND_WAIT_HEADER_ACK:
-            state_str = "Sending header";
-            break;
-        case XFER_SEND_BLOCK:
-            state_str = "Sending block";
-            break;
-        case XFER_SEND_WAIT_ACK:
-            state_str = "Waiting for ACK";
-            break;
-        case XFER_SEND_EOT:
-        case XFER_SEND_WAIT_EOT_ACK:
-        case XFER_SEND_END_BATCH:
-        case XFER_SEND_WAIT_END_BATCH_ACK:
-            state_str = "Completing";
-            break;
-        case XFER_RECV_SEND_START:
-            state_str = "Starting receive";
-            break;
-        case XFER_RECV_WAIT_HEADER:
-        case XFER_RECV_READ_HEADER:
-        case XFER_RECV_ACK_HEADER:
-            state_str = "Receiving header";
-            break;
-        case XFER_RECV_WAIT_BLOCK:
-            state_str = "Waiting for data";
-            break;
-        case XFER_RECV_READ_BLOCK:
-            state_str = "Receiving block";
-            break;
-        case XFER_COMPLETE:
-            state_str = "Complete";
-            break;
-        case XFER_ERROR:
-            state_str = "Error";
-            break;
-        case XFER_CANCELLED:
-            state_str = "Cancelled";
-            break;
-        case XFER_TIMEOUT:
-            state_str = "Timeout";
-            break;
+            
+        case TRANSFER_PROTO_YMODEM:
+        case TRANSFER_PROTO_YMODEM_G:
+        case TRANSFER_PROTO_ZMODEM:
+            snprintf(session->error_msg, sizeof(session->error_msg), "Protocol not implemented");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            return -1;
+            
         default:
-            state_str = "Unknown";
-            break;
+            snprintf(session->error_msg, sizeof(session->error_msg), "Unknown protocol");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            return -1;
     }
-
-    progress = transfer_get_progress(session);
-
-    if (progress >= 0)
+    
+    session->active = 1;
+    session->state = XFER_ACTIVE;
+    session->start_time = transfer_get_time();
+    
+    /* Clear any pending output data before enabling binary mode.
+     * This prevents leftover text data from contaminating the XMODEM stream.
+     * The text has already been written by the script but may not have been
+     * pumped to the socket yet. Clearing ensures clean binary data. */
     {
-        snprintf(buffer, buffer_size, "%s: %d%% (%ld/%ld bytes, %d blocks)",
-                 state_str, progress,
-                 session->bytes_transferred, session->file_size,
-                 session->blocks_transferred);
+        int space_free = pipes_space_available(line);
+        int pending = 4096 - space_free;  /* Pipe buffer is 4096 bytes */
+        debug_printf("transfer: pipe check - space_free=%d, pending=%d\n", space_free, pending);
+        if (pending > 0)
+        {
+            debug_printf("transfer: clearing %d pending bytes from output pipe\n", pending);
+            pipes_clear_output(line);
+        }
     }
-    else
-    {
-        snprintf(buffer, buffer_size, "%s: %ld bytes, %d blocks",
-                 state_str,
-                 session->bytes_transferred,
-                 session->blocks_transferred);
-    }
+    
+    /* Notify Support module - disables telnet filtering for binary data */
+    transfer_set_active_flag(line, 1);
+    debug_printf("transfer: set transfer_active=1 for line %d\n", line);
+    
+    return 0;
 }
 
 /* ******************************************************************************************************************************************************** */
-/* Start Send Transfer                                                                                                                                        */
+/* Start Receiving (Upload from User)                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
-int transfer_start_send(int line, transfer_protocol protocol,
-                        int filebase_id, int file_id,
-                        transfer_session *session)
+int transfer_start_receive(transfer_session *session, int line,
+                           transfer_protocol protocol,
+                           const char *filename, const char *description)
 {
-    long file_size;
-
+    FILE *fp;
+    
     if (session == NULL)
     {
-        return 0;
+        return -1;
     }
-
-    session_reset(session);
-
-    /* Get file size from Filer */
-    if (!filebase_get_file_size(filebase_id, file_id, &file_size))
+    
+    /* XMODEM requires filename to be provided */
+    if ((protocol == TRANSFER_PROTO_XMODEM || 
+         protocol == TRANSFER_PROTO_XMODEM_CRC ||
+         protocol == TRANSFER_PROTO_XMODEM_1K) &&
+        (filename == NULL || filename[0] == '\0'))
     {
-        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
+        snprintf(session->error_msg, sizeof(session->error_msg), "XMODEM requires filename");
         session->state = XFER_ERROR;
-        session->result = XFER_RESULT_FILE_ERROR;
-        return 0;
+        session->result = XFER_RESULT_PROTOCOL_ERROR;
+        return -1;
     }
-
-    debug_printf("transfer_start_send: line=%d protocol=%d filebase=%d file=%d size=%ld\n",
-                 line, protocol, filebase_id, file_id, file_size);
-
-    /* Initialise session */
+    
+    transfer_init_session(session);
+    
     session->line = line;
-    session->active = 1;
-    set_transfer_state(line, 1);  /* Notify Support module transfer started */
-    session->protocol = protocol;
-    session->direction = TRANSFER_DIR_SEND;
-    session->filebase_id = filebase_id;
-    session->file_id = file_id;
-    session->file_size = file_size;
-    session->file_offset = 0;
-    session->block_num = 1;
-
-    /* Set block size based on protocol */
-    if (protocol == TRANSFER_PROTO_XMODEM_1K ||
-        protocol == TRANSFER_PROTO_YMODEM ||
-        protocol == TRANSFER_PROTO_YMODEM_G)
-    {
-        session->block_size = XMODEM_1K_BLOCK_SIZE;
-    }
-    else
-    {
-        session->block_size = XMODEM_BLOCK_SIZE;
-    }
-
-    /* CRC mode for XMODEM-CRC, XMODEM-1K, and YMODEM */
-    session->use_crc = (protocol != TRANSFER_PROTO_XMODEM) ? 1 : 0;
-
-    /* YMODEM flags */
-    session->is_ymodem = (protocol == TRANSFER_PROTO_YMODEM ||
-                          protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->header_sent = 0;
-
-    /* Start state machine */
-    session->state = XFER_SEND_WAIT_START;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
-    session->retries = 0;
-
-    return 1;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Start Receive Transfer                                                                                                                                     */
-/* ******************************************************************************************************************************************************** */
-
-int transfer_start_receive(int line, transfer_protocol protocol,
-                           const char *upload_path,
-                           transfer_session *session)
-{
-    _kernel_swi_regs regs;
-
-    if (session == NULL || upload_path == NULL)
-    {
-        return 0;
-    }
-
-    session_reset(session);
-
-    debug_printf("transfer_start_receive: line=%d protocol=%d path=%s\n",
-                 line, protocol, upload_path);
-
-    /* Ensure the Temp directory exists */
-    regs.r[0] = 8;  /* OS_File 8 = Create directory */
-    regs.r[1] = (int)"<Converse$Dir>.Temp";
-    regs.r[4] = 0;  /* Default number of entries */
-    _kernel_swi(0x08, &regs, &regs); /* OS_File - ignore errors if already exists */
-
-    /* Open file for writing */
-    regs.r[0] = 0x8F; /* Open for output, create if needed */
-    regs.r[1] = (int)upload_path;
-
-    if (_kernel_swi(SWI_OS_Find, &regs, &regs) != NULL || regs.r[0] == 0)
-    {
-        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create file");
-        session->state = XFER_ERROR;
-        session->result = XFER_RESULT_FILE_ERROR;
-        return 0;
-    }
-
-    session->upload_handle = regs.r[0];
-    strncpy(session->upload_path, upload_path, sizeof(session->upload_path) - 1);
-    session->upload_path[sizeof(session->upload_path) - 1] = '\0';
-
-    /* Initialise session */
-    session->line = line;
-    session->active = 1;
-    set_transfer_state(line, 1);  /* Notify Support module transfer started */
     session->protocol = protocol;
     session->direction = TRANSFER_DIR_RECEIVE;
-    session->file_size = 0; /* Unknown until transfer complete */
-    session->file_offset = 0;
-    session->block_num = 1;
-
-    /* Set block size and CRC based on protocol */
-    if (protocol == TRANSFER_PROTO_XMODEM_1K ||
-        protocol == TRANSFER_PROTO_YMODEM ||
-        protocol == TRANSFER_PROTO_YMODEM_G)
+    
+    /* Store filename and description */
+    if (filename != NULL)
     {
-        session->block_size = XMODEM_1K_BLOCK_SIZE;
-        session->use_crc = 1;
+        strncpy(session->filename, filename, TRANSFER_MAX_FILENAME - 1);
+        session->filename[TRANSFER_MAX_FILENAME - 1] = '\0';
     }
-    else if (protocol == TRANSFER_PROTO_XMODEM_CRC)
+    
+    if (description != NULL)
     {
-        session->block_size = XMODEM_BLOCK_SIZE;
-        session->use_crc = 1;
+        strncpy(session->description, description, TRANSFER_MAX_DESCRIPTION - 1);
+        session->description[TRANSFER_MAX_DESCRIPTION - 1] = '\0';
     }
-    else
+    
+    /* Generate temp file path */
+    snprintf(session->temp_path, sizeof(session->temp_path),
+             "<Converse$Dir>.Temp.Upload_%d_%lx", line, (unsigned long)time(NULL));
+    
+    /* Create temp file */
+    fp = fopen(session->temp_path, "wb");
+    if (fp == NULL)
     {
-        session->block_size = XMODEM_BLOCK_SIZE;
-        session->use_crc = 0;
-    }
-
-    /* YMODEM flags */
-    session->is_ymodem = (protocol == TRANSFER_PROTO_YMODEM ||
-                          protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->header_sent = 0;
-
-    /* Start state machine */
-    session->state = XFER_RECV_SEND_START;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
-    session->retries = 0;
-
-    return 1;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* YMODEM Start Functions                                                                                                                                     */
-/* ******************************************************************************************************************************************************** */
-
-/*
- * Start a YMODEM file send transfer with explicit filename for block 0.
- */
-int transfer_start_send_ymodem(int line, transfer_protocol protocol,
-                               int filebase_id, int file_id,
-                               const char *filename,
-                               transfer_session *session)
-{
-    long file_size;
-
-    if (session == NULL || filename == NULL)
-    {
-        return 0;
-    }
-
-    /* Must be YMODEM variant */
-    if (protocol != TRANSFER_PROTO_YMODEM && protocol != TRANSFER_PROTO_YMODEM_G)
-    {
-        return transfer_start_send(line, protocol, filebase_id, file_id, session);
-    }
-
-    session_reset(session);
-
-    /* Get file size from Filer */
-    if (!filebase_get_file_size(filebase_id, file_id, &file_size))
-    {
-        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
+        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create temp file");
         session->state = XFER_ERROR;
         session->result = XFER_RESULT_FILE_ERROR;
-        return 0;
+        return -1;
     }
-
-    debug_printf("transfer_start_send_ymodem: line=%d filebase=%d file=%d size=%ld name=%s\n",
-                 line, filebase_id, file_id, file_size, filename);
-
-    /* Initialise session */
-    session->line = line;
+    session->file_handle = fp;
+    
+    debug_printf("transfer: starting receive of '%s' to '%s' via protocol %d\n",
+                 session->filename, session->temp_path, protocol);
+    
+    /* Initialise protocol-specific state */
+    switch (protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+        case TRANSFER_PROTO_XMODEM_CRC:
+        case TRANSFER_PROTO_XMODEM_1K:
+            if (xmodem_init_receive(session) != 0)
+            {
+                fclose(fp);
+                session->file_handle = NULL;
+                remove(session->temp_path);
+                return -1;
+            }
+            break;
+            
+        case TRANSFER_PROTO_YMODEM:
+        case TRANSFER_PROTO_YMODEM_G:
+        case TRANSFER_PROTO_ZMODEM:
+            fclose(fp);
+            session->file_handle = NULL;
+            remove(session->temp_path);
+            snprintf(session->error_msg, sizeof(session->error_msg), "Protocol not implemented");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            return -1;
+            
+        default:
+            fclose(fp);
+            session->file_handle = NULL;
+            remove(session->temp_path);
+            snprintf(session->error_msg, sizeof(session->error_msg), "Unknown protocol");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            return -1;
+    }
+    
     session->active = 1;
-    session->protocol = protocol;
-    session->direction = TRANSFER_DIR_SEND;
-    session->filebase_id = filebase_id;
-    session->file_id = file_id;
-    session->file_size = file_size;
-    session->file_offset = 0;
-    session->block_num = 0; /* YMODEM starts with block 0 */
-
-    /* YMODEM always uses 1K blocks and CRC */
-    session->block_size = XMODEM_1K_BLOCK_SIZE;
-    session->use_crc = 1;
-    session->is_ymodem = 1;
-    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->header_sent = 0;
-
-    /* Store filename for block 0 */
-    strncpy(session->ymodem_filename, filename, sizeof(session->ymodem_filename) - 1);
-    session->ymodem_filename[sizeof(session->ymodem_filename) - 1] = '\0';
-    session->ymodem_filesize = file_size;
-    session->ymodem_modtime = 0; /* Could get from file if needed */
-
-    /* Start state machine - wait for 'C' from receiver */
-    session->state = XFER_SEND_WAIT_START;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
-    session->retries = 0;
-
-    return 1;
+    session->state = XFER_ACTIVE;
+    session->start_time = transfer_get_time();
+    
+    /* Notify Support module - disables telnet filtering for binary data */
+    transfer_set_active_flag(line, 1);
+    
+    return 0;
 }
 
-/*
- * Start a YMODEM file receive transfer.
- * Filename will come from block 0 - upload_dir is the destination directory.
- */
-int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
-                                  const char *upload_dir,
-                                  transfer_session *session)
-{
-    _kernel_swi_regs regs;
+/* ******************************************************************************************************************************************************** */
+/* Poll Transfer                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
 
-    if (session == NULL || upload_dir == NULL)
+int transfer_poll(transfer_session *session)
+{
+    int result;
+    
+    if (session == NULL || !session->active)
     {
         return 0;
     }
-
-    /* Must be YMODEM variant */
-    if (protocol != TRANSFER_PROTO_YMODEM && protocol != TRANSFER_PROTO_YMODEM_G)
+    
+    /* Check for cancel request */
+    if (session->cancel_requested)
     {
-        return 0; /* Use transfer_start_receive for XMODEM */
+        debug_printf("transfer: cancel requested\n");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_CANCELLED;
+        session->active = 0;
+        transfer_set_active_flag(session->line, 0);
+        return 0;
     }
-
-    session_reset(session);
-
-    debug_printf("transfer_start_receive_ymodem: line=%d protocol=%d dir=%s\n",
-                 line, protocol, upload_dir);
-
-    /* Ensure upload directory exists */
-    regs.r[0] = 8;  /* OS_File 8 = Create directory */
-    regs.r[1] = (int)upload_dir;
-    regs.r[4] = 0;
-    _kernel_swi(0x08, &regs, &regs);
-
-    /* Store the upload directory path - actual file opened after block 0 */
-    strncpy(session->upload_path, upload_dir, sizeof(session->upload_path) - 1);
-    session->upload_path[sizeof(session->upload_path) - 1] = '\0';
-    session->upload_handle = 0; /* Will be opened after we get filename */
-
-    /* Initialise session */
-    session->line = line;
-    session->active = 1;
-    set_transfer_state(line, 1);  /* Notify Support module transfer started */
-    session->protocol = protocol;
-    session->direction = TRANSFER_DIR_RECEIVE;
-    session->file_size = 0;
-    session->file_offset = 0;
-    session->block_num = 0; /* YMODEM starts with block 0 */
-
-    /* YMODEM uses 1K blocks and CRC */
-    session->block_size = XMODEM_1K_BLOCK_SIZE;
-    session->use_crc = 1;
-    session->is_ymodem = 1;
-    session->ymodem_g = (protocol == TRANSFER_PROTO_YMODEM_G) ? 1 : 0;
-    session->header_sent = 0;
-    session->ymodem_filename[0] = '\0';
-    session->ymodem_filesize = 0;
-
-    /* Start state machine - send 'C' to request block 0 */
-    session->state = XFER_RECV_SEND_START;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, XMODEM_START_TIMEOUT_MS);
-    session->retries = 0;
-
+    
+    /* Dispatch to protocol handler */
+    switch (session->protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+        case TRANSFER_PROTO_XMODEM_CRC:
+        case TRANSFER_PROTO_XMODEM_1K:
+            result = xmodem_poll(session);
+            break;
+            
+        default:
+            result = 0;
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            break;
+    }
+    
+    /* Check if transfer completed */
+    if (session->state == XFER_COMPLETE || session->state == XFER_ERROR)
+    {
+        session->active = 0;
+        transfer_set_active_flag(session->line, 0);
+        
+        /* Close temp file if receiving */
+        if (session->file_handle != NULL)
+        {
+            fclose((FILE *)session->file_handle);
+            session->file_handle = NULL;
+        }
+        
+        /* Delete temp file on error */
+        if (session->state == XFER_ERROR && session->direction == TRANSFER_DIR_RECEIVE)
+        {
+            remove(session->temp_path);
+        }
+        
+        return 0;
+    }
+    
     return 1;
 }
 
@@ -902,2575 +383,219 @@ int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
 
 void transfer_cancel(transfer_session *session)
 {
-    int i;
+    if (session != NULL && session->active)
+    {
+        session->cancel_requested = 1;
+    }
+}
 
-    if (session == NULL || !session->active)
+/* ******************************************************************************************************************************************************** */
+/* Cleanup                                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+void transfer_cleanup(transfer_session *session)
+{
+    if (session == NULL)
     {
         return;
     }
-
-    debug_printf("transfer_cancel: cancelling transfer on line %d\n", session->line);
-
-    /* Send CAN characters to abort */
-    for (i = 0; i < XMODEM_CAN_COUNT; i++)
+    
+    /* Clear transfer active flag if was active */
+    if (session->active)
     {
-        pipe_write_byte(session->line, XMODEM_CAN);
+        transfer_set_active_flag(session->line, 0);
     }
-
-    /* Close upload file if open */
-    if (session->direction == TRANSFER_DIR_RECEIVE && session->upload_handle > 0)
+    
+    /* Close temp file if still open */
+    if (session->file_handle != NULL)
     {
-        _kernel_swi_regs regs;
-        regs.r[0] = 0;
-        regs.r[1] = session->upload_handle;
-        _kernel_swi(SWI_OS_Find, &regs, &regs);
-        session->upload_handle = 0;
+        fclose((FILE *)session->file_handle);
+        session->file_handle = NULL;
     }
-
-    session->state = XFER_CANCELLED;
-    session->result = XFER_RESULT_CANCELLED;
+    
+    /* Free protocol state */
+    if (session->protocol_state != NULL)
+    {
+        switch (session->protocol)
+        {
+            case TRANSFER_PROTO_XMODEM:
+            case TRANSFER_PROTO_XMODEM_CRC:
+            case TRANSFER_PROTO_XMODEM_1K:
+                xmodem_cleanup(session);
+                break;
+                
+            default:
+                free(session->protocol_state);
+                break;
+        }
+        session->protocol_state = NULL;
+    }
+    
     session->active = 0;
 }
 
 /* ******************************************************************************************************************************************************** */
-/* Send State Machine Helpers                                                                                                                                 */
+/* Status Queries                                                                                                                                             */
 /* ******************************************************************************************************************************************************** */
 
-static int send_prepare_block(transfer_session *session)
+int transfer_is_active(transfer_session *session)
 {
-    int bytes_to_read;
-    int bytes_read;
-    int trailer_size;
-    uint8_t *data_start;
-
-    /* Calculate bytes remaining */
-    bytes_to_read = session->block_size;
-    if ((session->file_size - session->file_offset) < bytes_to_read)
-    {
-        bytes_to_read = (int)(session->file_size - session->file_offset);
-    }
-
-    if (bytes_to_read <= 0)
-    {
-        return 0; /* No more data */
-    }
-
-    /* Build block header */
-    if (session->block_size == XMODEM_1K_BLOCK_SIZE)
-    {
-        session->block_buffer[0] = XMODEM_STX;
-    }
-    else
-    {
-        session->block_buffer[0] = XMODEM_SOH;
-    }
-    session->block_buffer[1] = session->block_num;
-    session->block_buffer[2] = (uint8_t)(255 - session->block_num);
-
-    /* Read file data into block */
-    data_start = &session->block_buffer[3];
-
-    bytes_read = filebase_download_block(session->filebase_id, session->file_id,
-                                         data_start, session->file_offset,
-                                         bytes_to_read);
-
-    if (bytes_read < 0)
-    {
-        snprintf(session->error_msg, sizeof(session->error_msg), "File read error");
-        return -1;
-    }
-
-    /* Pad remainder with CTRL-Z if needed */
-    if (bytes_read < session->block_size)
-    {
-        memset(data_start + bytes_read, XMODEM_CTRLZ, session->block_size - bytes_read);
-    }
-
-    /* Add checksum or CRC */
-    if (session->use_crc)
-    {
-        uint16_t crc = transfer_crc16(data_start, session->block_size);
-        session->block_buffer[3 + session->block_size] = (uint8_t)(crc >> 8);
-        session->block_buffer[4 + session->block_size] = (uint8_t)(crc & 0xFF);
-        trailer_size = 2;
-    }
-    else
-    {
-        session->block_buffer[3 + session->block_size] = transfer_checksum(data_start, session->block_size);
-        trailer_size = 1;
-    }
-
-    session->block_len = 3 + session->block_size + trailer_size;
-    session->block_pos = 0;
-
-    debug_printf("send_prepare_block: block %d prepared, %d bytes, offset %ld\n",
-                 session->block_num, session->block_len, session->file_offset);
-
-    return bytes_read;
+    return (session != NULL && session->active);
 }
 
-static int send_block_data(transfer_session *session)
+int transfer_get_progress(transfer_session *session)
 {
-    int space;
-    int to_send;
-    int sent;
-
-    space = pipe_space_available(session->line);
-    if (space <= 0)
-    {
-        return 0; /* Can't send yet */
-    }
-
-    to_send = session->block_len - session->block_pos;
-    if (to_send > space)
-    {
-        to_send = space;
-    }
-
-    /* Use block write for efficiency */
-    sent = pipe_write_block(session->line,
-                           &session->block_buffer[session->block_pos],
-                           to_send);
-
-    if (sent < 0)
+    if (session == NULL || session->file_size == 0)
     {
         return -1;
     }
-
-    session->block_pos += sent;
-
-    return (session->block_pos >= session->block_len) ? 1 : 0; /* 1 = complete */
+    
+    return (int)((session->bytes_transferred * 100) / session->file_size);
 }
 
-/* ******************************************************************************************************************************************************** */
-/* Receive State Machine Helpers                                                                                                                              */
-/* ******************************************************************************************************************************************************** */
-
-static int receive_write_file(transfer_session *session, const uint8_t *data, int length)
+void transfer_get_status(transfer_session *session, char *buffer, int buffer_size)
 {
-    _kernel_swi_regs regs;
-
-    if (session->upload_handle <= 0)
+    if (session == NULL)
     {
-        return -1;
+        snprintf(buffer, buffer_size, "No session");
+        return;
     }
-
-    regs.r[0] = 2; /* Write bytes to current position */
-    regs.r[1] = session->upload_handle;
-    regs.r[2] = (int)data;
-    regs.r[3] = length;
-
-    if (_kernel_swi(SWI_OS_GBPB, &regs, &regs) != NULL)
-    {
-        return -1;
-    }
-
-    return length;
-}
-
-static int receive_validate_block(transfer_session *session)
-{
-    uint8_t block_num;
-    uint8_t block_inv;
-    uint8_t *data_start;
-
-    /* Check block number */
-    block_num = session->block_buffer[1];
-    block_inv = session->block_buffer[2];
-
-    if ((uint8_t)(block_num + block_inv) != 255)
-    {
-        debug_printf("receive_validate_block: block number/inverse mismatch\n");
-        return 0; /* Invalid block */
-    }
-
-    /* YMODEM: Check for end-of-batch block 0 after EOT */
-    if (session->is_ymodem && block_num == 0 && session->block_num == 0)
-    {
-        /* Validate CRC first */
-        data_start = &session->block_buffer[3];
-        uint16_t calc_crc = transfer_crc16(data_start, session->block_size);
-        uint16_t recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
-                                       session->block_buffer[4 + session->block_size]);
-
-        if (calc_crc != recv_crc)
-        {
-            debug_printf("receive_validate_block: end-of-batch CRC mismatch\n");
-            return 0;
-        }
-
-        /* Check if filename is empty (end of batch) */
-        if (data_start[0] == '\0')
-        {
-            debug_printf("receive_validate_block: YMODEM end of batch\n");
-            return 3; /* End of batch */
-        }
-
-        /* Non-empty block 0 = another file starting (batch mode) */
-        debug_printf("receive_validate_block: YMODEM batch - another file\n");
-        return 4; /* Another file in batch - not currently supported */
-    }
-
-    /* Check sequence */
-    if (block_num == (uint8_t)(session->block_num - 1))
-    {
-        /* Duplicate block - ACK but don't save */
-        debug_printf("receive_validate_block: duplicate block %d\n", block_num);
-        return 2; /* Duplicate */
-    }
-
-    if (block_num != session->block_num)
-    {
-        debug_printf("receive_validate_block: out of sequence - expected %d got %d\n",
-                     session->block_num, block_num);
-        return 0; /* Out of sequence */
-    }
-
-    /* Validate checksum/CRC */
-    data_start = &session->block_buffer[3];
-
-    if (session->use_crc)
-    {
-        uint16_t calc_crc = transfer_crc16(data_start, session->block_size);
-        uint16_t recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
-                                       session->block_buffer[4 + session->block_size]);
-
-        if (calc_crc != recv_crc)
-        {
-            debug_printf("receive_validate_block: CRC mismatch - calc=%04X recv=%04X\n",
-                         calc_crc, recv_crc);
-            return 0;
-        }
-    }
-    else
-    {
-        uint8_t calc_sum = transfer_checksum(data_start, session->block_size);
-        uint8_t recv_sum = session->block_buffer[3 + session->block_size];
-
-        if (calc_sum != recv_sum)
-        {
-            debug_printf("receive_validate_block: checksum mismatch - calc=%02X recv=%02X\n",
-                         calc_sum, recv_sum);
-            return 0;
-        }
-    }
-
-    return 1; /* Valid new block */
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Poll - Send Direction                                                                                                                                      */
-/* ******************************************************************************************************************************************************** */
-
-static int poll_send(transfer_session *session)
-{
-    int byte;
-    int result;
-
-    switch (session->state)
-    {
-        case XFER_SEND_WAIT_START:
-            /* Wait for NAK (checksum) or 'C' (CRC) from receiver */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_NAK)
-                {
-                    debug_printf("poll_send: got NAK - using checksum mode\n");
-                    session->use_crc = 0;
-                    if (session->is_ymodem && !session->header_sent)
-                    {
-                        session->state = XFER_SEND_HEADER_BLOCK;
-                    }
-                    else
-                    {
-                        session->state = XFER_SEND_BLOCK;
-                    }
-                }
-                else if (byte == XMODEM_CRC_START)
-                {
-                    debug_printf("poll_send: got 'C' - using CRC mode\n");
-                    session->use_crc = 1;
-                    if (session->is_ymodem && !session->header_sent)
-                    {
-                        session->state = XFER_SEND_HEADER_BLOCK;
-                    }
-                    else
-                    {
-                        session->state = XFER_SEND_BLOCK;
-                    }
-                }
-                else if (byte == XMODEM_CAN)
-                {
-                    debug_printf("poll_send: got CAN - receiver cancelled\n");
-                    session->state = XFER_CANCELLED;
-                    session->result = XFER_RESULT_REMOTE_CANCEL;
-                    session->active = 0;
-                    return 0;
-                }
-                /* Ignore other characters */
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                session->retries++;
-                if (session->retries >= XMODEM_START_RETRIES)
-                {
-                    debug_printf("poll_send: start timeout - no response from receiver\n");
-                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from receiver");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_SEND_HEADER_BLOCK:
-            /* YMODEM: Build and send block 0 with filename/size */
-            if (session->block_pos == 0)
-            {
-                session->block_len = ymodem_build_block0(session->block_buffer,
-                                                         session->ymodem_filename,
-                                                         session->ymodem_filesize,
-                                                         session->ymodem_modtime);
-                debug_printf("poll_send: built YMODEM block 0 (%d bytes)\n", session->block_len);
-            }
-
-            result = send_block_data(session);
-            if (result > 0)
-            {
-                debug_printf("poll_send: YMODEM header block sent\n");
-                session->state = XFER_SEND_WAIT_HEADER_ACK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            else if (result < 0)
-            {
-                session->state = XFER_ERROR;
-                session->result = XFER_RESULT_PROTOCOL_ERROR;
-                session->active = 0;
-                return 0;
-            }
-            break;
-
-        case XFER_SEND_WAIT_HEADER_ACK:
-            /* YMODEM: Wait for ACK then 'C' for header block */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_ACK)
-                {
-                    debug_printf("poll_send: got ACK for header block\n");
-                    session->header_sent = 1;
-                    session->block_num = 1; /* Data blocks start at 1 */
-                    session->block_pos = 0;
-                    session->retries = 0;
-                    /* Now wait for 'C' to start data */
-                    transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-                }
-                else if (byte == XMODEM_CRC_START)
-                {
-                    if (session->header_sent)
-                    {
-                        debug_printf("poll_send: got 'C' after header ACK - starting data\n");
-                        session->state = XFER_SEND_BLOCK;
-                    }
-                }
-                else if (byte == XMODEM_NAK)
-                {
-                    debug_printf("poll_send: got NAK for header - retrying\n");
-                    session->errors++;
-                    session->retries++;
-
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Header rejected");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
-                        session->active = 0;
-                        return 0;
-                    }
-
-                    session->block_pos = 0;
-                    session->state = XFER_SEND_HEADER_BLOCK;
-                }
-                else if (byte == XMODEM_CAN)
-                {
-                    debug_printf("poll_send: got CAN - receiver cancelled\n");
-                    session->state = XFER_CANCELLED;
-                    session->result = XFER_RESULT_REMOTE_CANCEL;
-                    session->active = 0;
-                    return 0;
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                if (!session->header_sent)
-                {
-                    session->errors++;
-                    session->retries++;
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Header timeout");
-                        session->state = XFER_TIMEOUT;
-                        session->result = XFER_RESULT_TIMEOUT;
-                        session->active = 0;
-                        return 0;
-                    }
-                    session->block_pos = 0;
-                    session->state = XFER_SEND_HEADER_BLOCK;
-                }
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_SEND_BLOCK:
-            /* Prepare and send next block */
-            if (session->block_pos == 0)
-            {
-                result = send_prepare_block(session);
-                if (result == 0)
-                {
-                    /* No more data - send EOT */
-                    debug_printf("poll_send: all data sent, sending EOT\n");
-                    session->state = XFER_SEND_EOT;
-                    break;
-                }
-                else if (result < 0)
-                {
-                    session->state = XFER_ERROR;
-                    session->result = XFER_RESULT_FILE_ERROR;
-                    session->active = 0;
-                    return 0;
-                }
-            }
-
-            result = send_block_data(session);
-            if (result > 0)
-            {
-                /* Block sent, wait for ACK */
-                debug_printf("poll_send: block %d sent\n", session->block_num);
-                session->state = XFER_SEND_WAIT_ACK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            else if (result < 0)
-            {
-                session->state = XFER_ERROR;
-                session->result = XFER_RESULT_PROTOCOL_ERROR;
-                session->active = 0;
-                return 0;
-            }
-            break;
-
-        case XFER_SEND_WAIT_ACK:
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_ACK)
-                {
-                    debug_printf("poll_send: got ACK for block %d\n", session->block_num);
-                    
-                    /* Update statistics */
-                    session->file_offset += session->block_size;
-                    if (session->file_offset > session->file_size)
-                    {
-                        session->file_offset = session->file_size;
-                    }
-                    session->bytes_transferred = session->file_offset;
-                    session->blocks_transferred++;
-                    session->block_num++;
-                    session->block_pos = 0;
-                    session->retries = 0;
-
-                    /* Continue with next block */
-                    session->state = XFER_SEND_BLOCK;
-                }
-                else if (byte == XMODEM_NAK)
-                {
-                    debug_printf("poll_send: got NAK - retrying block %d\n", session->block_num);
-                    session->errors++;
-                    session->retries++;
-
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Too many retries");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
-                        session->active = 0;
-                        return 0;
-                    }
-
-                    /* Resend block */
-                    session->block_pos = 0;
-                    session->state = XFER_SEND_BLOCK;
-                }
-                else if (byte == XMODEM_CAN)
-                {
-                    debug_printf("poll_send: got CAN - receiver cancelled\n");
-                    session->state = XFER_CANCELLED;
-                    session->result = XFER_RESULT_REMOTE_CANCEL;
-                    session->active = 0;
-                    return 0;
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                debug_printf("poll_send: ACK timeout - retrying block %d\n", session->block_num);
-                session->errors++;
-                session->retries++;
-
-                if (session->retries >= XMODEM_MAX_RETRIES)
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "ACK timeout");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-
-                /* Resend block */
-                session->block_pos = 0;
-                session->state = XFER_SEND_BLOCK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_SEND_EOT:
-            if (pipe_space_available(session->line) > 0)
-            {
-                pipe_write_byte(session->line, XMODEM_EOT);
-                session->state = XFER_SEND_WAIT_EOT_ACK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-                session->retries = 0;
-            }
-            break;
-
-        case XFER_SEND_WAIT_EOT_ACK:
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_ACK)
-                {
-                    debug_printf("poll_send: EOT acknowledged\n");
-                    
-                    /* YMODEM: Need to send empty block 0 to end batch */
-                    if (session->is_ymodem)
-                    {
-                        session->block_pos = 0;
-                        session->retries = 0;
-                        /* Wait for 'C' then send empty block 0 */
-                        session->state = XFER_SEND_END_BATCH;
-                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-                    }
-                    else
-                    {
-                        session->state = XFER_COMPLETE;
-                        session->result = XFER_RESULT_OK;
-                        session->active = 0;
-                        return 0;
-                    }
-                }
-                else if (byte == XMODEM_NAK)
-                {
-                    /* Resend EOT */
-                    session->retries++;
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        /* Some receivers don't ACK EOT, consider it done */
-                        debug_printf("poll_send: EOT NAK limit reached, assuming complete\n");
-                        session->state = XFER_COMPLETE;
-                        session->result = XFER_RESULT_OK;
-                        session->active = 0;
-                        return 0;
-                    }
-                    session->state = XFER_SEND_EOT;
-                }
-                else if (byte == XMODEM_CRC_START)
-                {
-                    /* YMODEM receiver ready for next file / end batch */
-                    if (session->is_ymodem)
-                    {
-                        session->block_pos = 0;
-                        session->state = XFER_SEND_END_BATCH;
-                    }
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                /* Timeout waiting for EOT ACK - consider it done */
-                debug_printf("poll_send: EOT ACK timeout, assuming complete\n");
-                session->state = XFER_COMPLETE;
-                session->result = XFER_RESULT_OK;
-                session->active = 0;
-                return 0;
-            }
-            break;
-
-        case XFER_SEND_END_BATCH:
-            /* YMODEM: Wait for 'C' then send empty block 0 to end batch */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_CRC_START || byte == XMODEM_NAK)
-                {
-                    /* Build empty block 0 */
-                    session->block_len = ymodem_build_block0(session->block_buffer, NULL, 0, 0);
-                    session->block_pos = 0;
-                    debug_printf("poll_send: sending empty block 0 to end batch\n");
-
-                    result = send_block_data(session);
-                    if (result > 0)
-                    {
-                        session->state = XFER_SEND_WAIT_END_BATCH_ACK;
-                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-                    }
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                session->retries++;
-                if (session->retries >= XMODEM_MAX_RETRIES)
-                {
-                    /* Assume complete if we don't get 'C' */
-                    debug_printf("poll_send: end batch timeout, assuming complete\n");
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
-                }
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_SEND_WAIT_END_BATCH_ACK:
-            /* YMODEM: Wait for ACK on empty block 0 */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_ACK)
-                {
-                    debug_printf("poll_send: batch end acknowledged - transfer complete\n");
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
-                }
-                else if (byte == XMODEM_NAK)
-                {
-                    session->retries++;
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        session->state = XFER_COMPLETE;
-                        session->result = XFER_RESULT_OK;
-                        session->active = 0;
-                        return 0;
-                    }
-                    session->block_pos = 0;
-                    session->state = XFER_SEND_END_BATCH;
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                debug_printf("poll_send: end batch ACK timeout, assuming complete\n");
-                session->state = XFER_COMPLETE;
-                session->result = XFER_RESULT_OK;
-                session->active = 0;
-                return 0;
-            }
-            break;
-
-        default:
-            break;
-    }
-
-    return 1; /* Still active */
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Poll - Receive Direction                                                                                                                                   */
-/* ******************************************************************************************************************************************************** */
-
-static int poll_receive(transfer_session *session)
-{
-    int byte;
-    int result;
-    int expected_len;
-
-    switch (session->state)
-    {
-        case XFER_RECV_SEND_START:
-            /* Send NAK or 'C' to initiate transfer */
-            if (pipe_space_available(session->line) > 0)
-            {
-                if (session->use_crc)
-                {
-                    pipe_write_byte(session->line, XMODEM_CRC_START);
-                    debug_printf("poll_receive: sent 'C' for CRC mode\n");
-                }
-                else
-                {
-                    pipe_write_byte(session->line, XMODEM_NAK);
-                    debug_printf("poll_receive: sent NAK for checksum mode\n");
-                }
-
-                /* YMODEM: First expect block 0 (header) */
-                if (session->is_ymodem && !session->header_sent)
-                {
-                    session->state = XFER_RECV_WAIT_HEADER;
-                }
-                else
-                {
-                    session->state = XFER_RECV_WAIT_BLOCK;
-                }
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_RECV_WAIT_HEADER:
-            /* YMODEM: Wait for block 0 header */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_SOH)
-                {
-                    debug_printf("poll_receive: got SOH for header block\n");
-                    session->block_size = XMODEM_BLOCK_SIZE;
-                    session->block_buffer[0] = XMODEM_SOH;
-                    session->block_pos = 1;
-                    session->state = XFER_RECV_READ_HEADER;
-                }
-                else if (byte == XMODEM_STX)
-                {
-                    debug_printf("poll_receive: got STX for header block\n");
-                    session->block_size = XMODEM_1K_BLOCK_SIZE;
-                    session->block_buffer[0] = XMODEM_STX;
-                    session->block_pos = 1;
-                    session->state = XFER_RECV_READ_HEADER;
-                }
-                else if (byte == XMODEM_CAN)
-                {
-                    debug_printf("poll_receive: got CAN - sender cancelled\n");
-                    session->state = XFER_CANCELLED;
-                    session->result = XFER_RESULT_REMOTE_CANCEL;
-                    session->active = 0;
-                    return 0;
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                session->retries++;
-                if (session->retries >= XMODEM_START_RETRIES)
-                {
-                    debug_printf("poll_receive: header timeout\n");
-                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from sender");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-                session->state = XFER_RECV_SEND_START;
-            }
-            break;
-
-        case XFER_RECV_READ_HEADER:
-            /* YMODEM: Read block 0 data */
-            expected_len = 3 + session->block_size + 2; /* Always CRC for YMODEM */
-
-            while (pipe_bytes_available(session->line) > 0 && session->block_pos < expected_len)
-            {
-                byte = pipe_read_byte(session->line);
-                if (byte >= 0)
-                {
-                    session->block_buffer[session->block_pos++] = (uint8_t)byte;
-                }
-            }
-
-            if (session->block_pos > 0)
-            {
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-
-            if (session->block_pos >= expected_len)
-            {
-                /* Validate block 0 */
-                uint8_t block_num = session->block_buffer[1];
-                uint8_t block_inv = session->block_buffer[2];
-                uint16_t calc_crc, recv_crc;
-
-                if ((uint8_t)(block_num + block_inv) != 255 || block_num != 0)
-                {
-                    debug_printf("poll_receive: invalid header block number\n");
-                    session->retries++;
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Invalid header");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_PROTOCOL_ERROR;
-                        session->active = 0;
-                        return 0;
-                    }
-                    session->state = XFER_RECV_SEND_NAK;
-                    break;
-                }
-
-                calc_crc = transfer_crc16(&session->block_buffer[3], session->block_size);
-                recv_crc = (uint16_t)((session->block_buffer[3 + session->block_size] << 8) |
-                                      session->block_buffer[4 + session->block_size]);
-
-                if (calc_crc != recv_crc)
-                {
-                    debug_printf("poll_receive: header CRC error\n");
-                    session->retries++;
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Header CRC error");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_PROTOCOL_ERROR;
-                        session->active = 0;
-                        return 0;
-                    }
-                    session->state = XFER_RECV_SEND_NAK;
-                    break;
-                }
-
-                /* Parse the header */
-                result = ymodem_parse_block0(&session->block_buffer[3], session->block_size,
-                                             session->ymodem_filename,
-                                             &session->ymodem_filesize,
-                                             &session->ymodem_modtime);
-
-                if (result == 0)
-                {
-                    /* Empty filename = end of batch */
-                    debug_printf("poll_receive: end of batch\n");
-                    pipe_write_byte(session->line, XMODEM_ACK);
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
-                }
-
-                if (result < 0)
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Invalid header format");
-                    session->state = XFER_ERROR;
-                    session->result = XFER_RESULT_PROTOCOL_ERROR;
-                    session->active = 0;
-                    return 0;
-                }
-
-                /* Got valid filename - open the file */
-                session->file_size = session->ymodem_filesize;
-                debug_printf("poll_receive: YMODEM file='%s' size=%ld\n",
-                             session->ymodem_filename, session->file_size);
-
-                /* Build full path: upload_path (directory) + filename */
-                {
-                    _kernel_swi_regs regs;
-                    char full_path[512];
-
-                    snprintf(full_path, sizeof(full_path), "%s.%s",
-                             session->upload_path, session->ymodem_filename);
-
-                    regs.r[0] = 0x8F;
-                    regs.r[1] = (int)full_path;
-
-                    if (_kernel_swi(SWI_OS_Find, &regs, &regs) != NULL || regs.r[0] == 0)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create file");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_FILE_ERROR;
-                        session->active = 0;
-                        return 0;
-                    }
-
-                    session->upload_handle = regs.r[0];
-                    strncpy(session->upload_path, full_path, sizeof(session->upload_path) - 1);
-                }
-
-                session->header_sent = 1;
-                session->state = XFER_RECV_ACK_HEADER;
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                debug_printf("poll_receive: header read timeout at pos %d/%d\n",
-                             session->block_pos, expected_len);
-                session->retries++;
-                if (session->retries >= XMODEM_MAX_RETRIES)
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Header timeout");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-                session->state = XFER_RECV_SEND_NAK;
-            }
-            break;
-
-        case XFER_RECV_ACK_HEADER:
-            /* YMODEM: ACK header and send 'C' to start data */
-            if (pipe_space_available(session->line) >= 2)
-            {
-                pipe_write_byte(session->line, XMODEM_ACK);
-                pipe_write_byte(session->line, XMODEM_CRC_START);
-                debug_printf("poll_receive: ACKed header and sent 'C' for data\n");
-                session->block_num = 1;
-                session->block_pos = 0;
-                session->retries = 0;
-                session->state = XFER_RECV_WAIT_BLOCK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_RECV_WAIT_BLOCK:
-            /* Wait for block header (SOH, STX, or EOT) */
-            if (pipe_bytes_available(session->line) > 0)
-            {
-                byte = pipe_read_byte(session->line);
-
-                if (byte == XMODEM_SOH)
-                {
-                    debug_printf("poll_receive: got SOH - 128 byte block\n");
-                    session->block_size = XMODEM_BLOCK_SIZE;
-                    session->block_buffer[0] = XMODEM_SOH;
-                    session->block_pos = 1;
-                    session->state = XFER_RECV_READ_BLOCK;
-                }
-                else if (byte == XMODEM_STX)
-                {
-                    debug_printf("poll_receive: got STX - 1024 byte block\n");
-                    session->block_size = XMODEM_1K_BLOCK_SIZE;
-                    session->block_buffer[0] = XMODEM_STX;
-                    session->block_pos = 1;
-                    session->state = XFER_RECV_READ_BLOCK;
-                }
-                else if (byte == XMODEM_EOT)
-                {
-                    debug_printf("poll_receive: got EOT - transfer complete\n");
-                    /* Send ACK for EOT */
-                    pipe_write_byte(session->line, XMODEM_ACK);
-
-                    /* Close file */
-                    if (session->upload_handle > 0)
-                    {
-                        _kernel_swi_regs regs;
-                        regs.r[0] = 0;
-                        regs.r[1] = session->upload_handle;
-                        _kernel_swi(SWI_OS_Find, &regs, &regs);
-                        session->upload_handle = 0;
-                    }
-
-                    /* YMODEM: Need to receive end-of-batch empty block 0 */
-                    if (session->is_ymodem)
-                    {
-                        /* Send 'C' to request next file / end of batch */
-                        pipe_write_byte(session->line, XMODEM_CRC_START);
-                        debug_printf("poll_receive: YMODEM - sent 'C' for end of batch\n");
-                        session->block_num = 0; /* Expect block 0 again */
-                        session->block_pos = 0;
-                        session->retries = 0;
-                        session->state = XFER_RECV_WAIT_BLOCK; /* Use normal block receive */
-                        transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-                    }
-                    else
-                    {
-                        session->state = XFER_COMPLETE;
-                        session->result = XFER_RESULT_OK;
-                        session->active = 0;
-                        return 0;
-                    }
-                }
-                else if (byte == XMODEM_CAN)
-                {
-                    debug_printf("poll_receive: got CAN - sender cancelled\n");
-
-                    /* Close file */
-                    if (session->upload_handle > 0)
-                    {
-                        _kernel_swi_regs regs;
-                        regs.r[0] = 0;
-                        regs.r[1] = session->upload_handle;
-                        _kernel_swi(SWI_OS_Find, &regs, &regs);
-                        session->upload_handle = 0;
-                    }
-
-                    session->state = XFER_CANCELLED;
-                    session->result = XFER_RESULT_REMOTE_CANCEL;
-                    session->active = 0;
-                    return 0;
-                }
-                /* Ignore other characters */
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                session->retries++;
-                if (session->retries >= XMODEM_START_RETRIES)
-                {
-                    debug_printf("poll_receive: timeout waiting for sender\n");
-                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from sender");
-
-                    /* Close file */
-                    if (session->upload_handle > 0)
-                    {
-                        _kernel_swi_regs regs;
-                        regs.r[0] = 0;
-                        regs.r[1] = session->upload_handle;
-                        _kernel_swi(SWI_OS_Find, &regs, &regs);
-                        session->upload_handle = 0;
-                    }
-
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-
-                /* Resend start character */
-                session->state = XFER_RECV_SEND_START;
-            }
-            break;
-
-        case XFER_RECV_READ_BLOCK:
-            /* Read remaining block bytes */
-            expected_len = 3 + session->block_size + (session->use_crc ? 2 : 1);
-
-            while (pipe_bytes_available(session->line) > 0 && session->block_pos < expected_len)
-            {
-                byte = pipe_read_byte(session->line);
-                if (byte >= 0)
-                {
-                    session->block_buffer[session->block_pos++] = (uint8_t)byte;
-                }
-            }
-
-            /* Reset timeout if we received any data this iteration */
-            if (session->block_pos > 0)
-            {
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-
-            if (session->block_pos >= expected_len)
-            {
-                /* Block complete - validate */
-                result = receive_validate_block(session);
-
-                if (result == 1)
-                {
-                    /* Valid new block - write to file */
-                    if (receive_write_file(session, &session->block_buffer[3], session->block_size) < 0)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "File write error");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_FILE_ERROR;
-                        session->active = 0;
-                        return 0;
-                    }
-
-                    session->bytes_transferred += session->block_size;
-                    session->blocks_transferred++;
-                    session->block_num++;
-                    session->retries = 0;
-                    session->state = XFER_RECV_SEND_ACK;
-                }
-                else if (result == 2)
-                {
-                    /* Duplicate block - ACK without saving */
-                    session->state = XFER_RECV_SEND_ACK;
-                }
-                else if (result == 3)
-                {
-                    /* YMODEM end of batch - ACK and complete */
-                    pipe_write_byte(session->line, XMODEM_ACK);
-                    debug_printf("poll_receive: YMODEM batch complete\n");
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
-                }
-                else if (result == 4)
-                {
-                    /* YMODEM another file in batch - not supported, end transfer */
-                    pipe_write_byte(session->line, XMODEM_ACK);
-                    debug_printf("poll_receive: YMODEM batch mode not supported, ending\n");
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                    session->active = 0;
-                    return 0;
-                }
-                else
-                {
-                    /* Invalid block - NAK */
-                    session->errors++;
-                    session->retries++;
-
-                    if (session->retries >= XMODEM_MAX_RETRIES)
-                    {
-                        snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
-                        session->state = XFER_ERROR;
-                        session->result = XFER_RESULT_TOO_MANY_ERRORS;
-                        session->active = 0;
-                        return 0;
-                    }
-
-                    session->state = XFER_RECV_SEND_NAK;
-                }
-            }
-            else if (transfer_timeout_expired(session))
-            {
-                debug_printf("poll_receive: block read timeout at pos %d/%d\n",
-                             session->block_pos, expected_len);
-                session->errors++;
-                session->retries++;
-
-                if (session->retries >= XMODEM_MAX_RETRIES)
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Block timeout");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                    session->active = 0;
-                    return 0;
-                }
-
-                session->state = XFER_RECV_SEND_NAK;
-            }
-            break;
-
-        case XFER_RECV_SEND_ACK:
-            if (pipe_space_available(session->line) > 0)
-            {
-                pipe_write_byte(session->line, XMODEM_ACK);
-                debug_printf("poll_receive: sent ACK for block %d\n", (uint8_t)(session->block_num - 1));
-                session->block_pos = 0;
-                session->state = XFER_RECV_WAIT_BLOCK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        case XFER_RECV_SEND_NAK:
-            if (pipe_space_available(session->line) > 0)
-            {
-                pipe_write_byte(session->line, XMODEM_NAK);
-                debug_printf("poll_receive: sent NAK\n");
-                session->block_pos = 0;
-                session->state = XFER_RECV_WAIT_BLOCK;
-                transfer_set_timeout(session, XMODEM_TIMEOUT_MS);
-            }
-            break;
-
-        default:
-            break;
-    }
-
-    return 1; /* Still active */
-}
-
-/* ******************************************************************************************************************************************************** */
-/* Main Poll Entry Point                                                                                                                                      */
-/* ******************************************************************************************************************************************************** */
-
-int transfer_poll(transfer_session *session)
-{
-    if (session == NULL || !session->active)
-    {
-        return 0;
-    }
-
-    /* Check for terminal states */
-    if (session->state == XFER_COMPLETE ||
-        session->state == XFER_ERROR ||
-        session->state == XFER_CANCELLED ||
-        session->state == XFER_TIMEOUT)
-    {
-        session->active = 0;
-        set_transfer_state(session->line, 0);  /* Notify Support module transfer ended */
-        return 0;
-    }
-
-    /* Dispatch to protocol/direction-specific handler */
-    if (session->is_zmodem)
-    {
-        if (session->direction == TRANSFER_DIR_SEND)
-        {
-            return poll_send_zmodem(session);
-        }
-        else
-        {
-            return poll_receive_zmodem(session);
-        }
-    }
-    else if (session->direction == TRANSFER_DIR_SEND)
-    {
-        return poll_send(session);
-    }
-    else
-    {
-        return poll_receive(session);
-    }
-}
-
-/* ******************************************************************************************************************************************************** */
-/* ZMODEM Helper Functions                                                                                                                                    */
-/* ******************************************************************************************************************************************************** */
-
-/* Hex digit conversion */
-static const char zhex_digits[] = "0123456789abcdef";
-
-static int zhex_value(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-/*
- * Check if a byte needs ZDLE escaping.
- * Must escape: ZDLE (0x18), XON (0x11), XOFF (0x13), XON|0x80, XOFF|0x80, CR|0x80
- * Optionally escape all control characters if ESCCTL is set.
- */
-static int zmodem_needs_escape(uint8_t c, int escctl)
-{
-    /* Always escape ZDLE */
-    if (c == ZDLE) return 1;
-    
-    /* Always escape XON/XOFF and their high-bit variants */
-    if (c == 0x11 || c == 0x13 || c == 0x91 || c == 0x93) return 1;
-    
-    /* Escape 0x0D following 0x40 or 0xC0 to avoid Telnet issues */
-    /* We'll just always escape CR after @ */
-    
-    /* If ESCCTL flag, escape all control chars */
-    if (escctl && ((c & 0x60) == 0)) return 1;
-    
-    return 0;
-}
-
-/*
- * Write a byte to the pipe with ZDLE escaping if needed.
- * Returns: 1 if byte written (or queued), 0 if pipe full
- */
-static int zmodem_write_escaped(transfer_session *session, uint8_t c)
-{
-    _kernel_swi_regs regs;
-    
-    if (zmodem_needs_escape(c, session->zmodem_escctl))
-    {
-        /* Write ZDLE first */
-        regs.r[0] = session->line;
-        regs.r[1] = ZDLE;
-        if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1)
-        {
-            return 0;
-        }
-        
-        /* Write escaped character (XOR with 0x40) */
-        regs.r[0] = session->line;
-        regs.r[1] = c ^ 0x40;
-        if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1)
-        {
-            return 0;
-        }
-    }
-    else
-    {
-        /* Write character directly */
-        regs.r[0] = session->line;
-        regs.r[1] = c;
-        if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1)
-        {
-            return 0;
-        }
-    }
-    
-    return 1;
-}
-
-/*
- * Build and send a ZMODEM hex header.
- * Format: ZPAD ZPAD ZDLE ZHEX type p0 p1 p2 p3 crc1 crc2 CR LF [XON]
- *
- * type    - Frame type (ZRQINIT, ZRINIT, etc.)
- * p0-p3   - 4 flag/position bytes (little-endian for position)
- *
- * Returns: 1 on success, 0 if pipe full
- */
-static int zmodem_send_hex_header(transfer_session *session, int type, uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3)
-{
-    uint8_t header[20];
-    uint16_t crc;
-    int i, pos = 0;
-    _kernel_swi_regs regs;
-    
-    /* Build header */
-    header[pos++] = ZPAD;
-    header[pos++] = ZPAD;
-    header[pos++] = ZDLE;
-    header[pos++] = ZHEX;
-    header[pos++] = zhex_digits[(type >> 4) & 0x0F];
-    header[pos++] = zhex_digits[type & 0x0F];
-    header[pos++] = zhex_digits[(p0 >> 4) & 0x0F];
-    header[pos++] = zhex_digits[p0 & 0x0F];
-    header[pos++] = zhex_digits[(p1 >> 4) & 0x0F];
-    header[pos++] = zhex_digits[p1 & 0x0F];
-    header[pos++] = zhex_digits[(p2 >> 4) & 0x0F];
-    header[pos++] = zhex_digits[p2 & 0x0F];
-    header[pos++] = zhex_digits[(p3 >> 4) & 0x0F];
-    header[pos++] = zhex_digits[p3 & 0x0F];
-    
-    /* Calculate CRC-16 over type and p0-p3 */
-    {
-        uint8_t crc_data[5];
-        crc_data[0] = (uint8_t)type;
-        crc_data[1] = p0;
-        crc_data[2] = p1;
-        crc_data[3] = p2;
-        crc_data[4] = p3;
-        crc = transfer_crc16(crc_data, 5);
-    }
-    
-    header[pos++] = zhex_digits[(crc >> 12) & 0x0F];
-    header[pos++] = zhex_digits[(crc >> 8) & 0x0F];
-    header[pos++] = zhex_digits[(crc >> 4) & 0x0F];
-    header[pos++] = zhex_digits[crc & 0x0F];
-    header[pos++] = 0x0D;  /* CR */
-    header[pos++] = 0x0A;  /* LF */
-    
-    /* Send header */
-    for (i = 0; i < pos; i++)
-    {
-        regs.r[0] = session->line;
-        regs.r[1] = header[i];
-        if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1)
-        {
-            return 0;
-        }
-    }
-    
-    debug_printf("zmodem: sent hex header type=%d flags=%02X%02X%02X%02X\n", type, p0, p1, p2, p3);
-    return 1;
-}
-
-/*
- * Build and send a ZMODEM binary header with CRC-32.
- * Format: ZPAD ZDLE ZBIN32 type p0 p1 p2 p3 crc[4] (all escaped)
- *
- * Returns: 1 on success, 0 if pipe full
- */
-static int zmodem_send_bin32_header(transfer_session *session, int type, uint8_t p0, uint8_t p1, uint8_t p2, uint8_t p3)
-{
-    uint32_t crc;
-    uint8_t crc_data[5];
-    _kernel_swi_regs regs;
-    
-    /* Send preamble (not escaped) */
-    regs.r[0] = session->line;
-    regs.r[1] = ZPAD;
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1) return 0;
-    
-    regs.r[1] = ZDLE;
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1) return 0;
-    
-    regs.r[1] = ZBIN32;
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1) return 0;
-    
-    /* Send type and data bytes (escaped) */
-    if (!zmodem_write_escaped(session, (uint8_t)type)) return 0;
-    if (!zmodem_write_escaped(session, p0)) return 0;
-    if (!zmodem_write_escaped(session, p1)) return 0;
-    if (!zmodem_write_escaped(session, p2)) return 0;
-    if (!zmodem_write_escaped(session, p3)) return 0;
-    
-    /* Calculate CRC-32 */
-    crc_data[0] = (uint8_t)type;
-    crc_data[1] = p0;
-    crc_data[2] = p1;
-    crc_data[3] = p2;
-    crc_data[4] = p3;
-    crc = transfer_crc32(0xFFFFFFFF, crc_data, 5) ^ 0xFFFFFFFF;
-    
-    /* Send CRC bytes (escaped, little-endian) */
-    if (!zmodem_write_escaped(session, (uint8_t)(crc & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 8) & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 16) & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 24) & 0xFF))) return 0;
-    
-    debug_printf("zmodem: sent bin32 header type=%d pos=%ld\n", type, 
-                 (long)(p0 | ((long)p1 << 8) | ((long)p2 << 16) | ((long)p3 << 24)));
-    return 1;
-}
-
-/*
- * Send position as binary header.
- */
-static int zmodem_send_pos_header(transfer_session *session, int type, long pos)
-{
-    return zmodem_send_bin32_header(session, type,
-        (uint8_t)(pos & 0xFF),
-        (uint8_t)((pos >> 8) & 0xFF),
-        (uint8_t)((pos >> 16) & 0xFF),
-        (uint8_t)((pos >> 24) & 0xFF));
-}
-
-/*
- * Send a data subpacket.
- * Format: data... ZDLE frameend crc[4]
- *
- * data      - Data bytes to send
- * len       - Number of data bytes
- * frameend  - ZCRCE, ZCRCG, ZCRCQ, or ZCRCW
- *
- * Returns: 1 on success, 0 if pipe full
- */
-static int zmodem_send_data_subpacket(transfer_session *session, const uint8_t *data, int len, int frameend)
-{
-    uint32_t crc;
-    int i;
-    _kernel_swi_regs regs;
-    
-    /* Send data bytes (escaped) */
-    for (i = 0; i < len; i++)
-    {
-        if (!zmodem_write_escaped(session, data[i]))
-        {
-            return 0;
-        }
-    }
-    
-    /* Send ZDLE + frameend */
-    regs.r[0] = session->line;
-    regs.r[1] = ZDLE;
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1) return 0;
-    
-    regs.r[1] = frameend;
-    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL || regs.r[0] == -1) return 0;
-    
-    /* Calculate and send CRC-32 */
-    crc = transfer_crc32(0xFFFFFFFF, data, len);
-    {
-        uint8_t fe = (uint8_t)frameend;
-        crc = transfer_crc32(crc, &fe, 1);
-    }
-    crc ^= 0xFFFFFFFF;
-    
-    if (!zmodem_write_escaped(session, (uint8_t)(crc & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 8) & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 16) & 0xFF))) return 0;
-    if (!zmodem_write_escaped(session, (uint8_t)((crc >> 24) & 0xFF))) return 0;
-    
-    return 1;
-}
-
-/*
- * Parse a received hex header from the buffer.
- * Expects buffer to contain: type p0 p1 p2 p3 crc[2] (as hex chars)
- * 
- * Returns: Frame type on success, -1 on error
- */
-static int zmodem_parse_hex_header(transfer_session *session, const uint8_t *buf, int len)
-{
-    uint8_t type, p0, p1, p2, p3;
-    uint16_t crc_recv, crc_calc;
-    uint8_t crc_data[5];
-    int v;
-    
-    if (len < 14) return -1;  /* Need 14 hex chars */
-    
-    /* Parse type */
-    v = zhex_value(buf[0]);
-    if (v < 0) return -1;
-    type = (uint8_t)(v << 4);
-    v = zhex_value(buf[1]);
-    if (v < 0) return -1;
-    type |= v;
-    
-    /* Parse flags */
-    v = zhex_value(buf[2]); if (v < 0) return -1; p0 = (uint8_t)(v << 4);
-    v = zhex_value(buf[3]); if (v < 0) return -1; p0 |= v;
-    v = zhex_value(buf[4]); if (v < 0) return -1; p1 = (uint8_t)(v << 4);
-    v = zhex_value(buf[5]); if (v < 0) return -1; p1 |= v;
-    v = zhex_value(buf[6]); if (v < 0) return -1; p2 = (uint8_t)(v << 4);
-    v = zhex_value(buf[7]); if (v < 0) return -1; p2 |= v;
-    v = zhex_value(buf[8]); if (v < 0) return -1; p3 = (uint8_t)(v << 4);
-    v = zhex_value(buf[9]); if (v < 0) return -1; p3 |= v;
-    
-    /* Parse CRC */
-    v = zhex_value(buf[10]); if (v < 0) return -1; crc_recv = (uint16_t)(v << 12);
-    v = zhex_value(buf[11]); if (v < 0) return -1; crc_recv |= (uint16_t)(v << 8);
-    v = zhex_value(buf[12]); if (v < 0) return -1; crc_recv |= (uint16_t)(v << 4);
-    v = zhex_value(buf[13]); if (v < 0) return -1; crc_recv |= v;
-    
-    /* Verify CRC */
-    crc_data[0] = type;
-    crc_data[1] = p0;
-    crc_data[2] = p1;
-    crc_data[3] = p2;
-    crc_data[4] = p3;
-    crc_calc = transfer_crc16(crc_data, 5);
-    
-    if (crc_recv != crc_calc)
-    {
-        debug_printf("zmodem: hex header CRC error (recv=%04X calc=%04X)\n", crc_recv, crc_calc);
-        return -1;
-    }
-    
-    /* Store header data */
-    session->zmodem_rx_hdr[0] = p0;
-    session->zmodem_rx_hdr[1] = p1;
-    session->zmodem_rx_hdr[2] = p2;
-    session->zmodem_rx_hdr[3] = p3;
-    session->zmodem_rx_type = type;
-    
-    debug_printf("zmodem: received hex header type=%d flags=%02X%02X%02X%02X\n", type, p0, p1, p2, p3);
-    return type;
-}
-
-/*
- * Get position value from last received header.
- */
-static long zmodem_get_header_pos(transfer_session *session)
-{
-    return (long)session->zmodem_rx_hdr[0] |
-           ((long)session->zmodem_rx_hdr[1] << 8) |
-           ((long)session->zmodem_rx_hdr[2] << 16) |
-           ((long)session->zmodem_rx_hdr[3] << 24);
-}
-
-/* ZMODEM receive state for frame parsing */
-#define ZRX_IDLE        0
-#define ZRX_GOTPAD      1
-#define ZRX_GOTPAD2     2
-#define ZRX_GOTZDLE     3
-#define ZRX_GOTHEX      4
-#define ZRX_HEXDATA     5
-#define ZRX_GOTBIN      6
-#define ZRX_GOTBIN32    7
-#define ZRX_BINDATA     8
-#define ZRX_BINCRC      9
-
-/*
- * Process incoming bytes looking for ZMODEM headers.
- * Call repeatedly as data arrives.
- *
- * Returns: Frame type when complete header received, -1 otherwise
- */
-static int zmodem_receive_header(transfer_session *session)
-{
-    _kernel_swi_regs regs;
-    int byte;
-    
-    while (1)
-    {
-        /* Read a byte */
-        regs.r[0] = session->line;
-        if (_kernel_swi(SWI_PIPES_INPUT_READ, &regs, &regs) != NULL || regs.r[0] == -1)
-        {
-            return -1;  /* No data available */
-        }
-        byte = regs.r[0];
-        
-        switch (session->zmodem_rx_state)
-        {
-            case ZRX_IDLE:
-                if (byte == ZPAD)
-                {
-                    session->zmodem_rx_state = ZRX_GOTPAD;
-                }
-                else if (byte == ZDLE)
-                {
-                    session->zmodem_rx_state = ZRX_GOTZDLE;
-                }
-                break;
-                
-            case ZRX_GOTPAD:
-                if (byte == ZPAD)
-                {
-                    session->zmodem_rx_state = ZRX_GOTPAD2;
-                }
-                else if (byte == ZDLE)
-                {
-                    session->zmodem_rx_state = ZRX_GOTZDLE;
-                }
-                else
-                {
-                    session->zmodem_rx_state = ZRX_IDLE;
-                }
-                break;
-                
-            case ZRX_GOTPAD2:
-                if (byte == ZDLE)
-                {
-                    session->zmodem_rx_state = ZRX_GOTZDLE;
-                }
-                else
-                {
-                    session->zmodem_rx_state = ZRX_IDLE;
-                }
-                break;
-                
-            case ZRX_GOTZDLE:
-                if (byte == ZHEX)
-                {
-                    session->zmodem_rx_state = ZRX_HEXDATA;
-                    session->zmodem_rx_pos = 0;
-                }
-                else if (byte == ZBIN)
-                {
-                    session->zmodem_rx_state = ZRX_BINDATA;
-                    session->zmodem_rx_pos = 0;
-                    session->zmodem_crc32 = 0;
-                }
-                else if (byte == ZBIN32)
-                {
-                    session->zmodem_rx_state = ZRX_BINDATA;
-                    session->zmodem_rx_pos = 0;
-                    session->zmodem_crc32 = 1;
-                }
-                else
-                {
-                    session->zmodem_rx_state = ZRX_IDLE;
-                }
-                break;
-                
-            case ZRX_HEXDATA:
-                /* Collecting hex header data */
-                if (byte == 0x0D || byte == 0x0A)
-                {
-                    /* End of hex header */
-                    if (session->zmodem_rx_pos >= 14)
-                    {
-                        int type = zmodem_parse_hex_header(session, session->zmodem_rx_buf, session->zmodem_rx_pos);
-                        session->zmodem_rx_state = ZRX_IDLE;
-                        if (type >= 0)
-                        {
-                            return type;
-                        }
-                    }
-                    session->zmodem_rx_state = ZRX_IDLE;
-                }
-                else if (session->zmodem_rx_pos < ZMODEM_RX_BUFFER_SIZE)
-                {
-                    session->zmodem_rx_buf[session->zmodem_rx_pos++] = (uint8_t)byte;
-                }
-                else
-                {
-                    session->zmodem_rx_state = ZRX_IDLE;
-                }
-                break;
-                
-            case ZRX_BINDATA:
-                /* Handle ZDLE escaping in binary mode */
-                if (session->zmodem_zdle_pending)
-                {
-                    session->zmodem_zdle_pending = 0;
-                    if (byte == ZRUB0)
-                    {
-                        byte = 0x7F;
-                    }
-                    else if (byte == ZRUB1)
-                    {
-                        byte = 0xFF;
-                    }
-                    else
-                    {
-                        byte ^= 0x40;
-                    }
-                }
-                else if (byte == ZDLE)
-                {
-                    session->zmodem_zdle_pending = 1;
-                    break;
-                }
-                
-                if (session->zmodem_rx_pos < 5)
-                {
-                    session->zmodem_rx_buf[session->zmodem_rx_pos++] = (uint8_t)byte;
-                    if (session->zmodem_rx_pos == 5)
-                    {
-                        /* Got type + 4 flag bytes, now read CRC */
-                        session->zmodem_rx_state = ZRX_BINCRC;
-                        session->zmodem_rx_pos = 0;
-                    }
-                }
-                break;
-                
-            case ZRX_BINCRC:
-                /* Handle ZDLE escaping */
-                if (session->zmodem_zdle_pending)
-                {
-                    session->zmodem_zdle_pending = 0;
-                    if (byte == ZRUB0)
-                    {
-                        byte = 0x7F;
-                    }
-                    else if (byte == ZRUB1)
-                    {
-                        byte = 0xFF;
-                    }
-                    else
-                    {
-                        byte ^= 0x40;
-                    }
-                }
-                else if (byte == ZDLE)
-                {
-                    session->zmodem_zdle_pending = 1;
-                    break;
-                }
-                
-                session->zmodem_rx_buf[5 + session->zmodem_rx_pos++] = (uint8_t)byte;
-                
-                {
-                    int crc_len = session->zmodem_crc32 ? 4 : 2;
-                    if (session->zmodem_rx_pos >= crc_len)
-                    {
-                        /* Verify CRC and extract header */
-                        int type = session->zmodem_rx_buf[0];
-                        
-                        /* TODO: Full CRC verification */
-                        /* For now, trust the header */
-                        
-                        session->zmodem_rx_hdr[0] = session->zmodem_rx_buf[1];
-                        session->zmodem_rx_hdr[1] = session->zmodem_rx_buf[2];
-                        session->zmodem_rx_hdr[2] = session->zmodem_rx_buf[3];
-                        session->zmodem_rx_hdr[3] = session->zmodem_rx_buf[4];
-                        session->zmodem_rx_type = type;
-                        
-                        debug_printf("zmodem: received bin header type=%d flags=%02X%02X%02X%02X\n",
-                                     type, session->zmodem_rx_hdr[0], session->zmodem_rx_hdr[1],
-                                     session->zmodem_rx_hdr[2], session->zmodem_rx_hdr[3]);
-                        
-                        session->zmodem_rx_state = ZRX_IDLE;
-                        return type;
-                    }
-                }
-                break;
-        }
-    }
-}
-
-/* ******************************************************************************************************************************************************** */
-/* ZMODEM Start Functions                                                                                                                                     */
-/* ******************************************************************************************************************************************************** */
-
-int transfer_start_send_zmodem(int line,
-                               int filebase_id, int file_id,
-                               const char *filename,
-                               transfer_session *session)
-{
-    long file_size;
-
-    if (session == NULL || filename == NULL)
-    {
-        return 0;
-    }
-
-    session_reset(session);
-
-    /* Get file size from Filer */
-    if (!filebase_get_file_size(filebase_id, file_id, &file_size))
-    {
-        snprintf(session->error_msg, sizeof(session->error_msg), "File not found");
-        session->state = XFER_ERROR;
-        session->result = XFER_RESULT_FILE_ERROR;
-        return 0;
-    }
-
-    debug_printf("transfer_start_send_zmodem: line=%d filebase=%d file=%d size=%ld name=%s\n",
-                 line, filebase_id, file_id, file_size, filename);
-
-    /* Initialise session */
-    session->line = line;
-    session->active = 1;
-    set_transfer_state(line, 1);
-    session->protocol = TRANSFER_PROTO_ZMODEM;
-    session->direction = TRANSFER_DIR_SEND;
-    session->filebase_id = filebase_id;
-    session->file_id = file_id;
-    session->file_size = file_size;
-    session->file_offset = 0;
-    
-    /* ZMODEM specific */
-    session->is_zmodem = 1;
-    session->zmodem_crc32 = 1;
-    session->zmodem_escctl = 0;
-    session->zmodem_rx_state = ZRX_IDLE;
-    session->zmodem_zdle_pending = 0;
-    session->zmodem_txpos = 0;
-    session->zmodem_rxpos = 0;
-    session->zmodem_window_count = 0;
-    session->zmodem_rqinit_count = 0;
-    
-    /* Store filename */
-    strncpy(session->ymodem_filename, filename, sizeof(session->ymodem_filename) - 1);
-    session->ymodem_filename[sizeof(session->ymodem_filename) - 1] = '\0';
-    
-    /* Start state machine */
-    session->state = ZFER_SEND_ZRQINIT;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, ZMODEM_RQINIT_TIMEOUT);
-    session->retries = 0;
-
-    return 1;
-}
-
-int transfer_start_receive_zmodem(int line,
-                                  const char *upload_dir,
-                                  transfer_session *session)
-{
-    _kernel_swi_regs regs;
-
-    if (session == NULL || upload_dir == NULL)
-    {
-        return 0;
-    }
-
-    session_reset(session);
-
-    debug_printf("transfer_start_receive_zmodem: line=%d dir=%s\n", line, upload_dir);
-
-    /* Ensure upload directory exists */
-    regs.r[0] = 8;
-    regs.r[1] = (int)upload_dir;
-    regs.r[4] = 0;
-    _kernel_swi(0x08, &regs, &regs);
-
-    /* Store upload directory */
-    strncpy(session->upload_path, upload_dir, sizeof(session->upload_path) - 1);
-    session->upload_path[sizeof(session->upload_path) - 1] = '\0';
-    session->upload_handle = 0;
-
-    /* Initialise session */
-    session->line = line;
-    session->active = 1;
-    set_transfer_state(line, 1);
-    session->protocol = TRANSFER_PROTO_ZMODEM;
-    session->direction = TRANSFER_DIR_RECEIVE;
-    session->file_size = 0;
-    session->file_offset = 0;
-    
-    /* ZMODEM specific */
-    session->is_zmodem = 1;
-    session->zmodem_crc32 = 1;
-    session->zmodem_escctl = 0;
-    session->zmodem_rx_state = ZRX_IDLE;
-    session->zmodem_zdle_pending = 0;
-    session->zmodem_rxpos = 0;
-    
-    /* Start state machine - wait for ZRQINIT */
-    session->state = ZFER_RECV_WAIT_ZRQINIT;
-    session->transfer_start = transfer_get_time();
-    transfer_set_timeout(session, ZMODEM_RQINIT_TIMEOUT);
-    session->retries = 0;
-
-    return 1;
-}
-
-/* ******************************************************************************************************************************************************** */
-/* ZMODEM Send State Machine                                                                                                                                  */
-/* ******************************************************************************************************************************************************** */
-
-static int poll_send_zmodem(transfer_session *session)
-{
-    int header_type;
     
     switch (session->state)
     {
-        case ZFER_SEND_ZRQINIT:
-            /* Send ZRQINIT to initiate transfer */
-            if (zmodem_send_hex_header(session, ZRQINIT, 0, 0, 0, 0))
-            {
-                session->state = ZFER_SEND_WAIT_ZRINIT;
-                transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
-                session->zmodem_rqinit_count++;
-            }
+        case XFER_IDLE:
+            snprintf(buffer, buffer_size, "Idle");
             break;
             
-        case ZFER_SEND_WAIT_ZRINIT:
-            /* Wait for ZRINIT from receiver */
-            if (transfer_timeout_expired(session))
+        case XFER_ACTIVE:
+            if (session->file_size > 0)
             {
-                if (session->zmodem_rqinit_count < 10)
-                {
-                    /* Retry ZRQINIT */
-                    session->state = ZFER_SEND_ZRQINIT;
-                }
-                else
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from receiver");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                }
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZRINIT)
-            {
-                /* Store receiver capabilities */
-                memcpy(session->zmodem_rxflags, session->zmodem_rx_hdr, 4);
-                
-                /* Check if receiver wants CRC-32 */
-                if (session->zmodem_rxflags[0] & CANFC32)
-                {
-                    session->zmodem_crc32 = 1;
-                }
-                
-                /* Check if receiver wants control char escaping */
-                if (session->zmodem_rxflags[0] & ESCCTL)
-                {
-                    session->zmodem_escctl = 1;
-                }
-                
-                debug_printf("zmodem: receiver ready, caps=%02X\n", session->zmodem_rxflags[0]);
-                session->state = ZFER_SEND_ZFILE;
-            }
-            else if (header_type == ZCAN || header_type == ZABORT)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled");
-                session->state = XFER_CANCELLED;
-                session->result = XFER_RESULT_REMOTE_CANCEL;
-            }
-            break;
-            
-        case ZFER_SEND_ZFILE:
-        {
-            /* Build and send ZFILE header + filename subpacket */
-            char fileinfo[256];
-            int len;
-            
-            /* Send ZFILE header */
-            if (!zmodem_send_bin32_header(session, ZFILE, ZCBIN, 0, 0, 0))
-            {
-                break;
-            }
-            
-            /* Build file info: "filename\0size modtime mode serialno\0" */
-            len = snprintf(fileinfo, sizeof(fileinfo), "%s", session->ymodem_filename);
-            fileinfo[len++] = '\0';
-            len += snprintf(fileinfo + len, sizeof(fileinfo) - len, "%ld %lo 0 0",
-                           session->file_size, (unsigned long)time(NULL));
-            fileinfo[len++] = '\0';
-            
-            /* Send as data subpacket with ZCRCW (expect ZACK) */
-            if (!zmodem_send_data_subpacket(session, (uint8_t *)fileinfo, len, ZCRCW))
-            {
-                break;
-            }
-            
-            session->state = ZFER_SEND_WAIT_ZRPOS;
-            transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
-            break;
-        }
-            
-        case ZFER_SEND_WAIT_ZRPOS:
-            /* Wait for ZRPOS telling us where to start sending */
-            if (transfer_timeout_expired(session))
-            {
-                if (session->retries++ < 5)
-                {
-                    session->state = ZFER_SEND_ZFILE;
-                }
-                else
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Timeout waiting for ZRPOS");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                }
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZRPOS)
-            {
-                /* Receiver wants data from this position */
-                session->zmodem_rxpos = zmodem_get_header_pos(session);
-                session->file_offset = session->zmodem_rxpos;
-                session->zmodem_txpos = session->zmodem_rxpos;
-                
-                debug_printf("zmodem: ZRPOS at %ld\n", session->zmodem_rxpos);
-                session->state = ZFER_SEND_ZDATA;
-                session->retries = 0;
-            }
-            else if (header_type == ZSKIP)
-            {
-                /* Receiver wants to skip this file */
-                debug_printf("zmodem: file skipped\n");
-                session->state = ZFER_SEND_ZFIN;
-            }
-            else if (header_type == ZCAN || header_type == ZABORT)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled");
-                session->state = XFER_CANCELLED;
-                session->result = XFER_RESULT_REMOTE_CANCEL;
-            }
-            break;
-            
-        case ZFER_SEND_ZDATA:
-            /* Send ZDATA header with current position */
-            if (!zmodem_send_pos_header(session, ZDATA, session->zmodem_txpos))
-            {
-                break;
-            }
-            
-            session->state = ZFER_SEND_DATA;
-            session->zmodem_window_count = 0;
-            break;
-            
-        case ZFER_SEND_DATA:
-        {
-            /* Send data subpackets */
-            uint8_t data_buf[ZMODEM_MAX_BLOCK];
-            int bytes_read;
-            int frameend;
-            
-            /* Check for incoming header (ZACK, ZRPOS, etc.) */
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZACK)
-            {
-                /* Acknowledge received, continue */
-                session->zmodem_window_count = 0;
-            }
-            else if (header_type == ZRPOS)
-            {
-                /* Receiver wants to restart from position */
-                session->zmodem_rxpos = zmodem_get_header_pos(session);
-                session->file_offset = session->zmodem_rxpos;
-                session->zmodem_txpos = session->zmodem_rxpos;
-                session->state = ZFER_SEND_ZDATA;
-                session->errors++;
-                break;
-            }
-            else if (header_type == ZCAN || header_type == ZABORT)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled");
-                session->state = XFER_CANCELLED;
-                session->result = XFER_RESULT_REMOTE_CANCEL;
-                break;
-            }
-            
-            /* Read data from file */
-            bytes_read = filebase_download_block(session->filebase_id, session->file_id,
-                                                  data_buf, session->file_offset, ZMODEM_MAX_BLOCK);
-            
-            if (bytes_read < 0)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "File read error");
-                session->state = XFER_ERROR;
-                session->result = XFER_RESULT_FILE_ERROR;
-                break;
-            }
-            
-            if (bytes_read == 0 || session->file_offset >= session->file_size)
-            {
-                /* End of file */
-                session->state = ZFER_SEND_ZEOF;
-                break;
-            }
-            
-            /* Determine frame end type */
-            session->file_offset += bytes_read;
-            session->zmodem_txpos = session->file_offset;
-            session->zmodem_window_count += bytes_read;
-            
-            if (session->file_offset >= session->file_size)
-            {
-                /* Last data packet - end frame, expect ZACK */
-                frameend = ZCRCE;
-            }
-            else if (session->zmodem_window_count >= ZMODEM_WINDOW_SIZE)
-            {
-                /* Window full - request ZACK */
-                frameend = ZCRCQ;
+                snprintf(buffer, buffer_size, "%s %ld/%ld bytes",
+                         session->direction == TRANSFER_DIR_SEND ? "Sending" : "Receiving",
+                         session->bytes_transferred, session->file_size);
             }
             else
             {
-                /* Continue streaming */
-                frameend = ZCRCG;
-            }
-            
-            if (!zmodem_send_data_subpacket(session, data_buf, bytes_read, frameend))
-            {
-                break;
-            }
-            
-            session->bytes_transferred = session->file_offset;
-            session->blocks_transferred++;
-            
-            if (frameend == ZCRCQ)
-            {
-                /* Wait for ZACK */
-                transfer_set_timeout(session, ZMODEM_DATA_TIMEOUT);
-            }
-            break;
-        }
-            
-        case ZFER_SEND_ZEOF:
-            /* Send ZEOF with final file position */
-            if (!zmodem_send_pos_header(session, ZEOF, session->file_offset))
-            {
-                break;
-            }
-            
-            session->state = ZFER_SEND_WAIT_ZEOF_ACK;
-            transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
-            break;
-            
-        case ZFER_SEND_WAIT_ZEOF_ACK:
-            /* Wait for ZRINIT after ZEOF */
-            if (transfer_timeout_expired(session))
-            {
-                if (session->retries++ < 5)
-                {
-                    session->state = ZFER_SEND_ZEOF;
-                }
-                else
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Timeout after ZEOF");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                }
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZRINIT)
-            {
-                /* File complete, finish session */
-                debug_printf("zmodem: file transfer complete\n");
-                session->state = ZFER_SEND_ZFIN;
-            }
-            else if (header_type == ZRPOS)
-            {
-                /* Receiver wants retransmit */
-                session->zmodem_rxpos = zmodem_get_header_pos(session);
-                session->file_offset = session->zmodem_rxpos;
-                session->zmodem_txpos = session->zmodem_rxpos;
-                session->state = ZFER_SEND_ZDATA;
-                session->errors++;
-            }
-            else if (header_type == ZCAN || header_type == ZABORT)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled");
-                session->state = XFER_CANCELLED;
-                session->result = XFER_RESULT_REMOTE_CANCEL;
+                snprintf(buffer, buffer_size, "%s %ld bytes",
+                         session->direction == TRANSFER_DIR_SEND ? "Sending" : "Receiving",
+                         session->bytes_transferred);
             }
             break;
             
-        case ZFER_SEND_ZFIN:
-            /* Send ZFIN to end session */
-            if (!zmodem_send_hex_header(session, ZFIN, 0, 0, 0, 0))
-            {
-                break;
-            }
-            
-            session->state = ZFER_SEND_WAIT_ZFIN_ACK;
-            transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
+        case XFER_COMPLETE:
+            snprintf(buffer, buffer_size, "Complete");
             break;
             
-        case ZFER_SEND_WAIT_ZFIN_ACK:
-            /* Wait for ZFIN response */
-            if (transfer_timeout_expired(session))
-            {
-                /* Timeout is OK - session complete anyway */
-                session->state = ZFER_SEND_OO;
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZFIN)
-            {
-                session->state = ZFER_SEND_OO;
-            }
-            break;
-            
-        case ZFER_SEND_OO:
-        {
-            /* Send "OO" to complete session */
-            _kernel_swi_regs regs;
-            
-            regs.r[0] = session->line;
-            regs.r[1] = 'O';
-            _kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs);
-            regs.r[1] = 'O';
-            _kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs);
-            
-            debug_printf("zmodem: session complete\n");
-            session->state = XFER_COMPLETE;
-            session->result = XFER_RESULT_OK;
-            break;
-        }
-            
-        default:
+        case XFER_ERROR:
+            snprintf(buffer, buffer_size, "Error: %s", session->error_msg);
             break;
     }
-    
-    return 1;
+}
+
+const char *transfer_get_filename(transfer_session *session)
+{
+    if (session == NULL)
+    {
+        return "";
+    }
+    return session->filename;
+}
+
+const char *transfer_get_temp_path(transfer_session *session)
+{
+    if (session == NULL)
+    {
+        return "";
+    }
+    return session->temp_path;
 }
 
 /* ******************************************************************************************************************************************************** */
-/* ZMODEM Receive State Machine                                                                                                                               */
+/* Timer Utilities                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
-static int poll_receive_zmodem(transfer_session *session)
+uint32_t transfer_get_time(void)
 {
-    int header_type;
-    
-    switch (session->state)
+    _kernel_swi_regs regs;
+    _kernel_swi(0x42, &regs, &regs);  /* OS_ReadMonotonicTime */
+    return (uint32_t)regs.r[0];
+}
+
+void transfer_set_timeout(transfer_session *session, int centiseconds)
+{
+    if (session != NULL)
     {
-        case ZFER_RECV_WAIT_ZRQINIT:
-            /* Wait for ZRQINIT from sender */
-            if (transfer_timeout_expired(session))
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Timeout waiting for sender");
-                session->state = XFER_TIMEOUT;
-                session->result = XFER_RESULT_TIMEOUT;
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZRQINIT)
-            {
-                debug_printf("zmodem: received ZRQINIT\n");
-                session->state = ZFER_RECV_SEND_ZRINIT;
-            }
-            else if (header_type == ZFIN)
-            {
-                /* Sender finished early */
-                session->state = ZFER_RECV_SEND_ZFIN;
-            }
-            break;
-            
-        case ZFER_RECV_SEND_ZRINIT:
-            /* Send ZRINIT with our capabilities */
-            if (!zmodem_send_hex_header(session, ZRINIT,
-                    CANFDX | CANOVIO | CANFC32,  /* ZF0: capabilities */
-                    0,                            /* ZF1 */
-                    0,                            /* ZF2 */
-                    0))                           /* ZF3 */
-            {
-                break;
-            }
-            
-            session->state = ZFER_RECV_WAIT_ZFILE;
-            transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
-            break;
-            
-        case ZFER_RECV_WAIT_ZFILE:
-            /* Wait for ZFILE or ZFIN */
-            if (transfer_timeout_expired(session))
-            {
-                if (session->retries++ < 5)
-                {
-                    session->state = ZFER_RECV_SEND_ZRINIT;
-                }
-                else
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Timeout waiting for ZFILE");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                }
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZFILE)
-            {
-                /* ZFILE header received - need to read filename subpacket */
-                /* For now, this is a simplified implementation */
-                debug_printf("zmodem: received ZFILE header\n");
-                
-                /* TODO: Read the data subpacket containing filename */
-                /* For initial implementation, use a default name */
-                snprintf(session->ymodem_filename, sizeof(session->ymodem_filename), "received");
-                
-                session->state = ZFER_RECV_SEND_ZRPOS;
-            }
-            else if (header_type == ZSINIT)
-            {
-                /* Sender init - just ACK it */
-                zmodem_send_hex_header(session, ZACK, 0, 0, 0, 0);
-            }
-            else if (header_type == ZFIN)
-            {
-                /* No more files */
-                session->state = ZFER_RECV_SEND_ZFIN;
-            }
-            else if (header_type == ZRQINIT)
-            {
-                /* Sender retrying - resend ZRINIT */
-                session->state = ZFER_RECV_SEND_ZRINIT;
-            }
-            break;
-            
-        case ZFER_RECV_SEND_ZRPOS:
-        {
-            /* Send ZRPOS to request data from beginning (or resume point) */
-            char filepath[512];
-            _kernel_swi_regs regs;
-            
-            /* Construct full path */
-            snprintf(filepath, sizeof(filepath), "%s.%s", 
-                     session->upload_path, session->ymodem_filename);
-            
-            /* Open file for writing */
-            regs.r[0] = 0x8F; /* Open for output, create if needed */
-            regs.r[1] = (int)filepath;
-            
-            if (_kernel_swi(SWI_OS_Find, &regs, &regs) != NULL || regs.r[0] == 0)
-            {
-                snprintf(session->error_msg, sizeof(session->error_msg), "Cannot create file");
-                session->state = XFER_ERROR;
-                session->result = XFER_RESULT_FILE_ERROR;
-                break;
-            }
-            
-            session->upload_handle = regs.r[0];
-            strncpy(session->upload_path, filepath, sizeof(session->upload_path) - 1);
-            session->zmodem_rxpos = 0;
-            
-            /* Send ZRPOS with position 0 */
-            if (!zmodem_send_pos_header(session, ZRPOS, 0))
-            {
-                break;
-            }
-            
-            session->state = ZFER_RECV_WAIT_ZDATA;
-            transfer_set_timeout(session, ZMODEM_DATA_TIMEOUT);
-            break;
-        }
-            
-        case ZFER_RECV_WAIT_ZDATA:
-            /* Wait for ZDATA header */
-            if (transfer_timeout_expired(session))
-            {
-                if (session->retries++ < 5)
-                {
-                    /* Resend ZRPOS */
-                    zmodem_send_pos_header(session, ZRPOS, session->zmodem_rxpos);
-                    transfer_set_timeout(session, ZMODEM_DATA_TIMEOUT);
-                }
-                else
-                {
-                    snprintf(session->error_msg, sizeof(session->error_msg), "Timeout waiting for data");
-                    session->state = XFER_TIMEOUT;
-                    session->result = XFER_RESULT_TIMEOUT;
-                }
-                break;
-            }
-            
-            header_type = zmodem_receive_header(session);
-            if (header_type == ZDATA)
-            {
-                long data_pos = zmodem_get_header_pos(session);
-                debug_printf("zmodem: ZDATA at position %ld\n", data_pos);
-                
-                if (data_pos != session->zmodem_rxpos)
-                {
-                    /* Position mismatch - request correct position */
-                    zmodem_send_pos_header(session, ZRPOS, session->zmodem_rxpos);
-                    break;
-                }
-                
-                session->state = ZFER_RECV_DATA;
-                session->retries = 0;
-            }
-            else if (header_type == ZEOF)
-            {
-                /* End of file */
-                session->state = ZFER_RECV_SEND_ZRINIT_NEXT;
-            }
-            else if (header_type == ZFIN)
-            {
-                session->state = ZFER_RECV_SEND_ZFIN;
-            }
-            break;
-            
-        case ZFER_RECV_DATA:
-            /* Receive streaming data - this is complex and simplified here */
-            /* TODO: Full data subpacket reception with ZDLE unescaping */
-            {
-                _kernel_swi_regs regs;
-                uint8_t buf[256];
-                int count = 0;
-                int byte;
-                
-                /* Read available bytes */
-                while (count < (int)sizeof(buf))
-                {
-                    regs.r[0] = session->line;
-                    if (_kernel_swi(SWI_PIPES_INPUT_READ, &regs, &regs) != NULL || regs.r[0] == -1)
-                    {
-                        break;
-                    }
-                    byte = regs.r[0];
-                    
-                    /* Handle ZDLE escaping */
-                    if (session->zmodem_zdle_pending)
-                    {
-                        session->zmodem_zdle_pending = 0;
-                        
-                        /* Check for frame end markers */
-                        if (byte == ZCRCE || byte == ZCRCG || byte == ZCRCQ || byte == ZCRCW)
-                        {
-                            /* Frame end - write collected data and handle CRC */
-                            if (count > 0 && session->upload_handle > 0)
-                            {
-                                regs.r[0] = 2;  /* GBPB write */
-                                regs.r[1] = session->upload_handle;
-                                regs.r[2] = (int)buf;
-                                regs.r[3] = count;
-                                _kernel_swi(SWI_OS_GBPB, &regs, &regs);
-                                
-                                session->bytes_transferred += count;
-                                session->zmodem_rxpos += count;
-                                count = 0;
-                            }
-                            
-                            /* Skip CRC bytes (simplified - should verify) */
-                            /* TODO: Read and verify CRC */
-                            
-                            if (byte == ZCRCE || byte == ZCRCW)
-                            {
-                                /* Frame ends, wait for next header */
-                                session->state = ZFER_RECV_WAIT_ZDATA;
-                                transfer_set_timeout(session, ZMODEM_DATA_TIMEOUT);
-                                
-                                if (byte == ZCRCW)
-                                {
-                                    /* Send ZACK */
-                                    zmodem_send_pos_header(session, ZACK, session->zmodem_rxpos);
-                                }
-                            }
-                            /* ZCRCG/ZCRCQ: frame continues */
-                            break;
-                        }
-                        else if (byte == ZRUB0)
-                        {
-                            buf[count++] = 0x7F;
-                        }
-                        else if (byte == ZRUB1)
-                        {
-                            buf[count++] = 0xFF;
-                        }
-                        else
-                        {
-                            buf[count++] = (uint8_t)(byte ^ 0x40);
-                        }
-                    }
-                    else if (byte == ZDLE)
-                    {
-                        session->zmodem_zdle_pending = 1;
-                    }
-                    else
-                    {
-                        buf[count++] = (uint8_t)byte;
-                    }
-                }
-                
-                /* Write any remaining data */
-                if (count > 0 && session->upload_handle > 0)
-                {
-                    regs.r[0] = 2;
-                    regs.r[1] = session->upload_handle;
-                    regs.r[2] = (int)buf;
-                    regs.r[3] = count;
-                    _kernel_swi(SWI_OS_GBPB, &regs, &regs);
-                    
-                    session->bytes_transferred += count;
-                    session->zmodem_rxpos += count;
-                }
-            }
-            break;
-            
-        case ZFER_RECV_SEND_ZRINIT_NEXT:
-            /* Close current file and send ZRINIT for next file */
-            if (session->upload_handle > 0)
-            {
-                _kernel_swi_regs regs;
-                regs.r[0] = 0;
-                regs.r[1] = session->upload_handle;
-                _kernel_swi(SWI_OS_Find, &regs, &regs);
-                session->upload_handle = 0;
-            }
-            
-            debug_printf("zmodem: file complete, %ld bytes\n", session->bytes_transferred);
-            
-            /* Send ZRINIT for next file (or ZFIN will come) */
-            if (!zmodem_send_hex_header(session, ZRINIT,
-                    CANFDX | CANOVIO | CANFC32, 0, 0, 0))
-            {
-                break;
-            }
-            
-            /* Wait for sender's ZFIN (end of batch) or another ZFILE */
-            session->state = ZFER_RECV_WAIT_ZFIN;
-            transfer_set_timeout(session, ZMODEM_HEADER_TIMEOUT);
-            break;
-            
-        case ZFER_RECV_WAIT_ZFIN:
-            /* Wait for sender's ZFIN to complete the session */
-            {
-                int header_type = zmodem_receive_header(session);
-                
-                if (header_type == ZFIN)
-                {
-                    /* Sender finished - respond with our ZFIN */
-                    session->state = ZFER_RECV_SEND_ZFIN;
-                }
-                else if (header_type == ZFILE)
-                {
-                    /* Another file coming (batch mode) */
-                    /* For now, just complete - batch not fully implemented */
-                    session->state = XFER_COMPLETE;
-                    session->result = XFER_RESULT_OK;
-                }
-                else if (header_type == -1)
-                {
-                    /* No data yet */
-                    if (transfer_timeout_expired(session))
-                    {
-                        /* Timeout - assume done */
-                        debug_printf("zmodem: timeout waiting for ZFIN, assuming complete\n");
-                        session->state = XFER_COMPLETE;
-                        session->result = XFER_RESULT_OK;
-                    }
-                }
-            }
-            break;
-            
-        case ZFER_RECV_SEND_ZFIN:
-            /* Send ZFIN response */
-            if (!zmodem_send_hex_header(session, ZFIN, 0, 0, 0, 0))
-            {
-                break;
-            }
-            
-            /* Close file if open */
-            if (session->upload_handle > 0)
-            {
-                _kernel_swi_regs regs;
-                regs.r[0] = 0;
-                regs.r[1] = session->upload_handle;
-                _kernel_swi(SWI_OS_Find, &regs, &regs);
-                session->upload_handle = 0;
-            }
-            
-            debug_printf("zmodem: receive session complete\n");
-            session->state = XFER_COMPLETE;
-            session->result = XFER_RESULT_OK;
-            break;
-            
-        default:
-            break;
+        session->timeout_target = transfer_get_time() + centiseconds;
+    }
+}
+
+int transfer_timeout_expired(transfer_session *session)
+{
+    if (session == NULL)
+    {
+        return 1;
+    }
+    return (transfer_get_time() >= session->timeout_target);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* File I/O                                                                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+int transfer_read_file_block(transfer_session *session, uint8_t *buffer,
+                             long offset, int length)
+{
+    _kernel_swi_regs regs;
+    
+    if (session == NULL || buffer == NULL)
+    {
+        return -1;
     }
     
-    return 1;
+    /* Use Filer SWI to read from filebase */
+    regs.r[0] = FILER_FILEBASE_CMD_DOWNLOAD;
+    regs.r[1] = session->filebase_id;
+    regs.r[2] = session->file_id;
+    regs.r[3] = (int)buffer;
+    regs.r[4] = offset;
+    regs.r[5] = length;
+    
+    if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        debug_printf("transfer: file read error at offset %ld\n", offset);
+        return -1;
+    }
+    
+    return regs.r[0];  /* Returns bytes read */
+}
+
+int transfer_write_file_block(transfer_session *session, const uint8_t *data, int length)
+{
+    FILE *fp;
+    size_t written;
+    
+    if (session == NULL || data == NULL || session->file_handle == NULL)
+    {
+        return -1;
+    }
+    
+    fp = (FILE *)session->file_handle;
+    written = fwrite(data, 1, length, fp);
+    
+    if (written != (size_t)length)
+    {
+        debug_printf("transfer: file write error\n");
+        return -1;
+    }
+    
+    return (int)written;
+}
+
+long transfer_get_file_size(transfer_session *session)
+{
+    if (session == NULL)
+    {
+        return 0;
+    }
+    return session->file_size;
 }

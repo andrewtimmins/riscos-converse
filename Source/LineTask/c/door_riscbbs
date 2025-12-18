@@ -1,0 +1,320 @@
+/*
+ * door_riscbbs.c - RiscBBS door support for LineTask
+ *
+ * Handles classic RiscBBS-style doors which communicate via Wimp messages.
+ * The protocol uses message numbers 0xC0900-0xC0904:
+ *   - 0xC0900 MESSAGE_START: Door announces it's ready
+ *   - 0xC0901 MESSAGE_END: Door signals completion
+ *   - 0xC0902 MESSAGE_OUTPUT: Door sends output text
+ *   - 0xC0903 MESSAGE_ACK: Host acknowledges (requests more output)
+ *   - 0xC0904 MESSAGE_INPUT: Host sends user keystroke
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.Event.h"
+
+#include "door_riscbbs.h"
+#include "main.h"
+#include "script.h"
+#include "pipes.h"
+#include "debug.h"
+
+/* ============================================================================
+ * FORWARD DECLARATIONS
+ * ============================================================================
+ */
+
+static void door_riscbbs_send_acknowledgement(line_task_state *state);
+static void door_riscbbs_queue_output(line_task_state *state, const char *text, size_t length);
+static void door_riscbbs_flush_output(line_task_state *state);
+
+/* OS_Module SWI for Aemulor detection */
+#define SWI_OS_MODULE                0x1E
+#define OS_MODULE_LOOKUP             18
+
+/* ============================================================================
+ * HELPER FUNCTIONS
+ * ============================================================================
+ */
+
+static int is_aemulor_loaded(void)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = OS_MODULE_LOOKUP;
+    regs.r[1] = (int)"Aemulor";
+    return (_kernel_swi(SWI_OS_MODULE, &regs, &regs) == NULL) ? 1 : 0;
+}
+
+/* ============================================================================
+ * PUBLIC FUNCTIONS
+ * ============================================================================
+ */
+
+void door_riscbbs_reset_state(line_task_state *state)
+{
+    if (state->riscbbs.output_buffer != NULL)
+    {
+        free(state->riscbbs.output_buffer);
+        state->riscbbs.output_buffer = NULL;
+    }
+    state->riscbbs.launch_pending = Desk_bool_FALSE;
+    state->riscbbs.active = Desk_bool_FALSE;
+    state->riscbbs.task_handle = 0;
+    state->riscbbs.next_ack_tick = 0;
+    state->riscbbs.launch_deadline = 0;
+}
+
+void door_riscbbs_process(line_task_state *state)
+{
+    clock_t now;
+
+    door_riscbbs_flush_output(state);
+
+    now = clock();
+
+    if (state->riscbbs.launch_pending != Desk_bool_FALSE && state->riscbbs.launch_deadline != 0)
+    {
+        if (now >= state->riscbbs.launch_deadline)
+        {
+            pipes_write_string(state->line_id, "\r\n[Door did not respond]\r\n");
+            door_riscbbs_reset_state(state);
+            script_notify_door_closed(&state->script);
+            return;
+        }
+    }
+
+    if (state->riscbbs.active == Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    if (state->riscbbs.next_ack_tick == 0 || now >= state->riscbbs.next_ack_tick)
+    {
+        door_riscbbs_send_acknowledgement(state);
+        state->riscbbs.next_ack_tick = now + DOOR_ACK_INTERVAL_TICKS;
+    }
+}
+
+Desk_bool door_riscbbs_handle_message(Desk_event_pollblock *event, line_task_state *state)
+{
+    unsigned int action = event->data.message.header.action;
+
+    if (action == RISC_BBS_MESSAGE_START)
+    {
+        if (state->riscbbs.launch_pending == Desk_bool_FALSE || state->riscbbs.active != Desk_bool_FALSE)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        state->riscbbs.task_handle = event->data.message.header.sender;
+        state->riscbbs.active = Desk_bool_TRUE;
+        state->riscbbs.launch_pending = Desk_bool_FALSE;
+        state->riscbbs.launch_deadline = 0;
+        state->riscbbs.next_ack_tick = 0;
+        pipes_write_string(state->line_id, "");
+        door_riscbbs_send_acknowledgement(state);
+        state->riscbbs.next_ack_tick = clock() + DOOR_ACK_INTERVAL_TICKS;
+        return Desk_bool_TRUE;
+    }
+
+    if (action == RISC_BBS_MESSAGE_END)
+    {
+        if (state->riscbbs.active == Desk_bool_FALSE || event->data.message.header.sender != state->riscbbs.task_handle)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        door_riscbbs_close_session(state, "");
+        return Desk_bool_TRUE;
+    }
+
+    if (action == RISC_BBS_MESSAGE_OUTPUT)
+    {
+        int payload_length;
+
+        if (state->riscbbs.active == Desk_bool_FALSE || event->data.message.header.sender != state->riscbbs.task_handle)
+        {
+            return Desk_bool_FALSE;
+        }
+
+        payload_length = event->data.message.header.size - 20;
+        if (payload_length < 0)
+        {
+            payload_length = 0;
+        }
+        door_riscbbs_queue_output(state, (const char *)event->data.message.data.bytes, (size_t)payload_length);
+        return Desk_bool_TRUE;
+    }
+
+    return Desk_bool_FALSE;
+}
+
+void door_riscbbs_send_user_byte(line_task_state *state, unsigned char byte)
+{
+    Desk_message_block message;
+
+    if (state->riscbbs.active == Desk_bool_FALSE || state->riscbbs.task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 24;
+    message.header.action = (Desk_message_action)RISC_BBS_MESSAGE_INPUT;
+    message.data.bytes[0] = (char)byte;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->riscbbs.task_handle, NULL);
+}
+
+void door_riscbbs_close_session(line_task_state *state, const char *message)
+{
+    if (message != NULL)
+    {
+        pipes_write_string(state->line_id, message);
+    }
+
+    door_riscbbs_flush_output(state);
+    door_riscbbs_reset_state(state);
+    script_notify_door_closed(&state->script);
+}
+
+void door_riscbbs_launch(line_task_state *state, const char *command_line, int use_26bit)
+{
+    char final_command[512];
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    if (state->session_active == 0)
+    {
+        pipes_write_string(state->line_id, "\r\n[RiscBBS door unavailable until connected]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->riscbbs.active != Desk_bool_FALSE)
+    {
+        pipes_write_string(state->line_id, "\r\n[A door is already running]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (state->riscbbs.launch_pending != Desk_bool_FALSE)
+    {
+        pipes_write_string(state->line_id, "\r\n[A door launch is already pending]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    if (command_line == NULL || *command_line == '\0')
+    {
+        pipes_write_string(state->line_id, "\r\n[RiscBBS door command missing]\r\n");
+        script_notify_door_closed(&state->script);
+        return;
+    }
+
+    /* Build command line, optionally with Aemulor prefix */
+    if (use_26bit)
+    {
+        if (!is_aemulor_loaded())
+        {
+            pipes_write_string(state->line_id, "\r\n[26-bit door requires Aemulor module]\r\n");
+            script_notify_door_closed(&state->script);
+            return;
+        }
+        snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
+    }
+    else
+    {
+        snprintf(final_command, sizeof(final_command), "%s", command_line);
+    }
+
+    Desk_Wimp_StartTask(final_command);
+    state->riscbbs.launch_pending = Desk_bool_TRUE;
+    state->riscbbs.launch_deadline = clock() + DOOR_LAUNCH_TIMEOUT_TICKS;
+    if (use_26bit)
+    {
+        pipes_write_string(state->line_id, "\r\n[Launching 26-bit RiscBBS door]\r\n");
+    }
+    else
+    {
+        pipes_write_string(state->line_id, "\r\n[Launching RiscBBS door]\r\n");
+    }
+}
+
+/* ============================================================================
+ * PRIVATE FUNCTIONS
+ * ============================================================================
+ */
+
+static void door_riscbbs_send_acknowledgement(line_task_state *state)
+{
+    Desk_message_block message;
+
+    if (state->riscbbs.task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 20;
+    message.header.action = (Desk_message_action)RISC_BBS_MESSAGE_ACK;
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->riscbbs.task_handle, NULL);
+}
+
+static void door_riscbbs_queue_output(line_task_state *state, const char *text, size_t length)
+{
+    if (state->riscbbs.active == Desk_bool_FALSE)
+    {
+        return;
+    }
+
+    if (text == NULL || length == 0)
+    {
+        return;
+    }
+
+    if (state->riscbbs.output_buffer == NULL)
+    {
+        state->riscbbs.output_buffer = (char *)malloc(length + 1);
+        if (state->riscbbs.output_buffer == NULL)
+        {
+            return;
+        }
+
+        memcpy(state->riscbbs.output_buffer, text, length);
+        state->riscbbs.output_buffer[length] = '\0';
+        return;
+    }
+
+    {
+        size_t existing = strlen(state->riscbbs.output_buffer);
+        char *extended = (char *)realloc(state->riscbbs.output_buffer, existing + length + 1);
+        if (extended == NULL)
+        {
+            return;
+        }
+
+        memcpy(extended + existing, text, length);
+        extended[existing + length] = '\0';
+        state->riscbbs.output_buffer = extended;
+    }
+}
+
+static void door_riscbbs_flush_output(line_task_state *state)
+{
+    if (state->riscbbs.output_buffer == NULL)
+    {
+        return;
+    }
+
+    pipes_write_string(state->line_id, state->riscbbs.output_buffer);
+    free(state->riscbbs.output_buffer);
+    state->riscbbs.output_buffer = NULL;
+}

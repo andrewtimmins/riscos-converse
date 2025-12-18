@@ -127,7 +127,7 @@ Notes:
 0x5AA42 - ConverseFiler_Messagebase
 
 On Entry:
-            R0: Reason code (0-7).
+            R0: Reason code (0-15).
             R1..R5: Dependent on reason code.
 
 Reason codes:
@@ -208,6 +208,12 @@ Reason codes:
               R2: Message ID.
               Returns: 1 on success in R0.
 
+            15 (EndUpload)
+              R1: Base ID.
+              R2: Message ID.
+              Flushes and closes the cached file handle for the message payload.
+              Returns: 0 on success in R0.
+
 On Exit:
             R0: Command-specific value (IDs, byte counts, or 0). -1 signals an
                 argument/database error.
@@ -216,7 +222,9 @@ Notes:
             * BeginUpload/Create/StoreArea normalise strings and ignore caller-
               supplied IDs unless performing an update.
             * UploadBlock appends directly to disc and updates metadata after
-              every successful write. DownloadBlock clamps negative offsets.
+              every successful write. After the final UploadBlock, call EndUpload
+              to flush and close the file handle. DownloadBlock clamps negative
+              offsets.
             * StoreArea ensures <base>.Messages.Annnn directories exist and keeps
               `.AreaDB/.AreaIDX` in sync with the module's allocator.
 
@@ -225,7 +233,7 @@ Notes:
 0x5AA43 - ConverseFiler_Filebase
 
 On Entry:
-            R0: Reason code (0-7).
+            R0: Reason code (0-12).
             R1..R5: Dependent on reason code.
 
 Reason codes:
@@ -289,10 +297,11 @@ Reason codes:
               R2: File ID.
               Returns: Pointer to cached FILE_RECORD in R0 on success.
 
-            12 (SaveFileRecord)
+            12 (EndUpload)
               R1: Base ID.
-              R2: Pointer to FILE_RECORD with updates.
-              Returns: 1 on success in R0.
+              R2: File ID.
+              Flushes and closes the cached file handle for the file payload.
+              Returns: 0 on success in R0.
 
 On Exit:
             R0: Command-specific value (IDs, byte counts, or 0). -1 signals an
@@ -302,6 +311,8 @@ Notes:
             * Create/BeginUpload/StoreArea normalise strings, populate IDs, and
               ensure `<base>.Files`/`<base>.Files.Annnn` directories exist.
             * UploadBlock streams to disc and updates recorded sizes atomically.
+              After the final UploadBlock, call EndUpload to flush and close the
+              file handle.
             * DownloadBlock clamps negative offsets and returns 0 on EOF.
             * EnumerateBases/EnumerateAreas/EnumerateFiles return pointers to
               internal cache; callers should copy needed data before next SWI.

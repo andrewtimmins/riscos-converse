@@ -32,6 +32,7 @@
 /* Filer filebase commands */
 #define FILEBASE_CMD_BEGIN_UPLOAD   3
 #define FILEBASE_CMD_UPLOAD_BLOCK   4
+#define FILEBASE_CMD_END_UPLOAD     12
 
 /* Support filebase config reasons */
 #define FILEBASE_CONFIG_COUNT_BASES 6
@@ -613,6 +614,12 @@ int tic_store_file(const TIC_FILE *tic, const char *file_path)
     }
 
     fclose(f);
+
+    /* End upload - flush and close cached file handle */
+    regs.r[0] = FILEBASE_CMD_END_UPLOAD;
+    regs.r[1] = filebase_id;
+    regs.r[2] = file_id;
+    _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
 
     debug_printf("tic: Stored file %s in filebase %d area %d as file %d",
                  tic->filename, filebase_id, area_id, file_id);

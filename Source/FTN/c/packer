@@ -16,6 +16,7 @@
 #include "tosser.h"
 #include "mailer.h"
 #include "queue.h"
+#include "zip.h"
 #include "debug.h"
 #include "ftnlog.h"
 
@@ -1002,4 +1003,220 @@ void packer_get_stats(PACKER_STATS *stats)
 void packer_reset_stats(void)
 {
     memset(&packer_stats, 0, sizeof(packer_stats));
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Arcmail Creation                                                                                                                                         */
+/* Creates compressed mail bundles for outbound mail                                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Get arcmail extension based on day of week.
+ * Format: mo0, tu0, we0, th0, fr0, sa0, su0 (with digit cycling 0-9)
+ */
+static void packer_get_arcmail_extension(char *ext, size_t size)
+{
+    static const char *day_codes[] = { "su", "mo", "tu", "we", "th", "fr", "sa" };
+    static int ext_counter = 0;
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    int dow = tm->tm_wday;  /* 0=Sunday */
+    
+    snprintf(ext, size, "%s%d", day_codes[dow], ext_counter % 10);
+    ext_counter++;
+}
+
+/*
+ * Create arcmail bundle from a packet file.
+ * The packet is compressed and the original packet is removed.
+ *
+ * Entry:
+ *   packet_path - Path to the .pkt file
+ *   dest_addr   - Destination address (for arcmail naming)
+ *
+ * Exit:
+ *   Returns 1 on success, 0 on failure
+ */
+int packer_create_arcmail(const char *packet_path, const FTN_ADDR *dest_addr)
+{
+    ZIP_ARCHIVE archive;
+    char arc_path[PACKER_MAX_PATH];
+    char arc_name[64];
+    char ext[8];
+    const char *pkt_leaf;
+    int result;
+    
+    if (packet_path == NULL || dest_addr == NULL)
+        return 0;
+    
+    /* Get packet leaf name for archive entry */
+    pkt_leaf = strrchr(packet_path, '.');
+    if (pkt_leaf != NULL)
+        pkt_leaf++;
+    else
+        pkt_leaf = packet_path;
+    
+    /* Generate arcmail filename */
+    packer_get_arcmail_extension(ext, sizeof(ext));
+    
+    /* Build arcmail path in same directory as packet */
+    {
+        size_t dir_len;
+        const char *last_dot = strrchr(packet_path, '.');
+        
+        if (last_dot != NULL)
+        {
+            dir_len = last_dot - packet_path;
+            snprintf(arc_path, sizeof(arc_path), "%.*s.%08lx%s",
+                     (int)dir_len, packet_path,
+                     (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
+        }
+        else
+        {
+            snprintf(arc_path, sizeof(arc_path), "%s_%08lx%s",
+                     packet_path,
+                     (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
+        }
+    }
+    
+    /* Create archive name for internal .pkt file (with / separators for ZIP) */
+    snprintf(arc_name, sizeof(arc_name), "%s", pkt_leaf);
+    
+    debug_printf("packer: Creating arcmail %s from %s", arc_path, packet_path);
+    
+    result = zip_create(&archive, arc_path);
+    if (result != ZIP_OK)
+    {
+        mailer_log("Failed to create arcmail: %s", zip_error_string(result));
+        return 0;
+    }
+    
+    result = zip_add_file(&archive, packet_path, arc_name, 1);  /* Compress */
+    if (result != ZIP_OK)
+    {
+        zip_abort(&archive);
+        mailer_log("Failed to add packet to arcmail: %s", zip_error_string(result));
+        return 0;
+    }
+    
+    result = zip_close(&archive);
+    if (result != ZIP_OK)
+    {
+        mailer_log("Failed to close arcmail: %s", zip_error_string(result));
+        remove(arc_path);
+        return 0;
+    }
+    
+    /* Remove original packet */
+    remove(packet_path);
+    
+    ftnlog_printf(">> ARC %s", arc_path);
+    mailer_log("Created arcmail: %s", arc_path);
+    
+    return 1;
+}
+
+/*
+ * Create arcmail bundle from multiple packet files.
+ *
+ * Entry:
+ *   packet_paths - Array of paths to .pkt files
+ *   count        - Number of packets
+ *   dest_addr    - Destination address
+ *
+ * Exit:
+ *   Returns 1 on success, 0 on failure
+ */
+int packer_create_arcmail_multi(const char **packet_paths, int count, const FTN_ADDR *dest_addr)
+{
+    ZIP_ARCHIVE archive;
+    char arc_path[PACKER_MAX_PATH];
+    char ext[8];
+    int result;
+    int i;
+    int added = 0;
+    
+    if (packet_paths == NULL || count <= 0 || dest_addr == NULL)
+        return 0;
+    
+    /* Generate arcmail filename based on first packet's directory */
+    packer_get_arcmail_extension(ext, sizeof(ext));
+    
+    {
+        const char *first = packet_paths[0];
+        const char *last_dot = strrchr(first, '.');
+        size_t dir_len;
+        
+        if (last_dot != NULL)
+        {
+            dir_len = last_dot - first;
+            snprintf(arc_path, sizeof(arc_path), "%.*s.%08lx%s",
+                     (int)dir_len, first,
+                     (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
+        }
+        else
+        {
+            snprintf(arc_path, sizeof(arc_path), "%08lx%s",
+                     (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
+        }
+    }
+    
+    debug_printf("packer: Creating multi-packet arcmail %s", arc_path);
+    
+    result = zip_create(&archive, arc_path);
+    if (result != ZIP_OK)
+    {
+        mailer_log("Failed to create arcmail: %s", zip_error_string(result));
+        return 0;
+    }
+    
+    for (i = 0; i < count; i++)
+    {
+        const char *pkt_leaf;
+        char arc_name[64];
+        
+        pkt_leaf = strrchr(packet_paths[i], '.');
+        if (pkt_leaf != NULL)
+            pkt_leaf++;
+        else
+            pkt_leaf = packet_paths[i];
+        
+        snprintf(arc_name, sizeof(arc_name), "%s", pkt_leaf);
+        
+        result = zip_add_file(&archive, packet_paths[i], arc_name, 1);
+        if (result == ZIP_OK)
+        {
+            added++;
+        }
+        else
+        {
+            debug_printf("packer: Failed to add %s to arcmail", packet_paths[i]);
+        }
+    }
+    
+    if (added == 0)
+    {
+        zip_abort(&archive);
+        mailer_log("No packets added to arcmail");
+        return 0;
+    }
+    
+    result = zip_close(&archive);
+    if (result != ZIP_OK)
+    {
+        mailer_log("Failed to close arcmail: %s", zip_error_string(result));
+        remove(arc_path);
+        return 0;
+    }
+    
+    /* Remove original packets */
+    for (i = 0; i < count; i++)
+    {
+        remove(packet_paths[i]);
+    }
+    
+    ftnlog_printf(">> ARC %s (%d packets)", arc_path, added);
+    mailer_log("Created arcmail with %d packets: %s", added, arc_path);
+    
+    return 1;
 }

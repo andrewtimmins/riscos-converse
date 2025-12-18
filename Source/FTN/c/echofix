@@ -1193,6 +1193,12 @@ int echofix_send_response(const ECHOFIX_RESPONSE *resp)
         return 0;
     }
     
+    /* End upload - flush and close cached file handle */
+    regs.r[0] = 15;  /* MSGBASE_CMD_END_UPLOAD */
+    regs.r[1] = 1;   /* Base ID */
+    regs.r[2] = msg_id;
+    _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+    
     echofix_stats.responses_sent++;
     
     ftnlog_printf("EchoFix: Sent response to %d:%d/%d.%d",

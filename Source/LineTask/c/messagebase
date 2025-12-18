@@ -3895,6 +3895,12 @@ int messagebase_composer_send(messagebase_session *session,
         return 0;
     }
 
+    /* End upload - flush and close cached file handle */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_END_UPLOAD;
+    regs.r[1] = session->current_messagebase;
+    regs.r[2] = message_id;
+    _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+
     output(ctx, "\r\n\033[1;32mMessage sent successfully.\033[0m\r\n");
 
     messagebase_composer_reset(session);

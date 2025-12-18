@@ -17,6 +17,8 @@ RMEnsure SharedCLibrary 6.23 Error 0 Shared C Library 6.23 or higher is requred.
 
 Set ARCbbs$text <Converse$Dir>.Temp
 Set ARCbbsA$text <Converse$Dir>.Temp
+Set Binkley$Dir <Converse$Dir>.FTN
+Set Binkley$Path <Binkley$Dir>.
 
 Set Converse$Loaded 1
 RMEnsure ConverseBBS 0.00 Set Converse$Loaded 0

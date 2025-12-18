@@ -692,9 +692,16 @@ File Transfer
         prompt file_id line echo
         sendfile %{file_id} zmodem
 
-`RECEIVEFILE <path> [protocol]`
-    Uploads a file from the user to the specified path.
-    Same protocol options as SENDFILE.
+`RECEIVEFILE [filename] [protocol]`
+    Uploads a file from the user to the BBS.
+    
+    Modes:
+    - `receivefile` — Prompts for filename, description, and protocol
+    - `receivefile protocol` — Prompts for filename and description
+    - `receivefile filename protocol` — Prompts for description only
+    
+    Same protocol options as SENDFILE. User can press A or ESC during
+    protocol selection to abort.
 
 Macros
 ------

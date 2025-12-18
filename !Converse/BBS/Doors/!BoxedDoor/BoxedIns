@@ -1,0 +1,22 @@
+{cls bfgbg rb}   ___  ___  ___          ___          ___  ___  ___  ___  ___  ___  ___  ___{eol}
+  /__/  /   /    /_ /     /   /\ /    /__/ /__/ /__/ /__/ /  /  /   /__  /__{eol}
+ / \  _/_  /__  /  /    _/_  /  \    /    /  / / \  /  / /__/ _/_  ___/ /__{eol}
+{eol}
+{fgbg ry}                                 Boxed In Game{eol}
+{fgbg wn}
+                                 {bg b}            {bg n}
+                                 {bg b}  {bg y}        {bg b}  {bg n}
+                                 {bg b}  {bg y}  {bg r}  {bg y}    {bg b}  {bg n}
+                                 {bg b}  {bg y}  {bg b}  {bg y}    {bg b}  {bg n}
+                                 {bg b}            {bg n}
+
+                    You control the {bg r}red block{bg n} with these keys:
+
+                        Left:  Z               Right:  X
+                        Up  :  K               Down :  M
+
+{fg y}   Each time you move the {bg r}red block{bg n}, the computer tries to block your path
+   with a {bg b}blue block{bg n} in one direction. See how many moves you can make before
+   you are {bg b} Boxed In ! {bg n} When you are {bg b} Boxed In {bg n} the game ends and you are
+   asked to enter your name. Press q to quit early{_>0022}
+{fgbg yb}                            PRESS ANYKEY TO BEGIN{eol}

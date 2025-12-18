@@ -355,17 +355,17 @@ SetGlobal Field numbers:
             6  (inbound)         char*: Inbound directory path
             7  (outbound)        char*: Outbound directory path
             8  (netmail)         char*: Netmail directory path
-            9  (badmail)         char*: Bad mail directory path
-            10 (max_packet)      long: Maximum packet size
-            11 (ticpath)         char*: TIC staging directory path
-            12 (listenport)      int: Inbound BinkP port
-            13 (maxsessions)     int: Maximum concurrent sessions
-            14 (connecttimeout)  int: Connect timeout (seconds)
-            15 (sessiontimeout)  int: Session timeout (seconds)
-            16 (scaninterval)    int: Outbound rescan interval (seconds)
-            17 (tossinterval)    int: Auto-toss interval (seconds, 0=disabled)
-            18 (pollinterval)    int: Auto-poll interval (seconds, 0=disabled)
-            19 (retrydelay)      int: Retry delay after session (seconds)
+            9  (max_packet)      long: Maximum packet size
+            10 (listenport)      int: Inbound BinkP port
+            11 (maxsessions)     int: Maximum concurrent sessions
+            12 (connecttimeout)  int: Connect timeout (seconds)
+            13 (sessiontimeout)  int: Session timeout (seconds)
+            14 (scaninterval)    int: Outbound rescan interval (seconds)
+            15 (tossinterval)    int: Auto-toss interval (seconds, 0=disabled)
+            16 (pollinterval)    int: Auto-poll interval (seconds, 0=disabled)
+            17 (retrydelay)      int: Retry delay after session (seconds)
+            18 (freqpath)        char*: FREQ files directory path
+            19 (freqexec)        char*: External FREQ processor command
 
 On Exit:
             R0: Command-specific result or -1 on error.

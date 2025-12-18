@@ -1,8 +1,8 @@
 /* ******************************************************************************************************************************************************** */
 /* LineTask File Transfer Module                                                                                                                              */
 /*                                                                                                                                                            */
-/* Provides file transfer protocol support (XMODEM, XMODEM-CRC, XMODEM-1K) via the Pipes module.                                                              */
-/* Designed for cooperative multitasking - all operations are non-blocking with state machine polling.                                                         */
+/* Dispatcher and common utilities for file transfer protocols (XMODEM, YMODEM, ZMODEM).                                                                      */
+/* Protocol-specific code lives in separate files (xmodem.c, ymodem.c, zmodem.c).                                                                             */
 /* ******************************************************************************************************************************************************** */
 
 #ifndef LINETASK_TRANSFER_H
@@ -17,12 +17,13 @@
 
 typedef enum
 {
-    TRANSFER_PROTO_XMODEM,          /* Standard XMODEM - 128 byte blocks, checksum */
-    TRANSFER_PROTO_XMODEM_CRC,      /* XMODEM-CRC - 128 byte blocks, 16-bit CRC */
-    TRANSFER_PROTO_XMODEM_1K,       /* XMODEM-1K - 1024 byte blocks, 16-bit CRC */
-    TRANSFER_PROTO_YMODEM,          /* YMODEM - 1024 byte blocks, CRC, filename in block 0 */
-    TRANSFER_PROTO_YMODEM_G,        /* YMODEM-G - streaming mode (no per-block ACK) */
-    TRANSFER_PROTO_ZMODEM           /* ZMODEM - streaming, 32-bit CRC, auto-start, crash recovery */
+    TRANSFER_PROTO_XMODEM = 0,      /* Basic XMODEM with checksum */
+    TRANSFER_PROTO_XMODEM_CRC,      /* XMODEM with CRC-16 */
+    TRANSFER_PROTO_XMODEM_1K,       /* XMODEM with 1K blocks and CRC-16 */
+    TRANSFER_PROTO_YMODEM,          /* YMODEM with batch support */
+    TRANSFER_PROTO_YMODEM_G,        /* YMODEM-G streaming (no ACKs) */
+    TRANSFER_PROTO_ZMODEM,          /* ZMODEM full implementation */
+    TRANSFER_PROTO_COUNT            /* Number of protocols */
 } transfer_protocol;
 
 /* ******************************************************************************************************************************************************** */
@@ -36,66 +37,15 @@ typedef enum
 } transfer_direction;
 
 /* ******************************************************************************************************************************************************** */
-/* Transfer State Machine States                                                                                                                              */
+/* Transfer State (high-level)                                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
 typedef enum
 {
     XFER_IDLE,                      /* No transfer active */
-    XFER_INIT,                      /* Initialising transfer */
-    
-    /* Send states */
-    XFER_SEND_WAIT_START,           /* Waiting for receiver's NAK (checksum) or 'C' (CRC) */
-    XFER_SEND_HEADER_BLOCK,         /* YMODEM: Sending block 0 (filename/size) */
-    XFER_SEND_WAIT_HEADER_ACK,      /* YMODEM: Waiting for header ACK + 'C' */
-    XFER_SEND_BLOCK,                /* Transmitting a data block */
-    XFER_SEND_WAIT_ACK,             /* Waiting for ACK/NAK response */
-    XFER_SEND_EOT,                  /* Sending End Of Transmission */
-    XFER_SEND_WAIT_EOT_ACK,         /* Waiting for EOT acknowledgement */
-    XFER_SEND_END_BATCH,            /* YMODEM: Sending empty block 0 to end batch */
-    XFER_SEND_WAIT_END_BATCH_ACK,   /* YMODEM: Waiting for final empty block ACK */
-    
-    /* Receive states */
-    XFER_RECV_SEND_START,           /* Sending initial NAK or 'C' */
-    XFER_RECV_WAIT_HEADER,          /* YMODEM: Waiting for block 0 header */
-    XFER_RECV_READ_HEADER,          /* YMODEM: Reading block 0 data */
-    XFER_RECV_ACK_HEADER,           /* YMODEM: ACK header then send 'C' for data */
-    XFER_RECV_WAIT_BLOCK,           /* Waiting for block header (SOH/STX/EOT) */
-    XFER_RECV_READ_BLOCK,           /* Reading block data */
-    XFER_RECV_SEND_ACK,             /* Sending ACK after good block */
-    XFER_RECV_SEND_NAK,             /* Sending NAK after bad block */
-    
-    /* ZMODEM send states */
-    ZFER_SEND_ZRQINIT,              /* Sending ZRQINIT to start session */
-    ZFER_SEND_WAIT_ZRINIT,          /* Waiting for ZRINIT from receiver */
-    ZFER_SEND_ZFILE,                /* Sending ZFILE header */
-    ZFER_SEND_WAIT_ZRPOS,           /* Waiting for ZRPOS (position to send from) */
-    ZFER_SEND_ZDATA,                /* Sending ZDATA header */
-    ZFER_SEND_DATA,                 /* Streaming file data subpackets */
-    ZFER_SEND_WAIT_DATA_ACK,        /* Waiting for ZACK after data window */
-    ZFER_SEND_ZEOF,                 /* Sending ZEOF */
-    ZFER_SEND_WAIT_ZEOF_ACK,        /* Waiting for ZRINIT after ZEOF */
-    ZFER_SEND_ZFIN,                 /* Sending ZFIN */
-    ZFER_SEND_WAIT_ZFIN_ACK,        /* Waiting for ZFIN response */
-    ZFER_SEND_OO,                   /* Sending "OO" to finish */
-    
-    /* ZMODEM receive states */
-    ZFER_RECV_WAIT_ZRQINIT,         /* Waiting for ZRQINIT to start */
-    ZFER_RECV_SEND_ZRINIT,          /* Sending ZRINIT */
-    ZFER_RECV_WAIT_ZFILE,           /* Waiting for ZFILE header */
-    ZFER_RECV_SEND_ZRPOS,           /* Sending ZRPOS to request data */
-    ZFER_RECV_WAIT_ZDATA,           /* Waiting for ZDATA header */
-    ZFER_RECV_DATA,                 /* Receiving streaming data */
-    ZFER_RECV_WAIT_ZEOF,            /* Waiting for ZEOF */
-    ZFER_RECV_SEND_ZRINIT_NEXT,     /* Sending ZRINIT for next file */
-    ZFER_RECV_WAIT_ZFIN,            /* Waiting for ZFIN */
-    ZFER_RECV_SEND_ZFIN,            /* Sending ZFIN response */
-    
-    /* Terminal states */
+    XFER_ACTIVE,                    /* Transfer in progress */
     XFER_COMPLETE,                  /* Transfer completed successfully */
-    XFER_ERROR,                     /* Unrecoverable error occurred */
-    XFER_CANCELLED,                 /* Transfer cancelled by user or remote */
-    XFER_TIMEOUT                    /* Transfer timed out */
+    XFER_ERROR                      /* Unrecoverable error occurred */
 } transfer_state;
 
 /* ******************************************************************************************************************************************************** */
@@ -105,116 +55,35 @@ typedef enum
 typedef enum
 {
     XFER_RESULT_OK,                 /* Transfer completed successfully */
-    XFER_RESULT_CANCELLED,          /* User cancelled */
+    XFER_RESULT_CANCELLED,          /* User/sysop cancelled */
     XFER_RESULT_TIMEOUT,            /* Timed out waiting for response */
     XFER_RESULT_TOO_MANY_ERRORS,    /* Too many retries */
     XFER_RESULT_REMOTE_CANCEL,      /* Remote sent CAN */
     XFER_RESULT_FILE_ERROR,         /* File read/write error */
     XFER_RESULT_PROTOCOL_ERROR,     /* Protocol violation */
-    XFER_RESULT_OUT_OF_SYNC         /* Block sequence error */
+    XFER_RESULT_OUT_OF_SYNC,        /* Block sequence error */
+    XFER_RESULT_SKIP                /* File skipped (YMODEM/ZMODEM) */
 } transfer_result;
 
 /* ******************************************************************************************************************************************************** */
-/* XMODEM Protocol Constants                                                                                                                                  */
+/* Constants                                                                                                                                                  */
 /* ******************************************************************************************************************************************************** */
 
-#define XMODEM_SOH              0x01    /* Start of 128-byte block */
-#define XMODEM_STX              0x02    /* Start of 1024-byte block */
-#define XMODEM_EOT              0x04    /* End of transmission */
-#define XMODEM_ACK              0x06    /* Acknowledge */
-#define XMODEM_NAK              0x15    /* Negative acknowledge */
-#define XMODEM_CAN              0x18    /* Cancel transfer */
-#define XMODEM_CTRLZ            0x1A    /* Padding byte (EOF in CP/M) */
-#define XMODEM_CRC_START        'C'     /* CRC mode request */
+#define TRANSFER_MAX_FILENAME       64
+#define TRANSFER_MAX_DESCRIPTION    256
+#define TRANSFER_MAX_PATH           256
+#define TRANSFER_MAX_ERROR          64
 
-#define XMODEM_BLOCK_SIZE       128     /* Standard block size */
-#define XMODEM_1K_BLOCK_SIZE    1024    /* Extended block size */
-#define XMODEM_MAX_BLOCK_SIZE   1024    /* Maximum block we handle */
+#define TRANSFER_BLOCK_SIZE_128     128
+#define TRANSFER_BLOCK_SIZE_1K      1024
 
-#define XMODEM_MAX_RETRIES      10      /* Maximum retry attempts per block */
-#define XMODEM_START_RETRIES    6       /* Maximum start sequence retries */
-#define XMODEM_TIMEOUT_MS       10000   /* 10 second timeout for responses */
-#define XMODEM_START_TIMEOUT_MS 60000   /* 60 second timeout for initial start */
-#define XMODEM_CAN_COUNT        2       /* Number of CANs to send for abort */
+/* Timeout values in centiseconds (1cs = 10ms) */
+#define TRANSFER_TIMEOUT_START      6000    /* 60 seconds to start transfer */
+#define TRANSFER_TIMEOUT_BLOCK      1000    /* 10 seconds per block */
+#define TRANSFER_TIMEOUT_ACK        300     /* 3 seconds for ACK */
 
-/* ******************************************************************************************************************************************************** */
-/* ZMODEM Protocol Constants                                                                                                                                  */
-/* ******************************************************************************************************************************************************** */
-
-/* ZMODEM special characters */
-#define ZDLE                    0x18    /* Escape character (same as CAN) */
-#define ZPAD                    '*'     /* Padding before hex header */
-#define ZBIN                    'A'     /* Binary header with CRC-16 */
-#define ZHEX                    'B'     /* Hex header with CRC-16 */
-#define ZBIN32                  'C'     /* Binary header with CRC-32 */
-
-/* ZMODEM frame types */
-#define ZRQINIT                 0       /* Request receive init */
-#define ZRINIT                  1       /* Receive init */
-#define ZSINIT                  2       /* Send init sequence */
-#define ZACK                    3       /* ACK */
-#define ZFILE                   4       /* File header */
-#define ZSKIP                   5       /* Skip this file */
-#define ZNAK                    6       /* NAK - request retransmit */
-#define ZABORT                  7       /* Abort transfer */
-#define ZFIN                    8       /* Finish session */
-#define ZRPOS                   9       /* Resume at position */
-#define ZDATA                   10      /* Data packet follows */
-#define ZEOF                    11      /* End of file */
-#define ZFERR                   12      /* File error */
-#define ZCRC                    13      /* CRC request */
-#define ZCHALLENGE              14      /* Challenge */
-#define ZCOMPL                  15      /* Complete */
-#define ZCAN                    16      /* CAN - abort */
-#define ZFREECNT                17      /* Free count request */
-#define ZCOMMAND                18      /* Command */
-#define ZSTDERR                 19      /* Stderr data */
-
-/* ZMODEM subpacket types (frame end) */
-#define ZCRCE                   'h'     /* CRC next, frame ends, header follows */
-#define ZCRCG                   'i'     /* CRC next, frame continues nonstop */
-#define ZCRCQ                   'j'     /* CRC next, frame continues, ZACK expected */
-#define ZCRCW                   'k'     /* CRC next, frame ends, ZACK expected */
-
-/* ZMODEM ZDLE escape sequences */
-#define ZRUB0                   'l'     /* Translate to 0x7F (DEL) */
-#define ZRUB1                   'm'     /* Translate to 0xFF */
-
-/* ZRINIT capability flags (ZF0) */
-#define CANFDX                  0x01    /* Full duplex */
-#define CANOVIO                 0x02    /* Can overlap I/O */
-#define CANBRK                  0x04    /* Can send break */
-#define CANCRY                  0x08    /* Can encrypt */
-#define CANLZW                  0x10    /* Can LZW compress */
-#define CANFC32                 0x20    /* Can use CRC-32 */
-#define ESCCTL                  0x40    /* Escape control chars */
-#define ESC8                    0x80    /* Escape 8th bit chars */
-
-/* ZFILE conversion options (ZF0) */
-#define ZCBIN                   1       /* Binary transfer */
-#define ZCNL                    2       /* Convert NL to local EOL */
-#define ZCRESUM                 3       /* Resume interrupted transfer */
-
-/* ZFILE management options (ZF1) */
-#define ZMNEWL                  1       /* Transfer if source newer or longer */
-#define ZMCRC                   2       /* Transfer if CRC differs */
-#define ZMAPND                  3       /* Append */
-#define ZMCLOB                  4       /* Replace existing file */
-#define ZMNEW                   5       /* Transfer if source newer */
-#define ZMDIFF                  6       /* Transfer if dates/lengths differ */
-#define ZMPROT                  7       /* Protect: no overwrite */
-#define ZMCHNG                  8       /* Changed: only if changed */
-
-/* ZMODEM buffer sizes */
-#define ZMODEM_MAX_BLOCK        1024    /* Max data bytes per subpacket */
-#define ZMODEM_HEADER_SIZE      4       /* 4 flag bytes in header */
-#define ZMODEM_RX_BUFFER_SIZE   2048    /* Receive buffer size */
-#define ZMODEM_WINDOW_SIZE      4096    /* Bytes before expecting ZACK */
-
-/* ZMODEM timeouts */
-#define ZMODEM_RQINIT_TIMEOUT   60000   /* 60s for initial ZRQINIT */
-#define ZMODEM_HEADER_TIMEOUT   10000   /* 10s for header response */
-#define ZMODEM_DATA_TIMEOUT     15000   /* 15s for data */
+#define TRANSFER_MAX_ERRORS         10      /* Max consecutive errors before abort */
+#define TRANSFER_MAX_START_RETRIES  6       /* Max retries waiting for receiver */
 
 /* ******************************************************************************************************************************************************** */
 /* Transfer Session Structure                                                                                                                                 */
@@ -223,84 +92,48 @@ typedef enum
 typedef struct
 {
     /* Session identification */
-    int line;                           /* Pipe line number */
-    int active;                         /* Transfer is active */
+    int line;                               /* Pipe line number */
+    int active;                             /* Transfer is active */
+    transfer_protocol protocol;             /* Which protocol */
+    transfer_direction direction;           /* Send or receive */
     
-    /* Protocol configuration */
-    transfer_protocol protocol;         /* Selected protocol */
-    transfer_direction direction;       /* Send or receive */
-    int use_crc;                        /* Using CRC (vs checksum) - determined during handshake */
-    int block_size;                     /* Current block size (128 or 1024) */
-    int is_ymodem;                      /* YMODEM protocol (needs block 0) */
-    int ymodem_g;                       /* YMODEM-G streaming mode (no ACK per block) */
-    int header_sent;                    /* Block 0 has been sent/received */
+    /* High-level state */
+    transfer_state state;                   /* IDLE, ACTIVE, COMPLETE, ERROR */
+    transfer_result result;                 /* Result code when complete */
+    char error_msg[TRANSFER_MAX_ERROR];     /* Human-readable error description */
     
-    /* State machine */
-    transfer_state state;               /* Current state */
-    transfer_result result;             /* Result code when complete */
+    /* File info - for SEND (download to user) */
+    int filebase_id;                        /* Source filebase ID */
+    int file_id;                            /* Source file ID */
     
-    /* Block handling */
-    uint8_t block_num;                  /* Current block number (1-255, wraps) */
-    uint8_t block_buffer[XMODEM_MAX_BLOCK_SIZE + 5];  /* Block buffer with header/trailer */
-    int block_pos;                      /* Position within block buffer */
-    int block_len;                      /* Expected block length */
+    /* File info - for RECEIVE (upload from user) */
+    char filename[TRANSFER_MAX_FILENAME];           /* Filename (user or protocol provided) */
+    char description[TRANSFER_MAX_DESCRIPTION];     /* User-provided description */
+    char temp_path[TRANSFER_MAX_PATH];              /* Temp file path during receive */
+    int filename_from_protocol;                     /* 1 if YMODEM/ZMODEM provided filename */
     
-    /* File handling - uses Filer module for downloads */
-    int filebase_id;                    /* Filebase ID for downloads */
-    int file_id;                        /* File ID for downloads */
-    long file_size;                     /* Total file size */
-    long file_offset;                   /* Current offset in file */
-    
-    /* For receive (upload) - direct file path */
-    char upload_path[256];              /* Path for received file */
-    int upload_handle;                  /* File handle for uploads */
-    
-    /* YMODEM filename from block 0 */
-    char ymodem_filename[128];          /* Filename from/for YMODEM block 0 */
-    long ymodem_filesize;               /* File size from YMODEM block 0 */
-    time_t ymodem_modtime;              /* Modification time from block 0 */
-    
-    /* ZMODEM specific */
-    int is_zmodem;                      /* ZMODEM protocol active */
-    int zmodem_crc32;                   /* Use CRC-32 (vs CRC-16) */
-    int zmodem_escctl;                  /* Escape control characters */
-    uint8_t zmodem_rxflags[4];          /* Receiver capability flags */
-    uint8_t zmodem_txflags[4];          /* Transmitter flags */
-    uint8_t zmodem_rx_hdr[4];           /* Last received header data */
-    int zmodem_rx_type;                 /* Last received header type */
-    uint8_t zmodem_rx_buf[ZMODEM_RX_BUFFER_SIZE];  /* Receive assembly buffer */
-    int zmodem_rx_pos;                  /* Position in receive buffer */
-    int zmodem_rx_state;                /* Sub-state for frame parsing */
-    int zmodem_zdle_pending;            /* ZDLE escape pending */
-    long zmodem_txpos;                  /* Current transmit file position */
-    long zmodem_rxpos;                  /* Position receiver wants data from */
-    int zmodem_window_count;            /* Bytes since last ZACK */
-    int zmodem_attn_seq;                /* Attention sequence index */
-    char zmodem_attn[32];               /* Attention string from ZSINIT */
-    int zmodem_rqinit_count;            /* ZRQINIT retry count */
-    
-    /* Statistics */
-    long bytes_transferred;             /* Total bytes sent/received */
-    int blocks_transferred;             /* Total blocks sent/received */
-    int errors;                         /* Error count */
-    int retries;                        /* Current retry count */
+    /* Progress tracking */
+    long file_size;                         /* Total size (known for send, may be 0 for receive) */
+    long file_offset;                       /* Current read/write position */
+    long bytes_transferred;                 /* Total bytes successfully transferred */
     
     /* Timing */
-    unsigned int timeout_end;           /* Monotonic time when timeout expires */
-    unsigned int transfer_start;        /* When transfer started */
+    uint32_t timeout_target;                /* Centisecond timeout target */
+    uint32_t start_time;                    /* Transfer start time */
     
-    /* Output buffer for pending writes */
-    uint8_t output_pending[16];         /* Small buffer for protocol bytes */
-    int output_count;                   /* Bytes pending in output buffer */
-    int output_pos;                     /* Current write position */
+    /* Control */
+    int cancel_requested;                   /* Cancel signal from host */
     
-    /* Error message */
-    char error_msg[64];                 /* Human-readable error description */
+    /* File handle for receive */
+    void *file_handle;                      /* FILE* for temp file during receive */
+    
+    /* Protocol-specific state (allocated by protocol init) */
+    void *protocol_state;
     
 } transfer_session;
 
 /* ******************************************************************************************************************************************************** */
-/* Public API                                                                                                                                                 */
+/* Public API - Session Management                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
 /*
@@ -310,196 +143,126 @@ typedef struct
 void transfer_init(void);
 
 /*
- * Start a file send transfer (user downloading from BBS).
+ * Start sending a file from filebase (BBS download to user).
  *
- * line         - Pipe line number
- * protocol     - XMODEM variant to use
- * filebase_id  - Filer filebase ID containing the file
- * file_id      - File ID within the filebase
- * session      - Session structure to initialise
+ * session:     Pointer to session structure (caller allocates)
+ * line:        Pipe line number
+ * protocol:    Transfer protocol to use
+ * filebase_id: Filebase containing the file
+ * file_id:     File ID within the filebase
  *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
+ * Returns: 0 on success, -1 on error (check session->error_msg)
  */
-int transfer_start_send(int line, transfer_protocol protocol,
-                        int filebase_id, int file_id,
-                        transfer_session *session);
+int transfer_start_send(transfer_session *session, int line,
+                        transfer_protocol protocol, int filebase_id, int file_id);
 
 /*
- * Start a file receive transfer (user uploading to BBS).
+ * Start receiving a file (BBS upload from user).
  *
- * line         - Pipe line number
- * protocol     - XMODEM variant to use
- * upload_path  - Full RISC OS path for received file
- * session      - Session structure to initialise
+ * session:     Pointer to session structure (caller allocates)
+ * line:        Pipe line number
+ * protocol:    Transfer protocol to use
+ * filename:    Filename for XMODEM (required), or hint for YMODEM/ZMODEM (can be empty)
+ * description: User-provided file description
  *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
+ * Returns: 0 on success, -1 on error (check session->error_msg)
  */
-int transfer_start_receive(int line, transfer_protocol protocol,
-                           const char *upload_path,
-                           transfer_session *session);
-
-/*
- * Start a YMODEM file send transfer (user downloading from BBS).
- * This variant provides filename for the block 0 header.
- *
- * line         - Pipe line number
- * protocol     - YMODEM or YMODEM_G
- * filebase_id  - Filer filebase ID containing the file
- * file_id      - File ID within the filebase
- * filename     - Filename to send in YMODEM block 0
- * session      - Session structure to initialise
- *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
- */
-int transfer_start_send_ymodem(int line, transfer_protocol protocol,
-                               int filebase_id, int file_id,
-                               const char *filename,
-                               transfer_session *session);
-
-/*
- * Start a YMODEM file receive transfer (user uploading to BBS).
- * Filename will be extracted from YMODEM block 0 header.
- *
- * line         - Pipe line number
- * protocol     - YMODEM or YMODEM_G
- * upload_dir   - Directory to save received file (filename comes from block 0)
- * session      - Session structure to initialise
- *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
- */
-int transfer_start_receive_ymodem(int line, transfer_protocol protocol,
-                                  const char *upload_dir,
-                                  transfer_session *session);
-
-/*
- * Start a ZMODEM file send transfer (user downloading from BBS).
- * ZMODEM sends ZRQINIT to initiate auto-download on receiver.
- *
- * line         - Pipe line number
- * filebase_id  - Filer filebase ID containing the file
- * file_id      - File ID within the filebase
- * filename     - Filename to send in ZFILE header
- * session      - Session structure to initialise
- *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
- */
-int transfer_start_send_zmodem(int line,
-                               int filebase_id, int file_id,
-                               const char *filename,
-                               transfer_session *session);
-
-/*
- * Start a ZMODEM file receive transfer (user uploading to BBS).
- * Waits for ZRQINIT/ZFILE from sender.
- *
- * line         - Pipe line number
- * upload_dir   - Directory to save received file
- * session      - Session structure to initialise
- *
- * Returns: 1 on success, 0 on failure (check session->error_msg)
- */
-int transfer_start_receive_zmodem(int line,
-                                  const char *upload_dir,
-                                  transfer_session *session);
+int transfer_start_receive(transfer_session *session, int line,
+                           transfer_protocol protocol,
+                           const char *filename, const char *description);
 
 /*
  * Poll the transfer state machine.
- * Must be called frequently from the main loop.
+ * Call this from the null event handler while a transfer is active.
  *
- * session      - Active transfer session
- *
- * Returns: 1 if transfer still active, 0 if complete/error/cancelled
+ * Returns: 1 if transfer still active, 0 if complete/error
  */
 int transfer_poll(transfer_session *session);
 
 /*
- * Cancel an active transfer.
- *
- * session      - Transfer session to cancel
+ * Request cancellation of the transfer.
+ * The transfer will abort gracefully (sending CAN sequence).
  */
 void transfer_cancel(transfer_session *session);
 
 /*
- * Check if a transfer is active.
- *
- * session      - Transfer session to check
- *
- * Returns: 1 if active, 0 if idle/complete
+ * Clean up after transfer completes.
+ * Frees protocol state and closes any open files.
+ */
+void transfer_cleanup(transfer_session *session);
+
+/* ******************************************************************************************************************************************************** */
+/* Public API - Status Queries                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check if a transfer is currently active.
  */
 int transfer_is_active(transfer_session *session);
 
 /*
- * Get transfer progress as percentage.
- *
- * session      - Transfer session
- *
- * Returns: 0-100 percentage, or -1 if unknown
+ * Get transfer progress as percentage (0-100).
+ * Returns -1 if unknown (e.g., receiving with unknown file size).
  */
 int transfer_get_progress(transfer_session *session);
 
 /*
  * Get human-readable status string.
- *
- * session      - Transfer session
- * buffer       - Output buffer
- * buffer_size  - Size of output buffer
  */
 void transfer_get_status(transfer_session *session, char *buffer, int buffer_size);
 
-/* ******************************************************************************************************************************************************** */
-/* CRC Calculation                                                                                                                                            */
-/* ******************************************************************************************************************************************************** */
+/*
+ * Get the final filename (useful for YMODEM/ZMODEM where protocol provides name).
+ */
+const char *transfer_get_filename(transfer_session *session);
 
 /*
- * Calculate XMODEM CRC-16 (polynomial 0x1021).
- *
- * data         - Data buffer
- * length       - Number of bytes
- *
- * Returns: 16-bit CRC value
+ * Get the temp file path (for received files).
  */
-uint16_t transfer_crc16(const uint8_t *data, int length);
-
-/*
- * Calculate simple checksum (sum of bytes mod 256).
- *
- * data         - Data buffer
- * length       - Number of bytes
- *
- * Returns: 8-bit checksum
- */
-uint8_t transfer_checksum(const uint8_t *data, int length);
-
-/*
- * Calculate ZMODEM CRC-32 (polynomial 0xEDB88320, reflected).
- *
- * crc          - Initial CRC value (use 0xFFFFFFFF for first call)
- * data         - Data buffer
- * length       - Number of bytes
- *
- * Returns: 32-bit CRC value (XOR with 0xFFFFFFFF for final)
- */
-uint32_t transfer_crc32(uint32_t crc, const uint8_t *data, int length);
+const char *transfer_get_temp_path(transfer_session *session);
 
 /* ******************************************************************************************************************************************************** */
-/* Internal Helpers (exposed for testing)                                                                                                                     */
+/* Utility Functions - For use by protocol implementations                                                                                                    */
 /* ******************************************************************************************************************************************************** */
 
 /*
- * Get monotonic time in centiseconds.
- * Uses OS_ReadMonotonicTime.
+ * Get current time in centiseconds (OS_ReadMonotonicTime).
  */
-unsigned int transfer_get_time(void);
+uint32_t transfer_get_time(void);
+
+/*
+ * Set timeout relative to current time.
+ */
+void transfer_set_timeout(transfer_session *session, int centiseconds);
 
 /*
  * Check if timeout has expired.
  */
 int transfer_timeout_expired(transfer_session *session);
 
+/* ******************************************************************************************************************************************************** */
+/* File I/O Functions - For use by protocol implementations                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
 /*
- * Set timeout from now.
- * timeout_ms - Timeout in milliseconds
+ * Read a block of data from the source file (for sending).
+ * Uses Filer SWIs to read from filebase.
+ *
+ * Returns: Number of bytes read, 0 on EOF, -1 on error
  */
-void transfer_set_timeout(transfer_session *session, unsigned int timeout_ms);
+int transfer_read_file_block(transfer_session *session, uint8_t *buffer,
+                             long offset, int length);
+
+/*
+ * Write a block of data to the temp file (for receiving).
+ *
+ * Returns: Number of bytes written, -1 on error
+ */
+int transfer_write_file_block(transfer_session *session, const uint8_t *data, int length);
+
+/*
+ * Get the total file size (for sending).
+ */
+long transfer_get_file_size(transfer_session *session);
 
 #endif /* LINETASK_TRANSFER_H */

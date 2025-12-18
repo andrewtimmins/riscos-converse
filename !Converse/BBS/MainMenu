@@ -5,12 +5,15 @@
 label main_menu
     script `<Converse$Dir>.BBS.Header`
     bold
-    print `                               .:: Main Menu ::.\r\n`
+    fgbg 7 4
+    print `                                .:: Main Menu ::.`,cll
     std
-    print `\r\n`
+    print `\r\n\r\n`
     print `    [M] Messagebase \r\n`
     print `    [F] Filebase \r\n`
     print `    [S] Scan for New Content\r\n`
+    print `    [C] Chat to Sysop\n\n`
+    print ``
     print `    [Q] Quit / Logoff\r\n`
     print `\r\n`
     print `  Choice: `
@@ -24,6 +27,8 @@ label main_menu
     if choice == `S` goto login_scan
     if choice == `q` goto quit
     if choice == `Q` goto quit
+    if choice == `C` goto chat
+    if choice == `c` goto chat
 
     print `\r\n\r\n[Invalid choice]\r\n`
     anykey
@@ -43,6 +48,13 @@ label filebase
 label login_scan
     print `\r\n`
     loginscan
+    anykey
+    goto main_menu
+
+/* Chat */
+label chat
+    print `\n\n`
+    sysopchat
     anykey
     goto main_menu
 

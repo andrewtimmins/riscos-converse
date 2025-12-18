@@ -88,7 +88,8 @@ static void script_translate_escapes(char *text);
 static void script_set_error(script_state *state, const char *fmt, ...);
 static void script_reset_input(script_state *state);
 static void script_write_output(script_state *state, const char *text);
-static void script_set_variable_value(script_state *state, const char *name, const char *value);
+/* Exported for ZMODEM auto-start in main.c */
+void script_set_variable_value(script_state *state, const char *name, const char *value);
 static const char *script_get_variable_value(const script_state *state, const char *name);
 static int script_parse_backtick_string(const char *input, size_t *consumed, char **output);
 static char *script_trim(char *text);
@@ -106,6 +107,7 @@ static void script_send_clear_to_eol(script_state *state);
 static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
 static void script_display_file(script_state *state, const char *source, int trim_newlines);
 static void script_start_receive_transfer(script_state *state, int protocol);
+static int script_parse_protocol(const char *name);
 static void script_buffer_init(script_buffer *buffer);
 static void script_buffer_free(script_buffer *buffer);
 static void script_buffer_clear(script_buffer *buffer);
@@ -122,7 +124,6 @@ static int script_process_embedded_block(script_state *state, const char *buffer
 static int script_process_embedded_content(script_state *state, const char *buffer, size_t length, const char *source_name, script_text_handler text_handler, script_command_handler command_handler, void *context);
 static int script_handle_embedded_text_as_instruction(script_state *state, const char *text, size_t length, int line_number, void *context);
 static int script_handle_embedded_command_as_instruction(script_state *state, const char *command_text, int line_number, void *context);
-static const char *script_invert_operator(const char *op);
 static void script_reset_if_state(void);
 static int script_push_call_stack(script_state *state);
 static int script_pop_call_stack(script_state *state);
@@ -353,7 +354,8 @@ void script_process(script_state *state)
     }
 
     /* Check for ANSI detection timeout */
-    if (state->status == SCRIPT_STATUS_WAIT_ANSI)
+    if (state->status == SCRIPT_STATUS_WAITING && 
+        state->input_context == SCRIPT_INPUT_CTX_ANSI_DETECT)
     {
         if ((clock_t)clock() >= state->ansi_deadline)
         {
@@ -362,6 +364,8 @@ void script_process(script_state *state)
             script_set_variable_value(state, state->ansi_result_var, "0");
             state->ansi_parse_state = 0;
             state->ansi_response_len = 0;
+            state->input_mode = SCRIPT_INPUT_MODE_NONE;
+            state->input_context = SCRIPT_INPUT_CTX_NONE;
             state->status = SCRIPT_STATUS_RUNNING;
         }
     }
@@ -397,1994 +401,1495 @@ void script_process(script_state *state)
     }
 }
 
+/* ===========================================================================
+ * UNIFIED INPUT HANDLERS
+ * These functions handle the common input collection logic, reducing
+ * code duplication from the old switch-on-every-state approach.
+ * ===========================================================================
+ */
+
+/* Forward declarations for context completion handlers */
+static int input_complete_prompt(script_state *state);
+static int input_complete_anykey(script_state *state);
+static int input_complete_logon_user(script_state *state);
+static int input_complete_logon_pass(script_state *state);
+static int input_complete_newuser_user(script_state *state);
+static int input_complete_newuser_pass(script_state *state);
+static int input_complete_newuser_pass2(script_state *state);
+static int input_complete_newuser_name(script_state *state);
+static int input_complete_newuser_email(script_state *state);
+static int input_complete_newuser_confirm(script_state *state);
+static int input_complete_mb_select(script_state *state);
+static int input_complete_mb_area(script_state *state);
+static int input_complete_fb_select(script_state *state);
+static int input_complete_fb_area(script_state *state);
+static int input_complete_upload_file(script_state *state);
+static int input_complete_upload_desc(script_state *state);
+static int input_complete_protocol(script_state *state);
+static int input_complete_chat_reason(script_state *state);
+static int input_complete_more(script_state *state);
+/* Viewer/browser char input handlers */
+static int handle_mb_viewer_char(script_state *state, unsigned char byte);
+static int handle_fb_browse_char(script_state *state, unsigned char byte);
+static int handle_mb_compose_line(script_state *state);
+static int handle_mb_search_line(script_state *state);
+/* ANSI detection special handler */
+static int handle_ansi_detection_byte(script_state *state, unsigned char byte);
+
+/*
+ * Handle line input accumulation (backspace, CR, character accumulation).
+ * Returns 1 if input was consumed, 0 if not.
+ */
+static int handle_line_input_byte(script_state *state, unsigned char byte)
+{
+    int echo = state->input_echo;
+    
+    /* Ignore LF - we complete on CR */
+    if (byte == '\n')
+    {
+        return 1;
+    }
+
+    /* CR triggers end of input */
+    if (byte == '\r')
+    {
+        state->input_buffer[state->input_length] = '\0';
+        if (echo && state->host.write_text != NULL)
+        {
+            state->host.write_text(state->host.context, "\r\n");
+        }
+        return -1;  /* Signal: input complete */
+    }
+
+    /* Handle backspace (ASCII 8 or 127) */
+    if (byte == 8 || byte == 127)
+    {
+        if (state->input_length > 0)
+        {
+            state->input_length--;
+            state->input_buffer[state->input_length] = '\0';
+            if (echo && state->host.write_text != NULL)
+            {
+                state->host.write_text(state->host.context, "\b \b");
+            }
+        }
+        return 1;
+    }
+
+    /* Grow buffer if needed */
+    if (state->input_length + 1 >= state->input_capacity)
+    {
+        size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
+        char *resized = (char *)realloc(state->input_buffer, new_capacity);
+        if (resized == NULL)
+        {
+            script_set_error(state, "Out of memory expanding input buffer");
+            state->status = SCRIPT_STATUS_ERROR;
+            return 0;
+        }
+        state->input_buffer = resized;
+        state->input_capacity = new_capacity;
+    }
+
+    /* Accumulate character */
+    state->input_buffer[state->input_length++] = (char)byte;
+    if (echo && state->host.write_text != NULL)
+    {
+        char echobuf[2] = { (char)byte, '\0' };
+        state->host.write_text(state->host.context, echobuf);
+    }
+    return 1;
+}
+
+/*
+ * Dispatch to the appropriate completion handler based on input context.
+ * Returns 1 if handled successfully.
+ */
+static int dispatch_input_complete(script_state *state)
+{
+    switch (state->input_context)
+    {
+        case SCRIPT_INPUT_CTX_PROMPT:
+            return input_complete_prompt(state);
+            
+        case SCRIPT_INPUT_CTX_ANYKEY:
+            return input_complete_anykey(state);
+            
+        case SCRIPT_INPUT_CTX_LOGON_USER:
+            return input_complete_logon_user(state);
+            
+        case SCRIPT_INPUT_CTX_LOGON_PASS:
+            return input_complete_logon_pass(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_USER:
+            return input_complete_newuser_user(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_PASS:
+            return input_complete_newuser_pass(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_PASS2:
+            return input_complete_newuser_pass2(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_NAME:
+            return input_complete_newuser_name(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_EMAIL:
+            return input_complete_newuser_email(state);
+            
+        case SCRIPT_INPUT_CTX_NEWUSER_CONFIRM:
+            return input_complete_newuser_confirm(state);
+            
+        case SCRIPT_INPUT_CTX_MB_SELECT:
+            return input_complete_mb_select(state);
+            
+        case SCRIPT_INPUT_CTX_MB_AREA:
+            return input_complete_mb_area(state);
+            
+        case SCRIPT_INPUT_CTX_FB_SELECT:
+            return input_complete_fb_select(state);
+            
+        case SCRIPT_INPUT_CTX_FB_AREA:
+            return input_complete_fb_area(state);
+            
+        case SCRIPT_INPUT_CTX_UPLOAD_FILE:
+            return input_complete_upload_file(state);
+            
+        case SCRIPT_INPUT_CTX_UPLOAD_DESC:
+            return input_complete_upload_desc(state);
+            
+        case SCRIPT_INPUT_CTX_PROTOCOL:
+            return input_complete_protocol(state);
+            
+        case SCRIPT_INPUT_CTX_CHAT_REASON:
+            return input_complete_chat_reason(state);
+            
+        case SCRIPT_INPUT_CTX_MORE:
+            return input_complete_more(state);
+            
+        case SCRIPT_INPUT_CTX_MB_COMPOSE:
+            return handle_mb_compose_line(state);
+            
+        case SCRIPT_INPUT_CTX_MB_SEARCH:
+            return handle_mb_search_line(state);
+            
+        /* Note: MB_VIEWER and FB_BROWSE use char mode and are handled
+         * directly in script_handle_user_byte, not via dispatch_input_complete */
+            
+        default:
+            /* Unknown context - resume script */
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+    }
+}
+
+/* ===========================================================================
+ * INPUT COMPLETION HANDLERS
+ * Called when input is complete for a specific context.
+ * These extract the logic from the old monolithic script_handle_user_byte.
+ * ===========================================================================
+ */
+
+/* PROMPT/READLINE command completion */
+static int input_complete_prompt(script_state *state)
+{
+    /* Store the input in the target variable */
+    script_set_variable_value(state, state->input_target, state->input_buffer);
+    state->more_line_count = 0;  /* Reset line count after input */
+    script_clear_input(state);
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+/* ANYKEY command completion - any key was pressed */
+static int input_complete_anykey(script_state *state)
+{
+    script_clear_input(state);
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+/* More prompt completion - user pressed a key */
+static int input_complete_more(script_state *state)
+{
+    char key = (state->input_length > 0) ? state->input_buffer[0] : 0;
+    
+    /* Clear the "More?" prompt from the line */
+    if (state->host.write_text != NULL)
+    {
+        state->host.write_text(state->host.context, "\r\033[K");
+    }
+    
+    /* Check for quit/abort keys */
+    if (key == 'q' || key == 'Q' || key == 'n' || key == 'N' || key == 3)  /* 3 = Ctrl+C */
+    {
+        /* User wants to stop - disable more for this session */
+        state->more_override = 0;
+        state->more_line_count = 0;
+        /* Discard pending text */
+        free(state->more_pending_text);
+        state->more_pending_text = NULL;
+    }
+    else
+    {
+        /* Continue - reset line counter for next page */
+        state->more_line_count = 0;
+        
+        /* Output the pending text that triggered the More? prompt */
+        if (state->more_pending_text != NULL && state->host.write_text != NULL)
+        {
+            state->host.write_text(state->host.context, state->more_pending_text);
+            state->more_line_count = script_count_newlines(state->more_pending_text);
+            free(state->more_pending_text);
+            state->more_pending_text = NULL;
+        }
+    }
+    
+    script_clear_input(state);
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+/* Stub handlers - these will be filled in as we migrate each context */
+
+static int input_complete_logon_user(script_state *state)
+{
+    /* Check if user typed NEW */
+    if (script_stringcasecmp(state->input_buffer, "NEW") == 0)
+    {
+        /* User wants to register - start newuser script */
+        if (state->host.start_newuser != NULL)
+        {
+            state->host.start_newuser(state->host.context);
+        }
+        return 1;
+    }
+
+    /* Store the username and prompt for password */
+    strncpy(state->logon_username, state->input_buffer, sizeof(state->logon_username) - 1);
+    state->logon_username[sizeof(state->logon_username) - 1] = '\0';
+
+    script_write_output(state, "Password: ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_LOGON_PASS);
+    return 1;
+}
+
+static int input_complete_logon_pass(script_state *state)
+{
+    int auth_result = 0;
+    int authenticated = 0;
+
+    /* Attempt authentication */
+    if (state->host.authenticate_user != NULL)
+    {
+        authenticated = state->host.authenticate_user(
+            state->host.context,
+            state->logon_username,
+            state->input_buffer,
+            &auth_result
+        );
+    }
+
+    if (authenticated)
+    {
+        /* Success - run postlogon script */
+        script_write_output(state, "\r\n\033[1;32mLogin successful!\033[0m\r\n\r\n");
+        if (state->host.start_postlogon != NULL)
+        {
+            state->host.start_postlogon(state->host.context);
+        }
+        return 1;
+    }
+
+    /* Authentication failed */
+    state->logon_attempts++;
+
+    if (auth_result == 1)
+    {
+        script_write_output(state, "\r\n\033[1;31mUsername not found.\033[0m\r\n");
+    }
+    else if (auth_result == 2)
+    {
+        script_write_output(state, "\r\n\033[1;31mIncorrect password.\033[0m\r\n");
+    }
+    else if (auth_result == 3)
+    {
+        script_write_output(state, "\r\n\033[1;31mAccount is locked.\033[0m\r\n");
+        if (state->host.force_disconnect != NULL)
+        {
+            state->host.force_disconnect(state->host.context);
+        }
+        state->status = SCRIPT_STATUS_COMPLETED;
+        return 1;
+    }
+    else
+    {
+        script_write_output(state, "\r\n\033[1;31mLogin failed.\033[0m\r\n");
+    }
+
+    /* Check retry limit */
+    if (state->logon_attempts >= 3)
+    {
+        script_write_output(state, "\r\n\033[1;31mToo many failed attempts.\033[0m\r\n");
+        if (state->host.force_disconnect != NULL)
+        {
+            state->host.force_disconnect(state->host.context);
+        }
+        state->status = SCRIPT_STATUS_COMPLETED;
+        return 1;
+    }
+
+    /* Allow retry - prompt for username again */
+    script_write_output(state, "\r\nUsername: ");
+    state->logon_username[0] = '\0';
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_LOGON_USER);
+    return 1;
+}
+
+static int input_complete_newuser_user(script_state *state)
+{
+    /* Empty username - abort */
+    if (state->input_length == 0)
+    {
+        script_write_output(state, "\r\n\033[1;33mRegistration cancelled.\033[0m\r\n");
+        state->status = SCRIPT_STATUS_RUNNING;
+        return 1;
+    }
+
+    /* Validate username length */
+    if (state->input_length < 3)
+    {
+        script_write_output(state, "\r\n\033[1;31mUsername must be at least 3 characters.\033[0m\r\n");
+        script_write_output(state, "\r\nUsername: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    if (state->input_length > 31)
+    {
+        script_write_output(state, "\r\n\033[1;31mUsername must be 31 characters or less.\033[0m\r\n");
+        script_write_output(state, "\r\nUsername: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    /* Check if username is available */
+    if (state->host.check_username_available != NULL)
+    {
+        if (!state->host.check_username_available(state->host.context, state->input_buffer))
+        {
+            script_write_output(state, "\r\n\033[1;31mSorry, that username is already taken.\033[0m\r\n");
+            script_write_output(state, "\r\nUsername: ");
+            state->input_length = 0;
+            state->input_buffer[0] = '\0';
+            return 1;
+        }
+    }
+
+    /* Store username and prompt for password */
+    strncpy(state->newuser_username, state->input_buffer, sizeof(state->newuser_username) - 1);
+    state->newuser_username[sizeof(state->newuser_username) - 1] = '\0';
+
+    script_write_output(state, "\r\nPassword: ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_NEWUSER_PASS);
+    return 1;
+}
+
+static int input_complete_newuser_pass(script_state *state)
+{
+    /* Validate password length */
+    if (state->input_length < 4)
+    {
+        script_write_output(state, "\r\n\033[1;31mPassword must be at least 4 characters.\033[0m\r\n");
+        script_write_output(state, "\r\nPassword: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    if (state->input_length > 31)
+    {
+        script_write_output(state, "\r\n\033[1;31mPassword must be 31 characters or less.\033[0m\r\n");
+        script_write_output(state, "\r\nPassword: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    /* Store password and prompt for confirmation */
+    strncpy(state->newuser_password, state->input_buffer, sizeof(state->newuser_password) - 1);
+    state->newuser_password[sizeof(state->newuser_password) - 1] = '\0';
+
+    script_write_output(state, "Confirm Password: ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_NEWUSER_PASS2);
+    return 1;
+}
+
+static int input_complete_newuser_pass2(script_state *state)
+{
+    /* Check passwords match */
+    if (strcmp(state->newuser_password, state->input_buffer) != 0)
+    {
+        script_write_output(state, "\r\n\033[1;31mPasswords do not match. Please try again.\033[0m\r\n");
+        script_write_output(state, "\r\nPassword: ");
+        state->newuser_password[0] = '\0';
+        script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_NEWUSER_PASS);
+        return 1;
+    }
+
+    /* Passwords match - prompt for real name */
+    script_write_output(state, "\r\nReal Name: ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_NEWUSER_NAME);
+    return 1;
+}
+
+static int input_complete_newuser_name(script_state *state)
+{
+    /* Validate real name */
+    if (state->input_length < 2)
+    {
+        script_write_output(state, "\r\n\033[1;31mPlease enter your real name.\033[0m\r\n");
+        script_write_output(state, "\r\nReal Name: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    if (state->input_length > 63)
+    {
+        script_write_output(state, "\r\n\033[1;31mName is too long (max 63 characters).\033[0m\r\n");
+        script_write_output(state, "\r\nReal Name: ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    /* Store real name and prompt for email */
+    strncpy(state->newuser_realname, state->input_buffer, sizeof(state->newuser_realname) - 1);
+    state->newuser_realname[sizeof(state->newuser_realname) - 1] = '\0';
+
+    script_write_output(state, "Email (optional): ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_NEWUSER_EMAIL);
+    return 1;
+}
+
+static int input_complete_newuser_email(script_state *state)
+{
+    char summary[512];
+
+    /* Email is optional - just validate length if provided */
+    if (state->input_length > 63)
+    {
+        script_write_output(state, "\r\n\033[1;31mEmail is too long (max 63 characters).\033[0m\r\n");
+        script_write_output(state, "\r\nEmail (optional): ");
+        state->input_length = 0;
+        state->input_buffer[0] = '\0';
+        return 1;
+    }
+
+    /* Store email */
+    strncpy(state->newuser_email, state->input_buffer, sizeof(state->newuser_email) - 1);
+    state->newuser_email[sizeof(state->newuser_email) - 1] = '\0';
+
+    /* Show summary and ask for confirmation */
+    script_write_output(state, "\r\n\033[1;36m--- Account Summary ---\033[0m\r\n\r\n");
+    snprintf(summary, sizeof(summary),
+        "  Username:  \033[1;37m%s\033[0m\r\n"
+        "  Real Name: \033[1;37m%s\033[0m\r\n"
+        "  Email:     \033[1;37m%s\033[0m\r\n\r\n",
+        state->newuser_username,
+        state->newuser_realname,
+        state->newuser_email[0] ? state->newuser_email : "(not provided)");
+    script_write_output(state, summary);
+
+    script_write_output(state, "Create this account? (\033[1;32mY\033[0m/\033[1;31mN\033[0m): ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_YESNO, SCRIPT_INPUT_CTX_NEWUSER_CONFIRM);
+    return 1;
+}
+
+static int input_complete_newuser_confirm(script_state *state)
+{
+    /* This is called for Y key press - create the account */
+    int user_id = 0;
+
+    if (state->host.write_text != NULL)
+    {
+        state->host.write_text(state->host.context, "Y\r\n\r\n");
+    }
+
+    /* Create the user account */
+    if (state->host.create_user != NULL)
+    {
+        user_id = state->host.create_user(
+            state->host.context,
+            state->newuser_username,
+            state->newuser_password,
+            state->newuser_realname,
+            state->newuser_email
+        );
+    }
+
+    if (user_id > 0)
+    {
+        script_write_output(state, "\033[1;32mAccount created successfully!\033[0m\r\n\r\n");
+        script_write_output(state, "You can now log in with your new username and password.\r\n\r\n");
+    }
+    else
+    {
+        script_write_output(state, "\r\n\033[1;31mSorry, account creation failed. Please try again later.\033[0m\r\n\r\n");
+    }
+
+    /* Clear sensitive data */
+    memset(state->newuser_password, 0, sizeof(state->newuser_password));
+    state->status = SCRIPT_STATUS_RUNNING;
+    return 1;
+}
+
+static int input_complete_mb_select(script_state *state)
+{
+    int base_id;
+    messagebase_session *session = NULL;
+    LINETASK_MESSAGEBASE_RECORD record;
+
+    /* Empty input = cancel */
+    if (state->input_length == 0)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    base_id = atoi(state->input_buffer);
+
+    if (state->host.get_messagebase_session != NULL)
+    {
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    if (session != NULL && base_id > 0)
+    {
+        if (messagebase_get_info(base_id, &record))
+        {
+            if (messagebase_check_access(record.accesslevel, record.keys,
+                                          session->user_accesslevel, session->user_keys))
+            {
+                char msg[128];
+                session->current_messagebase = base_id;
+                session->current_area = 0;
+                script_save_user_history(state);
+                snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
+                script_write_output(state, msg);
+            }
+            else
+            {
+                script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+            }
+        }
+        else
+        {
+            script_write_output(state, "\033[1;31m[Messagebase not found]\033[0m\r\n");
+        }
+    }
+    else if (base_id <= 0 && state->input_length > 0)
+    {
+        script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+    }
+
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+static int input_complete_mb_area(script_state *state)
+{
+    int area_id;
+    messagebase_session *session = NULL;
+    LINETASK_MESSAGEBASE_AREA_RECORD area_record;
+
+    /* Empty input = cancel */
+    if (state->input_length == 0)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    area_id = atoi(state->input_buffer);
+
+    if (state->host.get_messagebase_session != NULL)
+    {
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    if (session != NULL && area_id >= 0)
+    {
+        if (area_id == 0)
+        {
+            /* Select root/all messages */
+            session->current_area = 0;
+            script_save_user_history(state);
+            script_write_output(state, "\033[1;32mSelected: [All Messages]\033[0m\r\n");
+        }
+        else if (messagebase_get_area_info(session->current_messagebase, area_id, &area_record))
+        {
+            char msg[128];
+            session->current_area = area_id;
+            script_save_user_history(state);
+            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
+            script_write_output(state, msg);
+        }
+        else
+        {
+            script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
+        }
+    }
+    else if (state->input_length > 0)
+    {
+        script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+    }
+
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+static int input_complete_fb_select(script_state *state)
+{
+    int base_id;
+    filebase_session *session = NULL;
+    LINETASK_FILEBASE_RECORD record;
+
+    /* Empty input = cancel */
+    if (state->input_length == 0)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    base_id = atoi(state->input_buffer);
+
+    if (state->host.get_filebase_session != NULL)
+    {
+        session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+    }
+
+    if (session != NULL && base_id > 0)
+    {
+        if (filebase_get_info(base_id, &record))
+        {
+            if (filebase_check_access(record.accesslevel, record.keys,
+                                       session->user_accesslevel, session->user_keys))
+            {
+                char msg[128];
+                session->current_filebase = base_id;
+                session->current_area = 0;
+                script_save_user_history(state);
+                snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
+                script_write_output(state, msg);
+            }
+            else
+            {
+                script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+            }
+        }
+        else
+        {
+            script_write_output(state, "\033[1;31m[Filebase not found]\033[0m\r\n");
+        }
+    }
+    else if (base_id <= 0 && state->input_length > 0)
+    {
+        script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+    }
+
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+static int input_complete_fb_area(script_state *state)
+{
+    int area_id;
+    filebase_session *session = NULL;
+    LINETASK_FILEBASE_AREA_RECORD area_record;
+
+    /* Empty input = cancel */
+    if (state->input_length == 0)
+    {
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    area_id = atoi(state->input_buffer);
+
+    if (state->host.get_filebase_session != NULL)
+    {
+        session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+    }
+
+    if (session != NULL && area_id >= 0)
+    {
+        if (area_id == 0)
+        {
+            /* Select root/all files */
+            session->current_area = 0;
+            script_save_user_history(state);
+            script_write_output(state, "\033[1;32mSelected: [All Files]\033[0m\r\n");
+        }
+        else if (filebase_get_area_info(session->current_filebase, area_id, &area_record))
+        {
+            if (filebase_check_access(area_record.accesslevel, area_record.keys,
+                                       session->user_accesslevel, session->user_keys))
+            {
+                char msg[128];
+                session->current_area = area_id;
+                script_save_user_history(state);
+                snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
+                script_write_output(state, msg);
+            }
+            else
+            {
+                script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
+            }
+        }
+        else
+        {
+            script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
+        }
+    }
+    else if (state->input_length > 0)
+    {
+        script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
+    }
+
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+static int input_complete_upload_file(script_state *state)
+{
+    /* Store the filename */
+    strncpy(state->pending_upload_filename, state->input_buffer, sizeof(state->pending_upload_filename) - 1);
+    state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
+
+    /* Prompt for description */
+    script_write_output(state, "Description: ");
+    script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_UPLOAD_DESC);
+    return 1;
+}
+
+static int input_complete_upload_desc(script_state *state)
+{
+    const char *protocol_file;
+
+    /* Store the description */
+    strncpy(state->pending_upload_description, state->input_buffer, sizeof(state->pending_upload_description) - 1);
+    state->pending_upload_description[sizeof(state->pending_upload_description) - 1] = '\0';
+
+    /* If protocol was already specified on command line, start transfer immediately */
+    if (state->pending_upload_protocol >= 0)
+    {
+        script_start_receive_transfer(state, state->pending_upload_protocol);
+        return 1;
+    }
+
+    /* Show protocol selection */
+    protocol_file = NULL;
+    if (state->host.get_protocol_file != NULL)
+    {
+        protocol_file = state->host.get_protocol_file(state->host.context);
+    }
+
+    if (protocol_file != NULL && protocol_file[0] != '\0')
+    {
+        script_display_file(state, protocol_file, 0);
+    }
+    else
+    {
+        script_write_output(state, "\r\nProtocol: \033[1;37m[\033[1;32mZ\033[1;37m]modem (recommended)\r\n");
+    }
+
+    /* Save current more setting */
+    protocol_more_saved = state->more_override;
+    state->more_override = 0;  /* Disable more during protocol selection */
+
+    state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_PROTOCOL;
+    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_PROTOCOL);
+    return 1;
+}
+
+static int input_complete_protocol(script_state *state)
+{
+    int protocol = -1;
+    char key;
+    
+    /* Get the key that was pressed */
+    key = (state->input_length > 0) ? state->input_buffer[0] : 0;
+    
+    /* Map key to protocol */
+    switch (key)
+    {
+        case 'z':
+        case 'Z':
+            protocol = 5;  /* ZMODEM */
+            break;
+        case 'y':
+        case 'Y':
+            protocol = 3;  /* YMODEM */
+            break;
+        case 'g':
+        case 'G':
+            protocol = 4;  /* YMODEM-G */
+            break;
+        case 'x':
+        case 'X':
+            protocol = 1;  /* XMODEM-CRC */
+            break;
+        case '1':
+            protocol = 2;  /* XMODEM-1K */
+            break;
+        case 'a':
+        case 'A':
+        case 27:  /* ESC */
+            /* Abort - restore More state first */
+            if (protocol_more_saved != -1)
+            {
+                state->more_override = protocol_more_saved;
+                protocol_more_saved = -1;
+            }
+            
+            /* Check if aborting a browser download */
+            if (state->is_browser_download)
+            {
+                state->is_browser_download = 0;
+                state->pending_download_file_id = 0;
+                state->pending_download_filebase = 0;
+                script_write_output(state, "\r\n[Aborted]\r\n");
+                /* Return to filebase browser */
+                script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_BROWSE);
+                return 1;
+            }
+            
+            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+            script_write_output(state, "\r\n[Aborted]\r\n");
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+        default:
+            /* Invalid key - stay in protocol selection, re-prompt */
+            return 1;
+    }
+    
+    /* Restore More state before starting transfer */
+    if (protocol_more_saved != -1)
+    {
+        state->more_override = protocol_more_saved;
+        protocol_more_saved = -1;
+    }
+    
+    /* Echo the selection */
+    if (state->host.write_text != NULL)
+    {
+        char echo[2] = { key, '\0' };
+        state->host.write_text(state->host.context, echo);
+    }
+    
+    /* Check if this is a download from browser or an upload */
+    if (state->is_browser_download)
+    {
+        /* Download: save values before clearing state */
+        int download_file_id = state->pending_download_file_id;
+        int download_filebase = state->pending_download_filebase;
+        
+        script_write_output(state, "\r\n");
+        
+        /* Clear download state */
+        state->is_browser_download = 0;
+        state->pending_download_file_id = 0;
+        state->pending_download_filebase = 0;
+        
+        /* Execute file transfer */
+        {
+            filebase_session *fb_session = NULL;
+            if (state->host.get_filebase_session != NULL)
+            {
+                fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            }
+            
+            if (fb_session != NULL && state->host.start_transfer != NULL)
+            {
+                if (state->host.start_transfer(state->host.context, 
+                                               download_filebase, 
+                                               download_file_id,
+                                               protocol))
+                {
+                    state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+                    return 1;
+                }
+                else
+                {
+                    script_write_output(state, "\r\n[Download failed to start]\r\n");
+                }
+            }
+            else
+            {
+                script_write_output(state, "\r\n[Download not available]\r\n");
+            }
+        }
+        
+        /* Return to browser */
+        script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_BROWSE);
+        return 1;
+    }
+    else
+    {
+        /* Upload: start receive transfer */
+        script_start_receive_transfer(state, protocol);
+        return 1;
+    }
+}
+
+static int input_complete_chat_reason(script_state *state)
+{
+    /* Empty reason = cancel */
+    if (state->input_length == 0)
+    {
+        script_write_output(state, "\r\n\033[1;33mChat request cancelled.\033[0m\r\n\r\n");
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    /* Have a reason - start pager via callback */
+    if (state->host.start_chat_pager != NULL)
+    {
+        state->host.start_chat_pager(state->host.context, state->input_buffer);
+    }
+    /* Status will be set to WAIT_CHAT by the callback */
+    return 1;
+}
+
+/* ===========================================================================
+ * VIEWER/BROWSER CHAR INPUT HANDLERS
+ * Handle single-character input for interactive viewers.
+ * ===========================================================================
+ */
+
+/* Handle ANSI detection byte - state machine for ESC[<row>;<col>R */
+static int handle_ansi_detection_byte(script_state *state, unsigned char byte)
+{
+    /* Debug: log each byte we receive during ANSI detection */
+    debug_printf("ANSI detect: byte=0x%02X '%c' state=%d\n", 
+                 byte, (byte >= 32 && byte < 127) ? byte : '.', state->ansi_parse_state);
+    
+    /* State machine to parse ANSI CPR response: ESC [ <digits> ; <digits> R */
+    switch (state->ansi_parse_state)
+    {
+        case 0:  /* Waiting for ESC */
+            if (byte == 0x1B)  /* ESC */
+            {
+                state->ansi_parse_state = 1;
+                state->ansi_response_len = 0;
+            }
+            /* Ignore any other characters while waiting */
+            break;
+
+        case 1:  /* Got ESC, expecting [ */
+            if (byte == '[')
+            {
+                state->ansi_parse_state = 2;
+            }
+            else
+            {
+                /* Not an ANSI sequence, reset */
+                state->ansi_parse_state = 0;
+            }
+            break;
+
+        case 2:  /* Got ESC[, reading row digits or waiting for ; or R */
+            if (byte >= '0' && byte <= '9')
+            {
+                if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
+                {
+                    state->ansi_response[state->ansi_response_len++] = (char)byte;
+                }
+            }
+            else if (byte == ';')
+            {
+                state->ansi_parse_state = 3;
+            }
+            else if (byte == 'R')
+            {
+                /* Complete! ESC[R or ESC[<row>R - still counts as ANSI */
+                debug_printf("ANSI detect: SUCCESS (got 'R' in state 2)\n");
+                script_set_variable_value(state, state->ansi_result_var, "1");
+                state->ansi_parse_state = 0;
+                state->ansi_response_len = 0;
+                script_clear_input(state);
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+            }
+            else
+            {
+                /* Unexpected character, reset */
+                state->ansi_parse_state = 0;
+                state->ansi_response_len = 0;
+            }
+            break;
+
+        case 3:  /* Got semicolon, reading col digits */
+            if (byte >= '0' && byte <= '9')
+            {
+                if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
+                {
+                    state->ansi_response[state->ansi_response_len++] = (char)byte;
+                }
+            }
+            else if (byte == 'R')
+            {
+                /* Complete! ANSI terminal detected */
+                debug_printf("ANSI detect: SUCCESS (got 'R' in state 3)\n");
+                script_set_variable_value(state, state->ansi_result_var, "1");
+                state->ansi_parse_state = 0;
+                state->ansi_response_len = 0;
+                script_clear_input(state);
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+            }
+            else
+            {
+                /* Unexpected character, reset */
+                state->ansi_parse_state = 0;
+                state->ansi_response_len = 0;
+            }
+            break;
+    }
+    return 1;  /* Consumed the byte */
+}
+
+/* Handle messagebase viewer char input */
+static int handle_mb_viewer_char(script_state *state, unsigned char byte)
+{
+    messagebase_session *session = NULL;
+    int action;
+
+    if (state->host.get_messagebase_session != NULL)
+    {
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    if (session == NULL || !messagebase_viewer_is_active(session))
+    {
+        /* No active viewer - return to script */
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    action = messagebase_viewer_handle_input(session, (char)byte,
+                                              (void (*)(void*, const char*))script_write_output, state);
+
+    switch (action)
+    {
+        case VIEWER_ACTION_CONTINUE:
+            /* Stay in viewer, waiting for more input */
+            return 1;
+
+        case VIEWER_ACTION_NEXT:
+            messagebase_viewer_goto_next(session,
+                                          (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_PREV:
+            messagebase_viewer_goto_prev(session,
+                                          (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_START:
+            messagebase_viewer_goto_start(session,
+                                           (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_END:
+            messagebase_viewer_goto_end(session,
+                                         (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_NEXT_AREA:
+            messagebase_viewer_next_area(session,
+                                          (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_PREV_AREA:
+            messagebase_viewer_prev_area(session,
+                                          (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_CURRENT:
+            messagebase_viewer_show_current(session,
+                                             (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_REPLY:
+            if (messagebase_viewer_start_reply(session,
+                                                (void (*)(void*, const char*))script_write_output, state))
+            {
+                /* Composer is now active - switch to line input for compose */
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_COMPOSE);
+            }
+            else
+            {
+                /* Reply failed - stay in viewer */
+                messagebase_viewer_show_prompt(session,
+                                                (void (*)(void*, const char*))script_write_output, state);
+            }
+            return 1;
+
+        case VIEWER_ACTION_PRIVATE_REPLY:
+            if (messagebase_viewer_start_private_reply(session,
+                                                        (void (*)(void*, const char*))script_write_output, state))
+            {
+                /* Composer is now active - switch to line input for compose */
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_COMPOSE);
+            }
+            else
+            {
+                /* Private reply failed - stay in viewer */
+                messagebase_viewer_show_prompt(session,
+                                                (void (*)(void*, const char*))script_write_output, state);
+            }
+            return 1;
+
+        case VIEWER_ACTION_SEARCH:
+            /* Start search - switch to line input for search term */
+            messagebase_viewer_start_search(session,
+                                             (void (*)(void*, const char*))script_write_output, state);
+            script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_SEARCH);
+            return 1;
+
+        case VIEWER_ACTION_EXIT_SEARCH:
+            /* Exit search mode - stay in viewer */
+            messagebase_viewer_exit_search_mode(session,
+                                                 (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case VIEWER_ACTION_QUIT:
+        default:
+            /* Quit viewer - return to script */
+            messagebase_viewer_close(session);
+            script_clear_input(state);
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+    }
+}
+
+/* Handle filebase browser char input */
+static int handle_fb_browse_char(script_state *state, unsigned char byte)
+{
+    filebase_session *session = NULL;
+    int action;
+
+    if (state->host.get_filebase_session != NULL)
+    {
+        session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+    }
+
+    if (session == NULL || !filebase_viewer_is_active(session))
+    {
+        /* No active browser - return to script */
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    action = filebase_viewer_handle_input(session, (char)byte,
+                                          (void (*)(void*, const char*))script_write_output, state);
+
+    switch (action)
+    {
+        case FILEVIEWER_ACTION_CONTINUE:
+            /* Stay in browser, waiting for more input */
+            return 1;
+
+        case FILEVIEWER_ACTION_NEXT:
+            filebase_viewer_goto_next(session,
+                                      (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case FILEVIEWER_ACTION_PREV:
+            filebase_viewer_goto_prev(session,
+                                      (void (*)(void*, const char*))script_write_output, state);
+            return 1;
+
+        case FILEVIEWER_ACTION_DOWNLOAD:
+            /* Download action - save context and prompt for protocol */
+            state->pending_download_file_id = session->viewer.file_id;
+            state->pending_download_filebase = session->current_filebase;
+            state->is_browser_download = 1;
+            
+            /* Show protocol selection prompt */
+            script_write_output(state, "\r\n\r\n");
+            script_write_output(state, "Protocol: \033[1;37m[\033[1;32mZ\033[1;37m]modem  "
+                                       "[\033[1;33mY\033[1;37m]modem  "
+                                       "[\033[1;33mG\033[1;37m]-Ymodem  "
+                                       "[\033[1;32mX\033[1;37m]modem  "
+                                       "[\033[1;32m1\033[1;37m]k-Xmodem  "
+                                       "[\033[1;31mA\033[1;37m]bort : \033[1;31m");
+            
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_PROTOCOL);
+            return 1;
+
+        case FILEVIEWER_ACTION_QUIT:
+            /* Quit browser - return to script */
+            filebase_viewer_close(session);
+            script_clear_input(state);
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+            return 1;
+
+        case FILEVIEWER_ACTION_INVALID:
+        default:
+            /* Invalid input - already handled by viewer */
+            return 1;
+    }
+}
+
+/* Handle messagebase composer line input completion */
+static int handle_mb_compose_line(script_state *state)
+{
+    messagebase_session *session = NULL;
+    int result;
+
+    if (state->host.get_messagebase_session != NULL)
+    {
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    if (session == NULL || !messagebase_composer_is_active(session))
+    {
+        /* No active composer - return to script */
+        if (composer_more_saved != -1)
+        {
+            state->more_override = composer_more_saved;
+            composer_more_saved = -1;
+        }
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    result = messagebase_composer_handle_line(session, state->input_buffer,
+                                               (void (*)(void*, const char*))script_write_output, state);
+    state->input_length = 0;
+    if (state->input_buffer != NULL)
+    {
+        state->input_buffer[0] = '\0';
+    }
+
+    if (result > 0)
+    {
+        /* Composer needs more input - stay in compose mode */
+        return 1;
+    }
+    else
+    {
+        /* Composer finished (sent, cancelled, or error) - return to viewer or script */
+        if (composer_more_saved != -1)
+        {
+            state->more_override = composer_more_saved;
+            composer_more_saved = -1;
+        }
+        
+        /* Check if we should return to viewer */
+        if (messagebase_viewer_is_active(session))
+        {
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
+        }
+        else
+        {
+            script_clear_input(state);
+            state->status = SCRIPT_STATUS_RUNNING;
+            script_process(state);
+        }
+        return 1;
+    }
+}
+
+/* Handle messagebase search line input completion */
+static int handle_mb_search_line(script_state *state)
+{
+    messagebase_session *session = NULL;
+
+    if (state->host.get_messagebase_session != NULL)
+    {
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+    }
+
+    if (session == NULL || !messagebase_viewer_is_active(session))
+    {
+        /* No active viewer - return to script */
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    /* Perform the search with the entered term */
+    messagebase_viewer_do_search(session, state->input_buffer,
+                                  (void (*)(void*, const char*))script_write_output, state);
+    state->input_length = 0;
+    if (state->input_buffer != NULL)
+    {
+        state->input_buffer[0] = '\0';
+    }
+
+    /* Check result - if phase is IDLE, search was cancelled */
+    if (session->viewer.phase == MESSAGE_VIEW_IDLE)
+    {
+        /* Came from script command, search cancelled/no results - resume script */
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+    else
+    {
+        /* Viewer is active (showing first result) - back to char input */
+        script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
+        return 1;
+    }
+}
+
 int script_handle_user_byte(script_state *state, unsigned char byte)
 {
+    int result;
+    
     if (state == NULL)
     {
         return 0;
     }
 
-    if (state->status != SCRIPT_STATUS_WAIT_INPUT_CHAR && 
-        state->status != SCRIPT_STATUS_WAIT_INPUT_LINE &&
-        state->status != SCRIPT_STATUS_WAIT_LOGON_USERNAME &&
-        state->status != SCRIPT_STATUS_WAIT_LOGON_PASSWORD &&
-        state->status != SCRIPT_STATUS_WAIT_ANSI &&
-        state->status != SCRIPT_STATUS_WAIT_CHAT_REASON &&
-        state->status != SCRIPT_STATUS_WAIT_CHAT &&
-        state->status != SCRIPT_STATUS_WAIT_MORE &&
-        state->status != SCRIPT_STATUS_WAIT_MB_SELECT &&
-        state->status != SCRIPT_STATUS_WAIT_MB_AREA_SELECT &&
-        state->status != SCRIPT_STATUS_WAIT_FB_SELECT &&
-        state->status != SCRIPT_STATUS_WAIT_FB_AREA_SELECT &&
-        state->status != SCRIPT_STATUS_WAIT_FB_BROWSE &&
-        state->status != SCRIPT_STATUS_WAIT_PROTOCOL &&
-        state->status != SCRIPT_STATUS_WAIT_UPLOAD_FILENAME &&
-        state->status != SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_USERNAME &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2 &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_REALNAME &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_EMAIL &&
-        state->status != SCRIPT_STATUS_WAIT_NEWUSER_CONFIRM)
+    /* NEW UNIFIED INPUT SYSTEM
+     * If input_mode is set, route through the new handlers.
+     * This eventually replaces all the status-based checks below.
+     */
+    if (state->input_mode != SCRIPT_INPUT_MODE_NONE)
     {
-        return 0;
-    }
-
-    /* Handle More? prompt - any key continues, 'q' or 'Q' or 'n' or 'N' aborts */
-    if (state->status == SCRIPT_STATUS_WAIT_MORE)
-    {
-        /* Clear the "More?" prompt from the line */
-        if (state->host.write_text != NULL)
+        switch (state->input_mode)
         {
-            state->host.write_text(state->host.context, "\r\033[K");
-        }
-        
-        /* Check for quit/abort keys */
-        if (byte == 'q' || byte == 'Q' || byte == 'n' || byte == 'N' || byte == 3)  /* 3 = Ctrl+C */
-        {
-            /* User wants to stop - disable more for this session */
-            state->more_override = 0;
-            state->more_line_count = 0;
-            /* Discard pending text */
-            free(state->more_pending_text);
-            state->more_pending_text = NULL;
-        }
-        else
-        {
-            /* Continue - reset line counter for next page */
-            state->more_line_count = 0;
-            
-            /* Output the pending text that triggered the More? prompt */
-            if (state->more_pending_text != NULL && state->host.write_text != NULL)
-            {
-                /* Output pending text directly (don't re-check for more, we just reset) */
-                state->host.write_text(state->host.context, state->more_pending_text);
-                state->more_line_count = script_count_newlines(state->more_pending_text);
-                free(state->more_pending_text);
-                state->more_pending_text = NULL;
-            }
-        }
-        
-        state->status = SCRIPT_STATUS_RUNNING;
-        script_process(state);
-        return 1;
-    }
-
-    /* Handle chat reason input */
-    if (state->status == SCRIPT_STATUS_WAIT_CHAT_REASON)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
+            case SCRIPT_INPUT_MODE_LINE:
+            case SCRIPT_INPUT_MODE_LINE_NOECHO:
+                result = handle_line_input_byte(state, byte);
+                if (result < 0)
                 {
-                    state->host.write_text(state->host.context, "\b \b");
+                    /* Input complete - dispatch to completion handler */
+                    return dispatch_input_complete(state);
                 }
-            }
-            return 1;
-        }
-
-        /* Ignore LF */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty reason = cancel */
-            if (state->input_length == 0)
-            {
-                script_write_output(state, "\r\n\033[1;33mChat request cancelled.\033[0m\r\n\r\n");
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Have a reason - start pager via callback */
-            if (state->host.start_chat_pager != NULL)
-            {
-                state->host.start_chat_pager(state->host.context, state->input_buffer);
-            }
-            /* Status will be set to WAIT_CHAT by the callback */
-            return 1;
-        }
-
-        /* Accumulate character */
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        if (state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        return 1;
-    }
-
-    /* Handle ANSI detection response - looking for ESC[<row>;<col>R */
-    if (state->status == SCRIPT_STATUS_WAIT_ANSI)
-    {
-        /* Debug: log each byte we receive during ANSI detection */
-        debug_printf("ANSI detect: byte=0x%02X '%c' state=%d\n", 
-                     byte, (byte >= 32 && byte < 127) ? byte : '.', state->ansi_parse_state);
-        
-        /* State machine to parse ANSI CPR response: ESC [ <digits> ; <digits> R */
-        switch (state->ansi_parse_state)
-        {
-            case 0:  /* Waiting for ESC */
-                if (byte == 0x1B)  /* ESC */
-                {
-                    state->ansi_parse_state = 1;
-                    state->ansi_response_len = 0;
-                }
-                /* Ignore any other characters while waiting */
-                break;
-
-            case 1:  /* Got ESC, expecting [ */
-                if (byte == '[')
-                {
-                    state->ansi_parse_state = 2;
-                }
-                else
-                {
-                    /* Not an ANSI sequence, reset */
-                    state->ansi_parse_state = 0;
-                }
-                break;
-
-            case 2:  /* Got ESC[, reading row digits or waiting for ; or R */
-                if (byte >= '0' && byte <= '9')
-                {
-                    if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
-                    {
-                        state->ansi_response[state->ansi_response_len++] = (char)byte;
-                    }
-                }
-                else if (byte == ';')
-                {
-                    state->ansi_parse_state = 3;
-                }
-                else if (byte == 'R')
-                {
-                    /* Complete! ESC[R or ESC[<row>R - still counts as ANSI */
-                    debug_printf("ANSI detect: SUCCESS (got 'R' in state 2)\n");
-                    script_set_variable_value(state, state->ansi_result_var, "1");
-                    state->ansi_parse_state = 0;
-                    state->ansi_response_len = 0;
-                    state->status = SCRIPT_STATUS_RUNNING;
-                    script_process(state);
-                }
-                else
-                {
-                    /* Unexpected character, reset */
-                    state->ansi_parse_state = 0;
-                    state->ansi_response_len = 0;
-                }
-                break;
-
-            case 3:  /* Got semicolon, reading col digits */
-                if (byte >= '0' && byte <= '9')
-                {
-                    if (state->ansi_response_len < (int)sizeof(state->ansi_response) - 1)
-                    {
-                        state->ansi_response[state->ansi_response_len++] = (char)byte;
-                    }
-                }
-                else if (byte == 'R')
-                {
-                    /* Complete! ANSI terminal detected */
-                    debug_printf("ANSI detect: SUCCESS (got 'R' in state 3)\n");
-                    script_set_variable_value(state, state->ansi_result_var, "1");
-                    state->ansi_parse_state = 0;
-                    state->ansi_response_len = 0;
-                    state->status = SCRIPT_STATUS_RUNNING;
-                    script_process(state);
-                }
-                else
-                {
-                    /* Unexpected character, reset */
-                    state->ansi_parse_state = 0;
-                    state->ansi_response_len = 0;
-                }
-                break;
-        }
-        return 1;  /* Consumed the byte */
-    }
-
-    if (state->status == SCRIPT_STATUS_WAIT_INPUT_CHAR)
-    {
-        /* Check if messagebase viewer is active and handle input there */
-        if (state->host.get_messagebase_session != NULL)
-        {
-            messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-            if (session != NULL && messagebase_viewer_is_active(session))
-            {
-                int action = messagebase_viewer_handle_input(session, (char)byte,
-                                                              (void (*)(void*, const char*))script_write_output, state);
-
-                switch (action)
-                {
-                    case VIEWER_ACTION_CONTINUE:
-                        /* Stay in viewer, waiting for more input */
-                        return 1;
-
-                    case VIEWER_ACTION_NEXT:
-                        messagebase_viewer_goto_next(session,
-                                                      (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_PREV:
-                        messagebase_viewer_goto_prev(session,
-                                                      (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_START:
-                        messagebase_viewer_goto_start(session,
-                                                       (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_END:
-                        messagebase_viewer_goto_end(session,
-                                                     (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_NEXT_AREA:
-                        messagebase_viewer_next_area(session,
-                                                      (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_PREV_AREA:
-                        messagebase_viewer_prev_area(session,
-                                                      (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_CURRENT:
-                        messagebase_viewer_show_current(session,
-                                                         (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_REPLY:
-                        if (messagebase_viewer_start_reply(session,
-                                                            (void (*)(void*, const char*))script_write_output, state))
-                        {
-                            /* Composer is now active - switch to line input */
-                            state->input_echo = 1;
-                            state->input_length = 0;
-                            if (state->input_buffer != NULL)
-                            {
-                                state->input_buffer[0] = '\0';
-                            }
-                            state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
-                        }
-                        else
-                        {
-                            /* Reply failed - stay in viewer */
-                            messagebase_viewer_show_prompt(session,
-                                                            (void (*)(void*, const char*))script_write_output, state);
-                        }
-                        return 1;
-
-                    case VIEWER_ACTION_PRIVATE_REPLY:
-                        if (messagebase_viewer_start_private_reply(session,
-                                                                    (void (*)(void*, const char*))script_write_output, state))
-                        {
-                            /* Composer is now active - switch to line input */
-                            state->input_echo = 1;
-                            state->input_length = 0;
-                            if (state->input_buffer != NULL)
-                            {
-                                state->input_buffer[0] = '\0';
-                            }
-                            state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
-                        }
-                        else
-                        {
-                            /* Private reply failed - stay in viewer */
-                            messagebase_viewer_show_prompt(session,
-                                                            (void (*)(void*, const char*))script_write_output, state);
-                        }
-                        return 1;
-
-                    case VIEWER_ACTION_SEARCH:
-                        /* Start search - switch to line input for search term */
-                        messagebase_viewer_start_search(session,
-                                                         (void (*)(void*, const char*))script_write_output, state);
-                        state->input_echo = 1;
-                        state->input_length = 0;
-                        if (state->input_buffer != NULL)
-                        {
-                            state->input_buffer[0] = '\0';
-                        }
-                        state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
-                        return 1;
-
-                    case VIEWER_ACTION_EXIT_SEARCH:
-                        /* Exit search mode - stay in viewer */
-                        messagebase_viewer_exit_search_mode(session,
-                                                             (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case VIEWER_ACTION_QUIT:
-                    default:
-                        /* Quit viewer - return to script */
-                        messagebase_viewer_close(session);
-                        state->status = SCRIPT_STATUS_RUNNING;
-                        script_process(state);
-                        return 1;
-                }
-            }
-        }
-
-        /* Normal char input handling (not viewer) */
-        if (byte == '\r' || byte == '\n')
-        {
-            return 1;
-        }
-
-        /* Special handling for YESNO mode - only accept Y/y/N/n */
-        if (state->input_mode == SCRIPT_INPUT_YESNO)
-        {
-            if (byte == 'Y' || byte == 'y')
-            {
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "Y\r\n");
-                }
-                script_set_variable_value(state, state->input_target, "1");
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-            else if (byte == 'N' || byte == 'n')
-            {
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "N\r\n");
-                }
-                script_set_variable_value(state, state->input_target, "0");
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-            /* Ignore any other keys for YESNO */
-            return 1;
-        }
-
-        state->input_buffer[0] = (char)byte;
-        state->input_buffer[1] = '\0';
-        state->input_length = 1;
-
-        if (state->input_echo && state->host.write_text != NULL)
-        {
-            char echo[4];
-            echo[0] = (char)byte;
-            echo[1] = '\r';
-            echo[2] = '\n';
-            echo[3] = '\0';
-            state->host.write_text(state->host.context, echo);
-        }
-
-        script_set_variable_value(state, state->input_target, state->input_buffer);
-        state->status = SCRIPT_STATUS_RUNNING;
-        script_process(state);
-        return 1;
-    }
-
-    if (state->status == SCRIPT_STATUS_WAIT_FB_BROWSE)
-    {
-        /* Check if filebase browser is active and handle input */
-        if (state->host.get_filebase_session != NULL)
-        {
-            filebase_session *session = (filebase_session *)state->host.get_filebase_session(state->host.context);
-            if (session != NULL && filebase_viewer_is_active(session))
-            {
-                int action = filebase_viewer_handle_input(session, (char)byte,
-                                                          (void (*)(void*, const char*))script_write_output, state);
-
-                switch (action)
-                {
-                    case FILEVIEWER_ACTION_CONTINUE:
-                        /* Stay in browser, waiting for more input */
-                        return 1;
-
-                    case FILEVIEWER_ACTION_NEXT:
-                        filebase_viewer_goto_next(session,
-                                                  (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case FILEVIEWER_ACTION_PREV:
-                        filebase_viewer_goto_prev(session,
-                                                  (void (*)(void*, const char*))script_write_output, state);
-                        return 1;
-
-                    case FILEVIEWER_ACTION_DOWNLOAD:
-                        /* Download action - save context and prompt for protocol */
-                        state->pending_download_file_id = session->viewer.file_id;
-                        state->pending_download_filebase = session->current_filebase;
-                        state->is_browser_download = 1;
-                        
-                        /* Show protocol selection prompt */
-                        script_write_output(state, "\r\n\r\n");
-                        script_write_output(state, "Protocol: \033[1;37m[\033[1;32mZ\033[1;37m]modem  "
-                                                   "[\033[1;33mY\033[1;37m]modem  "
-                                                   "[\033[1;33mG\033[1;37m]-Ymodem  "
-                                                   "[\033[1;32mX\033[1;37m]modem  "
-                                                   "[\033[1;32m1\033[1;37m]k-Xmodem  "
-                                                   "[\033[1;31mA\033[1;37m]bort : \033[1;31m");
-                        
-                        state->status = SCRIPT_STATUS_WAIT_PROTOCOL;
-                        return 1;
-
-                    case FILEVIEWER_ACTION_QUIT:
-                        /* Quit browser - return to script */
-                        filebase_viewer_close(session);
-                        state->status = SCRIPT_STATUS_RUNNING;
-                        script_process(state);
-                        return 1;
-
-                    case FILEVIEWER_ACTION_INVALID:
-                    default:
-                        /* Invalid input - already handled by viewer */
-                        return 1;
-                }
-            }
-        }
-
-        /* If we get here without active browser, return to script */
-        state->status = SCRIPT_STATUS_RUNNING;
-        script_process(state);
-        return 1;
-    }
-
-    if (state->status == SCRIPT_STATUS_WAIT_INPUT_LINE)
-    {
-        /* Ignore LF - we complete on CR */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->input_echo && state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Check if messagebase viewer is in search mode */
-            if (state->host.get_messagebase_session != NULL)
-            {
-                messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-                if (session != NULL && messagebase_viewer_is_active(session))
-                {
-                    if (session->viewer.phase == MESSAGE_VIEW_SEARCH_INPUT)
-                    {
-                        /* Perform the search with the entered term */
-                        messagebase_viewer_do_search(session, state->input_buffer,
-                                                      (void (*)(void*, const char*))script_write_output, state);
-                        state->input_length = 0;
-                        if (state->input_buffer != NULL)
-                        {
-                            state->input_buffer[0] = '\0';
-                        }
-
-                        /* Check result - if phase is IDLE, search was cancelled from script context */
-                        if (session->viewer.phase == MESSAGE_VIEW_IDLE)
-                        {
-                            /* Came from script command, search cancelled/no results - resume script */
-                            state->status = SCRIPT_STATUS_RUNNING;
-                            script_process(state);
-                            return 1;
-                        }
-                        else
-                        {
-                            /* Viewer is active (showing first result or was already in viewer) */
-                            state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
-                            return 1;
-                        }
-                    }
-                }
-            }
-
-            /* Check if messagebase composer is active and handle input there */
-            if (state->host.get_messagebase_session != NULL)
-            {
-                messagebase_session *session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-                if (session != NULL && messagebase_composer_is_active(session))
-                {
-                    int result = messagebase_composer_handle_line(session, state->input_buffer,
-                                                                   (void (*)(void*, const char*))script_write_output, state);
-                    state->input_length = 0;
-                    if (state->input_buffer != NULL)
-                    {
-                        state->input_buffer[0] = '\0';
-                    }
-
-                    if (result > 0)
-                    {
-                        /* Composer needs more input - stay in WAIT_INPUT_LINE */
-                        return 1;
-                    }
-                    else
-                    {
-                        /* Composer finished (sent, cancelled, or error) - resume script */
-                        if (composer_more_saved != -1)
-                        {
-                            state->more_override = composer_more_saved;
-                            composer_more_saved = -1;
-                        }
-                        state->status = SCRIPT_STATUS_RUNNING;
-                        script_process(state);
-                        return 1;
-                    }
-                }
-            }
-
-            script_set_variable_value(state, state->input_target, state->input_buffer);
-            state->more_line_count = 0;  /* Reset line count after input to prevent spurious More prompts */
-            state->status = SCRIPT_STATUS_RUNNING;
-            script_process(state);
-            return 1;
-        }
-
-        /* Handle backspace (ASCII 8 or 127) */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->input_echo && state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        if (state->input_echo && state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        return 1;
-    }
-
-    /* Handle messagebase selection input */
-    if (state->status == SCRIPT_STATUS_WAIT_MB_SELECT)
-    {
-        /* Ignore LF */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty input = cancel */
-            if (state->input_length == 0)
-            {
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Try to select the messagebase */
-            {
-                int base_id = atoi(state->input_buffer);
-                messagebase_session *session = NULL;
-                LINETASK_MESSAGEBASE_RECORD record;
-
-                if (state->host.get_messagebase_session != NULL)
-                {
-                    session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-                }
-
-                if (session != NULL && base_id > 0)
-                {
-                    if (messagebase_get_info(base_id, &record))
-                    {
-                        if (messagebase_check_access(record.accesslevel, record.keys,
-                                                      session->user_accesslevel, session->user_keys))
-                        {
-                            char msg[128];
-                            session->current_messagebase = base_id;
-                            session->current_area = 0;
-                            script_save_user_history(state);
-                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
-                            script_write_output(state, msg);
-                        }
-                        else
-                        {
-                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
-                        }
-                    }
-                    else
-                    {
-                        script_write_output(state, "\033[1;31m[Messagebase not found]\033[0m\r\n");
-                    }
-                }
-                else if (base_id <= 0 && state->input_length > 0)
-                {
-                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
-                }
-            }
-
-            state->status = SCRIPT_STATUS_RUNNING;
-            script_process(state);
-            return 1;
-        }
-
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Accumulate input */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle messagebase area selection input */
-    if (state->status == SCRIPT_STATUS_WAIT_MB_AREA_SELECT)
-    {
-        /* Ignore LF */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty input = cancel */
-            if (state->input_length == 0)
-            {
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Try to select the area */
-            {
-                int area_id = atoi(state->input_buffer);
-                messagebase_session *session = NULL;
-                LINETASK_MESSAGEBASE_AREA_RECORD area_record;
-
-                if (state->host.get_messagebase_session != NULL)
-                {
-                    session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-                }
-
-                if (session != NULL && area_id >= 0)
-                {
-                    if (area_id == 0)
-                    {
-                        /* Select root/all messages */
-                        session->current_area = 0;
-                        script_save_user_history(state);
-                        script_write_output(state, "\033[1;32mSelected: [All Messages]\033[0m\r\n");
-                    }
-                    else if (messagebase_get_area_info(session->current_messagebase, area_id, &area_record))
-                    {
-                        char msg[128];
-                        session->current_area = area_id;
-                        script_save_user_history(state);
-                        snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
-                        script_write_output(state, msg);
-                    }
-                    else
-                    {
-                        script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
-                    }
-                }
-                else if (state->input_length > 0)
-                {
-                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
-                }
-            }
-
-            state->status = SCRIPT_STATUS_RUNNING;
-            script_process(state);
-            return 1;
-        }
-
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Accumulate input */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle filebase selection input */
-    if (state->status == SCRIPT_STATUS_WAIT_FB_SELECT)
-    {
-        /* Ignore LF */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty input = cancel */
-            if (state->input_length == 0)
-            {
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Try to select the filebase */
-            {
-                int base_id = atoi(state->input_buffer);
-                filebase_session *session = NULL;
-                LINETASK_FILEBASE_RECORD record;
-
-                if (state->host.get_filebase_session != NULL)
-                {
-                    session = (filebase_session *)state->host.get_filebase_session(state->host.context);
-                }
-
-                if (session != NULL && base_id > 0)
-                {
-                    if (filebase_get_info(base_id, &record))
-                    {
-                        if (filebase_check_access(record.accesslevel, record.keys,
-                                                   session->user_accesslevel, session->user_keys))
-                        {
-                            char msg[128];
-                            session->current_filebase = base_id;
-                            session->current_area = 0;
-                            script_save_user_history(state);
-                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", record.name);
-                            script_write_output(state, msg);
-                        }
-                        else
-                        {
-                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
-                        }
-                    }
-                    else
-                    {
-                        script_write_output(state, "\033[1;31m[Filebase not found]\033[0m\r\n");
-                    }
-                }
-                else if (base_id <= 0 && state->input_length > 0)
-                {
-                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
-                }
-            }
-
-            state->status = SCRIPT_STATUS_RUNNING;
-            script_process(state);
-            return 1;
-        }
-
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Accumulate input */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle filebase area selection input */
-    if (state->status == SCRIPT_STATUS_WAIT_FB_AREA_SELECT)
-    {
-        /* Ignore LF */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty input = cancel */
-            if (state->input_length == 0)
-            {
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Try to select the area */
-            {
-                int area_id = atoi(state->input_buffer);
-                filebase_session *session = NULL;
-                LINETASK_FILEBASE_AREA_RECORD area_record;
-
-                if (state->host.get_filebase_session != NULL)
-                {
-                    session = (filebase_session *)state->host.get_filebase_session(state->host.context);
-                }
-
-                if (session != NULL && area_id >= 0)
-                {
-                    if (area_id == 0)
-                    {
-                        /* Select root/all files */
-                        session->current_area = 0;
-                        script_save_user_history(state);
-                        script_write_output(state, "\033[1;32mSelected: [All Files]\033[0m\r\n");
-                    }
-                    else if (filebase_get_area_info(session->current_filebase, area_id, &area_record))
-                    {
-                        if (filebase_check_access(area_record.accesslevel, area_record.keys,
-                                                   session->user_accesslevel, session->user_keys))
-                        {
-                            char msg[128];
-                            session->current_area = area_id;
-                            script_save_user_history(state);
-                            snprintf(msg, sizeof(msg), "\033[1;32mSelected: %s\033[0m\r\n", area_record.name);
-                            script_write_output(state, msg);
-                        }
-                        else
-                        {
-                            script_write_output(state, "\033[1;31m[Access denied]\033[0m\r\n");
-                        }
-                    }
-                    else
-                    {
-                        script_write_output(state, "\033[1;31m[Area not found]\033[0m\r\n");
-                    }
-                }
-                else if (state->input_length > 0)
-                {
-                    script_write_output(state, "\033[1;31m[Invalid ID]\033[0m\r\n");
-                }
-            }
-
-            state->status = SCRIPT_STATUS_RUNNING;
-            script_process(state);
-            return 1;
-        }
-
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Accumulate input */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle upload filename input */
-    if (state->status == SCRIPT_STATUS_WAIT_UPLOAD_FILENAME)
-    {
-        /* Handle backspace (ASCII 8 or 127) */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Ignore LF if we just processed CR */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Check for empty filename - abort */
-            if (state->input_length == 0)
-            {
-                /* Restore More state */
-                if (protocol_more_saved != -1)
-                {
-                    state->more_override = protocol_more_saved;
-                    protocol_more_saved = -1;
-                }
-                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
-                script_write_output(state, "[Aborted]\r\n");
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-
-            /* Store the filename */
-            strncpy(state->pending_upload_filename, state->input_buffer, sizeof(state->pending_upload_filename) - 1);
-            state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
-
-            debug_printf("RECEIVEFILE: captured filename '%s'\n", state->pending_upload_filename);
-
-            /* Prompt for description - use direct write to bypass More handling */
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "Enter description (optional): ");
-            }
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->input_echo = 1;
-            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_DESCRIPTION;
-            state->status = SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION;
-            return 1;
-        }
-
-        /* Accumulate filename character */
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        if (state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        return 1;
-    }
-
-    /* Handle upload description input */
-    if (state->status == SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION)
-    {
-        /* Handle backspace (ASCII 8 or 127) */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Ignore LF if we just processed CR */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Store description (may be empty) */
-            if (state->input_length > 0)
-            {
-                strncpy(state->pending_upload_description, state->input_buffer, sizeof(state->pending_upload_description) - 1);
-                state->pending_upload_description[sizeof(state->pending_upload_description) - 1] = '\0';
-            }
-            else
-            {
-                state->pending_upload_description[0] = '\0';
-            }
-
-            debug_printf("RECEIVEFILE: captured description '%s'\n",
-                         state->pending_upload_description);
-
-            /* Show protocol prompt - read file directly to bypass script processing */
-            {
-                const char *protocol_file = NULL;
-                int showed_file = 0;
+                return result;
                 
-                if (state->host.get_protocol_file != NULL)
+            case SCRIPT_INPUT_MODE_CHAR:
+            case SCRIPT_INPUT_MODE_CHAR_ECHO:
+                /* Check for viewer/browser contexts that handle chars specially */
+                if (state->input_context == SCRIPT_INPUT_CTX_MB_VIEWER)
                 {
-                    protocol_file = state->host.get_protocol_file(state->host.context);
+                    return handle_mb_viewer_char(state, byte);
                 }
+                if (state->input_context == SCRIPT_INPUT_CTX_FB_BROWSE)
+                {
+                    return handle_fb_browse_char(state, byte);
+                }
+                /* Single character - complete immediately */
+                state->input_buffer[0] = (char)byte;
+                state->input_buffer[1] = '\0';
+                state->input_length = 1;
+                if (state->input_mode == SCRIPT_INPUT_MODE_CHAR_ECHO && 
+                    state->host.write_text != NULL)
+                {
+                    char echo[4];
+                    echo[0] = (char)byte;
+                    echo[1] = '\r';
+                    echo[2] = '\n';
+                    echo[3] = '\0';
+                    state->host.write_text(state->host.context, echo);
+                }
+                return dispatch_input_complete(state);
                 
-                if (state->host.write_text != NULL)
+            case SCRIPT_INPUT_MODE_YESNO:
+                /* Only accept Y/y/N/n */
+                if (byte == 'Y' || byte == 'y')
                 {
-                    state->host.write_text(state->host.context, "\r\n");
+                    if (state->host.write_text != NULL)
+                    {
+                        state->host.write_text(state->host.context, "Y\r\n");
+                    }
+                    script_set_variable_value(state, state->input_target, "1");
+                    state->input_buffer[0] = 'Y';
+                    state->input_buffer[1] = '\0';
+                    state->input_length = 1;
+                    return dispatch_input_complete(state);
                 }
+                else if (byte == 'N' || byte == 'n')
+                {
+                    if (state->host.write_text != NULL)
+                    {
+                        state->host.write_text(state->host.context, "N\r\n");
+                    }
+                    script_set_variable_value(state, state->input_target, "0");
+                    state->input_buffer[0] = 'N';
+                    state->input_buffer[1] = '\0';
+                    state->input_length = 1;
+                    return dispatch_input_complete(state);
+                }
+                /* Ignore other keys for YESNO */
+                return 1;
                 
-                /* Display protocol file via script parser so embedded formatting works */
-                if (protocol_file != NULL && protocol_file[0] != '\0')
+            case SCRIPT_INPUT_MODE_KEY:
+                /* Check if byte is in valid_keys set */
                 {
-                    debug_printf("RECEIVEFILE: showing protocol file '%s'\n", protocol_file);
-                    script_display_file(state, protocol_file, 0);
-                    showed_file = 1;
-                }
-                
-                /* Only show hardcoded prompt if no file was displayed */
-                if (!showed_file && state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, 
-                        "Protocol: [Z]modem  [Y]modem  [G]-Ymodem  [X]modem  [1]k-Xmodem  [A]bort : ");
-                }
-            }
-            
-            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_PROTOCOL;
-            state->status = SCRIPT_STATUS_WAIT_PROTOCOL;
-            return 1;
-        }
-
-        /* Accumulate description character */
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        if (state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        return 1;
-    }
-
-    /* Handle protocol selection input */
-    if (state->status == SCRIPT_STATUS_WAIT_PROTOCOL)
-    {
-        int protocol = -1;
-        
-        /* Map key to protocol */
-        switch (byte)
-        {
-            case 'z':
-            case 'Z':
-                protocol = 5;  /* ZMODEM */
-                break;
-            case 'y':
-            case 'Y':
-                protocol = 3;  /* YMODEM */
-                break;
-            case 'g':
-            case 'G':
-                protocol = 4;  /* YMODEM-G */
-                break;
-            case 'x':
-            case 'X':
-                protocol = 1;  /* XMODEM-CRC */
-                break;
-            case '1':
-                protocol = 2;  /* XMODEM-1K */
-                break;
-            case 'a':
-            case 'A':
-            case 27:  /* ESC */
-                /* Abort - restore More state first */
-                if (protocol_more_saved != -1)
-                {
-                    state->more_override = protocol_more_saved;
-                    protocol_more_saved = -1;
-                }
-                
-                /* Check if aborting a browser download */
-                if (state->is_browser_download)
-                {
-                    state->is_browser_download = 0;
-                    state->pending_download_file_id = 0;
-                    state->pending_download_filebase = 0;
-                    script_write_output(state, "\r\n[Aborted]\r\n");
-                    state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
+                    char *found = strchr(state->input_valid_keys, byte);
+                    if (found != NULL)
+                    {
+                        state->input_buffer[0] = (char)byte;
+                        state->input_buffer[1] = '\0';
+                        state->input_length = 1;
+                        return dispatch_input_complete(state);
+                    }
+                    /* Ignore invalid keys */
                     return 1;
                 }
                 
-                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
-                script_write_output(state, "\r\n[Aborted]\r\n");
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
+            case SCRIPT_INPUT_MODE_SPECIAL:
+                /* Special handling for ANSI detection */
+                if (state->input_context == SCRIPT_INPUT_CTX_ANSI_DETECT)
+                {
+                    return handle_ansi_detection_byte(state, byte);
+                }
+                break;
+                
             default:
-                /* Ignore invalid keys */
-                return 1;
-        }
-        
-        /* Restore More state before starting transfer */
-        if (protocol_more_saved != -1)
-        {
-            state->more_override = protocol_more_saved;
-            protocol_more_saved = -1;
-        }
-        
-        /* Echo the selection */
-        if (state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        
-        /* Check if this is a download from browser or an upload */
-        if (state->is_browser_download)
-        {
-            /* Download: save values before clearing state */
-            int download_file_id = state->pending_download_file_id;
-            int download_filebase = state->pending_download_filebase;
-            
-            script_write_output(state, "\r\n");
-            
-            /* Clear download state */
-            state->is_browser_download = 0;
-            state->pending_download_file_id = 0;
-            state->pending_download_filebase = 0;
-            
-            /* Execute file transfer */
-            {
-                filebase_session *fb_session = NULL;
-                if (state->host.get_filebase_session != NULL)
-                {
-                    fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
-                }
-                
-                if (fb_session != NULL && state->host.start_transfer != NULL)
-                {
-                    if (state->host.start_transfer(state->host.context, 
-                                                   download_filebase, 
-                                                   download_file_id,
-                                                   protocol))
-                    {
-                        state->status = SCRIPT_STATUS_WAIT_TRANSFER;
-                        return 1;
-                    }
-                    else
-                    {
-                        script_write_output(state, "\r\n[Download failed to start]\r\n");
-                    }
-                }
-                else
-                {
-                    script_write_output(state, "\r\n[Download not available]\r\n");
-                }
-            }
-            
-            /* Return to browser */
-            state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
-            return 1;
-        }
-        else
-        {
-            /* Upload: start receive transfer */
-            script_start_receive_transfer(state, protocol);
-            return 1;
+                break;
         }
     }
 
-    /* Handle LOGON username input */
-    if (state->status == SCRIPT_STATUS_WAIT_LOGON_USERNAME)
+    /* All input is now handled via the unified input system above.
+     * Chat mode uses SCRIPT_STATUS_WAIT_CHAT which is a non-input waiting state.
+     */
+    if (state->status == SCRIPT_STATUS_WAIT_CHAT)
     {
-        /* Handle backspace (ASCII 8 or 127) */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                /* Echo backspace-space-backspace to erase character */
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        /* Ignore LF if we just processed CR */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Check if user typed NEW */
-            if (script_stringcasecmp(state->input_buffer, "NEW") == 0)
-            {
-                /* User wants to register - start newuser script */
-                if (state->host.start_newuser != NULL)
-                {
-                    state->host.start_newuser(state->host.context);
-                }
-                /* Don't set COMPLETED - start_newuser calls script_start which sets the status */
-                return 1;
-            }
-
-            /* Store the username and prompt for password */
-            strncpy(state->logon_username, state->input_buffer, sizeof(state->logon_username) - 1);
-            state->logon_username[sizeof(state->logon_username) - 1] = '\0';
-
-            script_write_output(state, "Password: ");
-            state->input_echo = 0;  /* No echo for password */
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->status = SCRIPT_STATUS_WAIT_LOGON_PASSWORD;
-            return 1;
-        }
-
-        /* Accumulate username character */
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        if (state->host.write_text != NULL)
-        {
-            char echo[2] = { (char)byte, '\0' };
-            state->host.write_text(state->host.context, echo);
-        }
-        return 1;
-    }
-
-    /* Handle LOGON password input */
-    if (state->status == SCRIPT_STATUS_WAIT_LOGON_PASSWORD)
-    {
-        /* Handle backspace (ASCII 8 or 127) */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                /* No echo for password backspace */
-            }
-            return 1;
-        }
-
-        /* Ignore LF if we just processed CR */
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR triggers end of input */
-        if (byte == '\r')
-        {
-            int auth_result = 0;
-            int authenticated = 0;
-
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Attempt authentication */
-            if (state->host.authenticate_user != NULL)
-            {
-                authenticated = state->host.authenticate_user(
-                    state->host.context,
-                    state->logon_username,
-                    state->input_buffer,
-                    &auth_result
-                );
-            }
-
-            if (authenticated)
-            {
-                /* Success - run postlogon script */
-                script_write_output(state, "\r\n\033[1;32mLogin successful!\033[0m\r\n\r\n");
-                if (state->host.start_postlogon != NULL)
-                {
-                    state->host.start_postlogon(state->host.context);
-                }
-                /* Don't set COMPLETED - start_postlogon calls script_start which sets the status */
-                return 1;
-            }
-
-            /* Authentication failed */
-            state->logon_attempts++;
-
-            if (auth_result == 1)
-            {
-                /* User not found */
-                script_write_output(state, "\r\n\033[1;31mUsername not found.\033[0m\r\n");
-            }
-            else if (auth_result == 2)
-            {
-                /* Bad password */
-                script_write_output(state, "\r\n\033[1;31mIncorrect password.\033[0m\r\n");
-            }
-            else if (auth_result == 3)
-            {
-                /* Account locked */
-                script_write_output(state, "\r\n\033[1;31mAccount is locked.\033[0m\r\n");
-                if (state->host.force_disconnect != NULL)
-                {
-                    state->host.force_disconnect(state->host.context);
-                }
-                state->status = SCRIPT_STATUS_COMPLETED;
-                return 1;
-            }
-            else
-            {
-                /* Generic error */
-                script_write_output(state, "\r\n\033[1;31mLogin failed.\033[0m\r\n");
-            }
-
-            /* Check retry limit */
-            if (state->logon_attempts >= 3)
-            {
-                script_write_output(state, "\r\n\033[1;31mToo many failed attempts.\033[0m\r\n");
-                if (state->host.force_disconnect != NULL)
-                {
-                    state->host.force_disconnect(state->host.context);
-                }
-                state->status = SCRIPT_STATUS_COMPLETED;
-                return 1;
-            }
-
-            /* Allow retry - prompt for username again */
-            script_write_output(state, "\r\nUsername: ");
-            state->logon_username[0] = '\0';
-            state->input_echo = 1;
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->status = SCRIPT_STATUS_WAIT_LOGON_USERNAME;
-            return 1;
-        }
-
-        /* Accumulate password character (no echo) */
-        if (state->input_length + 1 >= state->input_capacity)
-        {
-            size_t new_capacity = state->input_capacity + SCRIPT_INPUT_BUFFER_CHUNK;
-            char *resized = (char *)realloc(state->input_buffer, new_capacity);
-            if (resized == NULL)
-            {
-                script_set_error(state, "Out of memory expanding input buffer");
-                state->status = SCRIPT_STATUS_ERROR;
-                return 0;
-            }
-            state->input_buffer = resized;
-            state->input_capacity = new_capacity;
-        }
-
-        state->input_buffer[state->input_length++] = (char)byte;
-        /* No echo for password */
-        return 1;
-    }
-
-    /* Handle NEWUSER username input */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_USERNAME)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Empty username - abort */
-            if (state->input_length == 0)
-            {
-                script_write_output(state, "\r\n\033[1;33mRegistration cancelled.\033[0m\r\n");
-                state->status = SCRIPT_STATUS_RUNNING;
-                return 1;
-            }
-
-            /* Validate username length */
-            if (state->input_length < 3)
-            {
-                script_write_output(state, "\r\n\033[1;31mUsername must be at least 3 characters.\033[0m\r\n");
-                script_write_output(state, "\r\nUsername: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            if (state->input_length > 31)
-            {
-                script_write_output(state, "\r\n\033[1;31mUsername must be 31 characters or less.\033[0m\r\n");
-                script_write_output(state, "\r\nUsername: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            /* Check if username is available */
-            if (state->host.check_username_available != NULL)
-            {
-                if (!state->host.check_username_available(state->host.context, state->input_buffer))
-                {
-                    script_write_output(state, "\r\n\033[1;31mSorry, that username is already taken.\033[0m\r\n");
-                    script_write_output(state, "\r\nUsername: ");
-                    state->input_length = 0;
-                    state->input_buffer[0] = '\0';
-                    return 1;
-                }
-            }
-
-            /* Store username and prompt for password */
-            strncpy(state->newuser_username, state->input_buffer, sizeof(state->newuser_username) - 1);
-            state->newuser_username[sizeof(state->newuser_username) - 1] = '\0';
-
-            script_write_output(state, "\r\nPassword: ");
-            state->input_length = 0;
-            state->input_buffer[0] = '\0';
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD;
-            return 1;
-        }
-
-        /* Accumulate character */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle NEWUSER password input (first entry) */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-            }
-            return 1;
-        }
-
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Validate password length */
-            if (state->input_length < 4)
-            {
-                script_write_output(state, "\r\n\033[1;31mPassword must be at least 4 characters.\033[0m\r\n");
-                script_write_output(state, "\r\nPassword: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            if (state->input_length > 31)
-            {
-                script_write_output(state, "\r\n\033[1;31mPassword must be 31 characters or less.\033[0m\r\n");
-                script_write_output(state, "\r\nPassword: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            /* Store password and prompt for confirmation */
-            strncpy(state->newuser_password, state->input_buffer, sizeof(state->newuser_password) - 1);
-            state->newuser_password[sizeof(state->newuser_password) - 1] = '\0';
-
-            script_write_output(state, "Confirm Password: ");
-            state->input_length = 0;
-            state->input_buffer[0] = '\0';
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2;
-            return 1;
-        }
-
-        /* Accumulate character (no echo) */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-        }
-        return 1;
-    }
-
-    /* Handle NEWUSER password confirmation */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-            }
-            return 1;
-        }
-
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Check passwords match */
-            if (strcmp(state->newuser_password, state->input_buffer) != 0)
-            {
-                script_write_output(state, "\r\n\033[1;31mPasswords do not match. Please try again.\033[0m\r\n");
-                script_write_output(state, "\r\nPassword: ");
-                state->newuser_password[0] = '\0';
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                state->status = SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD;
-                return 1;
-            }
-
-            /* Passwords match - prompt for real name */
-            script_write_output(state, "\r\nReal Name: ");
-            state->input_length = 0;
-            state->input_buffer[0] = '\0';
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_REALNAME;
-            return 1;
-        }
-
-        /* Accumulate character (no echo) */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-        }
-        return 1;
-    }
-
-    /* Handle NEWUSER real name input */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_REALNAME)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Validate real name */
-            if (state->input_length < 2)
-            {
-                script_write_output(state, "\r\n\033[1;31mPlease enter your real name.\033[0m\r\n");
-                script_write_output(state, "\r\nReal Name: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            if (state->input_length > 63)
-            {
-                script_write_output(state, "\r\n\033[1;31mName is too long (max 63 characters).\033[0m\r\n");
-                script_write_output(state, "\r\nReal Name: ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            /* Store real name and prompt for email */
-            strncpy(state->newuser_realname, state->input_buffer, sizeof(state->newuser_realname) - 1);
-            state->newuser_realname[sizeof(state->newuser_realname) - 1] = '\0';
-
-            script_write_output(state, "Email (optional): ");
-            state->input_length = 0;
-            state->input_buffer[0] = '\0';
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_EMAIL;
-            return 1;
-        }
-
-        /* Accumulate character */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle NEWUSER email input */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_EMAIL)
-    {
-        /* Handle backspace */
-        if (byte == 8 || byte == 127)
-        {
-            if (state->input_length > 0)
-            {
-                state->input_length--;
-                state->input_buffer[state->input_length] = '\0';
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "\b \b");
-                }
-            }
-            return 1;
-        }
-
-        if (byte == '\n')
-        {
-            return 1;
-        }
-
-        /* CR - end of input */
-        if (byte == '\r')
-        {
-            char summary[512];
-            state->input_buffer[state->input_length] = '\0';
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "\r\n");
-            }
-
-            /* Email is optional - just validate length if provided */
-            if (state->input_length > 63)
-            {
-                script_write_output(state, "\r\n\033[1;31mEmail is too long (max 63 characters).\033[0m\r\n");
-                script_write_output(state, "\r\nEmail (optional): ");
-                state->input_length = 0;
-                state->input_buffer[0] = '\0';
-                return 1;
-            }
-
-            /* Store email */
-            strncpy(state->newuser_email, state->input_buffer, sizeof(state->newuser_email) - 1);
-            state->newuser_email[sizeof(state->newuser_email) - 1] = '\0';
-
-            /* Show summary and ask for confirmation */
-            script_write_output(state, "\r\n\033[1;36m--- Account Summary ---\033[0m\r\n\r\n");
-            snprintf(summary, sizeof(summary),
-                "  Username:  \033[1;37m%s\033[0m\r\n"
-                "  Real Name: \033[1;37m%s\033[0m\r\n"
-                "  Email:     \033[1;37m%s\033[0m\r\n\r\n",
-                state->newuser_username,
-                state->newuser_realname,
-                state->newuser_email[0] ? state->newuser_email : "(not provided)");
-            script_write_output(state, summary);
-
-            script_write_output(state, "Create this account? (\033[1;32mY\033[0m/\033[1;31mN\033[0m): ");
-            state->input_length = 0;
-            state->input_buffer[0] = '\0';
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_CONFIRM;
-            return 1;
-        }
-
-        /* Accumulate character */
-        if (state->input_length + 1 < state->input_capacity)
-        {
-            state->input_buffer[state->input_length++] = (char)byte;
-            if (state->host.write_text != NULL)
-            {
-                char echo[2] = { (char)byte, '\0' };
-                state->host.write_text(state->host.context, echo);
-            }
-        }
-        return 1;
-    }
-
-    /* Handle NEWUSER confirmation */
-    if (state->status == SCRIPT_STATUS_WAIT_NEWUSER_CONFIRM)
-    {
-        /* Wait for Y/N */
-        if (byte == 'Y' || byte == 'y')
-        {
-            int user_id = 0;
-
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "Y\r\n\r\n");
-            }
-
-            /* Create the user account */
-            if (state->host.create_user != NULL)
-            {
-                user_id = state->host.create_user(
-                    state->host.context,
-                    state->newuser_username,
-                    state->newuser_password,
-                    state->newuser_realname,
-                    state->newuser_email
-                );
-            }
-
-            if (user_id > 0)
-            {
-                script_write_output(state, "\033[1;32mAccount created successfully!\033[0m\r\n\r\n");
-                script_write_output(state, "You can now log in with your new username and password.\r\n\r\n");
-            }
-            else
-            {
-                script_write_output(state, "\r\n\033[1;31mSorry, account creation failed. Please try again later.\033[0m\r\n\r\n");
-            }
-
-            /* Clear sensitive data */
-            memset(state->newuser_password, 0, sizeof(state->newuser_password));
-            state->status = SCRIPT_STATUS_RUNNING;
-            return 1;
-        }
-        else if (byte == 'N' || byte == 'n')
-        {
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "N\r\n\r\n");
-            }
-
-            script_write_output(state, "\033[1;33mRegistration cancelled.\033[0m\r\n\r\n");
-            memset(state->newuser_password, 0, sizeof(state->newuser_password));
-            state->status = SCRIPT_STATUS_RUNNING;
-            return 1;
-        }
-        /* Ignore other keys */
-        return 1;
+        /* Chat mode input is handled separately by the chat subsystem */
+        return 0;
     }
 
     return 0;
@@ -2837,19 +2342,6 @@ static int script_pop_call_stack(script_state *state)
     memset(frame, 0, sizeof(*frame));
     
     return 1;
-}
-
-static const char *script_invert_operator(const char *op)
-{
-    if (strcmp(op, "==") == 0) return "!=";
-    if (strcmp(op, "!=") == 0) return "==";
-    if (strcmp(op, ">") == 0) return "<=";
-    if (strcmp(op, "<") == 0) return ">=";
-    if (strcmp(op, ">=") == 0) return "<";
-    if (strcmp(op, "<=") == 0) return ">";
-    if (strcmp(op, "contains") == 0) return "!contains";
-    if (strcmp(op, "!contains") == 0) return "contains";
-    return op;
 }
 
 static void script_clear_variables(script_state *state)
@@ -4263,21 +3755,25 @@ static void script_execute_instruction(script_state *state, script_instruction *
         case SCRIPT_CMD_PROMPT:
         {
             const char *var = instruction->arg1 != NULL ? instruction->arg1 : "selection";
-            const char *mode = instruction->arg2 != NULL ? instruction->arg2 : "char";
-            const char *echo = instruction->arg3 != NULL ? instruction->arg3 : "echo";
+            const char *mode_str = instruction->arg2 != NULL ? instruction->arg2 : "char";
+            const char *echo_str = instruction->arg3 != NULL ? instruction->arg3 : "echo";
+            int want_line = (script_stringcasecmp(mode_str, "line") == 0);
+            int want_echo = (script_stringcasecmp(echo_str, "noecho") != 0);
+            script_input_mode_t mode;
 
-            /* Reset input buffer for new prompt */
-            state->input_length = 0;
-            if (state->input_buffer != NULL && state->input_capacity > 0)
+            /* Determine the input mode based on line/char and echo settings */
+            if (want_line)
             {
-                state->input_buffer[0] = '\0';
+                mode = want_echo ? SCRIPT_INPUT_MODE_LINE : SCRIPT_INPUT_MODE_LINE_NOECHO;
+            }
+            else
+            {
+                mode = want_echo ? SCRIPT_INPUT_MODE_CHAR_ECHO : SCRIPT_INPUT_MODE_CHAR;
             }
 
             strncpy(state->input_target, var, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
-            state->input_mode = (script_stringcasecmp(mode, "line") == 0) ? SCRIPT_INPUT_LINE : SCRIPT_INPUT_CHAR;
-            state->input_echo = (script_stringcasecmp(echo, "noecho") != 0);
-            state->status = (state->input_mode == SCRIPT_INPUT_LINE) ? SCRIPT_STATUS_WAIT_INPUT_LINE : SCRIPT_STATUS_WAIT_INPUT_CHAR;
+            script_begin_input(state, mode, SCRIPT_INPUT_CTX_PROMPT);
             return;
         }
 
@@ -4828,8 +4324,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
             /* Send DSR query: ESC[6n */
             script_write_output(state, "\033[6n");
             
-            /* Wait for response */
-            state->status = SCRIPT_STATUS_WAIT_ANSI;
+            /* Wait for response using unified input with SPECIAL mode for ANSI detection */
+            script_begin_input(state, SCRIPT_INPUT_MODE_SPECIAL, SCRIPT_INPUT_CTX_ANSI_DETECT);
             return;
         }
 
@@ -4839,15 +4335,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
             script_write_output(state, "\r\n\033[1;36mEnter reason to chat with sysop (or press Enter to cancel):\033[0m\r\n");
             script_write_output(state, "> ");
             
-            /* Reset input buffer for reason collection */
-            state->input_echo = 1;
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            
-            state->status = SCRIPT_STATUS_WAIT_CHAT_REASON;
+            script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_CHAT_REASON);
             return;
         }
 
@@ -4914,12 +4402,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 state->more_override = saved_more;
                 /* Prompt for selection */
                 state->host.write_text(state->host.context, "\r\nEnter messagebase number to access: ");
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->status = SCRIPT_STATUS_WAIT_MB_SELECT;
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_SELECT);
                 return;
             }
             else if (script_stringcasecmp(subcmd, "select") == 0)
@@ -4972,12 +4455,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 messagebase_list_areas(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
                 /* Prompt for selection */
                 state->host.write_text(state->host.context, "\r\nEnter area number to access: ");
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->status = SCRIPT_STATUS_WAIT_MB_AREA_SELECT;
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_AREA);
                 return;
             }
             else if (script_stringcasecmp(subcmd, "area") == 0)
@@ -5035,9 +4513,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 
                 if (messagebase_enter_reader(session, (void (*)(void*, const char*))script_write_output, state))
                 {
-                    /* Reader is now active - wait for char input */
-                    state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
-                    state->input_echo = 0;
+                    /* Reader is now active - wait for char input via unified system */
+                    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
                     return;
                 }
                 /* enter_reader already displayed error message */
@@ -5063,9 +4540,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
                 if (messagebase_enter_reader(session, (void (*)(void*, const char*))script_write_output, state))
                 {
-                    /* Reader is now active - wait for char input */
-                    state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
-                    state->input_echo = 0;
+                    /* Reader is now active - wait for char input via unified system */
+                    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
                     return;
                 }
                 /* enter_reader already displayed error message */
@@ -5124,8 +4600,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 messagebase_viewer_show_body(session, (void (*)(void*, const char*))script_write_output, state);
                 messagebase_viewer_show_prompt(session, (void (*)(void*, const char*))script_write_output, state);
 
-                state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
-                state->input_echo = 0;
+                /* Wait for char input via unified system */
+                script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
                 return;
             }
             else if (script_stringcasecmp(subcmd, "compose") == 0)
@@ -5224,13 +4700,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
                 if (parsed && result)
                 {
-                    state->input_echo = 1;
-                    state->input_length = 0;
-                    if (state->input_buffer != NULL)
-                    {
-                        state->input_buffer[0] = '\0';
-                    }
-                    state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                    /* Wait for compose input via unified system */
+                    script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_COMPOSE);
                     return;
                 }
             }
@@ -5311,14 +4782,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 messagebase_viewer_start_search(session,
                                                  (void (*)(void*, const char*))script_write_output, state);
 
-                /* Switch to line input for search term */
-                state->input_echo = 1;
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+                /* Switch to line input for search term via unified system */
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_MB_SEARCH);
                 return;
             }
             else
@@ -5469,9 +4934,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
             strncpy(state->input_target, target, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
-            state->input_mode = SCRIPT_INPUT_CHAR;
-            state->input_echo = 0;
-            state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_ANYKEY);
             return;
         }
 
@@ -5540,19 +5003,12 @@ static void script_execute_instruction(script_state *state, script_instruction *
             /* READLINE <variable> [noecho] - read a line of input */
             const char *var = instruction->arg1 != NULL ? instruction->arg1 : "input";
             const char *echo = instruction->arg2 != NULL ? instruction->arg2 : "echo";
-
-            /* Reset input buffer for new prompt */
-            state->input_length = 0;
-            if (state->input_buffer != NULL && state->input_capacity > 0)
-            {
-                state->input_buffer[0] = '\0';
-            }
+            int want_echo = (script_stringcasecmp(echo, "noecho") != 0);
+            script_input_mode_t mode = want_echo ? SCRIPT_INPUT_MODE_LINE : SCRIPT_INPUT_MODE_LINE_NOECHO;
 
             strncpy(state->input_target, var, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
-            state->input_mode = SCRIPT_INPUT_LINE;
-            state->input_echo = (script_stringcasecmp(echo, "noecho") != 0);
-            state->status = SCRIPT_STATUS_WAIT_INPUT_LINE;
+            script_begin_input(state, mode, SCRIPT_INPUT_CTX_PROMPT);
             return;
         }
 
@@ -5572,18 +5028,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 }
             }
 
-            /* Reset input buffer for Y/N input */
-            state->input_length = 0;
-            if (state->input_buffer != NULL && state->input_capacity > 0)
-            {
-                state->input_buffer[0] = '\0';
-            }
-
             strncpy(state->input_target, var, sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
-            state->input_mode = SCRIPT_INPUT_YESNO;
-            state->input_echo = 0;  /* We handle echo ourselves for Y/N */
-            state->status = SCRIPT_STATUS_WAIT_INPUT_CHAR;
+            script_begin_input(state, SCRIPT_INPUT_MODE_YESNO, SCRIPT_INPUT_CTX_PROMPT);
             return;
         }
 
@@ -6298,12 +5745,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 state->more_override = saved_more;
                 /* Prompt for selection */
                 state->host.write_text(state->host.context, "\r\nEnter filebase number to access: ");
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->status = SCRIPT_STATUS_WAIT_FB_SELECT;
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_FB_SELECT);
                 return;
             }
             else if (script_stringcasecmp(subcmd, "select") == 0)
@@ -6360,12 +5802,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 filebase_list_areas(session, (void (*)(void*, const char*))state->host.write_text, state->host.context);
                 /* Prompt for selection */
                 state->host.write_text(state->host.context, "\r\nEnter area number to access: ");
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->status = SCRIPT_STATUS_WAIT_FB_AREA_SELECT;
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_FB_AREA);
                 return;
             }
             else if (script_stringcasecmp(subcmd, "area") == 0)
@@ -6433,7 +5870,8 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 
                 if (filebase_enter_browser(session, (void (*)(void*, const char*))script_write_output, state))
                 {
-                    state->status = SCRIPT_STATUS_WAIT_FB_BROWSE;
+                    /* Wait for char input via unified system */
+                    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_BROWSE);
                 }
             }
             else if (script_stringcasecmp(subcmd, "info") == 0)
@@ -6520,13 +5958,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
             state->logon_attempts = 0;
             
             /* Wait for username input (line mode with echo) */
-            state->input_echo = 1;
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->status = SCRIPT_STATUS_WAIT_LOGON_USERNAME;
+            script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_LOGON_USER);
             return;
         }
 
@@ -6542,137 +5974,77 @@ static void script_execute_instruction(script_state *state, script_instruction *
             state->newuser_email[0] = '\0';
 
             /* Wait for username input */
-            state->input_echo = 1;
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->status = SCRIPT_STATUS_WAIT_NEWUSER_USERNAME;
+            script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_NEWUSER_USER);
             return;
         }
 
         case SCRIPT_CMD_SENDFILE:
         {
             /* SENDFILE <file_id> [protocol]
-             * Initiates a file transfer using the current filebase.
-             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g
+             * Initiates a file download (BBS sends to user).
              */
             const char *file_id_str = instruction->arg1;
             const char *protocol_str = instruction->arg2;
-            char expanded_id[64];
-            char expanded_proto[32];
-            int file_id;
-            int protocol = 1; /* Default to XMODEM-CRC */
-            filebase_session *session = NULL;
-
-            /* Expand macros in arguments */
-            if (file_id_str != NULL)
+            int file_id = 0;
+            int protocol = 1;  /* Default: XMODEM-CRC */
+            int base_id = 0;
+            filebase_session *fb_session = NULL;
+            char expanded[256];
+            
+            /* Get file ID */
+            if (file_id_str != NULL && file_id_str[0] != '\0')
             {
-                script_expand_macros(state, file_id_str, expanded_id, sizeof(expanded_id));
-                file_id = atoi(expanded_id);
+                script_expand_macros(state, file_id_str, expanded, sizeof(expanded));
+                file_id = atoi(expanded);
             }
-            else
-            {
-                file_id = 0;
-            }
-
-            if (protocol_str != NULL)
-            {
-                script_expand_macros(state, protocol_str, expanded_proto, sizeof(expanded_proto));
-                
-                if (script_stringcasecmp(expanded_proto, "xmodem") == 0)
-                {
-                    protocol = 0;
-                }
-                else if (script_stringcasecmp(expanded_proto, "xmodem-crc") == 0)
-                {
-                    protocol = 1;
-                }
-                else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
-                {
-                    protocol = 2;
-                }
-                else if (script_stringcasecmp(expanded_proto, "ymodem") == 0)
-                {
-                    protocol = 3;
-                }
-                else if (script_stringcasecmp(expanded_proto, "ymodem-g") == 0)
-                {
-                    protocol = 4;
-                }
-                else if (script_stringcasecmp(expanded_proto, "zmodem") == 0)
-                {
-                    protocol = 5;
-                }
-            }
-
+            
             if (file_id <= 0)
             {
-                script_write_output(state, "\r\n[Invalid file ID]\r\n");
+                script_write_output(state, "\r\n\033[1;31m[Invalid file ID]\033[0m\r\n");
                 break;
             }
-
-            /* Get filebase session */
+            
+            /* Get filebase session for base_id */
             if (state->host.get_filebase_session != NULL)
             {
-                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                if (fb_session != NULL)
+                {
+                    base_id = fb_session->current_filebase;
+                }
             }
-
-            if (session == NULL || session->current_filebase <= 0)
+            
+            if (base_id <= 0)
             {
-                script_write_output(state, "\r\n[No filebase selected]\r\n");
+                script_write_output(state, "\r\n\033[1;31m[No filebase selected]\033[0m\r\n");
                 break;
             }
-
-            /* Check file access */
+            
+            /* Parse protocol */
+            if (protocol_str != NULL && protocol_str[0] != '\0')
             {
-                LINETASK_FILE_RECORD file_record;
-                _kernel_swi_regs regs;
-
-                regs.r[0] = 11; /* FILEBASE_CMD_FILE_INFO */
-                regs.r[1] = session->current_filebase;
-                regs.r[2] = file_id;
-
-                if (_kernel_swi(0x5AA43, &regs, &regs) != NULL || regs.r[0] <= 0)
-                {
-                    script_write_output(state, "\r\n[File not found]\r\n");
-                    break;
-                }
-
-                memcpy(&file_record, (void *)regs.r[0], sizeof(file_record));
-
-                if (file_record.deleted)
-                {
-                    script_write_output(state, "\r\n[File not found]\r\n");
-                    break;
-                }
-
-                if (!filebase_check_access(file_record.accesslevel, file_record.keys,
-                                           session->user_accesslevel, session->user_keys))
-                {
-                    script_write_output(state, "\r\n[Access denied]\r\n");
-                    break;
-                }
+                script_expand_macros(state, protocol_str, expanded, sizeof(expanded));
+                if (script_stringcasecmp(expanded, "xmodem") == 0)
+                    protocol = 0;
+                else if (script_stringcasecmp(expanded, "xmodem-crc") == 0)
+                    protocol = 1;
+                else if (script_stringcasecmp(expanded, "xmodem-1k") == 0)
+                    protocol = 2;
+                else if (script_stringcasecmp(expanded, "ymodem") == 0)
+                    protocol = 3;
+                else if (script_stringcasecmp(expanded, "ymodem-g") == 0)
+                    protocol = 4;
+                else if (script_stringcasecmp(expanded, "zmodem") == 0)
+                    protocol = 5;
             }
-
-            /* Initiate transfer via host callback */
+            
+            /* Start the transfer */
             if (state->host.start_transfer != NULL)
             {
-                char msg[128];
-                const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
-                const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
-
-                snprintf(msg, sizeof(msg), 
-                         "\r\n\033[1;33mStarting %s transfer. Start your receiver now...\033[0m\r\n",
-                         proto_name);
-                script_write_output(state, msg);
-
-                if (state->host.start_transfer(state->host.context, 
-                                               session->current_filebase, file_id, protocol))
+                if (state->host.start_transfer(state->host.context, base_id, file_id, protocol))
                 {
                     state->status = SCRIPT_STATUS_WAIT_TRANSFER;
-                    return;
+                    return;  /* Transfer started - script waits */
                 }
                 else
                 {
@@ -6681,7 +6053,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
             else
             {
-                script_write_output(state, "\r\n[File transfer not available]\r\n");
+                script_write_output(state, "\r\n\033[1;31m[File transfer not available]\033[0m\r\n");
             }
         }
         break;
@@ -6689,165 +6061,88 @@ static void script_execute_instruction(script_state *state, script_instruction *
         case SCRIPT_CMD_RECEIVEFILE:
         {
             /* RECEIVEFILE [filename] [protocol]
-             * Receives a file upload using the current filebase.
-             * If filename omitted, prompts for filename and description.
-             * If protocol omitted, shows protocol selection prompt.
-             * protocol: xmodem, xmodem-crc, xmodem-1k, ymodem, ymodem-g, zmodem
+             * Initiates a file upload (user sends to BBS).
+             * 
+             * Modes:
+             *   receivefile              - prompt for filename, description, protocol
+             *   receivefile protocol     - prompt for filename and description
+             *   receivefile file proto   - prompt for description only
+             *
+             * If arg1 looks like a protocol name, treat it as protocol-only mode.
              */
-            const char *filename_str = instruction->arg1;
-            const char *protocol_str = instruction->arg2;
-            char expanded_filename[128];
-            char expanded_proto[32];
-            int protocol = -1; /* -1 means prompt user */
-            filebase_session *session = NULL;
+            const char *arg1_str = instruction->arg1;
+            const char *arg2_str = instruction->arg2;
+            char expanded1[256];
+            char expanded2[256];
+            int protocol = -1;  /* -1 = need to prompt */
+            int have_filename = 0;
             
-            debug_printf("RECEIVEFILE: entered command handler (arg1=%s, arg2=%s, stage=%d)\n",
-                         filename_str ? filename_str : "(null)",
-                         protocol_str ? protocol_str : "(null)",
-                         state->pending_upload_stage);
-
-            /* Get filebase session first - needed for all paths */
-            if (state->host.get_filebase_session != NULL)
+            /* Expand arguments */
+            expanded1[0] = '\0';
+            expanded2[0] = '\0';
+            if (arg1_str != NULL && arg1_str[0] != '\0')
             {
-                session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                script_expand_macros(state, arg1_str, expanded1, sizeof(expanded1));
             }
-
-            if (session == NULL || session->current_filebase <= 0)
+            if (arg2_str != NULL && arg2_str[0] != '\0')
             {
-                script_write_output(state, "\r\n[No filebase selected]\r\n");
-                break;
+                script_expand_macros(state, arg2_str, expanded2, sizeof(expanded2));
             }
-
-            /* Store filebase/area info for later */
-            state->pending_upload_filebase = session->current_filebase;
-            state->pending_upload_area = session->current_area;
-
-            if (state->pending_upload_stage != SCRIPT_UPLOAD_STAGE_NONE)
+            
+            /* Reset upload state */
+            state->pending_upload_filename[0] = '\0';
+            state->pending_upload_description[0] = '\0';
+            state->pending_upload_protocol = -1;
+            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+            
+            /* Check if arg1 is a protocol name */
+            if (expanded1[0] != '\0')
             {
-                debug_printf("RECEIVEFILE: metadata collection already active (stage=%d)\n",
-                             state->pending_upload_stage);
-                return;
-            }
-
-            /* Check for filename argument - treat empty string same as NULL */
-            expanded_filename[0] = '\0';
-            if (filename_str != NULL && filename_str[0] != '\0')
-            {
-                /* Strip any leading/trailing whitespace that might be leftover */
-                const char *start = filename_str;
-                while (*start == ' ' || *start == '\t') start++;
-                
-                if (*start != '\0')
+                if (script_stringcasecmp(expanded1, "xmodem") == 0 ||
+                    script_stringcasecmp(expanded1, "xmodem-crc") == 0 ||
+                    script_stringcasecmp(expanded1, "xmodem-1k") == 0 ||
+                    script_stringcasecmp(expanded1, "ymodem") == 0 ||
+                    script_stringcasecmp(expanded1, "ymodem-g") == 0 ||
+                    script_stringcasecmp(expanded1, "zmodem") == 0)
                 {
-                    script_expand_macros(state, start, expanded_filename, sizeof(expanded_filename));
+                    /* arg1 is protocol - Mode 2: prompt for filename and description */
+                    protocol = script_parse_protocol(expanded1);
+                    state->pending_upload_protocol = protocol;
+                }
+                else
+                {
+                    /* arg1 is filename */
+                    have_filename = 1;
+                    strncpy(state->pending_upload_filename, expanded1, 
+                            sizeof(state->pending_upload_filename) - 1);
+                    state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
+                    
+                    /* Check if arg2 is protocol */
+                    if (expanded2[0] != '\0')
+                    {
+                        protocol = script_parse_protocol(expanded2);
+                        state->pending_upload_protocol = protocol;
+                    }
                 }
             }
-
-            /* If no filename provided in script, prompt user and let wait handlers chain */
-            if (expanded_filename[0] == '\0')
+            
+            /* Determine what to prompt for */
+            if (!have_filename)
             {
-                /* Disable More prompt during upload flow */
-                protocol_more_saved = state->more_override;
-                state->more_override = 0;
-                state->more_line_count = 0;
-                
-                /* Clear pending state */
-                state->pending_upload_filename[0] = '\0';
-                state->pending_upload_description[0] = '\0';
-                
-                /* Prompt for filename - wait handlers will prompt for description + protocol */
-                if (state->host.write_text != NULL)
-                {
-                    state->host.write_text(state->host.context, "Enter filename for upload: ");
-                }
-
-                debug_printf("RECEIVEFILE: prompting for filename (filebase=%d, area=%d)\n",
-                             state->pending_upload_filebase, state->pending_upload_area);
-                
-                /* Set up input buffer for filename */
-                state->input_length = 0;
-                if (state->input_buffer != NULL)
-                {
-                    state->input_buffer[0] = '\0';
-                }
-                state->input_echo = 1;
-                
+                /* Need filename - start prompting flow */
+                script_write_output(state, "Filename: ");
                 state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_FILENAME;
-                state->status = SCRIPT_STATUS_WAIT_UPLOAD_FILENAME;
-                /* Return here - the filename wait handler will prompt for description */
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_UPLOAD_FILE);
                 return;
             }
-
-            /* Have filename - store it */
-            strncpy(state->pending_upload_filename, expanded_filename, sizeof(state->pending_upload_filename) - 1);
-            state->pending_upload_filename[sizeof(state->pending_upload_filename) - 1] = '\0';
-
-            /* Check for protocol */
-            if (protocol_str != NULL && protocol_str[0] != '\0')
+            else
             {
-                script_expand_macros(state, protocol_str, expanded_proto, sizeof(expanded_proto));
-                
-                if (script_stringcasecmp(expanded_proto, "xmodem") == 0)
-                {
-                    protocol = 0;
-                }
-                else if (script_stringcasecmp(expanded_proto, "xmodem-crc") == 0)
-                {
-                    protocol = 1;
-                }
-                else if (script_stringcasecmp(expanded_proto, "xmodem-1k") == 0)
-                {
-                    protocol = 2;
-                }
-                else if (script_stringcasecmp(expanded_proto, "ymodem") == 0)
-                {
-                    protocol = 3;
-                }
-                else if (script_stringcasecmp(expanded_proto, "ymodem-g") == 0)
-                {
-                    protocol = 4;
-                }
-                else if (script_stringcasecmp(expanded_proto, "zmodem") == 0)
-                {
-                    protocol = 5;
-                }
-            }
-
-            /* If protocol specified, start transfer immediately (skip prompts) */
-            if (protocol >= 0)
-            {
-                state->pending_upload_description[0] = '\0';
-                script_start_receive_transfer(state, protocol);
+                /* Have filename - prompt for description */
+                script_write_output(state, "Description: ");
+                state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_DESCRIPTION;
+                script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_UPLOAD_DESC);
                 return;
             }
-
-            /* No protocol - the filename is provided, so skip to description prompt */
-            /* The filename handler would have done this, but we already have the filename */
-            /* Disable More prompt during upload flow */
-            protocol_more_saved = state->more_override;
-            state->more_override = 0;
-            state->more_line_count = 0;
-            
-            /* Prompt for description - use direct write to bypass More handling */
-            if (state->host.write_text != NULL)
-            {
-                state->host.write_text(state->host.context, "Enter description (optional): ");
-            }
-
-            debug_printf("RECEIVEFILE: waiting for description for '%s'\n",
-                         state->pending_upload_filename);
-            
-            /* Set up input buffer for description */
-            state->input_length = 0;
-            if (state->input_buffer != NULL)
-            {
-                state->input_buffer[0] = '\0';
-            }
-            state->input_echo = 1;
-            
-            state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_WAIT_DESCRIPTION;
-            state->status = SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION;
-            return;
         }
         break;
 
@@ -7614,7 +6909,8 @@ static void script_set_error(script_state *state, const char *fmt, ...)
 
 static void script_reset_input(script_state *state)
 {
-    state->input_mode = SCRIPT_INPUT_NONE;
+    state->input_mode = SCRIPT_INPUT_MODE_NONE;
+    state->input_context = SCRIPT_INPUT_CTX_NONE;
     state->input_echo = 0;
     state->input_length = 0;
     if (state->input_buffer != NULL && state->input_capacity > 0)
@@ -7622,6 +6918,112 @@ static void script_reset_input(script_state *state)
         state->input_buffer[0] = '\0';
     }
     state->input_target[0] = '\0';
+    state->input_valid_keys[0] = '\0';
+}
+
+/*
+ * Begin waiting for input with a specific mode and context.
+ * Echo behavior is derived from the mode (LINE/CHAR_ECHO vs LINE_NOECHO/CHAR).
+ */
+void script_begin_input(script_state *state, script_input_mode_t mode, 
+                        script_input_context context)
+{
+    int echo;
+    
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    /* Derive echo from mode - this is the key simplification */
+    switch (mode)
+    {
+        case SCRIPT_INPUT_MODE_LINE:
+        case SCRIPT_INPUT_MODE_CHAR_ECHO:
+            echo = 1;
+            break;
+        default:
+            echo = 0;
+            break;
+    }
+    
+    state->input_mode = mode;
+    state->input_context = context;
+    state->input_echo = echo;
+    state->input_length = 0;
+    if (state->input_buffer != NULL && state->input_capacity > 0)
+    {
+        state->input_buffer[0] = '\0';
+    }
+    state->input_valid_keys[0] = '\0';
+    /* Note: input_target is NOT cleared here - callers may set it before calling this function */
+    
+    state->status = SCRIPT_STATUS_WAITING;
+}
+
+/*
+ * Begin waiting for a single keypress from a set of valid keys.
+ */
+void script_begin_input_keys(script_state *state, script_input_context context,
+                             const char *valid_keys, const char *target)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    state->input_mode = SCRIPT_INPUT_MODE_KEY;
+    state->input_context = context;
+    state->input_echo = 0;  /* Key input usually doesn't echo */
+    state->input_length = 0;
+    if (state->input_buffer != NULL && state->input_capacity > 0)
+    {
+        state->input_buffer[0] = '\0';
+    }
+    
+    if (valid_keys != NULL)
+    {
+        strncpy(state->input_valid_keys, valid_keys, sizeof(state->input_valid_keys) - 1);
+        state->input_valid_keys[sizeof(state->input_valid_keys) - 1] = '\0';
+    }
+    else
+    {
+        state->input_valid_keys[0] = '\0';
+    }
+    
+    if (target != NULL)
+    {
+        strncpy(state->input_target, target, sizeof(state->input_target) - 1);
+        state->input_target[sizeof(state->input_target) - 1] = '\0';
+    }
+    else
+    {
+        state->input_target[0] = '\0';
+    }
+    
+    state->status = SCRIPT_STATUS_WAITING;
+}
+
+/*
+ * Clear input state without changing status.
+ */
+void script_clear_input(script_state *state)
+{
+    if (state == NULL)
+    {
+        return;
+    }
+    
+    state->input_mode = SCRIPT_INPUT_MODE_NONE;
+    state->input_context = SCRIPT_INPUT_CTX_NONE;
+    state->input_echo = 0;
+    state->input_length = 0;
+    if (state->input_buffer != NULL && state->input_capacity > 0)
+    {
+        state->input_buffer[0] = '\0';
+    }
+    state->input_target[0] = '\0';
+    state->input_valid_keys[0] = '\0';
 }
 
 /*
@@ -7750,7 +7152,7 @@ static void script_write_output(script_state *state, const char *text)
             state->host.write_text(state->host.context, "\033[7mMore?\033[0m ");
         }
         
-        state->status = SCRIPT_STATUS_WAIT_MORE;
+        script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MORE);
         return;
     }
     
@@ -7759,7 +7161,8 @@ static void script_write_output(script_state *state, const char *text)
     state->host.write_text(state->host.context, text);
 }
 
-static void script_set_variable_value(script_state *state, const char *name, const char *value)
+/* Exported for ZMODEM auto-start in main.c */
+void script_set_variable_value(script_state *state, const char *name, const char *value)
 {
     script_variable *var = script_find_variable(state, name, 1);
     if (var == NULL)
@@ -8252,68 +7655,97 @@ static void script_display_file(script_state *state, const char *source, int tri
  */
 static void script_start_receive_transfer(script_state *state, int protocol)
 {
-    char temp_path[300];
-    int line_id = 0;
-
+    char temp_path[260];
+    
     if (state == NULL)
     {
         return;
     }
 
     state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
-
-    /* Get line ID for temp file naming */
-    if (state->host.get_line_id != NULL)
+    
+    /* Check we have a filename */
+    if (state->pending_upload_filename[0] == '\0')
     {
-        line_id = state->host.get_line_id(state->host.context);
+        script_write_output(state, "\r\n\033[1;31m[No filename specified]\033[0m\r\n");
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return;
     }
-
-    /* Store upload metadata in script variables for post-transfer registration */
-    script_set_variable_value(state, "_upload_filebase", "");
-    script_set_variable_value(state, "_upload_area", "");
+    
+    /* Build temp path */
+    snprintf(temp_path, sizeof(temp_path),
+             "<Converse$Dir>.Temp.Upload_%s", state->pending_upload_filename);
+    
+    /* Store metadata in script variables for post-transfer processing */
     script_set_variable_value(state, "_upload_filename", state->pending_upload_filename);
     script_set_variable_value(state, "_upload_description", state->pending_upload_description);
+    
+    /* Also store filebase/area for registration */
     {
-        char num_buf[16];
-        snprintf(num_buf, sizeof(num_buf), "%d", state->pending_upload_filebase);
-        script_set_variable_value(state, "_upload_filebase", num_buf);
-        snprintf(num_buf, sizeof(num_buf), "%d", state->pending_upload_area);
-        script_set_variable_value(state, "_upload_area", num_buf);
+        filebase_session *fb_session = NULL;
+        if (state->host.get_filebase_session != NULL)
+        {
+            fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            if (fb_session != NULL)
+            {
+                char id_str[16];
+                snprintf(id_str, sizeof(id_str), "%d", fb_session->current_filebase);
+                script_set_variable_value(state, "_upload_filebase", id_str);
+                snprintf(id_str, sizeof(id_str), "%d", fb_session->current_area);
+                script_set_variable_value(state, "_upload_area", id_str);
+            }
+        }
     }
-
-    /* Build temp path */
-    filebase_get_temp_upload_path(state->pending_upload_filebase, line_id, temp_path, sizeof(temp_path));
-
-    /* Initiate receive transfer via host callback */
+    
+    /* Start the receive transfer */
     if (state->host.start_receive_transfer != NULL)
     {
-        char msg[256];
-        const char *proto_names[] = {"XMODEM", "XMODEM-CRC", "XMODEM-1K", "YMODEM", "YMODEM-G", "ZMODEM"};
-        const char *proto_name = (protocol >= 0 && protocol <= 5) ? proto_names[protocol] : "XMODEM-CRC";
-
-        snprintf(msg, sizeof(msg), 
-                 "\r\n\033[1;33mReady to receive '%s' via %s.\r\n"
-                 "Start your sender now...\033[0m\r\n",
-                 state->pending_upload_filename, proto_name);
-        script_write_output(state, msg);
-
+        script_write_output(state, "\r\n");
         if (state->host.start_receive_transfer(state->host.context, temp_path, protocol))
         {
             state->status = SCRIPT_STATUS_WAIT_TRANSFER;
-            return;
+            return;  /* Transfer started - script waits */
         }
         else
         {
-            script_write_output(state, "\r\n\033[1;31m[Receive failed to start]\033[0m\r\n");
+            script_write_output(state, "\033[1;31m[Transfer failed to start]\033[0m\r\n");
         }
     }
     else
     {
-        script_write_output(state, "\r\n[File receive not available]\r\n");
+        script_write_output(state, "\r\n\033[1;31m[File transfer not available]\033[0m\r\n");
     }
     
-    /* On failure, continue script */
     state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+}
+
+/*
+ * Parse a protocol name string and return the protocol number.
+ * Returns -1 if not a valid protocol name.
+ */
+static int script_parse_protocol(const char *name)
+{
+    if (name == NULL || name[0] == '\0')
+    {
+        return -1;
+    }
+    
+    if (script_stringcasecmp(name, "xmodem") == 0)
+        return 0;
+    if (script_stringcasecmp(name, "xmodem-crc") == 0)
+        return 1;
+    if (script_stringcasecmp(name, "xmodem-1k") == 0)
+        return 2;
+    if (script_stringcasecmp(name, "ymodem") == 0)
+        return 3;
+    if (script_stringcasecmp(name, "ymodem-g") == 0)
+        return 4;
+    if (script_stringcasecmp(name, "zmodem") == 0)
+        return 5;
+    
+    return -1;
 }
 
 static char *script_duplicate_range(const char *source, size_t length)

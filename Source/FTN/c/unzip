@@ -1,0 +1,1046 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - ZIP Archive Extraction Implementation                                                                                                       */
+/*                                                                                                                                                          */
+/* Implements PKZIP extraction with DEFLATE decompression (RFC 1951).                                                                                       */
+/* This is a self-contained implementation with no external dependencies.                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "unzip.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* ZIP File Format Constants                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define ZIP_LOCAL_HEADER_SIG        0x04034b50
+#define ZIP_CENTRAL_HEADER_SIG      0x02014b50
+#define ZIP_END_CENTRAL_SIG         0x06054b50
+
+/* ******************************************************************************************************************************************************** */
+/* CRC-32 Table (same polynomial as ZMODEM: 0xEDB88320)                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned long crc32_table[256];
+static int crc32_table_init = 0;
+
+static void init_crc32_table(void)
+{
+    unsigned long c;
+    int n, k;
+
+    if (crc32_table_init) return;
+
+    for (n = 0; n < 256; n++)
+    {
+        c = (unsigned long)n;
+        for (k = 0; k < 8; k++)
+        {
+            if (c & 1)
+                c = 0xedb88320UL ^ (c >> 1);
+            else
+                c = c >> 1;
+        }
+        crc32_table[n] = c;
+    }
+    crc32_table_init = 1;
+}
+
+static unsigned long update_crc32(unsigned long crc, const unsigned char *buf, unsigned long len)
+{
+    unsigned long c = crc ^ 0xffffffffUL;
+
+    while (len--)
+    {
+        c = crc32_table[(c ^ *buf++) & 0xff] ^ (c >> 8);
+    }
+
+    return c ^ 0xffffffffUL;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Little-Endian Readers                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned int read_le16(const unsigned char *p)
+{
+    return p[0] | ((unsigned int)p[1] << 8);
+}
+
+static unsigned long read_le32(const unsigned char *p)
+{
+    return p[0] | ((unsigned long)p[1] << 8) |
+           ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* DEFLATE Decompression (RFC 1951)                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/* Maximum code lengths */
+#define DEFLATE_MAX_BITS        15
+#define DEFLATE_MAX_LITLEN      288
+#define DEFLATE_MAX_DIST        32
+#define DEFLATE_MAX_CODELEN     19
+
+/* Fixed Huffman code lengths */
+static const unsigned char deflate_fixed_litlen[288] = {
+    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+    8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+    9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+    9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+    9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9, 9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+    7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,8,8,8,8,8,8,8,8
+};
+
+static const unsigned char deflate_fixed_dist[32] = {
+    5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5, 5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5
+};
+
+/* Code length alphabet order */
+static const unsigned char deflate_codelen_order[19] = {
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+};
+
+/* Base lengths for length codes 257-285 */
+static const unsigned int deflate_len_base[29] = {
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+    35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
+};
+
+/* Extra bits for length codes */
+static const unsigned int deflate_len_extra[29] = {
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+};
+
+/* Base distances for distance codes 0-29 */
+static const unsigned int deflate_dist_base[30] = {
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+    257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577
+};
+
+/* Extra bits for distance codes */
+static const unsigned int deflate_dist_extra[30] = {
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+    7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+};
+
+/* Huffman decode table entry */
+typedef struct
+{
+    unsigned short symbol;      /* Symbol value */
+    unsigned char bits;         /* Number of bits for this code */
+} HUFFMAN_ENTRY;
+
+/* Huffman decode table */
+typedef struct
+{
+    HUFFMAN_ENTRY *table;
+    int max_bits;
+    int size;
+} HUFFMAN_TABLE;
+
+/* Bitstream reader context */
+typedef struct
+{
+    const unsigned char *data;
+    unsigned long data_len;
+    unsigned long pos;          /* Byte position */
+    unsigned int bits;          /* Bit buffer */
+    int nbits;                  /* Bits in buffer */
+} BITSTREAM;
+
+static void bs_init(BITSTREAM *bs, const unsigned char *data, unsigned long len)
+{
+    bs->data = data;
+    bs->data_len = len;
+    bs->pos = 0;
+    bs->bits = 0;
+    bs->nbits = 0;
+}
+
+static int bs_ensure_bits(BITSTREAM *bs, int n)
+{
+    while (bs->nbits < n)
+    {
+        if (bs->pos >= bs->data_len)
+            return -1;
+        bs->bits |= (unsigned int)bs->data[bs->pos++] << bs->nbits;
+        bs->nbits += 8;
+    }
+    return 0;
+}
+
+static unsigned int bs_peek_bits(BITSTREAM *bs, int n)
+{
+    return bs->bits & ((1U << n) - 1);
+}
+
+static void bs_drop_bits(BITSTREAM *bs, int n)
+{
+    bs->bits >>= n;
+    bs->nbits -= n;
+}
+
+static int bs_read_bits(BITSTREAM *bs, int n)
+{
+    unsigned int val;
+
+    if (bs_ensure_bits(bs, n) < 0)
+        return -1;
+
+    val = bs_peek_bits(bs, n);
+    bs_drop_bits(bs, n);
+    return (int)val;
+}
+
+/* Build Huffman decode table from code lengths */
+static int huffman_build(HUFFMAN_TABLE *ht, const unsigned char *lengths, int count)
+{
+    int bl_count[DEFLATE_MAX_BITS + 1];
+    int next_code[DEFLATE_MAX_BITS + 1];
+    int code;
+    int bits;
+    int i;
+    int max_bits = 0;
+    int table_size;
+
+    /* Count codes of each length */
+    memset(bl_count, 0, sizeof(bl_count));
+    for (i = 0; i < count; i++)
+    {
+        if (lengths[i] > 0)
+        {
+            bl_count[lengths[i]]++;
+            if (lengths[i] > max_bits)
+                max_bits = lengths[i];
+        }
+    }
+
+    if (max_bits == 0)
+    {
+        ht->table = NULL;
+        ht->max_bits = 0;
+        ht->size = 0;
+        return 0;
+    }
+
+    /* Find starting code for each length */
+    code = 0;
+    bl_count[0] = 0;
+    for (bits = 1; bits <= max_bits; bits++)
+    {
+        code = (code + bl_count[bits - 1]) << 1;
+        next_code[bits] = code;
+    }
+
+    /* Allocate lookup table */
+    table_size = 1 << max_bits;
+    ht->table = (HUFFMAN_ENTRY *)malloc(table_size * sizeof(HUFFMAN_ENTRY));
+    if (ht->table == NULL)
+        return -1;
+
+    ht->max_bits = max_bits;
+    ht->size = table_size;
+
+    /* Initialize all entries as invalid */
+    for (i = 0; i < table_size; i++)
+    {
+        ht->table[i].bits = 0;
+        ht->table[i].symbol = 0;
+    }
+
+    /* Fill in table entries */
+    for (i = 0; i < count; i++)
+    {
+        int len = lengths[i];
+        if (len > 0)
+        {
+            int fill_bits;
+            int j;
+            int fill_count;
+            int rev;
+
+            code = next_code[len]++;
+
+            /* Reverse bits for table lookup */
+            rev = 0;
+            for (bits = 0; bits < len; bits++)
+            {
+                rev = (rev << 1) | ((code >> bits) & 1);
+            }
+
+            /* Fill in all entries that start with this code */
+            fill_bits = max_bits - len;
+            fill_count = 1 << fill_bits;
+
+            for (j = 0; j < fill_count; j++)
+            {
+                int idx = rev | (j << len);
+                ht->table[idx].symbol = (unsigned short)i;
+                ht->table[idx].bits = (unsigned char)len;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static void huffman_free(HUFFMAN_TABLE *ht)
+{
+    if (ht->table != NULL)
+    {
+        free(ht->table);
+        ht->table = NULL;
+    }
+    ht->max_bits = 0;
+    ht->size = 0;
+}
+
+static int huffman_decode(HUFFMAN_TABLE *ht, BITSTREAM *bs)
+{
+    int idx;
+    HUFFMAN_ENTRY *entry;
+
+    if (ht->table == NULL || ht->max_bits == 0)
+        return -1;
+
+    if (bs_ensure_bits(bs, ht->max_bits) < 0)
+    {
+        /* Try with available bits */
+        if (bs->nbits == 0)
+            return -1;
+    }
+
+    idx = bs_peek_bits(bs, ht->max_bits);
+    entry = &ht->table[idx];
+
+    if (entry->bits == 0)
+        return -1;
+
+    bs_drop_bits(bs, entry->bits);
+    return entry->symbol;
+}
+
+/* Inflate (decompress) deflate-compressed data */
+static int inflate_block(BITSTREAM *bs, unsigned char *out, unsigned long *out_pos,
+                         unsigned long out_size, HUFFMAN_TABLE *ht_litlen, HUFFMAN_TABLE *ht_dist)
+{
+    unsigned long pos = *out_pos;
+
+    while (1)
+    {
+        int sym = huffman_decode(ht_litlen, bs);
+
+        if (sym < 0)
+        {
+            return UNZIP_ERR_INFLATE;
+        }
+        else if (sym < 256)
+        {
+            /* Literal byte */
+            if (pos >= out_size)
+                return UNZIP_ERR_INFLATE;
+            out[pos++] = (unsigned char)sym;
+        }
+        else if (sym == 256)
+        {
+            /* End of block */
+            break;
+        }
+        else
+        {
+            /* Length/distance pair */
+            int length_code = sym - 257;
+            int length;
+            int dist_code;
+            int distance;
+            int extra;
+            unsigned long src;
+            int i;
+
+            if (length_code >= 29)
+                return UNZIP_ERR_INFLATE;
+
+            length = deflate_len_base[length_code];
+            extra = deflate_len_extra[length_code];
+            if (extra > 0)
+            {
+                int bits = bs_read_bits(bs, extra);
+                if (bits < 0)
+                    return UNZIP_ERR_INFLATE;
+                length += bits;
+            }
+
+            dist_code = huffman_decode(ht_dist, bs);
+            if (dist_code < 0 || dist_code >= 30)
+                return UNZIP_ERR_INFLATE;
+
+            distance = deflate_dist_base[dist_code];
+            extra = deflate_dist_extra[dist_code];
+            if (extra > 0)
+            {
+                int bits = bs_read_bits(bs, extra);
+                if (bits < 0)
+                    return UNZIP_ERR_INFLATE;
+                distance += bits;
+            }
+
+            if ((unsigned long)distance > pos)
+                return UNZIP_ERR_INFLATE;
+
+            if (pos + length > out_size)
+                return UNZIP_ERR_INFLATE;
+
+            /* Copy bytes from back-reference */
+            src = pos - distance;
+            for (i = 0; i < length; i++)
+            {
+                out[pos++] = out[src++];
+            }
+        }
+    }
+
+    *out_pos = pos;
+    return UNZIP_OK;
+}
+
+static int inflate(const unsigned char *in, unsigned long in_len,
+                   unsigned char *out, unsigned long out_size, unsigned long *out_len)
+{
+    BITSTREAM bs;
+    HUFFMAN_TABLE ht_litlen;
+    HUFFMAN_TABLE ht_dist;
+    unsigned long out_pos = 0;
+    int bfinal;
+    int result = UNZIP_OK;
+
+    bs_init(&bs, in, in_len);
+    memset(&ht_litlen, 0, sizeof(ht_litlen));
+    memset(&ht_dist, 0, sizeof(ht_dist));
+
+    do
+    {
+        int btype;
+
+        bfinal = bs_read_bits(&bs, 1);
+        if (bfinal < 0)
+        {
+            result = UNZIP_ERR_INFLATE;
+            break;
+        }
+
+        btype = bs_read_bits(&bs, 2);
+        if (btype < 0)
+        {
+            result = UNZIP_ERR_INFLATE;
+            break;
+        }
+
+        if (btype == 0)
+        {
+            /* Stored (uncompressed) block */
+            int len, nlen;
+
+            /* Align to byte boundary */
+            bs.bits = 0;
+            bs.nbits = 0;
+
+            if (bs.pos + 4 > bs.data_len)
+            {
+                result = UNZIP_ERR_INFLATE;
+                break;
+            }
+
+            len = read_le16(bs.data + bs.pos);
+            nlen = read_le16(bs.data + bs.pos + 2);
+            bs.pos += 4;
+
+            if ((len ^ nlen) != 0xffff)
+            {
+                result = UNZIP_ERR_INFLATE;
+                break;
+            }
+
+            if (bs.pos + len > bs.data_len || out_pos + len > out_size)
+            {
+                result = UNZIP_ERR_INFLATE;
+                break;
+            }
+
+            memcpy(out + out_pos, bs.data + bs.pos, len);
+            out_pos += len;
+            bs.pos += len;
+        }
+        else if (btype == 1)
+        {
+            /* Fixed Huffman codes */
+            huffman_free(&ht_litlen);
+            huffman_free(&ht_dist);
+
+            if (huffman_build(&ht_litlen, deflate_fixed_litlen, 288) < 0 ||
+                huffman_build(&ht_dist, deflate_fixed_dist, 32) < 0)
+            {
+                result = UNZIP_ERR_MEMORY;
+                break;
+            }
+
+            result = inflate_block(&bs, out, &out_pos, out_size, &ht_litlen, &ht_dist);
+            if (result != UNZIP_OK)
+                break;
+        }
+        else if (btype == 2)
+        {
+            /* Dynamic Huffman codes */
+            int hlit, hdist, hclen;
+            unsigned char codelen_lengths[19];
+            unsigned char lengths[DEFLATE_MAX_LITLEN + DEFLATE_MAX_DIST];
+            HUFFMAN_TABLE ht_codelen;
+            int i, n;
+
+            hlit = bs_read_bits(&bs, 5);
+            hdist = bs_read_bits(&bs, 5);
+            hclen = bs_read_bits(&bs, 4);
+
+            if (hlit < 0 || hdist < 0 || hclen < 0)
+            {
+                result = UNZIP_ERR_INFLATE;
+                break;
+            }
+
+            hlit += 257;
+            hdist += 1;
+            hclen += 4;
+
+            /* Read code length code lengths */
+            memset(codelen_lengths, 0, sizeof(codelen_lengths));
+            for (i = 0; i < hclen; i++)
+            {
+                int cbits = bs_read_bits(&bs, 3);
+                if (cbits < 0)
+                {
+                    result = UNZIP_ERR_INFLATE;
+                    break;
+                }
+                codelen_lengths[deflate_codelen_order[i]] = (unsigned char)cbits;
+            }
+
+            if (result != UNZIP_OK)
+                break;
+
+            /* Build code length Huffman table */
+            memset(&ht_codelen, 0, sizeof(ht_codelen));
+            if (huffman_build(&ht_codelen, codelen_lengths, 19) < 0)
+            {
+                result = UNZIP_ERR_MEMORY;
+                break;
+            }
+
+            /* Decode literal/length and distance code lengths */
+            n = hlit + hdist;
+            i = 0;
+            while (i < n)
+            {
+                int sym = huffman_decode(&ht_codelen, &bs);
+                if (sym < 0)
+                {
+                    result = UNZIP_ERR_INFLATE;
+                    break;
+                }
+
+                if (sym < 16)
+                {
+                    lengths[i++] = (unsigned char)sym;
+                }
+                else if (sym == 16)
+                {
+                    /* Repeat previous length 3-6 times */
+                    int repeat = bs_read_bits(&bs, 2);
+                    int prev;
+                    if (repeat < 0 || i == 0)
+                    {
+                        result = UNZIP_ERR_INFLATE;
+                        break;
+                    }
+                    repeat += 3;
+                    prev = lengths[i - 1];
+                    while (repeat-- > 0 && i < n)
+                        lengths[i++] = (unsigned char)prev;
+                }
+                else if (sym == 17)
+                {
+                    /* Repeat zero 3-10 times */
+                    int repeat = bs_read_bits(&bs, 3);
+                    if (repeat < 0)
+                    {
+                        result = UNZIP_ERR_INFLATE;
+                        break;
+                    }
+                    repeat += 3;
+                    while (repeat-- > 0 && i < n)
+                        lengths[i++] = 0;
+                }
+                else if (sym == 18)
+                {
+                    /* Repeat zero 11-138 times */
+                    int repeat = bs_read_bits(&bs, 7);
+                    if (repeat < 0)
+                    {
+                        result = UNZIP_ERR_INFLATE;
+                        break;
+                    }
+                    repeat += 11;
+                    while (repeat-- > 0 && i < n)
+                        lengths[i++] = 0;
+                }
+            }
+
+            huffman_free(&ht_codelen);
+
+            if (result != UNZIP_OK)
+                break;
+
+            /* Build literal/length and distance tables */
+            huffman_free(&ht_litlen);
+            huffman_free(&ht_dist);
+
+            if (huffman_build(&ht_litlen, lengths, hlit) < 0 ||
+                huffman_build(&ht_dist, lengths + hlit, hdist) < 0)
+            {
+                result = UNZIP_ERR_MEMORY;
+                break;
+            }
+
+            result = inflate_block(&bs, out, &out_pos, out_size, &ht_litlen, &ht_dist);
+            if (result != UNZIP_OK)
+                break;
+        }
+        else
+        {
+            /* Reserved block type */
+            result = UNZIP_ERR_INFLATE;
+            break;
+        }
+    }
+    while (!bfinal);
+
+    huffman_free(&ht_litlen);
+    huffman_free(&ht_dist);
+
+    *out_len = out_pos;
+    return result;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* ZIP Archive Functions                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+int unzip_open(UNZIP_ARCHIVE *archive, const char *path)
+{
+    FILE *fp;
+    unsigned char sig[4];
+    unsigned char eocd[22];
+    long file_size;
+    long search_pos;
+    int found = 0;
+
+    if (archive == NULL || path == NULL)
+        return UNZIP_ERR_OPEN;
+
+    init_crc32_table();
+
+    memset(archive, 0, sizeof(UNZIP_ARCHIVE));
+    strncpy(archive->path, path, sizeof(archive->path) - 1);
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        debug_printf("unzip: Cannot open %s", path);
+        return UNZIP_ERR_OPEN;
+    }
+
+    /* Check ZIP signature */
+    if (fread(sig, 1, 4, fp) != 4 || read_le32(sig) != ZIP_LOCAL_HEADER_SIG)
+    {
+        fclose(fp);
+        debug_printf("unzip: Not a ZIP file: %s", path);
+        return UNZIP_ERR_FORMAT;
+    }
+
+    /* Find End of Central Directory record */
+    fseek(fp, 0, SEEK_END);
+    file_size = ftell(fp);
+
+    /* Search backwards for EOCD signature */
+    for (search_pos = file_size - 22; search_pos >= 0 && search_pos >= file_size - 65536; search_pos--)
+    {
+        fseek(fp, search_pos, SEEK_SET);
+        if (fread(sig, 1, 4, fp) == 4 && read_le32(sig) == ZIP_END_CENTRAL_SIG)
+        {
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        fclose(fp);
+        debug_printf("unzip: Cannot find EOCD in %s", path);
+        return UNZIP_ERR_FORMAT;
+    }
+
+    /* Read EOCD */
+    fseek(fp, search_pos, SEEK_SET);
+    if (fread(eocd, 1, 22, fp) != 22)
+    {
+        fclose(fp);
+        return UNZIP_ERR_FORMAT;
+    }
+
+    archive->entry_count = read_le16(eocd + 10);
+    archive->cd_size = read_le32(eocd + 12);
+    archive->cd_offset = read_le32(eocd + 16);
+    archive->fp = fp;
+
+    debug_printf("unzip: Opened %s, %d entries", path, archive->entry_count);
+
+    return UNZIP_OK;
+}
+
+void unzip_close(UNZIP_ARCHIVE *archive)
+{
+    if (archive != NULL && archive->fp != NULL)
+    {
+        fclose((FILE *)archive->fp);
+        archive->fp = NULL;
+    }
+}
+
+int unzip_get_entry_count(UNZIP_ARCHIVE *archive)
+{
+    return archive != NULL ? archive->entry_count : 0;
+}
+
+int unzip_get_entry(UNZIP_ARCHIVE *archive, int index, UNZIP_ENTRY *entry)
+{
+    FILE *fp;
+    unsigned char hdr[46];
+    int i;
+    int name_len, extra_len, comment_len;
+
+    if (archive == NULL || entry == NULL || archive->fp == NULL)
+        return UNZIP_ERR_FORMAT;
+
+    if (index < 0 || index >= archive->entry_count)
+        return UNZIP_ERR_FORMAT;
+
+    fp = (FILE *)archive->fp;
+
+    /* Seek to central directory and skip to desired entry */
+    fseek(fp, (long)archive->cd_offset, SEEK_SET);
+
+    for (i = 0; i <= index; i++)
+    {
+        if (fread(hdr, 1, 46, fp) != 46)
+            return UNZIP_ERR_FORMAT;
+
+        if (read_le32(hdr) != ZIP_CENTRAL_HEADER_SIG)
+            return UNZIP_ERR_FORMAT;
+
+        name_len = read_le16(hdr + 28);
+        extra_len = read_le16(hdr + 30);
+        comment_len = read_le16(hdr + 32);
+
+        if (i == index)
+        {
+            char *p;
+            int read_len;
+
+            /* This is the entry we want */
+            memset(entry, 0, sizeof(UNZIP_ENTRY));
+
+            entry->method = read_le16(hdr + 10);
+            entry->crc32 = read_le32(hdr + 16);
+            entry->compressed_size = read_le32(hdr + 20);
+            entry->uncompressed_size = read_le32(hdr + 24);
+            entry->local_header_offset = read_le32(hdr + 42);
+
+            /* Read filename */
+            if (name_len > 0)
+            {
+                read_len = name_len;
+                if (read_len >= (int)sizeof(entry->filename))
+                    read_len = sizeof(entry->filename) - 1;
+                if (fread(entry->filename, 1, read_len, fp) != (size_t)read_len)
+                    return UNZIP_ERR_FORMAT;
+                entry->filename[read_len] = '\0';
+
+                /* Convert path separators to RISC OS style */
+                for (p = entry->filename; *p; p++)
+                {
+                    if (*p == '/' || *p == '\\')
+                        *p = '.';
+                }
+            }
+
+            return UNZIP_OK;
+        }
+        else
+        {
+            /* Skip this entry */
+            fseek(fp, name_len + extra_len + comment_len, SEEK_CUR);
+        }
+    }
+
+    return UNZIP_ERR_FORMAT;
+}
+
+int unzip_find_entry(UNZIP_ARCHIVE *archive, const char *filename)
+{
+    UNZIP_ENTRY entry;
+    int i;
+
+    if (archive == NULL || filename == NULL)
+        return -1;
+
+    for (i = 0; i < archive->entry_count; i++)
+    {
+        if (unzip_get_entry(archive, i, &entry) == UNZIP_OK)
+        {
+            /* Case-insensitive comparison */
+            const char *a = entry.filename;
+            const char *b = filename;
+            int match = 1;
+
+            while (*a && *b)
+            {
+                char ca = *a++;
+                char cb = *b++;
+                if (ca >= 'A' && ca <= 'Z') ca += 32;
+                if (cb >= 'A' && cb <= 'Z') cb += 32;
+                if (ca != cb)
+                {
+                    match = 0;
+                    break;
+                }
+            }
+
+            if (match && *a == '\0' && *b == '\0')
+                return i;
+        }
+    }
+
+    return -1;
+}
+
+int unzip_extract_to_memory(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry,
+                             unsigned char *buffer, unsigned long buffer_size)
+{
+    FILE *fp;
+    unsigned char local_hdr[30];
+    int name_len, extra_len;
+    unsigned char *compressed = NULL;
+    unsigned long crc;
+    int result;
+
+    if (archive == NULL || entry == NULL || buffer == NULL || archive->fp == NULL)
+        return UNZIP_ERR_FORMAT;
+
+    if (buffer_size < entry->uncompressed_size)
+        return UNZIP_ERR_MEMORY;
+
+    fp = (FILE *)archive->fp;
+
+    /* Seek to local file header */
+    fseek(fp, (long)entry->local_header_offset, SEEK_SET);
+
+    if (fread(local_hdr, 1, 30, fp) != 30)
+        return UNZIP_ERR_FORMAT;
+
+    if (read_le32(local_hdr) != ZIP_LOCAL_HEADER_SIG)
+        return UNZIP_ERR_FORMAT;
+
+    name_len = read_le16(local_hdr + 26);
+    extra_len = read_le16(local_hdr + 28);
+
+    /* Skip to compressed data */
+    fseek(fp, name_len + extra_len, SEEK_CUR);
+
+    if (entry->method == ZIP_METHOD_STORE)
+    {
+        /* No compression - just copy */
+        if (fread(buffer, 1, entry->uncompressed_size, fp) != entry->uncompressed_size)
+            return UNZIP_ERR_INFLATE;
+    }
+    else if (entry->method == ZIP_METHOD_DEFLATE)
+    {
+        unsigned long out_len;
+
+        /* Read compressed data */
+        compressed = (unsigned char *)malloc(entry->compressed_size);
+        if (compressed == NULL)
+            return UNZIP_ERR_MEMORY;
+
+        if (fread(compressed, 1, entry->compressed_size, fp) != entry->compressed_size)
+        {
+            free(compressed);
+            return UNZIP_ERR_INFLATE;
+        }
+
+        /* Decompress */
+        result = inflate(compressed, entry->compressed_size,
+                         buffer, buffer_size, &out_len);
+
+        free(compressed);
+
+        if (result != UNZIP_OK)
+            return result;
+
+        if (out_len != entry->uncompressed_size)
+        {
+            debug_printf("unzip: Size mismatch: got %lu, expected %lu",
+                         out_len, entry->uncompressed_size);
+            return UNZIP_ERR_INFLATE;
+        }
+    }
+    else
+    {
+        debug_printf("unzip: Unsupported method %d for %s", entry->method, entry->filename);
+        return UNZIP_ERR_UNSUPPORTED;
+    }
+
+    /* Verify CRC */
+    crc = update_crc32(0, buffer, entry->uncompressed_size);
+    if (crc != entry->crc32)
+    {
+        debug_printf("unzip: CRC mismatch for %s: got %08lx, expected %08lx",
+                     entry->filename, crc, entry->crc32);
+        return UNZIP_ERR_CRC;
+    }
+
+    return UNZIP_OK;
+}
+
+int unzip_extract_entry(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry, const char *dest_path)
+{
+    unsigned char *buffer;
+    FILE *out;
+    int result;
+
+    if (entry->uncompressed_size == 0)
+    {
+        /* Empty file or directory */
+        return UNZIP_OK;
+    }
+
+    buffer = (unsigned char *)malloc(entry->uncompressed_size);
+    if (buffer == NULL)
+        return UNZIP_ERR_MEMORY;
+
+    result = unzip_extract_to_memory(archive, entry, buffer, entry->uncompressed_size);
+    if (result != UNZIP_OK)
+    {
+        free(buffer);
+        return result;
+    }
+
+    out = fopen(dest_path, "wb");
+    if (out == NULL)
+    {
+        free(buffer);
+        debug_printf("unzip: Cannot create %s", dest_path);
+        return UNZIP_ERR_WRITE;
+    }
+
+    if (fwrite(buffer, 1, entry->uncompressed_size, out) != entry->uncompressed_size)
+    {
+        fclose(out);
+        free(buffer);
+        return UNZIP_ERR_WRITE;
+    }
+
+    fclose(out);
+    free(buffer);
+
+    debug_printf("unzip: Extracted %s (%lu bytes)", entry->filename, entry->uncompressed_size);
+
+    return UNZIP_OK;
+}
+
+int unzip_extract_all(const char *archive_path, const char *dest_dir)
+{
+    UNZIP_ARCHIVE archive;
+    UNZIP_ENTRY entry;
+    int i;
+    int count = 0;
+    int result;
+
+    result = unzip_open(&archive, archive_path);
+    if (result != UNZIP_OK)
+        return result;
+
+    for (i = 0; i < archive.entry_count; i++)
+    {
+        char dest_path[UNZIP_MAX_PATH];
+
+        if (unzip_get_entry(&archive, i, &entry) != UNZIP_OK)
+            continue;
+
+        /* Skip directories */
+        if (entry.uncompressed_size == 0)
+            continue;
+
+        /* Build destination path */
+        snprintf(dest_path, sizeof(dest_path), "%s.%s", dest_dir, entry.filename);
+
+        result = unzip_extract_entry(&archive, &entry, dest_path);
+        if (result == UNZIP_OK)
+            count++;
+    }
+
+    unzip_close(&archive);
+
+    return count;
+}
+
+int unzip_is_zip_file(const char *path)
+{
+    FILE *fp;
+    unsigned char sig[4];
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+        return 0;
+
+    if (fread(sig, 1, 4, fp) != 4)
+    {
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+
+    return (read_le32(sig) == ZIP_LOCAL_HEADER_SIG) ? 1 : 0;
+}
+
+const char *unzip_error_string(int error)
+{
+    switch (error)
+    {
+        case UNZIP_OK:              return "OK";
+        case UNZIP_ERR_OPEN:        return "Cannot open archive";
+        case UNZIP_ERR_FORMAT:      return "Invalid ZIP format";
+        case UNZIP_ERR_CRC:         return "CRC mismatch";
+        case UNZIP_ERR_UNSUPPORTED: return "Unsupported compression method";
+        case UNZIP_ERR_WRITE:       return "Cannot write output file";
+        case UNZIP_ERR_MEMORY:      return "Memory allocation failed";
+        case UNZIP_ERR_INFLATE:     return "Decompression error";
+        default:                    return "Unknown error";
+    }
+}

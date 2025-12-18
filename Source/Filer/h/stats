@@ -10,5 +10,6 @@ void stats_finalise(void);
 int stats_get_call_totals(int *total_out);
 int stats_set_call_totals(int total);
 int stats_increment_call_totals(void);
+int stats_flush(void);
 
 #endif

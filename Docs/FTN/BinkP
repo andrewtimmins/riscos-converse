@@ -1,8 +1,9 @@
 BinkP Protocol Reference
 ========================
 
-This document describes the BinkP/1.0 protocol as implemented by the
-Converse FTN mailer.
+This document describes the BinkP/1.1 protocol as implemented by the
+Converse FTN mailer, including extensions for encryption, compression
+negotiation, and advanced transfer modes.
 
 
 Protocol Overview
@@ -13,6 +14,15 @@ transfer. It operates on TCP port 24554 by default.
 The protocol is frame-based with two frame types:
 * Command frames - Protocol control messages
 * Data frames - File content
+
+BinkP/1.1 adds:
+* NR mode (Non-Reliable) for streaming transfers
+* ND mode (No Dupes) to prevent duplicate reception
+* Session restart (multiple batches per connection)
+* Encryption support (CRYPT option)
+* Compression negotiation (GZ, BZ2 options)
+* Traffic info exchange (TRF)
+* Extended command parameters (EXTCMD)
 
 
 Frame Format
@@ -64,20 +74,27 @@ Standard keys:
   LOC <location>  - Geographic location
   NDL <flags>     - Nodelist flags
   TIME <time>     - Local time (RFC 822 format)
-  VER <software>  - Mailer software and version
+  VER <software>  - Mailer software and version (should include binkp/1.1)
+  TRF <mail> <files> - Traffic info (pending bytes)
   
 Extended options:
   OPT <options>   - Protocol options (space-separated)
-    MB            - Multiple batch
-    ND            - Non-Destructive mode
-    NR            - Non-Reliable mode
+    NR            - Non-Reliable mode (streaming without per-file ACK)
+    ND            - No Dupes mode (track received files)
+    NDA           - Asymmetric ND (only one side needs ND)
+    MB            - Multiple batch (session restart)
+    CRYPT         - Encryption supported
+    GZ            - GZip compression supported
+    BZ2           - BZip2 compression supported
+    EXTCMD        - Extended command parameters
     CRAM-MD5-xxxx - Challenge for CRAM-MD5 auth
 
 Examples:
   M_NUL SYS Converse BBS
   M_NUL ZYZ Andrew Timmins
-  M_NUL VER Converse/0.01
-  M_NUL OPT ND NR
+  M_NUL VER Converse/0.02 binkp/1.1
+  M_NUL OPT NR ND NDA CRYPT
+  M_NUL TRF 4096 102400
 
 
 M_ADR - Present Addresses
@@ -115,9 +132,11 @@ Format: M_FILE <name> <size> <time> [offset]
   size    - File size in bytes (decimal)
   time    - Unix timestamp (seconds since 1970)
   offset  - Starting offset for resume (optional, default 0)
+            In NR mode, offset -1 indicates streaming mode
 
 Example:
   M_FILE 00010002.PKT 1234 1732713600 0
+  M_FILE 00010002.PKT 1234 1732713600 -1   (NR mode)
 
 
 M_OK - Password Accepted
@@ -138,7 +157,14 @@ M_EOB - End of Batch
 Format: M_EOB
 
 Signals no more files to send. Both sides must send M_EOB before
-closing the session. Session ends when both M_EOBs exchanged.
+closing the session.
+
+In BinkP/1.0: Session ends when both M_EOBs exchanged.
+
+In BinkP/1.1 with session restart: After both M_EOBs, the session
+may restart for another batch if either side has more files. EOB
+flags are cleared and file exchange resumes. This allows receiving
+files that arrived during the session without reconnecting.
 
 
 M_GOT - File Received
@@ -177,20 +203,77 @@ M_GET - Request File
 --------------------
 Format: M_GET <name> <size> <time> <offset>
 
-Request a file, optionally resuming from offset.
+Request a file, optionally resuming from offset. The sender should
+seek to the specified offset and continue transmission from there.
+
+This is used for:
+* Resume after interrupted transfer
+* NR mode acknowledgement with offset
+* File Requests (FREQ) when size=0 and time=0
 
 Example:
   M_GET 00010002.PKT 1234 1732713600 512
+  M_GET 00010002.PKT 1234 1732713600 0    (request from start)
+  M_GET NODELIST.* 0 0 0                  (FREQ with wildcard)
+
+
+FREQ (File Requests)
+--------------------
+FREQ allows a node to request files from a remote system during a
+BinkP session. This uses M_GET with special parameters.
+
+Format: M_GET <filename> 0 0 0
+
+When size=0 and time=0, the M_GET is treated as a file request rather
+than a resume request. The remote system searches its FREQ directory
+for matching files and sends them.
+
+Wildcards:
+  * (asterisk) - Match any sequence of characters
+  ? (question) - Match any single character
+
+Examples:
+  M_GET NODELIST.Z?? 0 0 0    (Request current nodelist diff)
+  M_GET *.ZIP 0 0 0           (Request all ZIP files)
+  M_GET MYFILE.LHA 0 0 0      (Request specific file)
+
+Response:
+  - If found: Remote sends M_FILE followed by file data
+  - If not found: Remote sends M_SKIP
+
+Creating FREQ requests:
+  The sending system creates a .REQ file in the BSO outbound directory
+  for the target address. This file contains one filename per line.
+  When connecting, the mailer reads this file and sends M_GET for each.
+
+Handling incoming FREQ:
+  When M_GET is received with size=0 and time=0:
+  1. Search configured freqpath directory for matching files
+  2. If wildcard, enumerate all matching files
+  3. For each match, queue file for immediate send
+  4. If no match, send M_SKIP
+
+Configuration:
+  freqpath    <Converse$Dir>.FTN.Freq
+  freqexec    (optional external processor - not yet implemented)
 
 
 M_SKIP - Skip File
 ------------------
-Format: M_SKIP <name>
+Format: M_SKIP <name> [<size> <time> [offset]]
 
-Decline a file transfer (already have it, etc).
+Decline a file transfer. Can be sent:
+* Before transfer starts (in response to M_FILE)
+* During transfer (to abort mid-reception)
+
+Reasons to skip:
+* Already have the file (ND mode duplicate detection)
+* Disk space insufficient
+* File unwanted
 
 Example:
   M_SKIP 00010002.PKT
+  M_SKIP 00010002.PKT 1234 1732713600 512
 
 
 Session Handshake
@@ -235,10 +318,20 @@ in that frame. Continue until total bytes received equals file size.
 
 Session Termination
 -------------------
-Normal termination:
+Normal termination (BinkP/1.0):
   1. Send M_EOB when no more files to send
   2. Wait for remote M_EOB
   3. Close TCP connection
+
+Session restart (BinkP/1.1):
+  1. Send M_EOB when no more files to send
+  2. Wait for remote M_EOB
+  3. Check for new files (arrived during session)
+  4. If either side has files, clear EOB flags and restart
+  5. Increment batch number
+  6. Resume file exchange
+  7. Repeat until no files on either side
+  8. Close TCP connection
 
 Error termination:
   1. Send M_ERR with reason
@@ -282,8 +375,99 @@ CRAM-MD5 provides challenge-response authentication:
 This prevents replay attacks but does not encrypt the session.
 
 
+Session Encryption (CRYPT)
+--------------------------
+BinkP/1.1 supports session encryption using Roger Schlafly's algorithm.
+
+Negotiation:
+  1. Both sides advertise CRYPT in OPT
+  2. After successful M_OK exchange, encryption activates
+  3. All subsequent frames are encrypted
+
+Algorithm:
+  - CRC32-based key derivation from session password
+  - Three 32-bit keys maintained for state
+  - Symmetric: same algorithm for encrypt/decrypt
+  - Keys evolve with each byte processed
+
+Key initialization:
+  - Initial values: 0x12345678, 0x23456789, 0x34567890
+  - Each password character updates all three keys
+  - Separate key states for TX and RX
+
+Operation:
+  - Keystream byte derived: ((keys[2] | 2) * ((keys[2] | 2) ^ 1)) >> 8
+  - Plaintext XORed with keystream to produce ciphertext
+  - Original byte (pre-XOR) updates keys for next byte
+
+
+NR Mode (Non-Reliable)
+----------------------
+NR mode enables streaming file transfers without per-file ACKs.
+
+Negotiation:
+  Both sides must advertise NR in OPT.
+
+Operation:
+  - Sender transmits M_FILE with offset -1
+  - Sender streams data without waiting for M_GOT
+  - Receiver sends M_GOT after file completes
+  - Sender may have multiple files in flight
+
+Benefits:
+  - Higher throughput over high-latency links
+  - Reduced round-trip delays
+
+Buggy NR detection:
+  Some older implementations have NR bugs. The mailer detects
+  these via version strings and falls back to reliable mode.
+
+
+ND Mode (No Dupes)
+------------------
+ND mode prevents duplicate file reception across session restarts.
+
+Negotiation:
+  Both sides advertise ND (or NDA for asymmetric support).
+
+Operation:
+  - Receiver tracks all filenames received during connection
+  - If sender offers a file already received, M_GOT sent immediately
+  - Prevents re-receiving after session restart
+
+NDA (asymmetric):
+  Only one side needs ND support. The ND-capable side tracks
+  files and can reject duplicates even if remote lacks ND.
+
+
+TRF - Traffic Info
+------------------
+TRF announces pending traffic during handshake.
+
+Format: M_NUL TRF <mail_bytes> <file_bytes>
+
+  mail_bytes - Pending mail packet bytes
+  file_bytes - Pending file attachment bytes
+
+This allows each side to estimate transfer duration.
+
+
+Compression (GZ/BZ2)
+--------------------
+Compression is negotiated via OPT but not yet implemented.
+
+  GZ  - GZip/deflate compression
+  BZ2 - BZip2 compression
+
+When both sides advertise the same compression type, frames
+would be compressed before transmission. Currently stubbed
+pending zlib/bzip2 library availability for RISC OS.
+
+
 References
 ----------
 * BinkP/1.0 specification (FSP-1011)
+* BinkP/1.1 extensions (FSP-1024)
 * FidoNet Technical Standards (FTS)
 * FSC-0056 - BinkleyTerm Style Outbound (BSO)
+* BinkD source code (reference implementation)

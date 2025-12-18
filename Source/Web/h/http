@@ -19,13 +19,21 @@
 #define HTTP_MAX_PATH       256
 #define HTTP_MAX_VERSION    16
 #define HTTP_MAX_HEADER     4096
+#define HTTP_MAX_COOKIE     256
+#define HTTP_MAX_CONTENT_TYPE 64
+#define HTTP_MAX_POST_BODY  2048
 
 /* HTTP Request structure */
 typedef struct
 {
-    char method[HTTP_MAX_METHOD];       /* GET, HEAD */
+    char method[HTTP_MAX_METHOD];       /* GET, POST, HEAD */
     char path[HTTP_MAX_PATH];           /* /path/to/file */
     char version[HTTP_MAX_VERSION];     /* HTTP/1.0 or HTTP/1.1 */
+    char cookie[HTTP_MAX_COOKIE];       /* Cookie header value */
+    char content_type[HTTP_MAX_CONTENT_TYPE]; /* Content-Type header */
+    long content_length;                /* Content-Length header */
+    char *body;                         /* POST body (points into buffer) */
+    int body_len;                       /* Length of body */
     int complete;                       /* 1 if full request received */
 } HTTP_REQUEST;
 
@@ -46,6 +54,17 @@ const char *http_status_text(int status);
  * Returns bytes written or -1 on error
  */
 int http_send_headers(int socket, int status, const char *content_type, long content_length);
+
+/* Send HTTP response headers with Set-Cookie
+ * Returns bytes written or -1 on error
+ */
+int http_send_headers_with_cookie(int socket, int status, const char *content_type,
+                                  long content_length, const char *set_cookie);
+
+/* Send HTTP redirect response
+ * Returns bytes written or -1 on error
+ */
+int http_send_redirect(int socket, const char *location, const char *set_cookie);
 
 /* Send HTTP error response (headers + body)
  * Returns bytes written or -1 on error
@@ -76,5 +95,61 @@ int http_validate_path(const char *path);
  */
 int http_build_filepath(const char *docroot, const char *request_path,
                         char *out, size_t out_size);
+
+/* Parse URL-encoded form data to extract a named field
+ * body: POST body (application/x-www-form-urlencoded)
+ * body_len: length of body
+ * name: field name to find
+ * value: output buffer for value
+ * value_size: size of value buffer
+ * Returns 1 if found, 0 if not
+ */
+int http_parse_form_field(const char *body, int body_len, const char *name,
+                          char *value, size_t value_size);
+
+/* URL decode a string in-place
+ * Decodes %XX hex escapes and + to space
+ */
+void http_url_decode(char *str);
+
+/* ******************************************************************************************************************************************************** */
+/* Multipart Form Data Parsing (for file uploads)                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/* Maximum sizes for multipart parsing */
+#define HTTP_MAX_BOUNDARY       72
+#define HTTP_MAX_FIELD_NAME     64
+#define HTTP_MAX_FILENAME       128
+
+/* Multipart part structure */
+typedef struct
+{
+    char name[HTTP_MAX_FIELD_NAME];     /* Field name from Content-Disposition */
+    char filename[HTTP_MAX_FILENAME];   /* Filename (for file uploads) */
+    char content_type[HTTP_MAX_CONTENT_TYPE]; /* Content-Type of part */
+    const char *data;                   /* Pointer to part data */
+    int data_len;                       /* Length of part data */
+} HTTP_MULTIPART_PART;
+
+/* Extract boundary string from Content-Type header
+ * content_type: e.g., "multipart/form-data; boundary=----WebKitFormBoundary..."
+ * boundary: output buffer
+ * boundary_size: size of output buffer
+ * Returns 1 on success, 0 if not found
+ */
+int http_get_multipart_boundary(const char *content_type, char *boundary, size_t boundary_size);
+
+/* Find next part in multipart body
+ * body: pointer to current position in body
+ * body_end: end of body
+ * boundary: boundary string (without leading --)
+ * part: output structure for parsed part
+ * Returns pointer to next position after this part, or NULL if no more parts
+ */
+const char *http_parse_multipart_part(const char *body, const char *body_end,
+                                      const char *boundary, HTTP_MULTIPART_PART *part);
+
+/* Check if Content-Type indicates multipart/form-data */
+int http_is_multipart(const char *content_type);
 
 #endif /* HTTP_H */

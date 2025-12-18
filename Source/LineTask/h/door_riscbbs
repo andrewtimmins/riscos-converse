@@ -1,0 +1,90 @@
+/*
+ * door_riscbbs.h - RiscBBS door support for LineTask
+ *
+ * Handles classic RiscBBS-style doors which communicate via Wimp messages.
+ * The protocol uses message numbers 0xC0900-0xC0904:
+ *   - 0xC0900 MESSAGE_START: Door announces it's ready
+ *   - 0xC0901 MESSAGE_END: Door signals completion
+ *   - 0xC0902 MESSAGE_OUTPUT: Door sends output text
+ *   - 0xC0903 MESSAGE_ACK: Host acknowledges (requests more output)
+ *   - 0xC0904 MESSAGE_INPUT: Host sends user keystroke
+ */
+
+#ifndef DOOR_RISCBBS_H
+#define DOOR_RISCBBS_H
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include <time.h>
+
+/* Forward declaration */
+struct line_task_state;
+
+/* ============================================================================
+ * CONSTANTS
+ * ============================================================================
+ */
+
+/* RiscBBS door message numbers */
+#define RISC_BBS_MESSAGE_START   0x00C0900
+#define RISC_BBS_MESSAGE_END     0x00C0901
+#define RISC_BBS_MESSAGE_OUTPUT  0x00C0902
+#define RISC_BBS_MESSAGE_ACK     0x00C0903
+#define RISC_BBS_MESSAGE_INPUT   0x00C0904
+
+/* Door timeout in clock ticks (5 seconds) */
+#ifndef CLOCKS_PER_SEC
+#define CLOCKS_PER_SEC 100
+#endif
+
+#if CLOCKS_PER_SEC < 4
+#define DOOR_ACK_INTERVAL_TICKS 1
+#else
+#define DOOR_ACK_INTERVAL_TICKS (CLOCKS_PER_SEC / 4)
+#endif
+
+#define DOOR_LAUNCH_TIMEOUT_TICKS (5 * CLOCKS_PER_SEC)
+
+/* ============================================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================================
+ */
+
+/*
+ * Reset door state to inactive.
+ * Frees any pending output buffer.
+ */
+void door_riscbbs_reset_state(struct line_task_state *state);
+
+/*
+ * Process door activity.
+ * Called from null poll handler.
+ * Handles timeouts, acknowledgements, and output flushing.
+ */
+void door_riscbbs_process(struct line_task_state *state);
+
+/*
+ * Handle a Wimp message for the RiscBBS door protocol.
+ * Returns Desk_bool_TRUE if the message was handled, Desk_bool_FALSE otherwise.
+ */
+Desk_bool door_riscbbs_handle_message(Desk_event_pollblock *event, struct line_task_state *state);
+
+/*
+ * Send a user keystroke to the active door.
+ */
+void door_riscbbs_send_user_byte(struct line_task_state *state, unsigned char byte);
+
+/*
+ * Close the door session with an optional message.
+ * Resets state and notifies script engine.
+ */
+void door_riscbbs_close_session(struct line_task_state *state, const char *message);
+
+/*
+ * Launch a RiscBBS door.
+ * Sets up state and starts the door task.
+ * If use_26bit is set, uses Aemulor to run legacy doors.
+ */
+void door_riscbbs_launch(struct line_task_state *state, const char *command_line, int use_26bit);
+
+#endif /* DOOR_RISCBBS_H */

@@ -28,6 +28,22 @@
 #define FILEBASE_FILES_PER_GROUP 60
 #define FILEBASE_MAX_FILE_GROUPS (FILEBASE_MAX_DIR_OBJECTS - 1)
 
+/* Transfer session cache - keep file handles open during multi-block operations */
+#define TRANSFER_CACHE_SIZE 32   /* One per line for concurrent transfers */
+#define TRANSFER_CACHE_TTL 500   /* Centiseconds (5 seconds) idle timeout */
+
+typedef struct {
+    int active;
+    int base_id;
+    int file_id;
+    char mode;          /* 'r' for read, 'w' for write */
+    FILE *handle;
+    unsigned int last_access;  /* OS_ReadMonotonicTime */
+} TRANSFER_CACHE_ENTRY;
+
+static TRANSFER_CACHE_ENTRY transfer_cache[TRANSFER_CACHE_SIZE];
+static int transfer_cache_initialised = 0;
+
 static int filebase_next_id = 0;
 static FILEBASE_RECORD filebase_info_cache;
 static FILEBASE_AREA_RECORD filebase_area_cache;
@@ -57,9 +73,202 @@ static int filebase_store_area_record(int base_id, const FILEBASE_AREA_RECORD *r
 static int filebase_find_area_record(int base_id, int area_id, FILEBASE_AREA_RECORD *record_out);
 static void filebase_log(const char *format, ...);
 
+/* ******************************************************************************************************************************************************** */
+/* Transfer Handle Cache - avoids open/close on every block                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned int transfer_cache_get_time(void)
+{
+    _kernel_swi_regs regs;
+    if (_kernel_swi(0x42, &regs, &regs) != NULL) /* OS_ReadMonotonicTime */
+    {
+        return 0;
+    }
+    return (unsigned int)regs.r[0];
+}
+
+static void transfer_cache_init(void)
+{
+    int i;
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        transfer_cache[i].active = 0;
+        transfer_cache[i].handle = NULL;
+    }
+    transfer_cache_initialised = 1;
+}
+
+static void transfer_cache_close_entry(int slot)
+{
+    if (slot >= 0 && slot < TRANSFER_CACHE_SIZE && transfer_cache[slot].active)
+    {
+        if (transfer_cache[slot].handle != NULL)
+        {
+            fclose(transfer_cache[slot].handle);
+            transfer_cache[slot].handle = NULL;
+        }
+        transfer_cache[slot].active = 0;
+    }
+}
+
+static void transfer_cache_cleanup(void)
+{
+    int i;
+    unsigned int now;
+
+    if (!transfer_cache_initialised)
+    {
+        return;
+    }
+
+    now = transfer_cache_get_time();
+
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        if (transfer_cache[i].active)
+        {
+            /* Check for stale entries (idle timeout) */
+            if (now - transfer_cache[i].last_access > TRANSFER_CACHE_TTL)
+            {
+                transfer_cache_close_entry(i);
+            }
+        }
+    }
+}
+
+static void transfer_cache_close_all(void)
+{
+    int i;
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        transfer_cache_close_entry(i);
+    }
+}
+
+static int transfer_cache_find(int base_id, int file_id, char mode)
+{
+    int i;
+
+    if (!transfer_cache_initialised)
+    {
+        transfer_cache_init();
+    }
+
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        if (transfer_cache[i].active &&
+            transfer_cache[i].base_id == base_id &&
+            transfer_cache[i].file_id == file_id &&
+            transfer_cache[i].mode == mode)
+        {
+            transfer_cache[i].last_access = transfer_cache_get_time();
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int transfer_cache_alloc(int base_id, int file_id, char mode, FILE *handle)
+{
+    int i;
+    int oldest_slot = -1;
+    unsigned int oldest_time = 0xFFFFFFFF;
+    unsigned int now;
+
+    if (!transfer_cache_initialised)
+    {
+        transfer_cache_init();
+    }
+
+    now = transfer_cache_get_time();
+
+    /* First pass: find empty slot or oldest entry */
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        if (!transfer_cache[i].active)
+        {
+            oldest_slot = i;
+            break;
+        }
+        if (transfer_cache[i].last_access < oldest_time)
+        {
+            oldest_time = transfer_cache[i].last_access;
+            oldest_slot = i;
+        }
+    }
+
+    if (oldest_slot < 0)
+    {
+        oldest_slot = 0; /* Fallback */
+    }
+
+    /* Close existing entry if active */
+    transfer_cache_close_entry(oldest_slot);
+
+    /* Fill in new entry */
+    transfer_cache[oldest_slot].active = 1;
+    transfer_cache[oldest_slot].base_id = base_id;
+    transfer_cache[oldest_slot].file_id = file_id;
+    transfer_cache[oldest_slot].mode = mode;
+    transfer_cache[oldest_slot].handle = handle;
+    transfer_cache[oldest_slot].last_access = now;
+
+    return oldest_slot;
+}
+
+static FILE *transfer_cache_get_handle(int base_id, int file_id, char mode, const char *path)
+{
+    int slot;
+    FILE *handle;
+
+    slot = transfer_cache_find(base_id, file_id, mode);
+    if (slot >= 0)
+    {
+        return transfer_cache[slot].handle;
+    }
+
+    /* Not in cache - open new handle */
+    if (mode == 'w')
+    {
+        handle = fopen(path, "ab");
+    }
+    else
+    {
+        handle = fopen(path, "rb");
+    }
+
+    if (handle != NULL)
+    {
+        transfer_cache_alloc(base_id, file_id, mode, handle);
+    }
+
+    return handle;
+}
+
+static void transfer_cache_invalidate(int base_id, int file_id)
+{
+    int i;
+    for (i = 0; i < TRANSFER_CACHE_SIZE; i++)
+    {
+        if (transfer_cache[i].active &&
+            transfer_cache[i].base_id == base_id &&
+            transfer_cache[i].file_id == file_id)
+        {
+            transfer_cache_close_entry(i);
+        }
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Filebase Initialisation                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
 int filebase_initialise(void)
 {
   FILE *file;
+
+  /* Initialize transfer cache */
+  transfer_cache_init();
 
   filebase_create_directory(FILEBASE_RESOURCE_DIR);
   filebase_create_directory(FILEBASE_ROOT_DIR);
@@ -101,6 +310,9 @@ int filebase_initialise(void)
 
 void filebase_finalise(void)
 {
+  /* Close any cached transfer handles first */
+  transfer_cache_close_all();
+  
   filebase_cache_clear();
   filebase_next_id = 0;
 }
@@ -326,7 +538,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
-      file = fopen(path, "ab");
+      
+      /* Use cached file handle for performance */
+      file = transfer_cache_get_handle(base_id, file_id, 'w', path);
       if (file == NULL)
       {
         r->r[0] = -1;
@@ -335,12 +549,12 @@ void filebase_swi_handler(_kernel_swi_regs *r)
 
       if (fwrite(data, 1, length, file) != length)
       {
-        fclose(file);
+        transfer_cache_invalidate(base_id, file_id);
         r->r[0] = -1;
         return;
       }
 
-      fclose(file);
+      /* Note: Don't close - handle stays in cache. Flushed periodically. */
 
       if (!filebase_update_filesize(base_id, file_id, length))
       {
@@ -381,7 +595,9 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
-      file = fopen(path, "rb");
+      
+      /* Use cached file handle for performance */
+      file = transfer_cache_get_handle(base_id, file_id, 'r', path);
       if (file == NULL)
       {
         r->r[0] = -1;
@@ -393,22 +609,21 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         offset = 0;
       }
 
-      if (offset > 0 && fseek(file, offset, SEEK_SET) != 0)
+      if (fseek(file, offset, SEEK_SET) != 0)
       {
-        fclose(file);
+        transfer_cache_invalidate(base_id, file_id);
         r->r[0] = -1;
         return;
       }
 
       if (request == 0)
       {
-        fclose(file);
         r->r[0] = 0;
         return;
       }
 
       transferred = fread(target, 1, request, file);
-      fclose(file);
+      /* Note: Don't close - handle stays in cache for next block read */
       r->r[0] = (int)transferred;
       break;
     }
@@ -603,6 +818,23 @@ void filebase_swi_handler(_kernel_swi_regs *r)
 
       filebase_file_cache = *cached;
       r->r[0] = (int)(uintptr_t)&filebase_file_cache;
+      break;
+    }
+
+    case FILER_FILEBASE_CMD_END_UPLOAD:
+    {
+      /* R1 = base_id, R2 = file_id - flush and close cached file handle */
+      int base_id = r->r[1];
+      int file_id = r->r[2];
+
+      if (base_id <= 0 || file_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      transfer_cache_invalidate(base_id, file_id);
+      r->r[0] = 0;
       break;
     }
 
@@ -1240,6 +1472,49 @@ static int filebase_append_file_record(int base_id, const FILE_RECORD *record)
   return 1;
 }
 
+/**
+ * In-place update of a file record using direct seek by ID.
+ * Much faster than copy-update-rename for frequent updates like filesize.
+ * Returns 1 on success, 0 on failure.
+ */
+static int filebase_update_file_record_inplace(int base_id, int file_id, const FILE_RECORD *record)
+{
+  char path[300];
+  FILE *file;
+  long position;
+
+  if (file_id <= 0)
+  {
+    return 0;
+  }
+
+  filebase_format_file_db_path(path, sizeof(path), base_id);
+
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  /* Direct seek: record N is at position (N-1) * sizeof(FILE_RECORD) */
+  position = ((long)(file_id - 1)) * (long)sizeof(FILE_RECORD);
+
+  if (fseek(file, position, SEEK_SET) != 0)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(FILE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
 static int filebase_update_file_record(int base_id, const FILE_RECORD *record)
 {
   char source_path[300];
@@ -1321,6 +1596,12 @@ static int filebase_find_file_record(int base_id, int file_id, FILE_RECORD *reco
 {
   char path[300];
   FILE *file;
+  long position;
+
+  if (file_id <= 0)
+  {
+    return 0;
+  }
 
   filebase_format_file_db_path(path, sizeof(path), base_id);
   file = fopen(path, "rb");
@@ -1329,21 +1610,35 @@ static int filebase_find_file_record(int base_id, int file_id, FILE_RECORD *reco
     return 0;
   }
 
-  while (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) == 1)
+  /* Direct seek: record N is at position (N-1) * sizeof(FILE_RECORD) */
+  /* This works because IDs are sequential starting at 1 and records are never physically deleted */
+  position = ((long)(file_id - 1)) * (long)sizeof(FILE_RECORD);
+  
+  if (fseek(file, position, SEEK_SET) != 0)
   {
-    if (filebase_file_cache.id == file_id)
-    {
-      if (record_out != NULL)
-      {
-        *record_out = filebase_file_cache;
-      }
-      fclose(file);
-      return 1;
-    }
+    fclose(file);
+    return 0;
+  }
+
+  if (fread(&filebase_file_cache, sizeof(FILE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
   }
 
   fclose(file);
-  return 0;
+
+  /* Verify we got the right record (sanity check) */
+  if (filebase_file_cache.id != file_id)
+  {
+    return 0;
+  }
+
+  if (record_out != NULL)
+  {
+    *record_out = filebase_file_cache;
+  }
+  return 1;
 }
 
 static int filebase_update_filesize(int base_id, int file_id, size_t delta)
@@ -1354,7 +1649,12 @@ static int filebase_update_filesize(int base_id, int file_id, size_t delta)
   }
 
   filebase_file_cache.filesize += (long)delta;
-  return filebase_update_file_record(base_id, &filebase_file_cache);
+  
+  /* Update the in-memory cache so FILE_INFO returns correct size */
+  filebase_cache_update_file(base_id, &filebase_file_cache);
+  
+  /* Use in-place update for performance - avoids full copy-rename cycle */
+  return filebase_update_file_record_inplace(base_id, file_id, &filebase_file_cache);
 }
 
 static void filebase_log(const char *format, ...)

@@ -160,8 +160,9 @@
         char remote[128];
         line_icon_buffers icons;
 
-        /* Pending write buffer for partial socket writes */
-        char pending_buffer[1536];
+        /* Pending write buffer for partial socket writes.
+         * Sized to handle worst-case telnet IAC doubling (1536 * 2 = 3072) */
+        char pending_buffer[3072];
         int pending_offset;
         int pending_length;
     } line_components;

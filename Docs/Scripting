@@ -57,7 +57,6 @@ Use `{{` to output a literal `{` character in embedded format.
 General Rules
 -------------
 - Leading/trailing whitespace is ignored.
-- Lines beginning with `#` are comments (plain format).
 - Block comments `/* ... */` work in both formats.
 - Commands and labels are case-insensitive.
 - Multi-word arguments can be wrapped in backticks (`` `like this` ``) to
@@ -159,6 +158,108 @@ Compound conditions work with block IF:
 - When condition is false, parser skips to matching ELSE/ENDIF
 - Labels inside skipped blocks are NOT registered
 
+Loop Commands (FOR, WHILE)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+The script engine supports structured iteration with FOR and WHILE loops:
+
+`FOR var = start TO end [STEP n]` ... `ENDFOR` (or `NEXT`)
+    Iterates from start to end (inclusive). STEP defaults to 1 if omitted.
+    Use negative STEP to count down. The loop variable is updated each iteration.
+    
+    Examples:
+        ; Count 1 to 10
+        for i = 1 to 10
+            print `%{i} `
+        endfor
+        
+        ; Count by twos
+        for j = 0 to 100 step 2
+            print `%{j}\r\n`
+        next
+        
+        ; Countdown
+        for k = 10 to 1 step -1
+            print `%{k}...`
+        endfor
+        print `Blast off!\r\n`
+    
+    **Technical Notes:**
+    - Start, end, and step values are macro-expanded and converted to integers
+    - FOR initializes the variable, then falls through to the loop body
+    - ENDFOR increments, tests, and jumps back if continuing
+    - If step > 0 and start > end, the loop body is skipped entirely
+    - If step < 0 and start < end, the loop body is skipped entirely
+    - Internal variables `_for_end_<var>` and `_for_step_<var>` store limits
+
+`WHILE condition` ... `ENDWHILE`
+    Repeats while the condition is true. Uses the same condition syntax as IF,
+    supporting all operators (`==`, `!=`, `>`, `<`, `>=`, `<=`) and compound
+    conditions (`&&`, `||`).
+    
+    Examples:
+        ; Double until > 100
+        set x `1`
+        while x <= 100
+            print `%{x} `
+            mul x %{x} 2
+        endwhile
+        
+        ; Wait for specific input
+        set done `0`
+        while done == 0
+            prompt choice char echo
+            if choice == `Q` then
+                set done `1`
+            end if
+        endwhile
+
+`BREAK`
+    Exits the innermost loop immediately, continuing after ENDFOR/ENDWHILE.
+    
+    Example:
+        for i = 1 to 100
+            if i == 50 then
+                print `Stopping at 50!\r\n`
+                break
+            end if
+            print `%{i} `
+        endfor
+        print `Done.\r\n`
+
+`CONTINUE`
+    Skips the rest of the current iteration and jumps to the next:
+    - For FOR loops: jumps to ENDFOR (which increments and tests)
+    - For WHILE loops: jumps to WHILE (which re-tests the condition)
+    
+    Example (print only even numbers):
+        for i = 1 to 10
+            mod remainder %{i} 2
+            if remainder == 1 then
+                continue
+            end if
+            print `%{i} `
+        endfor
+
+**Nested Loops:**
+    Loops can be nested up to 16 levels deep. BREAK and CONTINUE always
+    operate on the innermost loop.
+    
+    Example (multiplication table):
+        for row = 1 to 5
+            for col = 1 to 5
+                mul product %{row} %{col}
+                print `%{product}\t`
+            endfor
+            print `\r\n`
+        endfor
+
+**Technical Notes:**
+- Loop state is tracked in a static stack during parsing
+- Labels are generated internally: `_for_start_N`, `_for_test_N`, `_for_end_N`
+- BREAK uses the end_label to exit
+- CONTINUE uses the test_label (ENDFOR for FOR, WHILE for WHILE)
+- Loop state is reset on session disconnect via `script_reset_loop_state()`
+
 `RETURN` or `STOP`
     Ends the current script immediately. If called from a subscript,
     returns to the calling script. If called from the top-level script,
@@ -185,9 +286,22 @@ Compound conditions work with block IF:
 Output
 ~~~~~~
 `PRINT <text>`
-    Sends text to the caller. Supports macros and escape sequences
-    (`\r`, `\n`, `\t`, `\\`). Example:
+    Sends text to the caller. Supports macros and escape sequences.
+    
+    Recognized escape sequences:
+    - `\r\n` or `\n` — carriage return + line feed (newline)
+    - `\r` — carriage return only
+    - `\t` — tab character
+    - `\\` — literal backslash
+    - `` \` `` — literal backtick (for use inside backtick-quoted strings)
+    
+    Unrecognized escape sequences are preserved literally. This means
+    backslashes in ASCII art (like `\_/` or `\|/`) are output unchanged,
+    making it safe to include ANSI artwork in print statements.
+    
+    Example:
         print `Welcome to Converse, line %{line}!\r\n`
+        print `  \_O_/  <- ASCII art backslashes preserved\r\n`
 
 `TYPE <filename>`
     Streams a text/ANSI file to the caller. Example:
@@ -219,6 +333,25 @@ Output
         print `ALERT!`
         flash 0
         print ` Important message.\r\n`
+
+`BOLD`
+    Enables the bold/bright ANSI attribute. Subsequent text will be
+    displayed in high intensity until STD is called to reset.
+    Example:
+        bold
+        print `Important!`
+        std
+
+`STD`
+    Resets terminal attributes to standard white text on black
+    background with no bold, flash, or other effects.
+    Equivalent to sending ESC[0m ESC[37m ESC[40m.
+    Example:
+        bold
+        fg 1
+        print `Red alert!`
+        std
+        print ` Back to normal.\r\n`
 
 Terminal Detection
 ~~~~~~~~~~~~~~~~~~
@@ -256,6 +389,27 @@ Input
     Example:
         anykey
         anykey `<Converse$Dir>.BBS.Menus.Anykey`
+
+`READLINE <variable> [echo|noecho]`
+    Reads a line of input into the specified variable. This is a
+    shorthand for `PROMPT <variable> line <echo>`. Defaults to echo.
+    Example:
+        print `Enter your name: `
+        readline username
+        readline password noecho
+
+`YESNO <variable>`
+    Prompts for a Yes/No response. Waits for Y, y, N, or n keypress,
+    ignoring all other keys. Stores "1" for Yes or "0" for No.
+    Echoes the uppercase response (Y or N) followed by newline.
+    Example:
+        print `Download file? (Y/N): `
+        yesno confirm
+        if confirm == 1 goto do_download
+        print `Cancelled.\r\n`
+        stop
+        label do_download
+        sendfile %{file_id} zmodem
 
 Variables
 ~~~~~~~~~
@@ -319,6 +473,25 @@ User Authentication
     - Allows up to 3 retries before disconnect
     - On success, runs postlogon script
     - Sets user_id, access_level, keys in session state
+
+`NEWUSER`
+    Initiates new user registration. Guides the user through account creation
+    with the following prompts:
+    
+    1. Username - Must be 3-31 characters, checked for availability
+    2. Password - Must be 4-31 characters, no echo
+    3. Confirm Password - Must match first entry
+    4. Real Name - Must be 2-63 characters
+    5. Email - Optional, max 63 characters
+    6. Confirmation - Y/N to create the account
+    
+    After confirmation:
+    - Creates user record via Filer module
+    - Sets sensible defaults (ANSI, ZMODEM, 60 min/day)
+    - Logs the registration
+    - Returns to login prompt on completion
+    
+    Empty username cancels registration immediately.
 
 `LOGOFF`
     Ends the session and disconnects the caller.
@@ -403,29 +576,67 @@ Messagebase Commands
     - `select <id>` — Selects a messagebase
     - `areas` — Lists areas in selected messagebase
     - `area <id>` — Selects an area (0 = all messages)
-    - `messages` — Lists messages in current selection
-    - `read [id]` — Opens message viewer (or first unread)
+    - `messages` — Enters continuous message reader
+    - `read [id]` — Opens message viewer at specific ID (or newest unread)
     - `info <id>` — Shows message details
-    - `post` — Starts message composer
+    - `compose` — Starts message composer
+    - `compose private [user]` — Compose private mail (auto-finds Private area)
+    - `compose netmail [addr] [name]` — Compose netmail (auto-finds Netmail area)
+    - `inbox` — Reads private inbox (auto-selects Private area, restores on exit)
     - `reset` — Clears selection
 
-    Area types determine posting behaviour:
-    - LOCAL — Local-only messages
-    - ECHO — FTN echomail (exported to uplink)
-    - NETMAIL — FTN netmail (requires destination address)
-    - OTHER — Private user-to-user mail (local only)
+    Area types determine behaviour:
+    - LOCAL (0) — Local-only messages, visible to all
+    - ECHO (1) — FTN echomail, visible to all, exported to uplinks
+    - NETMAIL (2) — FTN netmail, only visible to recipient (receivedby filter)
+    - JUNK (3) — Junk/bad messages
+    - PRIVATE (4) — Private user-to-user mail, only visible to recipient
 
-    The message viewer displays messages with ANSI formatting:
-    - Header shows From, To, Subject, Date
-    - Body is paginated (press Enter for more)
-    - Navigation: [N]ext, [P]rev, [R]eply, [Q]uit
+    **Continuous Message Reader**
+    The `messages` command enters a continuous reader (like ArmBBS) instead
+    of showing a table listing. It starts at the newest unread message or
+    first message if all are read. Messages are marked as read automatically.
 
-    The message composer prompts for:
-    - To (for private/netmail areas)
-    - FTN address (for netmail only, e.g., 1:234/567)
-    - Subject line
-    - Body text (line by line, blank line to finish)
-    - Confirmation before posting
+    Header format:
+        Area    : General Discussion (003)
+        Message : #514320 (Read 86 times, 191 bytes)
+        Date    : 25 Jun 23 21:00:12
+        From    : Username
+        To      : All
+        Subject : Test Subject
+
+    Navigation keys:
+        Enter/Space/N  Next message (in current direction)
+        F              Set direction to Forward
+        B              Set direction to Backward
+        C              Re-display current message
+        S              Go to Start of area (first message)
+        E              Go to End of area (last message)
+        +              Next area in messagebase
+        -              Previous area in messagebase
+        R              Reply (public)
+        P              Private reply
+        A              Abort (return to menu)
+
+    The direction indicator in the prompt shows current reading direction:
+        Dir: >>    (reading forward)
+        Dir: <<    (reading backward)
+
+    **Private Inbox**
+    The `inbox` command provides a quick way to read private mail:
+    - Auto-finds the Private (areatype 4) area
+    - Saves the user's current messagebase/area selection
+    - Enters the continuous reader
+    - Restores the previous selection when user aborts
+
+    **Area Type Filtering**
+    Private (areatype 4) and Netmail (areatype 2) areas filter messages so
+    users only see mail addressed to them (receivedby == user_id). This
+    creates a personal inbox effect. Users cannot see mail sent to others
+    or mail they sent (which appears in the recipient's inbox instead).
+    
+    Public/Local (areatype 0) and Echo (areatype 1) areas show all messages
+    to everyone, even if a "To:" field is specified.
 
     Example:
         messagebase list
@@ -433,8 +644,8 @@ Messagebase Commands
         messagebase areas
         messagebase area 3
         messagebase messages
-        messagebase read 1
-        messagebase post
+        messagebase inbox
+        messagebase compose
 
 Direct Mail Commands
 ~~~~~~~~~~~~~~~~~~~~
@@ -577,7 +788,9 @@ Complete alphabetical list of all script commands:
 | LOGON | User | Authenticate user |
 | MESSAGEBASE | Messagebase | Messagebase operations |
 | MOD | Math | Integer modulo |
+| MORE | Output | Toggle More prompts |
 | MUL | Math | Integer multiplication |
+| NEWUSER | User | New user registration |
 | ONLINE | Status | List connected users |
 | OSCLI | System | Execute CLI command |
 | PAUSE | Flow | Delay execution |

@@ -731,11 +731,22 @@ static int filer_upload_file(int filebase_id, int area_id, const char *host_path
         if (_kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs) != NULL)
         {
             fclose(f);
+            /* End upload to flush cached handle even on error */
+            regs.r[0] = FILER_FILEBASE_CMD_END_UPLOAD;
+            regs.r[1] = filebase_id;
+            regs.r[2] = file_id;
+            _kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs);
             return -1;
         }
     }
 
     fclose(f);
+
+    /* End upload - flush and close cached file handle */
+    regs.r[0] = FILER_FILEBASE_CMD_END_UPLOAD;
+    regs.r[1] = filebase_id;
+    regs.r[2] = file_id;
+    _kernel_swi(SWI_CONVERSE_FILER_FILEBASE, &regs, &regs);
 
     return file_id;
 }

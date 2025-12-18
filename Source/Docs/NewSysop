@@ -1304,8 +1304,11 @@ FILE TRANSFER
         xmodem, xmodem-crc, xmodem-1k,
         ymodem, ymodem-g, zmodem (recommended)
 
-  receivefile <path> [protocol]
-      Upload file from user to specified path.
+  receivefile [filename] [protocol]
+      Upload file from user.
+      - receivefile           → prompts for filename, description, protocol
+      - receivefile protocol  → prompts for filename and description
+      - receivefile file proto → prompts for description only
 
 
 DOOR COMMANDS

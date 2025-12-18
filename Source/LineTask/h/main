@@ -1,6 +1,206 @@
 #ifndef MAIN_H
 #define MAIN_H
 
+#include <time.h>
+#include <stdint.h>
+#include "C:Desk.Core.h"
+#include "C:Desk.Window.h"
+#include "script.h"
+#include "filebase.h"
+#include "messagebase.h"
+#include "transfer.h"
+#include "ansiterm.h"
+#include "pipes.h"
+
 #define APP_VERSION "0.01"
+
+/* ============================================================================
+ * CONSTANTS
+ * ============================================================================
+ */
+
+/* PIPE_TRANSFER_CHUNK is defined in pipes.h */
+
+#define CHAT_PAGER_TIMEOUT_SECS  30
+#define CHAT_BEEP_INTERVAL_CS    50    /* Centiseconds between beeps */
+#define CHAT_SPLIT_ROW           12    /* Row where screen splits (1-based) */
+#define CHAT_SYSOP_START_ROW     2     /* Sysop text starts at row 2 */
+#define CHAT_USER_START_ROW      14    /* User text starts at row 14 */
+#define CHAT_MAX_COLS            80
+#define CHAT_TEXT_COLUMN         8     /* Column where chat text begins */
+#define CHAT_HEADER_ROW          1
+#define CHAT_HEADER_MARGIN_COL   1
+#define CHAT_HEADER_TIMER_INIT   "00:00:00"
+#define CHAT_PANE_X_OFFSET        6    /* Pixel tweak so panes stay inside parent border */
+#define CHAT_PANE_Y_OFFSET       -2
+
+#define CHAT_PANE_MAX_LINES          512
+#define CHAT_PANE_LINE_CHARS         256
+#define CHAT_PANE_MIN_COLUMNS        40
+#define CHAT_PANE_CHAR_WIDTH_SHIFT   4
+#define CHAT_PANE_CHAR_HEIGHT_SHIFT  5
+#define CHAT_PANE_CHAR_WIDTH         (1 << CHAT_PANE_CHAR_WIDTH_SHIFT)
+#define CHAT_PANE_CHAR_HEIGHT        (1 << CHAT_PANE_CHAR_HEIGHT_SHIFT)
+
+/* ============================================================================
+ * ENUMERATIONS
+ * ============================================================================
+ */
+
+typedef enum
+{
+    BOTSTOPPER_STATE_INACTIVE,      /* Not running */
+    BOTSTOPPER_STATE_WAITING,       /* Waiting for user response */
+    BOTSTOPPER_STATE_PASSED,        /* User passed the challenge */
+    BOTSTOPPER_STATE_FAILED         /* User timed out or failed */
+} BOTSTOPPER_STATE;
+
+/* ============================================================================
+ * SUPPORTING STRUCTS
+ * ============================================================================
+ */
+
+typedef struct chat_pane_view
+{
+    Desk_window_handle window;
+    char lines[CHAT_PANE_MAX_LINES][CHAT_PANE_LINE_CHARS];
+    uint16_t line_lengths[CHAT_PANE_MAX_LINES];
+    int start_index;
+    int line_count;
+    int longest_length;
+    Desk_bool longest_valid;
+    Desk_bool follow_tail;
+    int extent_min_x;
+    int extent_min_y;
+    int extent_max_x;
+    int extent_max_y;
+} chat_pane_view;
+
+/* RiscBBS door state - handles classic RiscBBS-style doors */
+typedef struct door_riscbbs_state
+{
+    Desk_bool launch_pending;
+    Desk_bool active;
+    int task_handle;
+    char *output_buffer;
+    clock_t next_ack_tick;
+    clock_t launch_deadline;
+} door_riscbbs_state;
+
+/* ARCbbs door state - handles ARCbbsDoors emulation */
+typedef struct door_arcbbs_state
+{
+    Desk_bool active;
+    Desk_bool launch_pending;
+    clock_t launch_deadline;
+    clock_t poll_tick;
+    int requested_door_number;
+} door_arcbbs_state;
+
+/* Native door state - handles ConverseDoors */
+typedef struct door_native_state
+{
+    Desk_bool active;
+    Desk_bool launch_pending;
+    clock_t launch_deadline;
+} door_native_state;
+
+/* Botstopper state - anti-bot challenge system */
+typedef struct botstopper_state_t
+{
+    BOTSTOPPER_STATE state;
+    time_t deadline;
+    int star_count;
+} botstopper_state_t;
+
+/* User session state - logged-in user information */
+typedef struct user_session
+{
+    int id;
+    int accesslevel;
+    int sysop;
+    char keys[128];
+    char realname[64];
+    script_user_stats stats;
+    script_user_flags flags;
+    time_t connect_time;
+    char current_activity[128];
+} user_session;
+
+/* Chat session state - sysop chat functionality */
+typedef struct chat_state
+{
+    Desk_bool paging;
+    Desk_bool active;
+    clock_t pager_deadline;
+    clock_t next_beep;
+    char reason[256];
+    char user_buffer[1024];
+    char sysop_buffer[1024];
+    int user_len;
+    int sysop_len;
+    int user_row;
+    int sysop_row;
+    clock_t timer_start;
+    int timer_last_seconds;
+    chat_pane_view user_pane;
+    chat_pane_view sysop_pane;
+} chat_state;
+
+/* I/O buffer state - pending write recovery */
+typedef struct io_buffers
+{
+    unsigned char pipe_out[PIPE_TRANSFER_CHUNK];
+    int pipe_out_offset;
+    int pipe_out_length;
+    unsigned char door_in[PIPE_TRANSFER_CHUNK];
+    int door_in_offset;
+    int door_in_length;
+} io_buffers;
+
+typedef struct line_task_state
+{
+    /* Core line/session identity */
+    int line_id;
+    int line_type;
+    char line_label[8];
+    int session_active;
+    pipes_local_state local;
+    int control_stage;
+    unsigned char control_code;
+    Desk_bool quit_requested;
+    
+    /* Door subsystems */
+    door_riscbbs_state riscbbs;
+    door_arcbbs_state arcbbs;
+    door_native_state native;
+    
+    /* Botstopper */
+    botstopper_state_t botstopper;
+    
+    /* Script engine */
+    script_state script;
+    
+    /* Filebase session */
+    filebase_session fb_session;
+    
+    /* Messagebase session */
+    messagebase_session mb_session;
+    
+    /* File transfer session */
+    transfer_session xfer_session;
+    
+    /* User session */
+    user_session user;
+    
+    /* Sysop chat */
+    chat_state chat;
+    
+    /* ANSI terminal emulator */
+    ansiterm_state *terminal;
+    
+    /* I/O buffers for partial write recovery */
+    io_buffers pending;
+} line_task_state;
 
 #endif

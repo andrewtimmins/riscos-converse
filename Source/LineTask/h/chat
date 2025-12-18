@@ -1,0 +1,112 @@
+/*
+ * chat.h - Sysop chat functionality for LineTask
+ *
+ * Handles real-time chat between sysop and connected user:
+ *   1. User requests chat via CHAT command (starts pager)
+ *   2. Sysop accepts/rejects via pager window
+ *   3. If accepted, split-screen chat session begins
+ *   4. Either party can end chat (user via CTRL+X, sysop via button)
+ */
+
+#ifndef CHAT_H
+#define CHAT_H
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Event.h"
+#include "C:Desk.Wimp.h"
+
+
+/* Forward declaration */
+struct line_task_state;
+
+/* ============================================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================================
+ */
+
+/*
+ * Initialize chat pane state for a line.
+ * Called during LineTask initialization.
+ */
+void chat_init(struct line_task_state *state);
+
+/*
+ * Set window handles used by chat module.
+ * Must be called after windows are created.
+ */
+void chat_set_window_handles(Desk_window_handle chat,
+                             Desk_window_handle chatpager,
+                             Desk_window_handle userchat,
+                             Desk_window_handle sysopchat);
+
+/*
+ * Set up chat pane window associations.
+ * Must be called after chat_init and chat_set_window_handles.
+ */
+void chat_setup_pane_windows(struct line_task_state *state);
+
+/*
+ * Reset chat state to inactive.
+ * Clears buffers and pane contents.
+ */
+void chat_reset_state(struct line_task_state *state);
+
+/*
+ * Start the chat pager.
+ * Opens pager window, starts timeout, begins beeping.
+ */
+void chat_start_pager(struct line_task_state *state, const char *reason);
+
+/*
+ * Close the chat pager.
+ * If accepted, starts chat session. Otherwise resumes script.
+ */
+void chat_close_pager(struct line_task_state *state, int accepted);
+
+/*
+ * Start a chat session.
+ * Sets up split screen on user terminal, opens chat window.
+ */
+void chat_start_session(struct line_task_state *state);
+
+/*
+ * End the chat session.
+ * Clears screen, resumes script if waiting.
+ */
+void chat_end_session(struct line_task_state *state);
+
+/*
+ * Process chat activity.
+ * Called from null poll handler.
+ * Handles pager timeout/beeps and timer updates.
+ */
+void chat_process(struct line_task_state *state);
+
+/*
+ * Handle a byte from the user during active chat.
+ * Processes keystrokes, updates panes and terminal.
+ */
+void chat_handle_user_byte(struct line_task_state *state, unsigned char byte);
+
+/*
+ * Send a line of text from sysop to user.
+ * Updates both pane and user terminal.
+ */
+void chat_send_sysop_line(struct line_task_state *state, const char *text);
+
+/*
+ * Wimp event handler for chat pane redraw.
+ */
+Desk_bool chat_handle_pane_redraw(Desk_event_pollblock *event, void *ref);
+
+/*
+ * Wimp event handler for chat pane scroll.
+ */
+Desk_bool chat_handle_pane_scroll(Desk_event_pollblock *event, void *ref);
+
+/*
+ * Update chat pane positions after parent window moves.
+ */
+void chat_update_panes(struct line_task_state *state);
+
+#endif /* CHAT_H */

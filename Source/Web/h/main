@@ -10,9 +10,10 @@
 
 /* Configuration */
 #define WEB_DEFAULT_PORT        80
-#define WEB_MAX_CLIENTS         16
-#define WEB_RECV_BUFFER_SIZE    4096
-#define WEB_CLIENT_TIMEOUT      30      /* seconds */
+#define WEB_MAX_CLIENTS         8       /* Reduced for memory */
+#define WEB_SMALL_BUFFER_SIZE   4096    /* Small buffer for headers/small requests */
+#define WEB_MAX_UPLOAD_SIZE     (2 * 1024 * 1024)  /* Max 2MB upload */
+#define WEB_CLIENT_TIMEOUT      60      /* seconds */
 #define WEB_DOCROOT             "<Converse$Dir>.Web"
 #define WEB_INDEX_FILE          "index"
 
@@ -28,8 +29,10 @@ typedef struct
     int socket;                             /* Client socket fd, 0 = free slot */
     int state;                              /* CLIENT_STATE_* */
     clock_t connected;                      /* Connection time for timeout */
-    char recv_buffer[WEB_RECV_BUFFER_SIZE]; /* Incoming request buffer */
+    char *recv_buffer;                      /* Dynamically allocated buffer */
+    int recv_buffer_size;                   /* Current buffer size */
     int recv_len;                           /* Bytes received so far */
+    long content_length;                    /* Expected Content-Length for POST */
     char remote_addr[32];                   /* Client IP address */
 } CLIENT_SLOT;
 

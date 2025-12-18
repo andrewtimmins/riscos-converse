@@ -80,22 +80,19 @@ int stats_get_call_totals(int *total_out)
 int stats_set_call_totals(int total)
 {
     stats_call_totals = total;
-    if (!stats_write_to_file(stats_call_totals))
-    {
-        return 0;
-    }
-
+    /* Note: Value persisted on finalise or explicit flush, not on every update */
     return 1;
 }
 
 int stats_increment_call_totals(void)
 {
-    stats_get_call_totals(NULL);
     stats_call_totals++;
-    if (!stats_write_to_file(stats_call_totals))
-    {
-        return 0;
-    }
-
+    /* Note: Value persisted on finalise or explicit flush, not on every increment */
     return 1;
+}
+
+int stats_flush(void)
+{
+    /* Explicitly persist current stats to disk */
+    return stats_write_to_file(stats_call_totals);
 }

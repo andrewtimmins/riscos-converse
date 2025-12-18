@@ -1,0 +1,226 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask Pipe I/O Module                                                                                                                                   */
+/*                                                                                                                                                            */
+/* Unified pipe access functions for all LineTask code.                                                                                                       */
+/* Supports both network mode (via Pipes module SWIs) and local mode (via internal buffer).                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_PIPES_H
+#define LINETASK_PIPES_H
+
+#include <stdint.h>
+
+/* ******************************************************************************************************************************************************** */
+/* SWI Definitions                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#define SWI_PIPES_BASE              0x5AA00
+
+#define SWI_PIPES_READ_STATUS       (SWI_PIPES_BASE + 0)
+#define SWI_PIPES_WRITE_STATUS      (SWI_PIPES_BASE + 1)
+#define SWI_PIPES_INPUT_STATUS      (SWI_PIPES_BASE + 2)
+#define SWI_PIPES_INPUT_READ        (SWI_PIPES_BASE + 3)
+#define SWI_PIPES_OUTPUT_STATUS     (SWI_PIPES_BASE + 4)
+#define SWI_PIPES_OUTPUT_WRITE      (SWI_PIPES_BASE + 5)
+#define SWI_PIPES_CLEAR_INPUT       (SWI_PIPES_BASE + 6)
+#define SWI_PIPES_CLEAR_OUTPUT      (SWI_PIPES_BASE + 7)
+#define SWI_PIPES_INPUT_WRITE       (SWI_PIPES_BASE + 8)
+#define SWI_PIPES_OUTPUT_READ       (SWI_PIPES_BASE + 9)
+#define SWI_PIPES_RESET_STATE       (SWI_PIPES_BASE + 0xA)
+#define SWI_PIPES_INPUT_PEEK        (SWI_PIPES_BASE + 0xB)
+#define SWI_PIPES_OUTPUT_PEEK       (SWI_PIPES_BASE + 0xC)
+#define SWI_PIPES_INPUT_WRITE_BLOCK (SWI_PIPES_BASE + 0xD)
+#define SWI_PIPES_OUTPUT_READ_BLOCK (SWI_PIPES_BASE + 0xE)
+#define SWI_PIPES_INPUT_READ_BLOCK  (SWI_PIPES_BASE + 0xF)
+#define SWI_PIPES_OUTPUT_WRITE_BLOCK (SWI_PIPES_BASE + 0x10)
+
+/* Pipes buffer size - must match Pipes module PIPES_BUFFER_SIZE */
+#define PIPE_BUFFER_SIZE            4096
+
+/* Maximum chunk size for pipe transfers */
+#define PIPE_TRANSFER_CHUNK         256
+
+/* Maximum retries waiting for pipe space before giving up */
+#define PIPE_WRITE_MAX_RETRIES      1000
+
+/* ******************************************************************************************************************************************************** */
+/* Local Mode Support                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+/* Local mode buffer size */
+#define LOCAL_BUFFER_SIZE           256
+
+/* Local mode state structure - must be set by main.c for local mode to work */
+typedef struct
+{
+    int active;                             /* Local mode is active */
+    char input_buffer[LOCAL_BUFFER_SIZE];   /* Input buffer (user typing) */
+    int input_head;                         /* Write position */
+    int input_tail;                         /* Read position */
+    void *terminal;                         /* Pointer to ansiterm for output */
+} pipes_local_state;
+
+/*
+ * Set the local mode state.
+ * Call with state->active = 1 to enable local mode.
+ * In local mode, pipe reads come from the local input buffer
+ * and pipe writes go directly to the terminal.
+ */
+void pipes_set_local_state(pipes_local_state *state);
+
+/*
+ * Get the current local mode state.
+ */
+pipes_local_state *pipes_get_local_state(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe I/O Functions - Reading (data FROM user, OUTPUT pipe)                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check how many bytes are available to read from the user.
+ * In network mode, reads from OUTPUT pipe (slave->host).
+ * In local mode, checks local input buffer.
+ *
+ * Returns: Number of bytes available
+ */
+int pipes_bytes_available(int line);
+
+/*
+ * Read a single byte from the user.
+ * In network mode, reads from OUTPUT pipe.
+ * In local mode, reads from local input buffer.
+ *
+ * Returns: byte value (0-255) or -1 if no data available
+ */
+int pipes_read_byte(int line);
+
+/*
+ * Read a block of bytes from the user.
+ *
+ * Returns: number of bytes read, or -1 on error
+ */
+int pipes_read_block(int line, uint8_t *buffer, int length);
+
+/*
+ * Peek at the next byte without removing it.
+ *
+ * Returns: byte value (0-255) or -1 if no data available
+ */
+int pipes_peek_byte(int line);
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe I/O Functions - Writing (data TO user, INPUT pipe)                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Check how much space is available to write to the user.
+ * In network mode, checks INPUT pipe (host->slave).
+ * In local mode, always returns a large value.
+ *
+ * Returns: Number of bytes of space available
+ */
+int pipes_space_available(int line);
+
+/*
+ * Write a single byte to the user.
+ * In network mode, writes to INPUT pipe.
+ * In local mode, outputs directly to terminal.
+ *
+ * Returns: 0 on success, -1 if pipe full
+ */
+int pipes_write_byte(int line, uint8_t byte);
+
+/*
+ * Write a block of bytes to the user.
+ *
+ * Returns: number of bytes written, or -1 on error
+ */
+int pipes_write_block(int line, const uint8_t *data, int length);
+
+/*
+ * Write a null-terminated string to the user.
+ * This function handles chunking and retries automatically.
+ * In local mode, outputs directly to terminal.
+ * If snoop terminal is set, output is also sent there.
+ */
+void pipes_write_string(int line, const char *str);
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe I/O Functions - Sysop Input (host keyboard -> user input stream)                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Write a block of bytes to the user's input stream.
+ * This is for sysop terminal input injection.
+ * In network mode, writes to INPUT pipe like pipes_write_block.
+ * In local mode, adds to local input buffer.
+ *
+ * Returns: number of bytes written
+ */
+int pipes_inject_input(int line, const char *buffer, int length);
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe Control Functions                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Clear the input pipe (data going TO user).
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int pipes_clear_input(int line);
+
+/*
+ * Clear the output pipe (data coming FROM user).
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int pipes_clear_output(int line);
+
+/*
+ * Reset all pipe state for a line.
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int pipes_reset(int line);
+
+/* ******************************************************************************************************************************************************** */
+/* Snoop Terminal Support                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Set the snoop terminal for output mirroring.
+ * When set, all output is also sent to this terminal.
+ * Pass NULL to disable snooping.
+ */
+void pipes_set_snoop_terminal(void *terminal);
+
+/*
+ * Get the current snoop terminal.
+ */
+void *pipes_get_snoop_terminal(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Function                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Wait for pipe space to become available.
+ * Does a Wimp_Poll with null mask to allow cooperative multitasking.
+ */
+void pipes_wait_for_space(void);
+
+/* ******************************************************************************************************************************************************** */
+/* Compatibility Macros - for transfer code migration                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+#define pipe_bytes_available(line)          pipes_bytes_available(line)
+#define pipe_read_byte(line)                pipes_read_byte(line)
+#define pipe_read_block(line, buf, len)     pipes_read_block((line), (buf), (len))
+#define pipe_space_available(line)          pipes_space_available(line)
+#define pipe_write_byte(line, byte)         pipes_write_byte((line), (byte))
+#define pipe_write_block(line, data, len)   pipes_write_block((line), (const uint8_t *)(data), (len))
+#define pipe_write_string(line, str)        pipes_write_string((line), (str))
+
+#endif /* LINETASK_PIPES_H */

@@ -7,6 +7,7 @@
 
 #define DEBUG_MAX_LINE_LENGTH 256
 
+/* Always enable debug logging */
 int debug_printf(char *cntrl_string, ...);
 
 #endif

@@ -45,6 +45,7 @@
 #include "main.h"
 #include "http.h"
 #include "template.h"
+#include "session.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
@@ -346,6 +347,18 @@ void check_listener(void)
         return;
     }
 
+    /* Allocate initial receive buffer */
+    clients[slot].recv_buffer = malloc(WEB_SMALL_BUFFER_SIZE);
+    if (clients[slot].recv_buffer == NULL)
+    {
+        http_send_error(new_socket, 503, "Server out of memory");
+        shutdown(new_socket, 0);
+        socketclose(new_socket);
+        web_log("Connection rejected - out of memory");
+        return;
+    }
+    clients[slot].recv_buffer_size = WEB_SMALL_BUFFER_SIZE;
+
     /* Set up client slot */
     {
         int nonblock = 1;
@@ -356,6 +369,7 @@ void check_listener(void)
     clients[slot].state = CLIENT_STATE_CONNECTED;
     clients[slot].connected = clock();
     clients[slot].recv_len = 0;
+    clients[slot].content_length = 0;
     strncpy(clients[slot].remote_addr, inet_ntoa(saddr.sin_addr), sizeof(clients[slot].remote_addr) - 1);
     clients[slot].remote_addr[sizeof(clients[slot].remote_addr) - 1] = '\0';
     active_clients++;
@@ -376,9 +390,18 @@ void close_client(int slot)
         socketclose(clients[slot].socket);
     }
 
+    /* Free dynamic buffer */
+    if (clients[slot].recv_buffer != NULL)
+    {
+        free(clients[slot].recv_buffer);
+        clients[slot].recv_buffer = NULL;
+    }
+    clients[slot].recv_buffer_size = 0;
+
     clients[slot].socket = 0;
     clients[slot].state = CLIENT_STATE_FREE;
     clients[slot].recv_len = 0;
+    clients[slot].content_length = 0;
 
     if (active_clients > 0)
     {
@@ -395,6 +418,7 @@ void poll_clients(void)
     for (i = 0; i < WEB_MAX_CLIENTS; i++)
     {
         int bytes_read;
+        int space_available;
 
         if (clients[i].socket == 0)
         {
@@ -409,10 +433,20 @@ void poll_clients(void)
             continue;
         }
 
+        /* Calculate space available in buffer */
+        space_available = clients[i].recv_buffer_size - clients[i].recv_len - 1;
+        if (space_available <= 0)
+        {
+            /* Buffer full - this shouldn't happen if expansion worked */
+            http_send_error(clients[i].socket, HTTP_STATUS_BAD_REQUEST, "Request too large");
+            close_client(i);
+            continue;
+        }
+
         /* Try to receive data */
         bytes_read = socketread(clients[i].socket,
                                 clients[i].recv_buffer + clients[i].recv_len,
-                                WEB_RECV_BUFFER_SIZE - clients[i].recv_len - 1);
+                                space_available);
 
         if (bytes_read < 0)
         {
@@ -437,16 +471,82 @@ void poll_clients(void)
         clients[i].state = CLIENT_STATE_RECEIVING;
 
         /* Check if we have a complete request */
-        if (strstr(clients[i].recv_buffer, "\r\n\r\n") != NULL ||
-            strstr(clients[i].recv_buffer, "\n\n") != NULL)
         {
-            handle_client_request(i);
-        }
-        else if (clients[i].recv_len >= WEB_RECV_BUFFER_SIZE - 1)
-        {
-            /* Buffer full but no complete request */
-            http_send_error(clients[i].socket, HTTP_STATUS_BAD_REQUEST, "Request too large");
-            close_client(i);
+            char *header_end = strstr(clients[i].recv_buffer, "\r\n\r\n");
+            char *header_end_lf = strstr(clients[i].recv_buffer, "\n\n");
+            int header_len = 0;
+            int body_start = 0;
+            
+            if (header_end != NULL)
+            {
+                header_len = (int)(header_end - clients[i].recv_buffer);
+                body_start = header_len + 4;
+            }
+            else if (header_end_lf != NULL)
+            {
+                header_len = (int)(header_end_lf - clients[i].recv_buffer);
+                body_start = header_len + 2;
+            }
+            
+            if (header_len > 0)
+            {
+                /* Headers complete - check if this is a POST with Content-Length */
+                char *cl_header = strstr(clients[i].recv_buffer, "Content-Length:");
+                if (cl_header == NULL)
+                {
+                    cl_header = strstr(clients[i].recv_buffer, "content-length:");
+                }
+                
+                if (cl_header != NULL && cl_header < (clients[i].recv_buffer + header_len))
+                {
+                    /* Has Content-Length - might need larger buffer */
+                    long content_len = atol(cl_header + 15);
+                    long total_needed = body_start + content_len + 1;
+                    int body_received = clients[i].recv_len - body_start;
+                    
+                    /* Check size limit */
+                    if (content_len > WEB_MAX_UPLOAD_SIZE)
+                    {
+                        http_send_error(clients[i].socket, HTTP_STATUS_BAD_REQUEST, 
+                                       "Upload too large (max 2MB)");
+                        close_client(i);
+                        continue;
+                    }
+                    
+                    /* Expand buffer if needed */
+                    if (total_needed > clients[i].recv_buffer_size)
+                    {
+                        char *new_buffer = realloc(clients[i].recv_buffer, (size_t)total_needed);
+                        if (new_buffer == NULL)
+                        {
+                            http_send_error(clients[i].socket, HTTP_STATUS_SERVER_ERROR, 
+                                           "Server out of memory");
+                            close_client(i);
+                            continue;
+                        }
+                        clients[i].recv_buffer = new_buffer;
+                        clients[i].recv_buffer_size = (int)total_needed;
+                    }
+                    
+                    if (body_received >= content_len)
+                    {
+                        /* Full request received */
+                        handle_client_request(i);
+                    }
+                    /* else keep waiting for body */
+                }
+                else
+                {
+                    /* No Content-Length - request is complete (GET/HEAD) */
+                    handle_client_request(i);
+                }
+            }
+            else if (clients[i].recv_len >= clients[i].recv_buffer_size - 1)
+            {
+                /* Buffer full but no complete headers - bad request */
+                http_send_error(clients[i].socket, HTTP_STATUS_BAD_REQUEST, "Request headers too large");
+                close_client(i);
+            }
         }
     }
 }
@@ -600,6 +700,441 @@ static int handle_download_request(int slot, const char *path)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Authentication Handlers                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+/* Filer userdb SWI */
+#define SWI_FILER_USERDB        0x5AA41
+#define FILER_USERDB_CMD_AUTH   4
+
+/* USER_RECORD field offsets */
+#define USER_RECORD_OFFSET_ID           0
+#define USER_RECORD_OFFSET_USERNAME     4
+#define USER_RECORD_OFFSET_REALNAME     36
+#define USER_RECORD_OFFSET_KEYS         196
+#define USER_RECORD_OFFSET_SYSOP        600
+#define USER_RECORD_OFFSET_ACCESSLEVEL  640
+
+/*
+ * Handle POST /login
+ * Expects form fields: username, password
+ */
+static void handle_login_post(int slot, HTTP_REQUEST *req)
+{
+    char username[32];
+    char password[32];
+    char cookie_header[256];
+    _kernel_swi_regs regs;
+    int auth_result;
+    char *user_record;
+    
+    if (req->body == NULL || req->body_len == 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Missing form data");
+        close_client(slot);
+        return;
+    }
+    
+    /* Parse form fields */
+    if (!http_parse_form_field(req->body, req->body_len, "username", username, sizeof(username)) ||
+        !http_parse_form_field(req->body, req->body_len, "password", password, sizeof(password)))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Missing username or password");
+        close_client(slot);
+        return;
+    }
+    
+    debug_printf("Web: Login attempt for user: %s\n", username);
+    
+    /* Authenticate via Filer SWI */
+    regs.r[0] = FILER_USERDB_CMD_AUTH;
+    regs.r[1] = (int)username;
+    regs.r[2] = (int)password;
+    
+    if (_kernel_swi(SWI_FILER_USERDB, &regs, &regs) != NULL)
+    {
+        debug_printf("Web: Filer SWI failed\n");
+        http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Authentication service unavailable");
+        close_client(slot);
+        return;
+    }
+    
+    auth_result = regs.r[0];
+    user_record = (char *)regs.r[1];
+    
+    if (auth_result != 0 || user_record == NULL)
+    {
+        /* Authentication failed - redirect back to login with error */
+        debug_printf("Web: Login failed for %s (result %d)\n", username, auth_result);
+        web_log("%s POST /login - 401 Failed (%s)", clients[slot].remote_addr, username);
+        http_send_redirect(clients[slot].socket, "/login?error=1", NULL);
+        close_client(slot);
+        return;
+    }
+    
+    /* Authentication successful - create session */
+    {
+        WEB_SESSION *session;
+        int user_id;
+        char *realname;
+        char *keys;
+        int access_level;
+        int sysop;
+        int *int_ptr;
+        
+        int_ptr = (int *)(user_record + USER_RECORD_OFFSET_ID);
+        user_id = *int_ptr;
+        
+        realname = user_record + USER_RECORD_OFFSET_REALNAME;
+        keys = user_record + USER_RECORD_OFFSET_KEYS;
+        
+        int_ptr = (int *)(user_record + USER_RECORD_OFFSET_ACCESSLEVEL);
+        access_level = *int_ptr;
+        
+        int_ptr = (int *)(user_record + USER_RECORD_OFFSET_SYSOP);
+        sysop = *int_ptr;
+        
+        session = session_create(user_id, username, realname, access_level, sysop, keys);
+        
+        if (session == NULL)
+        {
+            debug_printf("Web: Failed to create session for %s\n", username);
+            http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Session creation failed");
+            close_client(slot);
+            return;
+        }
+        
+        /* Build Set-Cookie header */
+        session_build_cookie(session, cookie_header, sizeof(cookie_header));
+        
+        /* Redirect to home page with session cookie */
+        web_log("%s POST /login - 302 OK (%s)", clients[slot].remote_addr, username);
+        http_send_redirect(clients[slot].socket, "/", cookie_header);
+    }
+    
+    close_client(slot);
+}
+
+/* Filer filebase SWIs */
+#define SWI_FILER_FILEBASE              0x5AA43
+#define FILER_FILEBASE_CMD_BEGIN_UPLOAD 3
+#define FILER_FILEBASE_CMD_UPLOAD_BLOCK 4
+#define FILER_FILEBASE_CMD_END_UPLOAD   12
+
+/*
+ * Handle POST /upload
+ * Expects multipart form with: filebase, area, description, file
+ */
+static void handle_upload_post(int slot, HTTP_REQUEST *req)
+{
+    char token[SESSION_TOKEN_LEN + 1];
+    WEB_SESSION *session;
+    char boundary[HTTP_MAX_BOUNDARY];
+    HTTP_MULTIPART_PART part;
+    const char *pos;
+    const char *body_end;
+    
+    /* Form fields */
+    int filebase_id = 0;
+    int area_id = 0;
+    char description[256] = "";
+    char filename[128] = "";
+    const char *file_data = NULL;
+    int file_len = 0;
+    
+    _kernel_swi_regs regs;
+    int file_id;
+    
+    /* Check user is logged in */
+    if (!session_parse_cookie(req->cookie, token, sizeof(token)))
+    {
+        http_send_redirect(clients[slot].socket, "/login", NULL);
+        close_client(slot);
+        return;
+    }
+    
+    session = session_lookup(token);
+    if (session == NULL)
+    {
+        http_send_redirect(clients[slot].socket, "/login", NULL);
+        close_client(slot);
+        return;
+    }
+    
+    debug_printf("Web: Upload attempt by user %s\n", session->username);
+    
+    /* Check for multipart content type */
+    if (!http_is_multipart(req->content_type))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Expected multipart form data");
+        close_client(slot);
+        return;
+    }
+    
+    /* Get boundary */
+    if (!http_get_multipart_boundary(req->content_type, boundary, sizeof(boundary)))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Missing multipart boundary");
+        close_client(slot);
+        return;
+    }
+    
+    debug_printf("Web: Multipart boundary: %s\n", boundary);
+    
+    /* Parse multipart parts */
+    if (req->body == NULL || req->body_len == 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Missing form data");
+        close_client(slot);
+        return;
+    }
+    
+    pos = req->body;
+    body_end = req->body + req->body_len;
+    
+    while ((pos = http_parse_multipart_part(pos, body_end, boundary, &part)) != NULL)
+    {
+        debug_printf("Web: Part name='%s' filename='%s' len=%d\n", 
+                     part.name, part.filename, part.data_len);
+        
+        if (strcmp(part.name, "filebase") == 0 && part.data != NULL)
+        {
+            filebase_id = atoi(part.data);
+        }
+        else if (strcmp(part.name, "area") == 0 && part.data != NULL)
+        {
+            area_id = atoi(part.data);
+        }
+        else if (strcmp(part.name, "description") == 0 && part.data != NULL)
+        {
+            size_t len = (size_t)part.data_len;
+            if (len >= sizeof(description))
+            {
+                len = sizeof(description) - 1;
+            }
+            strncpy(description, part.data, len);
+            description[len] = '\0';
+        }
+        else if (strcmp(part.name, "file") == 0 && part.filename[0] != '\0')
+        {
+            strncpy(filename, part.filename, sizeof(filename) - 1);
+            filename[sizeof(filename) - 1] = '\0';
+            file_data = part.data;
+            file_len = part.data_len;
+        }
+    }
+    
+    /* Validate required fields */
+    if (filebase_id <= 0 || filename[0] == '\0' || file_data == NULL || file_len <= 0)
+    {
+        debug_printf("Web: Upload validation failed: fb=%d fn='%s' len=%d\n", 
+                     filebase_id, filename, file_len);
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, 
+                       "Missing required fields (filebase and file)");
+        close_client(slot);
+        return;
+    }
+    
+    debug_printf("Web: Uploading '%s' (%d bytes) to filebase %d area %d\n",
+                 filename, file_len, filebase_id, area_id);
+    
+    /* Build FILE_RECORD for upload
+     * We'll create a minimal one - the Filer will fill in the rest
+     */
+    {
+        char file_record[512];
+        memset(file_record, 0, sizeof(file_record));
+        
+        /* id = 0 (will be assigned) */
+        /* filebaseid = filebase_id */
+        *(int *)(file_record + 4) = filebase_id;
+        /* filebaseareaid = area_id */
+        *(int *)(file_record + 8) = area_id;
+        /* deleted = 0 */
+        /* accesslevel = 0 */
+        /* keys at offset 20 - empty */
+        /* name at offset 148 */
+        strncpy(file_record + 148, filename, 63);
+        /* uploadedby at offset 212 */
+        *(int *)(file_record + 212) = session->user_id;
+        /* uploaddate at offset 216 */
+        *(int *)(file_record + 216) = (int)time(NULL);
+        /* description at offset 220 */
+        strncpy(file_record + 220, description, 255);
+        /* filesize at offset 476 */
+        *(long *)(file_record + 476) = file_len;
+        /* downloads at offset 480 = 0 */
+        
+        /* Call Filer to begin upload */
+        regs.r[0] = FILER_FILEBASE_CMD_BEGIN_UPLOAD;
+        regs.r[1] = filebase_id;
+        regs.r[2] = (int)file_record;
+        
+        if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+        {
+            debug_printf("Web: Begin upload failed\n");
+            http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Upload failed - could not create file record");
+            close_client(slot);
+            return;
+        }
+        
+        file_id = regs.r[0];
+        debug_printf("Web: File record created with ID %d\n", file_id);
+        
+        /* Upload the file data */
+        regs.r[0] = FILER_FILEBASE_CMD_UPLOAD_BLOCK;
+        regs.r[1] = filebase_id;
+        regs.r[2] = file_id;
+        regs.r[3] = (int)file_data;
+        regs.r[4] = file_len;
+        
+        if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+        {
+            debug_printf("Web: Upload block failed\n");
+            http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Upload failed - could not write file data");
+            close_client(slot);
+            return;
+        }
+        
+        debug_printf("Web: File data written successfully\n");
+        
+        /* Close the file handle */
+        regs.r[0] = FILER_FILEBASE_CMD_END_UPLOAD;
+        regs.r[1] = filebase_id;
+        regs.r[2] = file_id;
+        _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+        
+        debug_printf("Web: File handle closed\n");
+    }
+    
+    web_log("%s POST /upload - 302 OK (%s, %d bytes)", 
+            clients[slot].remote_addr, filename, file_len);
+    
+    /* Redirect back to upload page with success message */
+    http_send_redirect(clients[slot].socket, "/upload?success=1", NULL);
+    close_client(slot);
+}
+
+/*
+ * Handle GET /api/areas?filebase=N
+ * Returns JSON array of areas for a filebase
+ */
+static void handle_api_areas(int slot, HTTP_REQUEST *req)
+{
+    char *query;
+    int filebase_id = 0;
+    char json[4096];
+    char *p;
+    int area_index;
+    int first = 1;
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    
+    /* Parse filebase ID from query string */
+    query = strchr(req->path, '?');
+    if (query != NULL)
+    {
+        query++;
+        if (strncmp(query, "filebase=", 9) == 0)
+        {
+            filebase_id = atoi(query + 9);
+        }
+    }
+    
+    if (filebase_id <= 0)
+    {
+        http_send_headers(clients[slot].socket, HTTP_STATUS_OK, "application/json", 2);
+        http_send_data(clients[slot].socket, "[]", 2);
+        close_client(slot);
+        return;
+    }
+    
+    /* Build JSON array of areas */
+    p = json;
+    *p++ = '[';
+    
+    for (area_index = 0; area_index < 100; area_index++)
+    {
+        char *area_rec;
+        int area_id;
+        char *area_name;
+        char escaped_name[128];
+        char *src, *dst;
+        
+        regs.r[0] = 9;  /* FILER_FILEBASE_CMD_ENUMERATE_AREAS */
+        regs.r[1] = filebase_id;
+        regs.r[2] = area_index;
+        err = _kernel_swi(SWI_FILER_FILEBASE, &regs, &regs);
+        if (err != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        {
+            break;
+        }
+        
+        area_rec = (char *)regs.r[0];
+        area_id = *(int *)(area_rec + 0);  /* FILEBASE_AREA_RECORD.id */
+        area_name = area_rec + 140;         /* FILEBASE_AREA_RECORD.name at offset 140 (4+4+4+128) */
+        
+        /* JSON escape the name */
+        dst = escaped_name;
+        for (src = area_name; *src && dst < escaped_name + sizeof(escaped_name) - 2; src++)
+        {
+            if (*src == '"' || *src == '\\')
+            {
+                *dst++ = '\\';
+            }
+            *dst++ = *src;
+        }
+        *dst = '\0';
+        
+        if (!first)
+        {
+            *p++ = ',';
+        }
+        first = 0;
+        
+        p += sprintf(p, "{\"id\":%d,\"name\":\"%s\"}", area_id, escaped_name);
+        
+        if (p >= json + sizeof(json) - 100)
+        {
+            break;  /* Safety limit */
+        }
+    }
+    
+    *p++ = ']';
+    *p = '\0';
+    
+    /* Send response */
+    http_send_headers(clients[slot].socket, HTTP_STATUS_OK, "application/json", strlen(json));
+    http_send_data(clients[slot].socket, json, strlen(json));
+    close_client(slot);
+}
+
+/*
+ * Handle GET /logout
+ * Destroys session and clears cookie
+ */
+static void handle_logout(int slot, HTTP_REQUEST *req)
+{
+    char token[SESSION_TOKEN_LEN + 1];
+    char cookie_header[256];
+    
+    /* Parse session token from cookie */
+    if (session_parse_cookie(req->cookie, token, sizeof(token)))
+    {
+        debug_printf("Web: Logout, destroying session %s\n", token);
+        session_destroy(token);
+    }
+    
+    /* Build Set-Cookie to clear the cookie */
+    session_build_clear_cookie(cookie_header, sizeof(cookie_header));
+    
+    /* Redirect to home page */
+    web_log("%s GET /logout - 302 OK", clients[slot].remote_addr);
+    http_send_redirect(clients[slot].socket, "/", cookie_header);
+    close_client(slot);
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Request Handling                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
@@ -633,12 +1168,46 @@ void handle_client_request(int slot)
         return;
     }
 
-    /* Only support GET */
+    /* Handle POST for login */
+    if (strcmp(req.method, "POST") == 0)
+    {
+        if (strcmp(req.path, "/login") == 0)
+        {
+            handle_login_post(slot, &req);
+            return;
+        }
+        if (strcmp(req.path, "/upload") == 0)
+        {
+            handle_upload_post(slot, &req);
+            return;
+        }
+        /* Other POST routes not supported */
+        web_log("%s POST %s - 400 Method not supported", clients[slot].remote_addr, req.path);
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Method not supported for this path");
+        close_client(slot);
+        return;
+    }
+
+    /* Only support GET and HEAD for other routes */
     if (strcmp(req.method, "GET") != 0 && strcmp(req.method, "HEAD") != 0)
     {
         web_log("%s %s %s - 400 Method not supported", clients[slot].remote_addr, req.method, req.path);
         http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Method not supported");
         close_client(slot);
+        return;
+    }
+
+    /* Handle logout */
+    if (strcmp(req.path, "/logout") == 0)
+    {
+        handle_logout(slot, &req);
+        return;
+    }
+
+    /* Check for API requests */
+    if (strncmp(req.path, "/api/areas", 10) == 0)
+    {
+        handle_api_areas(slot, &req);
         return;
     }
 
@@ -744,6 +1313,17 @@ void handle_client_request(int slot)
             long filesize = (long)regs.r[4];
             char *content;
             _kernel_swi_regs load_regs;
+            WEB_SESSION *session = NULL;
+            char token[SESSION_TOKEN_LEN + 1];
+
+            /* Look up session from cookie */
+            if (session_parse_cookie(req.cookie, token, sizeof(token)))
+            {
+                session = session_lookup(token);
+            }
+            
+            /* Set session context for template processing */
+            template_set_session(session);
 
             /* Load file into memory */
             content = malloc((size_t)filesize + 1);
@@ -813,6 +1393,9 @@ int main(void)
     debug_initialise();
     debug_printf("Web: Starting...\n");
 
+    /* Initialise sessions */
+    session_initialise();
+
     /* Initialise Wimp */
     Desk_Resource_Initialise("ConverseRes");
     Desk_Msgs_LoadFile("Messages");
@@ -881,6 +1464,7 @@ int main(void)
     }
 
     debug_printf("Web: Shutting down\n");
+    session_finalise();
     debug_finalise();
 
     Desk_Template_ClearAll();

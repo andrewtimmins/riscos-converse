@@ -122,6 +122,40 @@ void logging_finalise(void)
     }
 }
 
+void logging_flush(void)
+{
+    int i;
+
+    /* Flush all open log handles to disk */
+    if (log_system_handle != NULL)
+    {
+        fflush(log_system_handle);
+    }
+
+    if (log_call_handle != NULL)
+    {
+        fflush(log_call_handle);
+    }
+
+    if (log_ftn_handle != NULL)
+    {
+        fflush(log_ftn_handle);
+    }
+
+    if (log_web_handle != NULL)
+    {
+        fflush(log_web_handle);
+    }
+
+    for (i = 0; i < LOGGING_MAX_LINES; i++)
+    {
+        if (log_line_handles[i] != NULL)
+        {
+            fflush(log_line_handles[i]);
+        }
+    }
+}
+
 void log_header(int log_type)
 {
     switch (log_type)
@@ -210,7 +244,7 @@ void log_system(char *log_entry)
     snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_system_handle, "%s", timestamped_log_entry);
-    fflush(log_system_handle);
+    /* fflush removed for performance - handles are flushed periodically via logging_flush() */
 }
 
 void log_line(int line_id, char *log_entry)
@@ -240,7 +274,7 @@ void log_line(int line_id, char *log_entry)
     snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_line_handles[line_id], "%s", timestamped_log_entry);
-    fflush(log_line_handles[line_id]);
+    /* fflush removed for performance - handles are flushed periodically via logging_flush() */
 }
 
 void log_call(int line_id, int user_id, int status_id)
@@ -281,7 +315,7 @@ void log_call(int line_id, int user_id, int status_id)
     snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s,%d,%d,%s\n", timestamp, line_id, user_id, status);
     
     fprintf(log_call_handle, "%s", timestamped_log_entry);
-    fflush(log_call_handle);
+    /* fflush removed for performance - handles are flushed periodically via logging_flush() */
 
     (void)stats_increment_call_totals();
 }
@@ -305,7 +339,7 @@ void log_ftn(char *log_entry)
     snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_ftn_handle, "%s", timestamped_log_entry);
-    fflush(log_ftn_handle);
+    /* fflush removed for performance - handles are flushed periodically via logging_flush() */
 }
 
 void log_web(char *log_entry)
@@ -327,5 +361,5 @@ void log_web(char *log_entry)
     snprintf(timestamped_log_entry, sizeof(timestamped_log_entry), "%s | %s\n", timestamp, log_entry);
      
     fprintf(log_web_handle, "%s", timestamped_log_entry);
-    fflush(log_web_handle);
+    /* fflush removed for performance - handles are flushed periodically via logging_flush() */
 }

@@ -1,0 +1,74 @@
+/* ******************************************************************************************************************************************************** */
+/* Web Server - Session Header                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef SESSION_H
+#define SESSION_H
+
+#include <time.h>
+
+/* Session configuration */
+#define SESSION_MAX             32          /* Maximum concurrent sessions */
+#define SESSION_TOKEN_LEN       32          /* Length of session token (hex) */
+#define SESSION_COOKIE_NAME     "CONVERSE_SESSION"
+#define SESSION_EXPIRY_SECS     (60 * 60)   /* 1 hour session timeout */
+
+/* Session structure */
+typedef struct
+{
+    int active;                             /* 1 if slot in use */
+    char token[SESSION_TOKEN_LEN + 1];      /* Session token (hex string) */
+    int user_id;                            /* User ID from database */
+    char username[32];                      /* Username */
+    char realname[64];                      /* Real name */
+    int access_level;                       /* Access level (0-255) */
+    int sysop;                              /* 1 if sysop */
+    char keys[128];                         /* Access keys string */
+    time_t created;                         /* When session was created */
+    time_t last_access;                     /* Last activity time */
+    time_t expires;                         /* Expiry time */
+} WEB_SESSION;
+
+/* Initialise session system */
+void session_initialise(void);
+
+/* Finalise session system (cleanup) */
+void session_finalise(void);
+
+/* Create a new session for an authenticated user
+ * Returns pointer to session, or NULL on failure
+ */
+WEB_SESSION *session_create(int user_id, const char *username, const char *realname,
+                            int access_level, int sysop, const char *keys);
+
+/* Look up session by token
+ * Returns pointer to session, or NULL if not found/expired
+ * Updates last_access time on success
+ */
+WEB_SESSION *session_lookup(const char *token);
+
+/* Destroy a session by token */
+void session_destroy(const char *token);
+
+/* Clean up expired sessions (call periodically) */
+void session_cleanup(void);
+
+/* Parse session token from Cookie header value
+ * cookie_header: the value of the Cookie header (e.g., "CONVERSE_SESSION=abc123; other=value")
+ * token_out: buffer to receive token
+ * token_size: size of token buffer
+ * Returns 1 if found, 0 if not
+ */
+int session_parse_cookie(const char *cookie_header, char *token_out, size_t token_size);
+
+/* Build Set-Cookie header value for a session
+ * session: the session
+ * buffer: output buffer
+ * buffer_size: size of output buffer
+ */
+void session_build_cookie(const WEB_SESSION *session, char *buffer, size_t buffer_size);
+
+/* Build Set-Cookie header to clear/expire the cookie */
+void session_build_clear_cookie(char *buffer, size_t buffer_size);
+
+#endif /* SESSION_H */

@@ -44,6 +44,9 @@ WIMP_STATE wimp;
 SERIAL_LINE_STATE serial_lines[SERIAL_MAX_LINES];
 int serial_line_count = 0;
 
+SERIAL_STATUS_ROW *serial_status_rows = NULL;
+int serial_status_row_count = 0;
+
 static Desk_window_handle proginfo_window;
 
 /* Menu indices */
@@ -59,11 +62,6 @@ static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref);
 /* ******************************************************************************************************************************************************** */
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
-
-static void display_error(const char *message)
-{
-    Desk_Error_Report(1, (char *)message);
-}
 
 void serial_log(const char *format, ...)
 {
@@ -328,18 +326,235 @@ static void load_serial_lines(void)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Status Window Functions                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+int serialstatus_icon_index(int line_index, int column)
+{
+    return SERIALSTATUS_ICON_BASE + (line_index * SERIALSTATUS_ICONS_PER_LINE) + column;
+}
+
+int serialstatus_create_icons(void)
+{
+    Desk_icon_createblock icon_create;
+    Desk_icon_handle icon_handle;
+    int row;
+    int y_base;
+    int column_x;
+    SERIAL_STATUS_ROW *icons;
+    
+    if (serial_line_count <= 0)
+    {
+        debug_printf("serialstatus: No serial lines, skipping icon creation");
+        return 1;
+    }
+    
+    /* Allocate row array */
+    serial_status_rows = malloc(serial_line_count * sizeof(SERIAL_STATUS_ROW));
+    if (serial_status_rows == NULL)
+    {
+        debug_printf("serialstatus: Failed to allocate row array");
+        return 0;
+    }
+    
+    serial_status_row_count = serial_line_count;
+    memset(serial_status_rows, 0, serial_line_count * sizeof(SERIAL_STATUS_ROW));
+    
+    icon_create.window = wimp.status_window;
+    y_base = -((SERIALSTATUS_TOP_STATIC_ROWS * SERIALSTATUS_ICON_HEIGHT) + SERIALSTATUS_PADDING);
+    
+    for (row = 0; row < serial_status_row_count; row++)
+    {
+        icons = &serial_status_rows[row];
+        
+        /* Allocate text buffers */
+        icons->line_text = malloc(8);
+        icons->status_text = malloc(64);
+        
+        if (icons->line_text == NULL || icons->status_text == NULL)
+        {
+            debug_printf("serialstatus: Failed to allocate icon buffers for row %d", row);
+            return 0;
+        }
+        
+        /* Initialize text */
+        snprintf(icons->line_text, 8, "%d", serial_lines[row].line_id);
+        strcpy(icons->status_text, "Initializing");
+        
+        /* Calculate Y position for this row */
+        icon_create.icondata.workarearect.max.y = y_base - (SERIALSTATUS_ICON_HEIGHT * row);
+        icon_create.icondata.workarearect.min.y = icon_create.icondata.workarearect.max.y - SERIALSTATUS_ICON_HEIGHT;
+        
+        column_x = SERIALSTATUS_COLUMN_START;
+        
+        /* Column 0: Line Number */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + SERIALSTATUS_LINE_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = icons->line_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 8;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + SERIALSTATUS_COLUMN_GAP;
+        
+        /* Column 1: Status */
+        icon_create.icondata.flags.value = 0;
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + SERIALSTATUS_STATUS_WIDTH;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1);
+        icon_create.icondata.data.indirecttext.buffer = icons->status_text;
+        icon_create.icondata.data.indirecttext.validstring = "R2";
+        icon_create.icondata.data.indirecttext.bufflen = 64;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+    }
+    
+    debug_printf("serialstatus: Created icons for %d rows", serial_status_row_count);
+    return 1;
+}
+
+void serialstatus_free_icons(void)
+{
+    int i;
+    
+    if (serial_status_rows == NULL)
+    {
+        return;
+    }
+    
+    for (i = 0; i < serial_status_row_count; i++)
+    {
+        if (serial_status_rows[i].line_text != NULL)
+        {
+            free(serial_status_rows[i].line_text);
+        }
+        if (serial_status_rows[i].status_text != NULL)
+        {
+            free(serial_status_rows[i].status_text);
+        }
+    }
+    
+    free(serial_status_rows);
+    serial_status_rows = NULL;
+    serial_status_row_count = 0;
+}
+
+void serialstatus_set_extent(void)
+{
+    Desk_wimp_box extent;
+    int total_height;
+    int total_width;
+    int rows;
+    
+    /* Use at least 1 row for minimum window size */
+    rows = (serial_status_row_count > 0) ? serial_status_row_count : 1;
+    
+    /* Calculate total height: (header rows + data rows) * row height + padding */
+    total_height = ((rows + SERIALSTATUS_TOP_STATIC_ROWS) * SERIALSTATUS_ICON_HEIGHT) +
+                   SERIALSTATUS_PADDING + SERIALSTATUS_BOTTOM_PADDING;
+    
+    /* Calculate total width: all columns + gaps between them (matching FTN mailer pattern) */
+    total_width = SERIALSTATUS_COLUMN_START +
+                  SERIALSTATUS_LINE_WIDTH + SERIALSTATUS_COLUMN_GAP +
+                  SERIALSTATUS_STATUS_WIDTH;
+    
+    extent.min.x = 0;
+    extent.max.x = total_width;
+    extent.min.y = -total_height;
+    extent.max.y = 0;
+    
+    Desk_Wimp_SetExtent(wimp.status_window, &extent);
+}
+
+void serialstatus_update_line(int line_index, const char *status)
+{
+    if (serial_status_rows == NULL || line_index < 0 || line_index >= serial_status_row_count)
+    {
+        return;
+    }
+    
+    if (wimp.status_window != 0 && status != NULL)
+    {
+        /* Update the icon text using Desk_Icon_SetText like Server does */
+        Desk_Icon_SetText(wimp.status_window,
+                          serialstatus_icon_index(line_index, SERIALSTATUS_COLUMN_STATUS),
+                          (char *)status);
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Wimp Event Handlers                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
+
+/*
+ * Handle window open events - required to allow window dragging.
+ */
+static Desk_bool handle_window_open(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+    Desk_Wimp_OpenWindow(&event->data.openblock);
+    return Desk_bool_TRUE;
+}
+
+/*
+ * Handle window close events.
+ */
+static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
+{
+    Desk_UNUSED(ref);
+    Desk_Window_Hide(event->data.openblock.window);
+    return Desk_bool_TRUE;
+}
 
 static Desk_bool handle_iconbar_click(Desk_event_pollblock *event, void *ref)
 {
     WIMP_STATE *w = (WIMP_STATE *)ref;
-
-    Desk_UNUSED(event);
+    Desk_window_state state;
+    int win_width, win_height;
 
     if (event->data.mouse.button.data.menu)
     {
         Desk_Menu_Show(w->iconbar_menu, event->data.mouse.pos.x, -1);
+    }
+    else if (event->data.mouse.button.data.select)
+    {
+        /* Open status window on SELECT click - position at bottom-left like FTN mailer */
+        debug_printf("serial: Iconbar SELECT clicked, status_window=%d", (int)w->status_window);
+        if (w->status_window != 0)
+        {
+            /* Get current window state */
+            Desk_Wimp_GetWindowState(w->status_window, &state);
+            win_width = state.openblock.screenrect.max.x - state.openblock.screenrect.min.x;
+            win_height = state.openblock.screenrect.max.y - state.openblock.screenrect.min.y;
+            
+            /* Position at bottom-left, just above iconbar */
+            state.openblock.screenrect.min.x = 16;
+            state.openblock.screenrect.max.x = 16 + win_width;
+            state.openblock.screenrect.min.y = 134;  /* Just above iconbar (128) + margin */
+            state.openblock.screenrect.max.y = 134 + win_height;
+            state.openblock.behind = -1;  /* Open at front */
+            
+            Desk_Wimp_OpenWindow(&state.openblock);
+            debug_printf("serial: Window opened at bottom-left");
+        }
+        else
+        {
+            debug_printf("serial: status_window is 0, cannot show");
+        }
     }
 
     return Desk_bool_TRUE;
@@ -353,6 +568,7 @@ static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref)
     {
         case ICONBAR_MENU_QUIT:
             w->quit = Desk_bool_TRUE;
+            debug_printf("serial: Menu Quit selected, setting quit flag");
             break;
     }
 
@@ -421,7 +637,6 @@ static void poll_idle(void)
 
 int main(void)
 {
-    int i;
     char menu_title[32];
     char menu_items[64];
 
@@ -448,8 +663,17 @@ int main(void)
 
     /* Create iconbar icon */
     wimp.iconbar_icon = Desk_Icon_BarIcon("!serial", Desk_iconbar_RIGHT);
-    Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon,
-                     handle_iconbar_click, &wimp);
+    debug_printf("serial: Created iconbar icon, handle=%d", (int)wimp.iconbar_icon);
+    if (wimp.iconbar_icon >= 0)
+    {
+        Desk_Event_Claim(Desk_event_CLICK, Desk_window_ICONBAR, wimp.iconbar_icon,
+                         handle_iconbar_click, &wimp);
+        debug_printf("serial: Claimed CLICK event for iconbar");
+    }
+    else
+    {
+        debug_printf("serial: Failed to create iconbar icon, skipping click claim");
+    }
     /* Create iconbar menu */
     Desk_Msgs_Lookup("ser.ibmt", menu_title, sizeof(menu_title));
     Desk_Msgs_Lookup("ser.ibm", menu_items, sizeof(menu_items));
@@ -465,25 +689,64 @@ int main(void)
 
     wimp.iconbar_menu = Desk_Menu_New(menu_title, menu_items);
 
-    /* Load templates and create proginfo window */
+    /* Load templates and create windows */
     Desk_Template_Initialise();
     Desk_Template_UseOutlineFonts();
     Desk_Template_LoadFile("Templates");
 
     proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+    wimp.status_window = Desk_Window_Create("serial", Desk_template_TITLEMIN);
+    
+    debug_printf("serial: Created windows: proginfo=%d, status=%d", 
+                 (int)proginfo_window, (int)wimp.status_window);
+    
     if (wimp.iconbar_menu != NULL && proginfo_window != 0)
     {
         /* Attach proginfo as submenu of Info entry (matches FTN approach) */
         Desk_Menu_AddSubMenu(wimp.iconbar_menu, ICONBAR_MENU_INFO, (Desk_menu_ptr)proginfo_window);
     }
 
+    /* Handle redraws for status window explicitly (template is not autoredraw) */
+    if (wimp.status_window != 0)
+    {
+        Desk_Event_Claim(Desk_event_REDRAW, wimp.status_window, Desk_event_ANY,
+                         Desk_Handler_NullRedraw, NULL);
+    }
+    
+    /* Handle open/close events for all windows - required for dragging */
+    Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY,
+                     handle_window_open, NULL);
+    Desk_Event_Claim(Desk_event_CLOSE, Desk_event_ANY, Desk_event_ANY,
+                     handle_window_close, NULL);
+
     /* Load serial line configuration from Support module */
     load_serial_lines();
+
+    /* Create dynamic status window icons */
+    if (wimp.status_window != 0)
+    {
+        debug_printf("serial: Creating status icons, line_count=%d", serial_line_count);
+        if (serial_line_count > 0)
+        {
+            if (serialstatus_create_icons())
+            {
+                debug_printf("serial: Icons created successfully");
+            }
+            else
+            {
+                debug_printf("serial: Icon creation failed");
+            }
+        }
+        debug_printf("serial: Setting extent");
+        serialstatus_set_extent();
+        debug_printf("serial: Extent set");
+    }
 
     /* Initialise all serial ports */
     serial_init_all();
 
     serial_log("Serial handler started with %d lines", serial_line_count);
+    debug_printf("serial: Entering main loop");
 
     /* Main event loop */
     while (wimp.quit == Desk_bool_FALSE)
@@ -491,8 +754,11 @@ int main(void)
         poll_idle();
     }
 
+    debug_printf("serial: Main loop exited, quit=%d", (int)wimp.quit);
+
     /* Shutdown */
     serial_close_all();
+    serialstatus_free_icons();
     serial_log("Serial handler stopped");
 
     debug_printf("serial: Serial Handler shutdown complete");

@@ -1,0 +1,1044 @@
+/* ******************************************************************************************************************************************************** */
+/* XMODEM Protocol Implementation                                                                                                                             */
+/*                                                                                                                                                            */
+/* Non-blocking state machine implementation of XMODEM, XMODEM-CRC, and XMODEM-1K.                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "xmodem.h"
+#include "transfer.h"
+#include "pipes.h"
+#include "crc.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Helper Functions                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Send CAN sequence to abort transfer.
+ */
+void xmodem_send_cancel(transfer_session *session)
+{
+    int i;
+    
+    for (i = 0; i < 8; i++)
+    {
+        pipes_write_byte(session->line, XMODEM_CAN);
+    }
+    /* Send some backspaces to clear any garbage */
+    for (i = 0; i < 8; i++)
+    {
+        pipes_write_byte(session->line, 0x08);  /* Backspace */
+    }
+}
+
+/*
+ * Check for CAN abort sequence from remote.
+ * Returns 1 if abort detected.
+ */
+static int xmodem_check_cancel(xmodem_protocol_state *xstate, int byte)
+{
+    if (byte == XMODEM_CAN)
+    {
+        xstate->can_count++;
+        if (xstate->can_count >= 2)
+        {
+            return 1;  /* Abort detected */
+        }
+    }
+    else
+    {
+        xstate->can_count = 0;
+    }
+    return 0;
+}
+
+/*
+ * Build a block for sending.
+ * Reads data from file, pads with CTRLZ if needed.
+ * Returns number of data bytes (before padding), or -1 on error.
+ */
+static int xmodem_build_send_block(transfer_session *session, xmodem_protocol_state *xstate)
+{
+    int bytes_read;
+    int block_size = xstate->block_size;
+    long offset;
+    
+    /* Calculate file offset for this block */
+    offset = (long)(xstate->block_number - 1) * block_size;
+    
+    debug_printf("xmodem: building block %d, offset=%ld, block_size=%d\n",
+                 xstate->block_number, offset, block_size);
+    
+    /* Clear buffer with padding character */
+    memset(xstate->block_buffer, XMODEM_CTRLZ, block_size);
+    
+    /* Read data from file */
+    bytes_read = transfer_read_file_block(session, xstate->block_buffer, offset, block_size);
+    
+    debug_printf("xmodem: transfer_read_file_block returned %d bytes\n", bytes_read);
+    
+    if (bytes_read < 0)
+    {
+        debug_printf("xmodem: file read error\n");
+        return -1;  /* Read error */
+    }
+    
+    if (bytes_read == 0)
+    {
+        debug_printf("xmodem: EOF reached\n");
+        xstate->eof_reached = 1;
+        return 0;  /* End of file */
+    }
+    
+    if (bytes_read < block_size)
+    {
+        debug_printf("xmodem: partial block, EOF\n");
+        xstate->eof_reached = 1;  /* This is the last block */
+    }
+    
+    xstate->bytes_in_block = bytes_read;
+    return bytes_read;
+}
+
+/*
+ * Send the current block.
+ * Builds entire packet in buffer and sends with single write for reliability.
+ */
+static void xmodem_send_block(transfer_session *session, xmodem_protocol_state *xstate)
+{
+    uint8_t packet[3 + XMODEM_BLOCK_1K + 2];  /* header(3) + data(up to 1024) + crc(2) */
+    int packet_len = 0;
+    uint8_t header;
+    uint8_t block_num;
+    
+    /* Choose header byte based on block size */
+    header = (xstate->block_size == XMODEM_BLOCK_1K) ? XMODEM_STX : XMODEM_SOH;
+    block_num = (uint8_t)(xstate->block_number & 0xFF);
+    
+    debug_printf("xmodem: sending block %d (size=%d, crc=%d)\n",
+                 xstate->block_number, xstate->block_size, xstate->use_crc);
+    debug_printf("xmodem: header=0x%02X blk=0x%02X ~blk=0x%02X\n",
+                 header, block_num, (uint8_t)(~block_num));
+    debug_printf("xmodem: data[0..7]: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                 xstate->block_buffer[0], xstate->block_buffer[1],
+                 xstate->block_buffer[2], xstate->block_buffer[3],
+                 xstate->block_buffer[4], xstate->block_buffer[5],
+                 xstate->block_buffer[6], xstate->block_buffer[7]);
+    
+    /* Build packet header */
+    packet[packet_len++] = header;
+    packet[packet_len++] = block_num;
+    packet[packet_len++] = (uint8_t)(~block_num);
+    
+    /* Copy data */
+    memcpy(&packet[packet_len], xstate->block_buffer, xstate->block_size);
+    packet_len += xstate->block_size;
+    
+    /* Add checksum or CRC */
+    if (xstate->use_crc)
+    {
+        /* Calculate CRC over the data portion only (128 bytes after header) */
+        uint16_t crc = crc16(&packet[3], xstate->block_size);
+        
+        /* Extended CRC debug - dump first and last 8 bytes of data being CRC'd */
+        debug_printf("xmodem: CRC input data[0..7]: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     packet[3], packet[4], packet[5], packet[6],
+                     packet[7], packet[8], packet[9], packet[10]);
+        debug_printf("xmodem: CRC input data[120..127]: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     packet[3+120], packet[3+121], packet[3+122], packet[3+123],
+                     packet[3+124], packet[3+125], packet[3+126], packet[3+127]);
+        debug_printf("xmodem: block_size=%d, CRC calculated over %d bytes at packet+3\n",
+                     xstate->block_size, xstate->block_size);
+        debug_printf("xmodem: CRC=0x%04X -> bytes: 0x%02X (high) 0x%02X (low)\n",
+                     crc, (crc >> 8) & 0xFF, crc & 0xFF);
+        
+        packet[packet_len++] = (uint8_t)(crc >> 8);   /* High byte first (MSB) */
+        packet[packet_len++] = (uint8_t)(crc & 0xFF); /* Low byte second (LSB) */
+        debug_printf("xmodem: packet_len after CRC = %d (expected 133 for 128-byte block)\n", packet_len);
+        
+        /* Verification: re-calculate CRC over packet[3..130] and check it matches */
+        {
+            uint16_t verify_crc = crc16(&packet[3], 128);
+            debug_printf("xmodem: VERIFY CRC over packet[3..130] = 0x%04X (should match 0x%04X)\n", verify_crc, crc);
+            debug_printf("xmodem: packet[131]=0x%02X packet[132]=0x%02X (CRC bytes)\n", packet[131], packet[132]);
+        }
+    }
+    else
+    {
+        uint8_t chksum = checksum8(xstate->block_buffer, xstate->block_size);
+        packet[packet_len++] = chksum;
+        debug_printf("xmodem: sent block with checksum 0x%02X\n", chksum);
+        
+        /* Debug: dump first 16 and last 16 bytes of data for manual checksum verification */
+        debug_printf("xmodem: data[0..15]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     xstate->block_buffer[0], xstate->block_buffer[1], xstate->block_buffer[2], xstate->block_buffer[3],
+                     xstate->block_buffer[4], xstate->block_buffer[5], xstate->block_buffer[6], xstate->block_buffer[7],
+                     xstate->block_buffer[8], xstate->block_buffer[9], xstate->block_buffer[10], xstate->block_buffer[11],
+                     xstate->block_buffer[12], xstate->block_buffer[13], xstate->block_buffer[14], xstate->block_buffer[15]);
+        debug_printf("xmodem: data[112..127]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                     xstate->block_buffer[112], xstate->block_buffer[113], xstate->block_buffer[114], xstate->block_buffer[115],
+                     xstate->block_buffer[116], xstate->block_buffer[117], xstate->block_buffer[118], xstate->block_buffer[119],
+                     xstate->block_buffer[120], xstate->block_buffer[121], xstate->block_buffer[122], xstate->block_buffer[123],
+                     xstate->block_buffer[124], xstate->block_buffer[125], xstate->block_buffer[126], xstate->block_buffer[127]);
+    }
+    
+    /* Send entire packet at once */
+    debug_printf("xmodem: writing %d byte packet to pipe\n", packet_len);
+    debug_printf("xmodem: packet[0..9]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                 packet[0], packet[1], packet[2], packet[3], packet[4],
+                 packet[5], packet[6], packet[7], packet[8], packet[9]);
+    debug_printf("xmodem: packet[last5]: %02X %02X %02X %02X %02X\n",
+                 packet[packet_len-5], packet[packet_len-4], packet[packet_len-3],
+                 packet[packet_len-2], packet[packet_len-1]);
+    
+    /* Check for 0xFF bytes which might be eaten by telnet on the receiver side */
+    {
+        int i, ff_count = 0;
+        for (i = 0; i < packet_len; i++)
+        {
+            if (packet[i] == 0xFF) ff_count++;
+        }
+        if (ff_count > 0)
+        {
+            debug_printf("xmodem: WARNING - packet contains %d 0xFF bytes (telnet IAC!)\n", ff_count);
+        }
+    }
+    
+    {
+        int written = pipes_write_block(session->line, packet, packet_len);
+        debug_printf("xmodem: pipes_write_block returned %d (expected %d)\n", written, packet_len);
+    }
+    
+    /* Clear input buffer after sending (matches ARCbbs behavior) - discard any echo/garbage */
+    pipes_clear_input(session->line);
+}
+
+/*
+ * Verify received block.
+ * Returns: 1 if valid, 0 if invalid
+ */
+static int xmodem_verify_block(xmodem_protocol_state *xstate)
+{
+    /* Check block number complement */
+    if ((xstate->received_block_num ^ xstate->received_complement) != 0xFF)
+    {
+        debug_printf("xmodem: block number complement mismatch\n");
+        return 0;
+    }
+    
+    /* Check CRC or checksum */
+    if (xstate->use_crc)
+    {
+        uint16_t calculated = crc16(xstate->block_buffer, xstate->block_size);
+        if (calculated != xstate->received_crc)
+        {
+            debug_printf("xmodem: CRC mismatch (calc=%04X recv=%04X)\n",
+                         calculated, xstate->received_crc);
+            return 0;
+        }
+    }
+    else
+    {
+        uint8_t calculated = checksum8(xstate->block_buffer, xstate->block_size);
+        if (calculated != xstate->received_checksum)
+        {
+            debug_printf("xmodem: checksum mismatch (calc=%02X recv=%02X)\n",
+                         calculated, xstate->received_checksum);
+            return 0;
+        }
+    }
+    
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Send State Machine                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int xmodem_poll_send(transfer_session *session)
+{
+    xmodem_protocol_state *xstate = (xmodem_protocol_state *)session->protocol_state;
+    int c;
+    int bytes_read;
+    int bytes_avail;
+    
+    switch (xstate->state)
+    {
+        case XMODEM_SEND_WAIT_START:
+            /* Wait for receiver to initiate with 'C' (CRC) or NAK (checksum) */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->start_attempts++;
+                debug_printf("xmodem: start timeout, attempt %d/%d\n", 
+                             xstate->start_attempts, XMODEM_MAX_START);
+                if (xstate->start_attempts >= XMODEM_MAX_START)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "No response from receiver");
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    return 0;
+                }
+                /* Reset timeout and wait more */
+                transfer_set_timeout(session, XMODEM_TIMEOUT_START / XMODEM_MAX_START);
+                return 1;
+            }
+            
+            bytes_avail = pipes_bytes_available(session->line);
+            debug_printf("xmodem: WAIT_START - line=%d, bytes_avail=%d\n", session->line, bytes_avail);
+            if (bytes_avail <= 0)
+            {
+                return 1;  /* No data yet (or error) */
+            }
+            
+            debug_printf("xmodem: %d bytes available in pipe\n", bytes_avail);
+            c = pipes_read_byte(session->line);
+            debug_printf("xmodem: received byte 0x%02X ('%c')\n", c, (c >= 32 && c < 127) ? c : '.');
+            
+            if (xmodem_check_cancel(xstate, c))
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "Transfer cancelled by receiver");
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_REMOTE_CANCEL;
+                return 0;
+            }
+            
+            if (c == XMODEM_CRC_START)
+            {
+                /* CRC mode */
+                xstate->use_crc = 1;
+                debug_printf("xmodem: receiver requested CRC mode\n");
+                
+                /* Build and send first block */
+                bytes_read = xmodem_build_send_block(session, xstate);
+                if (bytes_read < 0)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "File read error");
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_FILE_ERROR;
+                    return 0;
+                }
+                
+                if (bytes_read == 0)
+                {
+                    /* Empty file - send EOT immediately */
+                    xstate->state = XMODEM_SEND_EOT;
+                }
+                else
+                {
+                    xmodem_send_block(session, xstate);
+                    transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+                    xstate->state = XMODEM_SEND_WAIT_ACK;
+                }
+            }
+            else if (c == XMODEM_NAK)
+            {
+                /* Checksum mode */
+                xstate->use_crc = 0;
+                debug_printf("xmodem: receiver requested checksum mode\n");
+                
+                /* Build and send first block */
+                bytes_read = xmodem_build_send_block(session, xstate);
+                if (bytes_read < 0)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "File read error");
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_FILE_ERROR;
+                    return 0;
+                }
+                
+                if (bytes_read == 0)
+                {
+                    /* Empty file - send EOT immediately */
+                    xstate->state = XMODEM_SEND_EOT;
+                }
+                else
+                {
+                    xmodem_send_block(session, xstate);
+                    transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+                    xstate->state = XMODEM_SEND_WAIT_ACK;
+                }
+            }
+            /* Ignore other characters */
+            break;
+            
+        case XMODEM_SEND_WAIT_ACK:
+            /* Wait for ACK or NAK */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->consecutive_errors++;
+                if (xstate->consecutive_errors >= XMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "Too many errors");
+                    xmodem_send_cancel(session);
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                /* Resend block */
+                debug_printf("xmodem: timeout, resending block %d\n", xstate->block_number);
+                xmodem_send_block(session, xstate);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+                return 1;
+            }
+            
+            if (pipes_bytes_available(session->line) == 0)
+            {
+                return 1;  /* No data yet */
+            }
+            
+            c = pipes_read_byte(session->line);
+            debug_printf("xmodem: WAIT_ACK received byte 0x%02X ('%c')\n", 
+                         c, (c >= 32 && c < 127) ? c : '.');
+            
+            if (xmodem_check_cancel(xstate, c))
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "Transfer cancelled by receiver");
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_REMOTE_CANCEL;
+                return 0;
+            }
+            
+            if (c == XMODEM_ACK)
+            {
+                /* Block acknowledged */
+                xstate->consecutive_errors = 0;
+                session->bytes_transferred += xstate->bytes_in_block;
+                
+                if (xstate->eof_reached)
+                {
+                    /* All data sent, send EOT */
+                    xstate->state = XMODEM_SEND_EOT;
+                }
+                else
+                {
+                    /* Prepare next block */
+                    xstate->block_number++;
+                    
+                    bytes_read = xmodem_build_send_block(session, xstate);
+                    if (bytes_read < 0)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg),
+                                 "File read error");
+                        xmodem_send_cancel(session);
+                        xstate->state = XMODEM_ERROR;
+                        session->state = XFER_ERROR;
+                        session->result = XFER_RESULT_FILE_ERROR;
+                        return 0;
+                    }
+                    
+                    if (bytes_read == 0)
+                    {
+                        /* End of file */
+                        xstate->state = XMODEM_SEND_EOT;
+                    }
+                    else
+                    {
+                        xmodem_send_block(session, xstate);
+                        transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+                    }
+                }
+            }
+            else if (c == XMODEM_NAK)
+            {
+                /* Block rejected, resend */
+                xstate->consecutive_errors++;
+                if (xstate->consecutive_errors >= XMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "Too many errors");
+                    xmodem_send_cancel(session);
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                debug_printf("xmodem: NAK received, resending block %d\n", xstate->block_number);
+                xmodem_send_block(session, xstate);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+            }
+            /* Ignore other characters */
+            break;
+            
+        case XMODEM_SEND_EOT:
+            /* Send end of transmission */
+            pipes_write_byte(session->line, XMODEM_EOT);
+            transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+            xstate->eot_attempts = 1;
+            xstate->state = XMODEM_SEND_WAIT_EOT_ACK;
+            break;
+            
+        case XMODEM_SEND_WAIT_EOT_ACK:
+            /* Wait for EOT acknowledgement */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->eot_attempts++;
+                if (xstate->eot_attempts >= XMODEM_MAX_EOT)
+                {
+                    /* Give up, but consider transfer successful */
+                    debug_printf("xmodem: EOT not acknowledged, but data sent\n");
+                    xstate->state = XMODEM_COMPLETE;
+                    session->state = XFER_COMPLETE;
+                    session->result = XFER_RESULT_OK;
+                    return 0;
+                }
+                /* Resend EOT */
+                pipes_write_byte(session->line, XMODEM_EOT);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+                return 1;
+            }
+            
+            if (pipes_bytes_available(session->line) == 0)
+            {
+                return 1;  /* No data yet */
+            }
+            
+            c = pipes_read_byte(session->line);
+            
+            if (c == XMODEM_ACK)
+            {
+                debug_printf("xmodem: transfer complete, %ld bytes sent\n",
+                             session->bytes_transferred);
+                xstate->state = XMODEM_COMPLETE;
+                session->state = XFER_COMPLETE;
+                session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            else if (c == XMODEM_NAK)
+            {
+                /* Some receivers NAK the first EOT, resend */
+                xstate->eot_attempts++;
+                pipes_write_byte(session->line, XMODEM_EOT);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_ACK);
+            }
+            break;
+            
+        case XMODEM_COMPLETE:
+        case XMODEM_ERROR:
+            return 0;
+            
+        default:
+            debug_printf("xmodem: invalid send state %d\n", xstate->state);
+            xstate->state = XMODEM_ERROR;
+            session->state = XFER_ERROR;
+            return 0;
+    }
+    
+    return 1;  /* Still active */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Receive State Machine                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+static int xmodem_poll_receive(transfer_session *session)
+{
+    xmodem_protocol_state *xstate = (xmodem_protocol_state *)session->protocol_state;
+    int c;
+    int write_result;
+    
+    switch (xstate->state)
+    {
+        case XMODEM_RECV_SEND_START:
+            /* Send 'C' for CRC mode or NAK for checksum mode */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->start_attempts++;
+                debug_printf("xmodem recv: start attempt %d/%d (use_crc=%d)\n",
+                             xstate->start_attempts, XMODEM_MAX_START, xstate->use_crc);
+                
+                /* After several 'C' attempts, fall back to checksum mode */
+                if (xstate->start_attempts >= 4 && xstate->use_crc)
+                {
+                    debug_printf("xmodem: falling back to checksum mode\n");
+                    xstate->use_crc = 0;
+                }
+                
+                if (xstate->start_attempts >= XMODEM_MAX_START)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "No response from sender");
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_TIMEOUT;
+                    return 0;
+                }
+                
+                /* Send start character */
+                if (xstate->use_crc)
+                {
+                    debug_printf("xmodem recv: sending 'C' (0x43)\n");
+                    pipes_write_byte(session->line, XMODEM_CRC_START);
+                }
+                else
+                {
+                    debug_printf("xmodem recv: sending NAK (0x15)\n");
+                    pipes_write_byte(session->line, XMODEM_NAK);
+                }
+                
+                transfer_set_timeout(session, XMODEM_TIMEOUT_START / XMODEM_MAX_START);
+            }
+            
+            if (pipes_bytes_available(session->line) == 0)
+            {
+                return 1;  /* No data yet */
+            }
+            
+            c = pipes_read_byte(session->line);
+            debug_printf("xmodem recv: got byte 0x%02X in SEND_START state\n", c);
+            
+            if (xmodem_check_cancel(xstate, c))
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "Transfer cancelled by sender");
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_REMOTE_CANCEL;
+                return 0;
+            }
+            
+            if (c == XMODEM_SOH)
+            {
+                debug_printf("xmodem recv: SOH received, starting block read\n");
+                xstate->block_size = XMODEM_BLOCK_128;
+                xstate->buffer_expected = XMODEM_BLOCK_128;
+                xstate->header_bytes_read = 0;
+                xstate->state = XMODEM_RECV_READ_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_CHAR);
+            }
+            else if (c == XMODEM_STX)
+            {
+                debug_printf("xmodem recv: STX received, starting 1K block read\n");
+                xstate->block_size = XMODEM_BLOCK_1K;
+                xstate->buffer_expected = XMODEM_BLOCK_1K;
+                xstate->header_bytes_read = 0;
+                xstate->state = XMODEM_RECV_READ_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_CHAR);
+            }
+            else if (c == XMODEM_EOT)
+            {
+                /* Empty transfer (shouldn't happen but handle it) */
+                pipes_write_byte(session->line, XMODEM_ACK);
+                debug_printf("xmodem: empty transfer (immediate EOT)\n");
+                xstate->state = XMODEM_COMPLETE;
+                session->state = XFER_COMPLETE;
+                session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            break;
+            
+        case XMODEM_RECV_WAIT_HEADER:
+            /* Wait for SOH/STX/EOT */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->consecutive_errors++;
+                if (xstate->consecutive_errors >= XMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "Too many errors");
+                    xmodem_send_cancel(session);
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                /* Send NAK to request retransmission */
+                pipes_write_byte(session->line, XMODEM_NAK);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_BLOCK);
+                return 1;
+            }
+            
+            if (pipes_bytes_available(session->line) == 0)
+            {
+                return 1;  /* No data yet */
+            }
+            
+            c = pipes_read_byte(session->line);
+            
+            if (xmodem_check_cancel(xstate, c))
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "Transfer cancelled by sender");
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_REMOTE_CANCEL;
+                return 0;
+            }
+            
+            if (c == XMODEM_SOH)
+            {
+                xstate->block_size = XMODEM_BLOCK_128;
+                xstate->buffer_expected = XMODEM_BLOCK_128;
+                xstate->header_bytes_read = 0;
+                xstate->state = XMODEM_RECV_READ_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_CHAR);
+            }
+            else if (c == XMODEM_STX)
+            {
+                xstate->block_size = XMODEM_BLOCK_1K;
+                xstate->buffer_expected = XMODEM_BLOCK_1K;
+                xstate->header_bytes_read = 0;
+                xstate->state = XMODEM_RECV_READ_BLOCK;
+                transfer_set_timeout(session, XMODEM_TIMEOUT_CHAR);
+            }
+            else if (c == XMODEM_EOT)
+            {
+                /* End of transmission */
+                pipes_write_byte(session->line, XMODEM_ACK);
+                debug_printf("xmodem: transfer complete, %ld bytes received\n",
+                             session->bytes_transferred);
+                xstate->state = XMODEM_COMPLETE;
+                session->state = XFER_COMPLETE;
+                session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            break;
+            
+        case XMODEM_RECV_READ_BLOCK:
+            /* Read block header and data */
+            if (transfer_timeout_expired(session))
+            {
+                xstate->consecutive_errors++;
+                debug_printf("xmodem: timeout reading block (header=%d, pos=%d/%d, crc=%d)\n",
+                             xstate->header_bytes_read, xstate->buffer_pos, 
+                             xstate->buffer_expected, xstate->crc_bytes_read);
+                xstate->state = XMODEM_RECV_SEND_NAK;
+                break;
+            }
+            
+            while (pipes_bytes_available(session->line) > 0)
+            {
+                c = pipes_read_byte(session->line);
+                transfer_set_timeout(session, XMODEM_TIMEOUT_CHAR);
+                
+                if (xmodem_check_cancel(xstate, c))
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg),
+                             "Transfer cancelled by sender");
+                    xstate->state = XMODEM_ERROR;
+                    session->state = XFER_ERROR;
+                    session->result = XFER_RESULT_REMOTE_CANCEL;
+                    return 0;
+                }
+                
+                /* Read header bytes first */
+                if (xstate->header_bytes_read < 2)
+                {
+                    if (xstate->header_bytes_read == 0)
+                    {
+                        xstate->received_block_num = (uint8_t)c;
+                    }
+                    else
+                    {
+                        xstate->received_complement = (uint8_t)c;
+                    }
+                    xstate->header_bytes_read++;
+                    
+                    if (xstate->header_bytes_read == 2)
+                    {
+                        xstate->buffer_pos = 0;
+                        xstate->crc_bytes_read = 0;
+                    }
+                    continue;
+                }
+                
+                /* Read data bytes */
+                if (xstate->buffer_pos < xstate->buffer_expected)
+                {
+                    xstate->block_buffer[xstate->buffer_pos++] = (uint8_t)c;
+                    continue;
+                }
+                
+                /* Read CRC or checksum */
+                if (xstate->use_crc)
+                {
+                    if (xstate->crc_bytes_read == 0)
+                    {
+                        xstate->received_crc = (uint16_t)c << 8;
+                        xstate->crc_bytes_read = 1;
+                    }
+                    else
+                    {
+                        xstate->received_crc |= (uint16_t)c;
+                        xstate->state = XMODEM_RECV_VERIFY;
+                        break;
+                    }
+                }
+                else
+                {
+                    xstate->received_checksum = (uint8_t)c;
+                    xstate->state = XMODEM_RECV_VERIFY;
+                    break;
+                }
+            }
+            break;
+            
+        case XMODEM_RECV_VERIFY:
+            /* Verify the received block */
+            if (!xmodem_verify_block(xstate))
+            {
+                xstate->consecutive_errors++;
+                xstate->state = XMODEM_RECV_SEND_NAK;
+                break;
+            }
+            
+            /* Check block number */
+            if (xstate->received_block_num == (uint8_t)((xstate->expected_block - 1) & 0xFF))
+            {
+                /* Duplicate block - ACK it but don't write again */
+                debug_printf("xmodem: duplicate block %d\n", xstate->received_block_num);
+                xstate->state = XMODEM_RECV_SEND_ACK;
+                break;
+            }
+            
+            if (xstate->received_block_num != (uint8_t)(xstate->expected_block & 0xFF))
+            {
+                /* Out of sequence */
+                debug_printf("xmodem: block out of sequence (got %d, expected %d)\n",
+                             xstate->received_block_num, xstate->expected_block & 0xFF);
+                xstate->consecutive_errors++;
+                xstate->state = XMODEM_RECV_SEND_NAK;
+                break;
+            }
+            
+            /* Write data to file */
+            write_result = transfer_write_file_block(session, xstate->block_buffer, xstate->block_size);
+            if (write_result < 0)
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "File write error");
+                xmodem_send_cancel(session);
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_FILE_ERROR;
+                return 0;
+            }
+            
+            session->bytes_transferred += xstate->block_size;
+            xstate->expected_block++;
+            xstate->consecutive_errors = 0;
+            
+            /* Log every 50 blocks to avoid flooding */
+            if ((xstate->expected_block % 50) == 0)
+            {
+                debug_printf("xmodem recv: block %d complete, %ld bytes total\n",
+                             xstate->expected_block - 1, session->bytes_transferred);
+            }
+            
+            xstate->state = XMODEM_RECV_SEND_ACK;
+            break;
+            
+        case XMODEM_RECV_SEND_ACK:
+            pipes_write_byte(session->line, XMODEM_ACK);
+            xstate->state = XMODEM_RECV_WAIT_HEADER;
+            transfer_set_timeout(session, XMODEM_TIMEOUT_BLOCK);
+            break;
+            
+        case XMODEM_RECV_SEND_NAK:
+            if (xstate->consecutive_errors >= XMODEM_MAX_ERRORS)
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg),
+                         "Too many errors");
+                xmodem_send_cancel(session);
+                xstate->state = XMODEM_ERROR;
+                session->state = XFER_ERROR;
+                session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                return 0;
+            }
+            
+            /* Flush any remaining garbage */
+            while (pipes_bytes_available(session->line) > 0)
+            {
+                pipes_read_byte(session->line);
+            }
+            
+            debug_printf("xmodem recv: sending NAK (errors=%d)\n", xstate->consecutive_errors);
+            pipes_write_byte(session->line, XMODEM_NAK);
+            xstate->state = XMODEM_RECV_WAIT_HEADER;
+            transfer_set_timeout(session, XMODEM_TIMEOUT_BLOCK);
+            break;
+            
+        case XMODEM_COMPLETE:
+        case XMODEM_ERROR:
+            return 0;
+            
+        default:
+            debug_printf("xmodem: invalid receive state %d\n", xstate->state);
+            xstate->state = XMODEM_ERROR;
+            session->state = XFER_ERROR;
+            return 0;
+    }
+    
+    return 1;  /* Still active */
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Public API                                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+int xmodem_init_send(transfer_session *session)
+{
+    xmodem_protocol_state *xstate;
+    
+    xstate = (xmodem_protocol_state *)malloc(sizeof(xmodem_protocol_state));
+    if (xstate == NULL)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg),
+                 "Out of memory");
+        return -1;
+    }
+    
+    memset(xstate, 0, sizeof(xmodem_protocol_state));
+    
+    /* Set mode based on protocol variant */
+    switch (session->protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+            xstate->use_crc = 0;  /* Will be set by receiver */
+            xstate->use_1k = 0;
+            xstate->block_size = XMODEM_BLOCK_128;
+            break;
+            
+        case TRANSFER_PROTO_XMODEM_CRC:
+            xstate->use_crc = 1;  /* Prefer CRC, but respect receiver */
+            xstate->use_1k = 0;
+            xstate->block_size = XMODEM_BLOCK_128;
+            break;
+            
+        case TRANSFER_PROTO_XMODEM_1K:
+            xstate->use_crc = 1;
+            xstate->use_1k = 1;
+            xstate->block_size = XMODEM_BLOCK_1K;
+            break;
+            
+        default:
+            free(xstate);
+            return -1;
+    }
+    
+    xstate->state = XMODEM_SEND_WAIT_START;
+    xstate->block_number = 1;
+    
+    session->protocol_state = xstate;
+    transfer_set_timeout(session, XMODEM_TIMEOUT_START);
+    
+    /* CRC self-test: "123456789" should give 0x31C3 for XMODEM CRC-16 */
+    {
+        const uint8_t test[] = "123456789";
+        uint16_t test_crc = crc16(test, 9);
+        debug_printf("xmodem: CRC self-test: crc16(\"123456789\") = 0x%04X (expected 0x31C3)\n", test_crc);
+    }
+    
+    debug_printf("xmodem: init send, block_size=%d, use_crc=%d\n",
+                 xstate->block_size, xstate->use_crc);
+    
+    return 0;
+}
+
+int xmodem_init_receive(transfer_session *session)
+{
+    xmodem_protocol_state *xstate;
+    
+    xstate = (xmodem_protocol_state *)malloc(sizeof(xmodem_protocol_state));
+    if (xstate == NULL)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg),
+                 "Out of memory");
+        return -1;
+    }
+    
+    memset(xstate, 0, sizeof(xmodem_protocol_state));
+    
+    /* Set mode based on protocol variant */
+    switch (session->protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+            xstate->use_crc = 0;  /* Use checksum only */
+            xstate->use_1k = 0;
+            break;
+            
+        case TRANSFER_PROTO_XMODEM_CRC:
+            xstate->use_crc = 1;  /* Request CRC, fallback to checksum */
+            xstate->use_1k = 0;
+            break;
+            
+        case TRANSFER_PROTO_XMODEM_1K:
+            xstate->use_crc = 1;
+            xstate->use_1k = 1;  /* Accept 1K blocks */
+            break;
+            
+        default:
+            free(xstate);
+            return -1;
+    }
+    
+    xstate->state = XMODEM_RECV_SEND_START;
+    xstate->expected_block = 1;
+    
+    session->protocol_state = xstate;
+    
+    /* Flush any leftover input data before starting */
+    while (pipes_bytes_available(session->line) > 0)
+    {
+        pipes_read_byte(session->line);
+    }
+    
+    /* Send initial start character immediately */
+    if (xstate->use_crc)
+    {
+        pipes_write_byte(session->line, XMODEM_CRC_START);
+    }
+    else
+    {
+        pipes_write_byte(session->line, XMODEM_NAK);
+    }
+    
+    transfer_set_timeout(session, XMODEM_TIMEOUT_START / XMODEM_MAX_START);
+    
+    debug_printf("xmodem: init receive, use_crc=%d, use_1k=%d\n",
+                 xstate->use_crc, xstate->use_1k);
+    
+    return 0;
+}
+
+int xmodem_poll(transfer_session *session)
+{
+    if (session == NULL || session->protocol_state == NULL)
+    {
+        return 0;
+    }
+    
+    if (session->direction == TRANSFER_DIR_SEND)
+    {
+        return xmodem_poll_send(session);
+    }
+    else
+    {
+        return xmodem_poll_receive(session);
+    }
+}
+
+void xmodem_cleanup(transfer_session *session)
+{
+    if (session != NULL && session->protocol_state != NULL)
+    {
+        free(session->protocol_state);
+        session->protocol_state = NULL;
+    }
+}

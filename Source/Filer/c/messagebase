@@ -28,6 +28,22 @@
 #define MESSAGEBASE_FILES_PER_GROUP 60
 #define MESSAGEBASE_MAX_FILE_GROUPS (MESSAGEBASE_MAX_DIR_OBJECTS - 1)
 
+/* Transfer session cache - keep file handles open during multi-block operations */
+#define MSG_TRANSFER_CACHE_SIZE 32   /* One per line for concurrent transfers */
+#define MSG_TRANSFER_CACHE_TTL 500   /* Centiseconds (5 seconds) idle timeout */
+
+typedef struct {
+    int active;
+    int base_id;
+    int message_id;
+    char mode;          /* 'r' for read, 'w' for write */
+    FILE *handle;
+    unsigned int last_access;  /* OS_ReadMonotonicTime */
+} MSG_TRANSFER_CACHE_ENTRY;
+
+static MSG_TRANSFER_CACHE_ENTRY msg_transfer_cache[MSG_TRANSFER_CACHE_SIZE];
+static int msg_transfer_cache_initialised = 0;
+
 static int messagebase_next_id = 0;
 static MESSAGEBASE_RECORD messagebase_info_cache;
 static MESSAGEBASE_AREA messagebase_area_cache;
@@ -57,6 +73,177 @@ static int messagebase_allocate_area_id(int base_id, int *new_id);
 static int messagebase_store_area_record(int base_id, const MESSAGEBASE_AREA *record);
 static int messagebase_find_area_record(int base_id, int area_id, MESSAGEBASE_AREA *record_out);
 static void messagebase_log(const char *format, ...);
+
+/* ******************************************************************************************************************************************************** */
+/* Transfer Cache Helper Functions                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+static unsigned int msg_transfer_cache_get_time(void)
+{
+    _kernel_swi_regs regs;
+    if (_kernel_swi(OS_ReadMonotonicTime, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+    return (unsigned int)regs.r[0];
+}
+
+static void msg_transfer_cache_init(void)
+{
+    int i;
+    if (!msg_transfer_cache_initialised)
+    {
+        for (i = 0; i < MSG_TRANSFER_CACHE_SIZE; i++)
+        {
+            msg_transfer_cache[i].active = 0;
+            msg_transfer_cache[i].handle = NULL;
+        }
+        msg_transfer_cache_initialised = 1;
+    }
+}
+
+static void msg_transfer_cache_close_expired(void)
+{
+    int i;
+    unsigned int now = msg_transfer_cache_get_time();
+    
+    for (i = 0; i < MSG_TRANSFER_CACHE_SIZE; i++)
+    {
+        if (msg_transfer_cache[i].active && 
+            (now - msg_transfer_cache[i].last_access) > MSG_TRANSFER_CACHE_TTL)
+        {
+            if (msg_transfer_cache[i].handle != NULL)
+            {
+                fclose(msg_transfer_cache[i].handle);
+                msg_transfer_cache[i].handle = NULL;
+            }
+            msg_transfer_cache[i].active = 0;
+        }
+    }
+}
+
+/**
+ * Get a cached file handle for message transfer, or open a new one.
+ * Returns slot index on success, -1 on failure.
+ */
+static int msg_transfer_cache_get_handle(int base_id, int message_id, const char *path, char mode, FILE **handle_out)
+{
+    int i;
+    int free_slot = -1;
+    unsigned int oldest_time = 0xFFFFFFFF;
+    int oldest_slot = -1;
+    unsigned int now;
+
+    msg_transfer_cache_init();
+    msg_transfer_cache_close_expired();
+    
+    now = msg_transfer_cache_get_time();
+
+    /* Look for existing entry or find a free/oldest slot */
+    for (i = 0; i < MSG_TRANSFER_CACHE_SIZE; i++)
+    {
+        if (msg_transfer_cache[i].active)
+        {
+            if (msg_transfer_cache[i].base_id == base_id &&
+                msg_transfer_cache[i].message_id == message_id &&
+                msg_transfer_cache[i].mode == mode)
+            {
+                /* Found existing entry - refresh access time */
+                msg_transfer_cache[i].last_access = now;
+                *handle_out = msg_transfer_cache[i].handle;
+                return i;
+            }
+            /* Track oldest for eviction */
+            if (msg_transfer_cache[i].last_access < oldest_time)
+            {
+                oldest_time = msg_transfer_cache[i].last_access;
+                oldest_slot = i;
+            }
+        }
+        else if (free_slot < 0)
+        {
+            free_slot = i;
+        }
+    }
+
+    /* Use free slot or evict oldest */
+    if (free_slot < 0)
+    {
+        if (oldest_slot >= 0)
+        {
+            if (msg_transfer_cache[oldest_slot].handle != NULL)
+            {
+                fclose(msg_transfer_cache[oldest_slot].handle);
+            }
+            free_slot = oldest_slot;
+        }
+        else
+        {
+            return -1; /* No slot available */
+        }
+    }
+
+    /* Open new handle */
+    {
+        FILE *new_handle;
+        const char *fmode = (mode == 'w') ? "ab" : "rb";
+        
+        new_handle = fopen(path, fmode);
+        if (new_handle == NULL)
+        {
+            return -1;
+        }
+
+        msg_transfer_cache[free_slot].active = 1;
+        msg_transfer_cache[free_slot].base_id = base_id;
+        msg_transfer_cache[free_slot].message_id = message_id;
+        msg_transfer_cache[free_slot].mode = mode;
+        msg_transfer_cache[free_slot].handle = new_handle;
+        msg_transfer_cache[free_slot].last_access = now;
+
+        *handle_out = new_handle;
+        return free_slot;
+    }
+}
+
+/**
+ * Invalidate (close and remove) a cache entry for a specific message.
+ */
+static void msg_transfer_cache_invalidate(int base_id, int message_id)
+{
+    int i;
+    for (i = 0; i < MSG_TRANSFER_CACHE_SIZE; i++)
+    {
+        if (msg_transfer_cache[i].active &&
+            msg_transfer_cache[i].base_id == base_id &&
+            msg_transfer_cache[i].message_id == message_id)
+        {
+            if (msg_transfer_cache[i].handle != NULL)
+            {
+                fclose(msg_transfer_cache[i].handle);
+                msg_transfer_cache[i].handle = NULL;
+            }
+            msg_transfer_cache[i].active = 0;
+        }
+    }
+}
+
+/**
+ * Close all cached handles (call on module finalise).
+ */
+static void msg_transfer_cache_close_all(void)
+{
+    int i;
+    for (i = 0; i < MSG_TRANSFER_CACHE_SIZE; i++)
+    {
+        if (msg_transfer_cache[i].active && msg_transfer_cache[i].handle != NULL)
+        {
+            fclose(msg_transfer_cache[i].handle);
+            msg_transfer_cache[i].handle = NULL;
+        }
+        msg_transfer_cache[i].active = 0;
+    }
+}
 
 int messagebase_initialise(void)
 {
@@ -102,6 +289,7 @@ int messagebase_initialise(void)
 
 void messagebase_finalise(void)
 {
+  msg_transfer_cache_close_all();
   messagebase_cache_clear();
   messagebase_next_id = 0;
 }
@@ -311,6 +499,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       char path[300];
       MESSAGE_RECORD record;
       FILE *file;
+      int cache_slot;
 
       debug_printf("UPLOAD_BLOCK: base=%d msg=%d len=%u", base_id, message_id, (unsigned)length);
 
@@ -343,10 +532,11 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       }
       debug_printf("UPLOAD_BLOCK: path=%s", path);
 
-      file = fopen(path, "ab");
-      if (file == NULL)
+      /* Use cached file handle for better performance */
+      cache_slot = msg_transfer_cache_get_handle(base_id, message_id, path, 'w', &file);
+      if (cache_slot < 0 || file == NULL)
       {
-        debug_printf("UPLOAD_BLOCK: fopen failed");
+        debug_printf("UPLOAD_BLOCK: cache get handle failed");
         r->r[0] = -1;
         return;
       }
@@ -354,12 +544,13 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       if (fwrite(data, 1, length, file) != length)
       {
         debug_printf("UPLOAD_BLOCK: fwrite failed");
-        fclose(file);
+        msg_transfer_cache_invalidate(base_id, message_id);
         r->r[0] = -1;
         return;
       }
 
-      fclose(file);
+      /* Flush but keep handle open for next block */
+      fflush(file);
 
       if (!messagebase_update_messagesize(base_id, message_id, length))
       {
@@ -384,6 +575,7 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       MESSAGE_RECORD record;
       FILE *file;
       size_t transferred;
+      int cache_slot;
 
       debug_printf("DOWNLOAD_BLOCK: base=%d msg=%d off=%ld req=%u", base_id, message_id, offset, (unsigned)request);
 
@@ -410,10 +602,11 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       }
       debug_printf("DOWNLOAD_BLOCK: path=%s", path);
 
-      file = fopen(path, "rb");
-      if (file == NULL)
+      /* Use cached file handle for better performance */
+      cache_slot = msg_transfer_cache_get_handle(base_id, message_id, path, 'r', &file);
+      if (cache_slot < 0 || file == NULL)
       {
-        debug_printf("DOWNLOAD_BLOCK: fopen failed");
+        debug_printf("DOWNLOAD_BLOCK: cache get handle failed");
         r->r[0] = -1;
         return;
       }
@@ -423,10 +616,10 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         offset = 0;
       }
 
-      if (offset > 0 && fseek(file, offset, SEEK_SET) != 0)
+      if (fseek(file, offset, SEEK_SET) != 0)
       {
         debug_printf("DOWNLOAD_BLOCK: fseek failed");
-        fclose(file);
+        msg_transfer_cache_invalidate(base_id, message_id);
         r->r[0] = -1;
         return;
       }
@@ -434,13 +627,12 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       if (request == 0)
       {
         debug_printf("DOWNLOAD_BLOCK: zero request");
-        fclose(file);
         r->r[0] = 0;
         return;
       }
 
       transferred = fread(target, 1, request, file);
-      fclose(file);
+      /* Keep handle open for next block */
       debug_printf("DOWNLOAD_BLOCK: transferred %u bytes", (unsigned)transferred);
       r->r[0] = (int)transferred;
       break;
@@ -765,6 +957,23 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
 
       messagebase_log("Messagebase %d message %d marked exported", base_id, message_id);
       r->r[0] = 1;
+      break;
+    }
+
+    case FILER_MESSAGEBASE_CMD_END_UPLOAD:
+    {
+      /* R1 = base_id, R2 = message_id - flush and close cached file handle */
+      int base_id = r->r[1];
+      int message_id = r->r[2];
+
+      if (base_id <= 0 || message_id <= 0)
+      {
+        r->r[0] = -1;
+        return;
+      }
+
+      msg_transfer_cache_invalidate(base_id, message_id);
+      r->r[0] = 0;
       break;
     }
 
@@ -1419,6 +1628,49 @@ static int messagebase_append_message_record(int base_id, const MESSAGE_RECORD *
   return 1;
 }
 
+/**
+ * Update a message record in-place using direct seek by message ID.
+ * Much faster than copy-update-rename for frequent updates like bodysize.
+ * Returns 1 on success, 0 on failure.
+ */
+static int messagebase_update_message_record_inplace(int base_id, int message_id, const MESSAGE_RECORD *record)
+{
+  char path[300];
+  FILE *file;
+  long position;
+
+  if (message_id <= 0)
+  {
+    return 0;
+  }
+
+  messagebase_format_message_db_path(path, sizeof(path), base_id);
+
+  file = fopen(path, "r+b");
+  if (file == NULL)
+  {
+    return 0;
+  }
+
+  /* Direct seek: record N is at position (N-1) * sizeof(MESSAGE_RECORD) */
+  position = ((long)(message_id - 1)) * (long)sizeof(MESSAGE_RECORD);
+
+  if (fseek(file, position, SEEK_SET) != 0)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  if (fwrite(record, sizeof(MESSAGE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    return 0;
+  }
+
+  fclose(file);
+  return 1;
+}
+
 static int messagebase_update_message_record(int base_id, const MESSAGE_RECORD *record)
 {
   char source_path[300];
@@ -1517,6 +1769,12 @@ static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_REC
 {
   char path[300];
   FILE *file;
+  long position;
+
+  if (file_id <= 0)
+  {
+    return 0;
+  }
 
   messagebase_format_message_db_path(path, sizeof(path), base_id);
   debug_printf("find_message_record: path=%s looking for id=%d", path, file_id);
@@ -1528,25 +1786,40 @@ static int messagebase_find_message_record(int base_id, int file_id, MESSAGE_REC
     return 0;
   }
 
-  while (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) == 1)
+  /* Direct seek: record N is at position (N-1) * sizeof(MESSAGE_RECORD) */
+  /* This works because IDs are sequential starting at 1 and records are never physically deleted */
+  position = ((long)(file_id - 1)) * (long)sizeof(MESSAGE_RECORD);
+  
+  if (fseek(file, position, SEEK_SET) != 0)
   {
-    debug_printf("find_message_record: read id=%d bodysize=%ld", 
-                 messagebase_message_cache.id, messagebase_message_cache.bodysize);
-    if (messagebase_message_cache.id == file_id)
-    {
-      if (record_out != NULL)
-      {
-        *record_out = messagebase_message_cache;
-      }
-      fclose(file);
-      debug_printf("find_message_record: found! bodysize=%ld", messagebase_message_cache.bodysize);
-      return 1;
-    }
+    fclose(file);
+    debug_printf("find_message_record: seek failed");
+    return 0;
+  }
+
+  if (fread(&messagebase_message_cache, sizeof(MESSAGE_RECORD), 1, file) != 1)
+  {
+    fclose(file);
+    debug_printf("find_message_record: read failed");
+    return 0;
   }
 
   fclose(file);
-  debug_printf("find_message_record: not found");;
-  return 0;
+
+  /* Verify we got the right record (sanity check) */
+  if (messagebase_message_cache.id != file_id)
+  {
+    debug_printf("find_message_record: id mismatch got %d expected %d", messagebase_message_cache.id, file_id);
+    return 0;
+  }
+
+  debug_printf("find_message_record: found! bodysize=%ld", messagebase_message_cache.bodysize);
+  
+  if (record_out != NULL)
+  {
+    *record_out = messagebase_message_cache;
+  }
+  return 1;
 }
 
 static int messagebase_update_messagesize(int base_id, int message_id, size_t delta)
@@ -1563,9 +1836,10 @@ static int messagebase_update_messagesize(int base_id, int message_id, size_t de
   messagebase_message_cache.bodysize += (long)delta;
   debug_printf("update_messagesize: new bodysize=%ld", messagebase_message_cache.bodysize);
 
-  if (!messagebase_update_message_record(base_id, &messagebase_message_cache))
+  /* Use in-place update for frequent bodysize updates during upload */
+  if (!messagebase_update_message_record_inplace(base_id, message_id, &messagebase_message_cache))
   {
-    debug_printf("update_messagesize: update_message_record failed");
+    debug_printf("update_messagesize: update_message_record_inplace failed");
     return 0;
   }
 

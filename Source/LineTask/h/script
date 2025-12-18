@@ -92,36 +92,85 @@ typedef enum
 {
     SCRIPT_STATUS_IDLE = 0,
     SCRIPT_STATUS_RUNNING,
-    SCRIPT_STATUS_WAIT_INPUT_CHAR,
-    SCRIPT_STATUS_WAIT_INPUT_LINE,
-    SCRIPT_STATUS_WAIT_DOOR,
-    SCRIPT_STATUS_WAIT_SLEEP,
-    SCRIPT_STATUS_WAIT_LOGON_USERNAME,
-    SCRIPT_STATUS_WAIT_LOGON_PASSWORD,
-    SCRIPT_STATUS_WAIT_TRANSFER,
-    SCRIPT_STATUS_WAIT_ANSI,
-    SCRIPT_STATUS_WAIT_CHAT_REASON,
-    SCRIPT_STATUS_WAIT_CHAT,
-    SCRIPT_STATUS_WAIT_MORE,
-    SCRIPT_STATUS_WAIT_MB_SELECT,
-    SCRIPT_STATUS_WAIT_MB_AREA_SELECT,
-    SCRIPT_STATUS_WAIT_FB_SELECT,
-    SCRIPT_STATUS_WAIT_FB_AREA_SELECT,
-    SCRIPT_STATUS_WAIT_FB_BROWSE,
-    SCRIPT_STATUS_WAIT_PROTOCOL,
-    /* Upload flow states */
-    SCRIPT_STATUS_WAIT_UPLOAD_FILENAME,
-    SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION,
-    /* New user registration states */
-    SCRIPT_STATUS_WAIT_NEWUSER_USERNAME,
-    SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD,
-    SCRIPT_STATUS_WAIT_NEWUSER_PASSWORD2,
-    SCRIPT_STATUS_WAIT_NEWUSER_REALNAME,
-    SCRIPT_STATUS_WAIT_NEWUSER_EMAIL,
-    SCRIPT_STATUS_WAIT_NEWUSER_CONFIRM,
+    SCRIPT_STATUS_WAITING,          /* Waiting for input - check input_mode for type */
+    SCRIPT_STATUS_WAIT_DOOR,        /* Waiting for external door process */
+    SCRIPT_STATUS_WAIT_SLEEP,       /* Waiting for timer */
+    SCRIPT_STATUS_WAIT_TRANSFER,    /* Waiting for file transfer */
+    SCRIPT_STATUS_WAIT_CHAT,        /* In active chat session */
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
+    
+    /* === LEGACY STATUS VALUES (REMOVED) ===
+     * All legacy WAIT_* statuses have been migrated to the unified input system.
+     * The script_handle_user_byte() function now routes based on:
+     * - state->status == SCRIPT_STATUS_WAITING
+     * - state->input_context (WHY we're waiting)
+     * - state->input_mode (HOW to collect input)
+     *
+     * Migrated statuses:
+     * - SCRIPT_STATUS_WAIT_INPUT_CHAR -> WAITING + CTX_MB_VIEWER or CTX_FB_BROWSE
+     * - SCRIPT_STATUS_WAIT_INPUT_LINE -> WAITING + CTX_MB_COMPOSE or CTX_MB_SEARCH
+     * - SCRIPT_STATUS_WAIT_ANSI -> WAITING + CTX_ANSI_DETECT + MODE_SPECIAL
+     * - SCRIPT_STATUS_WAIT_FB_BROWSE -> WAITING + CTX_FB_BROWSE
+     * - SCRIPT_STATUS_WAIT_UPLOAD_FILENAME -> WAITING + CTX_UPLOAD_FILE
+     * - SCRIPT_STATUS_WAIT_UPLOAD_DESCRIPTION -> WAITING + CTX_UPLOAD_DESC
+     * - SCRIPT_STATUS_WAIT_LOGON_* -> WAITING + CTX_LOGON_*
+     * - SCRIPT_STATUS_WAIT_NEWUSER_* -> WAITING + CTX_NEWUSER_*
+     * - SCRIPT_STATUS_WAIT_CHAT_REASON -> WAITING + CTX_CHAT_REASON
+     * - SCRIPT_STATUS_WAIT_MB_SELECT -> WAITING + CTX_MB_SELECT
+     * - SCRIPT_STATUS_WAIT_MORE -> WAITING + CTX_MORE
+     * - SCRIPT_STATUS_WAIT_PROTOCOL -> WAITING + CTX_PROTOCOL
+     */
 } script_status;
+
+/* Input collection mode - HOW we collect input */
+typedef enum
+{
+    SCRIPT_INPUT_MODE_NONE = 0,     /* Not waiting for input */
+    SCRIPT_INPUT_MODE_CHAR,         /* Single character, no echo */
+    SCRIPT_INPUT_MODE_CHAR_ECHO,    /* Single character with echo */
+    SCRIPT_INPUT_MODE_LINE,         /* Line input with echo */
+    SCRIPT_INPUT_MODE_LINE_NOECHO,  /* Line input without echo (passwords) */
+    SCRIPT_INPUT_MODE_YESNO,        /* Y/N only input */
+    SCRIPT_INPUT_MODE_KEY,          /* Single key from set (protocol selection etc) */
+    SCRIPT_INPUT_MODE_SPECIAL       /* Custom parsing (ANSI detection) */
+} script_input_mode_t;
+
+/* Input context - WHY we're waiting for input */
+typedef enum
+{
+    SCRIPT_INPUT_CTX_NONE = 0,
+    /* Script commands */
+    SCRIPT_INPUT_CTX_PROMPT,        /* PROMPT/READLINE command */
+    SCRIPT_INPUT_CTX_ANYKEY,        /* ANYKEY command */
+    /* Authentication */
+    SCRIPT_INPUT_CTX_LOGON_USER,    /* LOGON - username */
+    SCRIPT_INPUT_CTX_LOGON_PASS,    /* LOGON - password */
+    /* New user registration */
+    SCRIPT_INPUT_CTX_NEWUSER_USER,  /* NEWUSER - username */
+    SCRIPT_INPUT_CTX_NEWUSER_PASS,  /* NEWUSER - password */
+    SCRIPT_INPUT_CTX_NEWUSER_PASS2, /* NEWUSER - confirm password */
+    SCRIPT_INPUT_CTX_NEWUSER_NAME,  /* NEWUSER - real name */
+    SCRIPT_INPUT_CTX_NEWUSER_EMAIL, /* NEWUSER - email */
+    SCRIPT_INPUT_CTX_NEWUSER_CONFIRM, /* NEWUSER - Y/N confirm */
+    /* Browser selection */
+    SCRIPT_INPUT_CTX_MB_SELECT,     /* Messagebase selection */
+    SCRIPT_INPUT_CTX_MB_AREA,       /* Messagebase area selection */
+    SCRIPT_INPUT_CTX_FB_SELECT,     /* Filebase selection */
+    SCRIPT_INPUT_CTX_FB_AREA,       /* Filebase area selection */
+    SCRIPT_INPUT_CTX_FB_BROWSE,     /* Filebase browser navigation */
+    SCRIPT_INPUT_CTX_MB_VIEWER,     /* Message viewer navigation */
+    SCRIPT_INPUT_CTX_MB_COMPOSE,    /* Message composer line input */
+    SCRIPT_INPUT_CTX_MB_SEARCH,     /* Message search term input */
+    /* Upload flow */
+    SCRIPT_INPUT_CTX_UPLOAD_FILE,   /* Upload filename */
+    SCRIPT_INPUT_CTX_UPLOAD_DESC,   /* Upload description */
+    SCRIPT_INPUT_CTX_PROTOCOL,      /* Protocol selection */
+    /* Misc */
+    SCRIPT_INPUT_CTX_CHAT_REASON,   /* Chat pager reason */
+    SCRIPT_INPUT_CTX_MORE,          /* More? prompt */
+    SCRIPT_INPUT_CTX_ANSI_DETECT    /* ANSI terminal detection */
+} script_input_context;
 
 typedef enum
 {
@@ -179,13 +228,14 @@ typedef enum
     SCRIPT_CMD_CONTINUE
 } script_command_type;
 
+/* Legacy enum - used by PROMPT command only, to be phased out */
 typedef enum
 {
-    SCRIPT_INPUT_NONE = 0,
-    SCRIPT_INPUT_CHAR,
-    SCRIPT_INPUT_LINE,
-    SCRIPT_INPUT_YESNO
-} script_input_mode;
+    SCRIPT_PROMPT_NONE = 0,
+    SCRIPT_PROMPT_CHAR,
+    SCRIPT_PROMPT_LINE,
+    SCRIPT_PROMPT_YESNO
+} script_prompt_type;
 
 typedef struct script_instruction
 {
@@ -245,12 +295,20 @@ typedef struct script_state
     size_t variable_capacity;
     size_t program_counter;
     script_status status;
-    script_input_mode input_mode;
-    int input_echo;
-    char input_target[32];
-    char *input_buffer;
+    
+    /* Unified input system */
+    script_input_mode_t input_mode;     /* HOW to collect input */
+    script_input_context input_context; /* WHY we're waiting for input */
+    int input_echo;                     /* Echo input to terminal? */
+    char input_target[32];              /* Variable to store result */
+    char *input_buffer;                 /* Accumulated input */
     size_t input_length;
     size_t input_capacity;
+    char input_valid_keys[32];          /* Valid keys for MODE_KEY */
+    
+    /* Legacy field for PROMPT command - to be phased out */
+    script_prompt_type prompt_type;
+    
     clock_t sleep_deadline;
     char last_error[128];
     /* Logon state */
@@ -280,6 +338,7 @@ typedef struct script_state
     char pending_upload_description[256];
     int pending_upload_filebase;
     int pending_upload_area;
+    int pending_upload_protocol;
     script_upload_stage pending_upload_stage;
     /* Pending download state for protocol selection from browser */
     int pending_download_file_id;
@@ -299,5 +358,13 @@ void script_notify_transfer_complete(script_state *state);
 script_status script_get_status(const script_state *state);
 const char *script_get_last_error(const script_state *state);
 const char *script_get_variable(const script_state *state, const char *name);
+void script_set_variable_value(script_state *state, const char *name, const char *value);
+
+/* Input helpers - start waiting for input in a specific context */
+void script_begin_input(script_state *state, script_input_mode_t mode, 
+                        script_input_context context);
+void script_begin_input_keys(script_state *state, script_input_context context,
+                             const char *valid_keys, const char *target);
+void script_clear_input(script_state *state);
 
 #endif

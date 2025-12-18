@@ -1,22 +1,23 @@
 # Make file for FTN Mailer
+# Uses partial library to avoid 255 char link command limit
 
 COMPONENT 	= FTN
-OBJS        = debug timer ftnlog mailer binkp queue tosser scanner packer md5 tic crypt compress freq echofix nodelist ftnupload
-LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
+# Core objects linked directly
+OBJS		= mailer ftnlog debug timer
+# Objects combined into partial library (split across lines for libfile)
+LIBOBJS1	= o.binkp o.queue o.tosser o.scanner o.packer o.md5 o.tic o.crypt
+LIBOBJS2	= o.compress o.freq o.echofix o.nodelist o.ftnupload o.unzip o.zip
+LIBS        = o.ftnlib C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan 
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
 include CApp
 
+# Build partial library in two steps
+o.ftnlib: ${LIBOBJS1} ${LIBOBJS2}
+	libfile -c -o o.ftnlib ${LIBOBJS1}
+	libfile -i -o o.ftnlib ${LIBOBJS2}
+
 # Dynamic dependencies:
-o.debug:	c.debug
-o.debug:	C:h.kernel
-o.debug:	C:h.swis
-o.debug:	h.debug
-o.timer:	c.timer
-o.timer:	C:h.kernel
-o.timer:	C:h.swis
-o.timer:	h.timer
-o.timer:	h.debug
 o.ftnlog:	c.ftnlog
 o.ftnlog:	C:Desk.h.Core
 o.ftnlog:	C:h.kernel
@@ -37,6 +38,15 @@ o.ftnlog:	C:Desk.h.Coord
 o.ftnlog:	C:Desk.h.Core
 o.ftnlog:	h.ftnlog
 o.ftnlog:	C:Desk.h.Wimp
+o.debug:	c.debug
+o.debug:	C:h.kernel
+o.debug:	C:h.swis
+o.debug:	h.debug
+o.timer:	c.timer
+o.timer:	C:h.kernel
+o.timer:	C:h.swis
+o.timer:	h.timer
+o.timer:	h.debug
 o.binkp:	c.binkp
 o.binkp:	C:h.kernel
 o.binkp:	C:h.swis
@@ -81,6 +91,7 @@ o.tosser:	h.queue
 o.tosser:	h.mailer
 o.tosser:	h.echofix
 o.tosser:	h.mailer
+o.tosser:	h.unzip
 o.tosser:	h.debug
 o.scanner:	c.scanner
 o.scanner:	C:h.kernel
@@ -112,6 +123,7 @@ o.packer:	h.mailer
 o.packer:	h.mailer
 o.packer:	h.queue
 o.packer:	h.mailer
+o.packer:	h.zip
 o.packer:	h.debug
 o.packer:	h.ftnlog
 o.packer:	C:Desk.h.Wimp
@@ -180,6 +192,12 @@ o.nodelist:	h.mailer
 o.nodelist:	h.debug
 o.nodelist:	h.ftnlog
 o.nodelist:	C:Desk.h.Wimp
+o.unzip:	c.unzip
+o.unzip:	h.unzip
+o.unzip:	h.debug
+o.zip:	c.zip
+o.zip:	h.zip
+o.zip:	h.debug
 o.mailer:	c.mailer
 o.mailer:	C:h.kernel
 o.mailer:	C:h.swis

@@ -963,7 +963,7 @@ static Desk_bool ftnfreq_handle_click(Desk_event_pollblock *event, void *ref)
         }
         
         /* Get optional password */
-        ptr = Desk_Icon_GetTextPtr(ftnfreq_window, FTNFREQ_PASSWORD);
+        ptr = Desk_Icon_GetTextPtr(ftnfreq_window, FTNFREQ_FREQPASSWORD);
         if (ptr != NULL)
         {
             strncpy(password, ptr, sizeof(password) - 1);

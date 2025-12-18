@@ -1,0 +1,459 @@
+/* ******************************************************************************************************************************************************** */
+/* LineTask Pipe I/O Module                                                                                                                                   */
+/*                                                                                                                                                            */
+/* Unified pipe access functions for all LineTask code.                                                                                                       */
+/* Supports both network mode (via Pipes module SWIs) and local mode (via internal buffer).                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "pipes.h"
+#include "ansiterm.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Module State                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+/* Local mode state - set by main.c when in local mode */
+static pipes_local_state *local_state = NULL;
+
+/* Snoop terminal for output mirroring */
+static ansiterm_state *snoop_terminal = NULL;
+
+/* ******************************************************************************************************************************************************** */
+/* Local Mode Management                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+void pipes_set_local_state(pipes_local_state *state)
+{
+    local_state = state;
+}
+
+pipes_local_state *pipes_get_local_state(void)
+{
+    return local_state;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Snoop Terminal Management                                                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+void pipes_set_snoop_terminal(void *terminal)
+{
+    snoop_terminal = (ansiterm_state *)terminal;
+}
+
+void *pipes_get_snoop_terminal(void)
+{
+    return snoop_terminal;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe Reading - Data FROM user (OUTPUT pipe)                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+int pipes_bytes_available(int line)
+{
+    _kernel_swi_regs regs;
+    int input_used;
+
+    /* In local mode, check the local input buffer */
+    if (local_state && local_state->active)
+    {
+        int count = local_state->input_head - local_state->input_tail;
+        if (count < 0)
+        {
+            count += LOCAL_BUFFER_SIZE;
+        }
+        return count;
+    }
+
+    regs.r[0] = line;
+
+    /* InputStatus returns bytes USED in the input pipe (Server writes user data here).
+     * This is the bytes available for LineTask to read. */
+    if (_kernel_swi(SWI_PIPES_INPUT_STATUS, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    input_used = regs.r[0];
+    if (input_used < 0)
+    {
+        return 0;
+    }
+
+    return input_used;
+}
+
+int pipes_read_byte(int line)
+{
+    _kernel_swi_regs regs;
+
+    /* In local mode, read from the local input buffer */
+    if (local_state && local_state->active)
+    {
+        if (local_state->input_head != local_state->input_tail)
+        {
+            int byte = (unsigned char)local_state->input_buffer[local_state->input_tail];
+            local_state->input_tail = (local_state->input_tail + 1) % LOCAL_BUFFER_SIZE;
+            return byte;
+        }
+        return -1;
+    }
+
+    regs.r[0] = line;
+
+    /* Read from INPUT pipe (Server writes user data here, LineTask reads) */
+    if (_kernel_swi(SWI_PIPES_INPUT_READ, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+int pipes_read_block(int line, uint8_t *buffer, int length)
+{
+    _kernel_swi_regs regs;
+
+    if (length <= 0)
+    {
+        return 0;
+    }
+
+    /* In local mode, read from the local input buffer */
+    if (local_state && local_state->active)
+    {
+        int copied = 0;
+        while (copied < length)
+        {
+            if (local_state->input_head != local_state->input_tail)
+            {
+                buffer[copied++] = (unsigned char)local_state->input_buffer[local_state->input_tail];
+                local_state->input_tail = (local_state->input_tail + 1) % LOCAL_BUFFER_SIZE;
+            }
+            else
+            {
+                break;
+            }
+        }
+        return copied;
+    }
+
+    regs.r[0] = line;
+    regs.r[1] = (int)buffer;
+    regs.r[2] = length;
+
+    /* Read from INPUT pipe (Server writes user data here, LineTask reads) */
+    if (_kernel_swi(SWI_PIPES_INPUT_READ_BLOCK, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+int pipes_peek_byte(int line)
+{
+    _kernel_swi_regs regs;
+
+    /* In local mode, peek the local input buffer */
+    if (local_state && local_state->active)
+    {
+        if (local_state->input_head != local_state->input_tail)
+        {
+            return (unsigned char)local_state->input_buffer[local_state->input_tail];
+        }
+        return -1;
+    }
+
+    regs.r[0] = line;
+
+    /* Peek at INPUT pipe (Server writes user data here, LineTask peeks) */
+    if (_kernel_swi(SWI_PIPES_INPUT_PEEK, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe Writing - Data TO user (OUTPUT pipe - Server reads from here)                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+int pipes_space_available(int line)
+{
+    _kernel_swi_regs regs;
+    int output_free;
+
+    /* In local mode, always have space (output goes directly to terminal) */
+    if (local_state && local_state->active)
+    {
+        return PIPE_BUFFER_SIZE;
+    }
+
+    regs.r[0] = line;
+
+    /* OutputStatus returns bytes FREE in the output pipe (LineTask writes here, Server reads).
+     * This directly gives us the space available. */
+    if (_kernel_swi(SWI_PIPES_OUTPUT_STATUS, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    output_free = regs.r[0];
+    if (output_free < 0)
+    {
+        return 0;
+    }
+
+    return output_free;
+}
+
+int pipes_write_byte(int line, uint8_t byte)
+{
+    _kernel_swi_regs regs;
+
+    /* In local mode, output directly to terminal */
+    if (local_state && local_state->active)
+    {
+        if (local_state->terminal != NULL)
+        {
+            ansiterm_process_byte((ansiterm_state *)local_state->terminal, byte);
+            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+        }
+        return 0;
+    }
+
+    /* Mirror to snoop terminal if set */
+    if (snoop_terminal != NULL && snoop_terminal->snoop_mode)
+    {
+        ansiterm_process_byte(snoop_terminal, byte);
+        ansiterm_update_dirty(snoop_terminal);
+    }
+
+    regs.r[0] = line;
+    regs.r[1] = byte;
+
+    /* Write to OUTPUT pipe (LineTask writes here, Server reads) */
+    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return (regs.r[0] == 0) ? 0 : -1;
+}
+
+int pipes_write_block(int line, const uint8_t *data, int length)
+{
+    _kernel_swi_regs regs;
+
+    if (length <= 0)
+    {
+        return 0;
+    }
+
+    /* In local mode, output directly to terminal */
+    if (local_state && local_state->active)
+    {
+        if (local_state->terminal != NULL)
+        {
+            ansiterm_process_block((ansiterm_state *)local_state->terminal, data, length);
+            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+        }
+        return length;
+    }
+
+    /* Mirror to snoop terminal if set */
+    if (snoop_terminal != NULL && snoop_terminal->snoop_mode)
+    {
+        ansiterm_process_block(snoop_terminal, data, length);
+        ansiterm_update_dirty(snoop_terminal);
+    }
+
+    regs.r[0] = line;
+    regs.r[1] = (int)data;
+    regs.r[2] = length;
+
+    /* Write to OUTPUT pipe (LineTask writes here, Server reads and sends to user) */
+    if (_kernel_swi(SWI_PIPES_OUTPUT_WRITE_BLOCK, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return regs.r[0];
+}
+
+void pipes_write_string(int line, const char *str)
+{
+    int retry_count = 0;
+
+    if (str == NULL)
+    {
+        return;
+    }
+
+    /* In local mode, output directly to terminal */
+    if (local_state && local_state->active)
+    {
+        if (local_state->terminal != NULL)
+        {
+            ansiterm_process_block((ansiterm_state *)local_state->terminal, 
+                                   (const unsigned char *)str, strlen(str));
+            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+        }
+        return;
+    }
+
+    /* Mirror to snoop terminal if set */
+    if (snoop_terminal != NULL && snoop_terminal->snoop_mode)
+    {
+        ansiterm_process_block(snoop_terminal, (const unsigned char *)str, strlen(str));
+        ansiterm_update_dirty(snoop_terminal);
+    }
+
+    while (*str != '\0')
+    {
+        int chunk = (int)strlen(str);
+        int written;
+
+        if (chunk > PIPE_TRANSFER_CHUNK)
+        {
+            chunk = PIPE_TRANSFER_CHUNK;
+        }
+
+        written = pipes_write_block(line, (const uint8_t *)str, chunk);
+        if (written <= 0)
+        {
+            retry_count++;
+            if (retry_count >= PIPE_WRITE_MAX_RETRIES)
+            {
+                /* Pipe blocked for too long - connection likely dead */
+                break;
+            }
+            pipes_wait_for_space();
+            continue;
+        }
+
+        /* Reset retry count on successful write */
+        retry_count = 0;
+        str += written;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Sysop Input Injection                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+int pipes_inject_input(int line, const char *buffer, int length)
+{
+    int copied = 0;
+
+    /* In local mode, add to the local input buffer */
+    if (local_state && local_state->active)
+    {
+        while (copied < length)
+        {
+            int next_head = (local_state->input_head + 1) % LOCAL_BUFFER_SIZE;
+            if (next_head == local_state->input_tail)
+            {
+                break; /* Buffer full */
+            }
+            local_state->input_buffer[local_state->input_head] = buffer[copied];
+            local_state->input_head = next_head;
+            copied++;
+        }
+        return copied;
+    }
+
+    /* In network mode, write to INPUT pipe */
+    while (copied < length)
+    {
+        _kernel_swi_regs regs;
+
+        regs.r[0] = line;
+        regs.r[1] = (unsigned int)(unsigned char)buffer[copied];
+        if (_kernel_swi(SWI_PIPES_INPUT_WRITE, &regs, &regs) != NULL)
+        {
+            break;
+        }
+
+        if (regs.r[0] != 0)
+        {
+            break;  /* Pipe full */
+        }
+
+        copied++;
+    }
+
+    return copied;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Pipe Control                                                                                                                                               */
+/* ******************************************************************************************************************************************************** */
+
+int pipes_clear_input(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+    if (_kernel_swi(SWI_PIPES_CLEAR_INPUT, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+int pipes_clear_output(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+    if (_kernel_swi(SWI_PIPES_CLEAR_OUTPUT, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+int pipes_reset(int line)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line;
+    if (_kernel_swi(SWI_PIPES_RESET_STATE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Utility Functions                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+void pipes_wait_for_space(void)
+{
+    _kernel_swi_regs regs;
+    int event_code;
+    int poll_word = 0;
+    
+    /* Do a Wimp_Poll with null events enabled to allow cooperative multitasking */
+    regs.r[0] = 0;  /* Accept null events */
+    regs.r[1] = (int)&poll_word;
+    _kernel_swi(0x400C7, &regs, &regs);  /* Wimp_Poll */
+    
+    (void)event_code;
+}

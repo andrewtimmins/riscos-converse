@@ -135,6 +135,10 @@ void packer_format_intl(char *buffer, size_t size, const FTN_ADDR *dest, const F
 void packer_format_datetime(time_t t, char *buffer, size_t size);
 unsigned short packer_get_message_attributes(int is_echomail, int is_private, int is_crash, int is_hold);
 
+/* Arcmail creation */
+int packer_create_arcmail(const char *packet_path, const FTN_ADDR *dest_addr);
+int packer_create_arcmail_multi(const char **packet_paths, int count, const FTN_ADDR *dest_addr);
+
 /* Statistics */
 void packer_get_stats(PACKER_STATS *stats);
 void packer_reset_stats(void);

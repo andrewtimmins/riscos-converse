@@ -1,0 +1,77 @@
+!SnakeDoor On-line Snake door game for ARCbbs by © Richard Paddle
+e-mail: Richard Paddle@2:252/102.1 (Fido) or py9rmp@ss1.bath.ac.uk
+
+History: Version 1.03 SHAREWARE
+
+15/2/93: 1.00-beta
+
+Started version 1.00-beta
+Finished working version on 20/2/93, beta testing.
+Problem with snake crashing after a few mins.
+Added scoring.
+
+To implement:
+
+: Timer on food eating
++ High score table of users
++ Instructions screen
+: Neater game over screen
++ Baudrate checker and trials at low baud rates
+: Terminal type - ANSI - checker
+: Levels of difficulty:
+     : Extra food
+     : Less time
+     : Faster growing snake
+     : Different respective scoring
+: Different screen levels & screen patterns
+: Pause/continue option?
+: More food eaten the faster the snake?
+
+1/3/93:
+
+Fixed bug with new food being positioned on top of snake
+Added a simple instruction screen and wrote ReadMe file.
+1st version put onto TWoC for trial.
+
+4/3/93:
+
+Tested at 2400 baud on Arcade found to be too unresponsive to
+keypresses, altered key detection repeat loop hopefully make
+things better.
+
+16/3/93:
+
+chr 219 full block
+Changed screen display and key search routines
+
+18/3/93: 1.01-beta
+
+Added FNf=0 bits in case of dropped carrier, added quit delay
+implementation. Sent to Arcade
+
+20/3/93:
+
+Username entry and highscore table added.
+
+22/3/93: 1.02
+
+Hugo visited, and brought 1.63 ARCbbs which now has working
+DoorsModule, therefore username entry now automatic and final
+releasable version ready.
+Sent to TWoC and Arcade.
+Tested at 300 baud... fine!
+
+13/4/93: 1.03 Shareware
+
+Made shareware and added unregistered bits
+Added games to date
+
+17/4/93: 1.04
+
+Altered Highscore routines and added title page
+
+
+Richard...
+
+
+

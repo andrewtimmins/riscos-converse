@@ -17,6 +17,7 @@
 
 void logging_initialise(void);
 void logging_finalise(void);
+void logging_flush(void);
 void log_header(int log_type);
 void log_footer(int log_type);
 void log_line_header(int line_id);

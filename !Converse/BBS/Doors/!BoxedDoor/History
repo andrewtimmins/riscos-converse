@@ -1,0 +1,51 @@
+!BoxedDoor On-line Boxed in door game for ARCbbs by © Richard Paddle
+
+e-mail: Richard Paddle@2:252/102.1 (Fido) or
+        Richard Paddle@2:252/102.0 (Fido)
+
+History: Version 1.06 SHAREWARE
+
+4/3/93: 1.00-beta
+
+Started version 1.00-beta
+Finished working version!
+
+14/3/93: 1.01-beta
+
+Added highscore facility
+chr 219 FULL BLOCK
+
+16/3/93:
+
+Altered highscore and screen displays
+Added lastuser score and name
+
+18/3/93: 1.02-beta
+
+Added username input from keyboard in absence of ARCbbs door not
+fuctioning correctly. Added FNf=0 bits and quit delay implemented
+Beta test sent to Arcade.
+
+22/3/93: 1.03
+
+Working ARCbbs DoorModule so changed username bits.
+VERY nice Serial Port dual serial card fitted...
+GET ONE NOW IF YOU HAVEN'T ALREADY!!!
+Sent to TWoC and Arcade.
+
+8/4/93: 1.04
+
+Added total games to date bit
+
+13/4/93: 1.05 Shareware
+
+Made into shareware program, added unregistered bits
+
+17/4/93: 1.06
+
+Added Title page
+
+
+Richard...
+
+

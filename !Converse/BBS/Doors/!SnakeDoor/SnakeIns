@@ -1,0 +1,21 @@
+{cls bfgbg rb}   ___  ___  ___          ___          ___  ___  ___  ___  ___  ___  ___  ___{eol}
+  /__/  /   /    /_ /     /   /\ /    /__/ /__/ /__/ /__/ /  /  /   /__  /__{eol}
+ / \  _/_  /__  /  /    _/_  /  \    /    /  / / \  /  / /__/ _/_  ___/ /__{eol}
+{eol}
+{fgbg ry}                                  Snake Game{eol}
+{fgbg cn}
+                                    {bg y}      {bg n} {bg y}             {bg n}
+                                 {bg y}    {bg n}    {bg y}   {bg n}
+                                 {bg y} {bg n}
+                      {bg y}            {bg n}
+
+                    You control the {bg y}snake{bg n} using these keys:
+
+                        Left:  Z               Right:  X
+                        Up  :  K               Down :  M
+
+
+{fg y}   You must eat the piece of food ({fg r}*{fg y}) without either running into the wall
+   or into your tail. For each piece of food you eat you gain a point and
+   increase in length. Press q to quit early{_>0022}
+{fgbg yb}                            PRESS ANYKEY TO BEGIN{eol}
