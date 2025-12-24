@@ -30,11 +30,15 @@
 #include "C:Desk.Dialog2.h"
 #include "C:Desk.Error.h"
 #include "C:Desk.Error.h"
+#include "C:Desk.Sprite.h"
+#include "C:Desk.File.h"
 
 /* Our Includes */
 #include "main.h"
 #include "serial.h"
+#include "ansiterm.h"
 #include "debug.h"
+#include "version.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variables                                                                                                                                         */
@@ -46,6 +50,8 @@ int serial_line_count = 0;
 
 SERIAL_STATUS_ROW *serial_status_rows = NULL;
 int serial_status_row_count = 0;
+
+static Desk_sprite_area status_sprites = NULL;
 
 static Desk_window_handle proginfo_window;
 
@@ -312,6 +318,10 @@ static void load_serial_lines(void)
                 serial_lines[serial_line_count].ring_count = 0;
                 serial_lines[serial_line_count].ring_match_index = 0;
                 serial_lines[serial_line_count].last_activity = 0;
+                serial_lines[serial_line_count].last_ring_time = 0;
+                serial_lines[serial_line_count].escape_plus_count = 0;
+                serial_lines[serial_line_count].escape_silence_start = 0;
+                serial_lines[serial_line_count].escape_guard_active = 0;
                 strncpy(serial_lines[serial_line_count].driver_name, config.driver_name,
                         sizeof(serial_lines[serial_line_count].driver_name) - 1);
                 serial_lines[serial_line_count].driver_name[sizeof(serial_lines[serial_line_count].driver_name) - 1] = '\0';
@@ -421,6 +431,54 @@ int serialstatus_create_icons(void)
         icon_create.icondata.data.indirecttext.validstring = "R2";
         icon_create.icondata.data.indirecttext.bufflen = 64;
         Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + SERIALSTATUS_COLUMN_GAP;
+        
+        /* Column 2: Terminal Button (sprite) */
+        icons->terminal_text = malloc(1);
+        if (icons->terminal_text) icons->terminal_text[0] = '\0';
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + SERIALSTATUS_BUTTON_WIDTH;
+        icon_create.icondata.workarearect.max.y = y_base - (SERIALSTATUS_ICON_HEIGHT * row);
+        icon_create.icondata.workarearect.min.y = icon_create.icondata.workarearect.max.y - SERIALSTATUS_ICON_HEIGHT;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_SPRITE |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1) |
+                                           (Desk_icon_BUTTONTYPE * Desk_iconbtype_CLICK);
+        icon_create.icondata.data.indirecttext.buffer = icons->terminal_text;
+        icon_create.icondata.data.indirecttext.validstring = "Sterminal;R5";
+        icon_create.icondata.data.indirecttext.bufflen = 1;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
+        
+        column_x = icon_create.icondata.workarearect.max.x + SERIALSTATUS_COLUMN_GAP;
+        
+        /* Column 3: Init Button (sprite) */
+        icons->init_text = malloc(1);
+        if (icons->init_text) icons->init_text[0] = '\0';
+        icon_create.icondata.workarearect.min.x = column_x;
+        icon_create.icondata.workarearect.max.x = column_x + SERIALSTATUS_BUTTON_WIDTH;
+        icon_create.icondata.workarearect.max.y = y_base - (SERIALSTATUS_ICON_HEIGHT * row);
+        icon_create.icondata.workarearect.min.y = icon_create.icondata.workarearect.max.y - SERIALSTATUS_ICON_HEIGHT;
+        icon_create.icondata.flags.value = Desk_icon_TEXT |
+                                           Desk_icon_SPRITE |
+                                           Desk_icon_VCENTRE |
+                                           Desk_icon_HCENTRE |
+                                           Desk_icon_INDIRECTED |
+                                           Desk_icon_BORDER |
+                                           Desk_icon_FILLED |
+                                           (Desk_icon_FORECOLOUR * 7) |
+                                           (Desk_icon_BACKCOLOUR * 1) |
+                                           (Desk_icon_BUTTONTYPE * Desk_iconbtype_CLICK);
+        icon_create.icondata.data.indirecttext.buffer = icons->init_text;
+        icon_create.icondata.data.indirecttext.validstring = "Sinit;R5";
+        icon_create.icondata.data.indirecttext.bufflen = 1;
+        Desk_Wimp_CreateIcon(&icon_create, &icon_handle);
     }
     
     debug_printf("serialstatus: Created icons for %d rows", serial_status_row_count);
@@ -446,6 +504,14 @@ void serialstatus_free_icons(void)
         {
             free(serial_status_rows[i].status_text);
         }
+        if (serial_status_rows[i].terminal_text != NULL)
+        {
+            free(serial_status_rows[i].terminal_text);
+        }
+        if (serial_status_rows[i].init_text != NULL)
+        {
+            free(serial_status_rows[i].init_text);
+        }
     }
     
     free(serial_status_rows);
@@ -467,10 +533,12 @@ void serialstatus_set_extent(void)
     total_height = ((rows + SERIALSTATUS_TOP_STATIC_ROWS) * SERIALSTATUS_ICON_HEIGHT) +
                    SERIALSTATUS_PADDING + SERIALSTATUS_BOTTOM_PADDING;
     
-    /* Calculate total width: all columns + gaps between them (matching FTN mailer pattern) */
+    /* Calculate total width: all columns + gaps between them */
     total_width = SERIALSTATUS_COLUMN_START +
                   SERIALSTATUS_LINE_WIDTH + SERIALSTATUS_COLUMN_GAP +
-                  SERIALSTATUS_STATUS_WIDTH;
+                  SERIALSTATUS_STATUS_WIDTH + SERIALSTATUS_COLUMN_GAP +
+                  SERIALSTATUS_BUTTON_WIDTH + SERIALSTATUS_COLUMN_GAP +
+                  SERIALSTATUS_BUTTON_WIDTH + SERIALSTATUS_COLUMN_GAP;
     
     extent.min.x = 0;
     extent.max.x = total_width;
@@ -497,6 +565,13 @@ void serialstatus_update_line(int line_index, const char *status)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Terminal State Arrays (declared early for use by window handlers)                                                                                        */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_window_handle terminal_windows[SERIAL_MAX_LINES];
+static ansiterm_state terminal_states[SERIAL_MAX_LINES];
+
+/* ******************************************************************************************************************************************************** */
 /* Wimp Event Handlers                                                                                                                                      */
 /* ******************************************************************************************************************************************************** */
 
@@ -512,11 +587,29 @@ static Desk_bool handle_window_open(Desk_event_pollblock *event, void *ref)
 
 /*
  * Handle window close events.
+ * Checks if it's a terminal window and handles appropriately.
  */
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref)
 {
+    int i;
+    Desk_window_handle window;
+    
     Desk_UNUSED(ref);
-    Desk_Window_Hide(event->data.openblock.window);
+    
+    window = event->data.openblock.window;
+    
+    /* Check if it's a terminal window */
+    for (i = 0; i < serial_line_count; i++)
+    {
+        if (terminal_windows[i] == window && serial_lines[i].terminal_active)
+        {
+            serial_close_terminal(i);
+            return Desk_bool_TRUE;
+        }
+    }
+    
+    /* Not a terminal - just hide the window */
+    Desk_Window_Hide(window);
     return Desk_bool_TRUE;
 }
 
@@ -572,6 +665,328 @@ static Desk_bool handle_menu_selection(Desk_event_pollblock *event, void *ref)
             break;
     }
 
+    return Desk_bool_TRUE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Terminal Functions                                                                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+/* Callback to send data from terminal to serial port */
+static void terminal_send_to_serial(int line_index, const char *data, int len)
+{
+    int i;
+    SERIAL_LINE_STATE *state;
+    
+    if (line_index < 0 || line_index >= serial_line_count)
+        return;
+    
+    state = &serial_lines[line_index];
+    if (state->driver == NULL)
+        return;
+    
+    /* Write each byte to the serial port */
+    for (i = 0; i < len; i++)
+    {
+        state->driver(DRIVER_PUTBYTE, (unsigned char)data[i]);
+    }
+}
+
+void serial_open_terminal(int line_index)
+{
+    SERIAL_LINE_STATE *state;
+    ansiterm_state *term;
+    char title[128];
+    
+    if (line_index < 0 || line_index >= serial_line_count)
+        return;
+    
+    state = &serial_lines[line_index];
+    term = &terminal_states[line_index];
+    
+    /* Check if already open */
+    if (state->terminal_active)
+    {
+        /* Just bring window to front */
+        if (terminal_windows[line_index] != 0)
+        {
+            ansiterm_open_window(term, NULL);
+        }
+        return;
+    }
+    
+    /* If there's an active connection, disconnect it first */
+    if (state->carrier_detect)
+    {
+        debug_printf("serial: Disconnecting line %d before opening terminal", line_index);
+        serial_handle_disconnect(line_index);
+        serialstatus_update_line(line_index, "Disconnected for terminal");
+    }
+    
+    /* Initialize the terminal state */
+    ansiterm_init(term, line_index);
+    term->send_to_serial = terminal_send_to_serial;
+    
+    /* Create the terminal window if not yet created */
+    if (terminal_windows[line_index] == 0)
+    {
+        terminal_windows[line_index] = Desk_Window_Create("main", Desk_template_TITLEMIN);
+        debug_printf("serial: Created terminal window %d for line %d", 
+                     (int)terminal_windows[line_index], line_index);
+    }
+    
+    if (terminal_windows[line_index] == 0)
+    {
+        debug_printf("serial: Failed to create terminal window for line %d", line_index);
+        return;
+    }
+    
+    term->window = terminal_windows[line_index];
+    
+    /* Load font */
+    ansiterm_load_font(term, "<Converse$Dir>.Resources.Font");
+    
+    /* Set up title */
+    snprintf(title, sizeof(title), "Terminal - Line %d (%s port %d @ %d)", 
+             state->line_id, state->driver_name, state->port_number, state->baud_rate);
+    
+    /* Open the window */
+    ansiterm_open_window(term, title);
+    
+    /* Mark terminal as active */
+    state->terminal_active = 1;
+    state->terminal = term;
+    
+    /* Update status */
+    serialstatus_update_line(line_index, "Terminal active");
+    serial_log("Terminal opened for line %d", state->line_id);
+    
+    /* Display welcome message in terminal */
+    ansiterm_process_block(term, (const unsigned char *)"\033[1;32mTerminal connected to serial port\033[0m\r\n", 44);
+    ansiterm_update_dirty(term);
+}
+
+void serial_close_terminal(int line_index)
+{
+    SERIAL_LINE_STATE *state;
+    ansiterm_state *term;
+    
+    if (line_index < 0 || line_index >= serial_line_count)
+        return;
+    
+    state = &serial_lines[line_index];
+    term = &terminal_states[line_index];
+    
+    if (!state->terminal_active)
+        return;
+    
+    /* Close the window */
+    ansiterm_close_window(term);
+    
+    /* Clean up terminal state */
+    ansiterm_finalise(term);
+    
+    /* Mark terminal as inactive */
+    state->terminal_active = 0;
+    state->terminal = NULL;
+    
+    /* Update status */
+    serialstatus_update_line(line_index, "Ready");
+    serial_log("Terminal closed for line %d", state->line_id);
+}
+
+int serial_terminal_active(int line_index)
+{
+    if (line_index < 0 || line_index >= serial_line_count)
+        return 0;
+    return serial_lines[line_index].terminal_active;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Init Function                                                                                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+void serial_reinit_line(int line_index)
+{
+    SERIAL_LINE_STATE *state;
+    char status_msg[64];
+    
+    if (line_index < 0 || line_index >= serial_line_count)
+        return;
+    
+    state = &serial_lines[line_index];
+    
+    /* If there's an active connection, disconnect it first */
+    if (state->carrier_detect)
+    {
+        debug_printf("serial: Disconnecting line %d before reinit", line_index);
+        serial_handle_disconnect(line_index);
+    }
+    
+    /* Close terminal if open */
+    if (state->terminal_active)
+    {
+        serial_close_terminal(line_index);
+    }
+    
+    /* Update status to show we're initializing */
+    snprintf(status_msg, sizeof(status_msg), "Init: %s", state->init);
+    serialstatus_update_line(line_index, status_msg);
+    
+    /* Re-initialize the port (sends init string to modem) */
+    serial_init_port(line_index);
+    
+    /* Update status to show ready */
+    serialstatus_update_line(line_index, "Ready");
+    
+    serial_log("Line %d reinitialized", state->line_id);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Button Click Handler                                                                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_bool serialstatus_icon_to_line(Desk_icon_handle icon, int *line_index, int *column)
+{
+    int relative;
+    
+    if (icon < SERIALSTATUS_ICON_BASE || serial_status_row_count <= 0)
+        return Desk_bool_FALSE;
+    
+    relative = icon - SERIALSTATUS_ICON_BASE;
+    if (relative < 0 || relative >= (serial_status_row_count * SERIALSTATUS_ICONS_PER_LINE))
+        return Desk_bool_FALSE;
+    
+    if (line_index != NULL)
+        *line_index = relative / SERIALSTATUS_ICONS_PER_LINE;
+    
+    if (column != NULL)
+        *column = relative % SERIALSTATUS_ICONS_PER_LINE;
+    
+    return Desk_bool_TRUE;
+}
+
+static Desk_bool handle_status_click(Desk_event_pollblock *event, void *ref)
+{
+    int line_index, column;
+    
+    Desk_UNUSED(ref);
+    
+    if (!event->data.mouse.button.data.select && !event->data.mouse.button.data.adjust)
+        return Desk_bool_FALSE;
+    
+    if (!serialstatus_icon_to_line(event->data.mouse.icon, &line_index, &column))
+        return Desk_bool_FALSE;
+    
+    debug_printf("serial: Status window click: line_index=%d column=%d", line_index, column);
+    
+    switch (column)
+    {
+        case SERIALSTATUS_COLUMN_TERMINAL:
+            /* Terminal button clicked */
+            debug_printf("serial: Terminal button clicked for line %d", line_index);
+            if (serial_lines[line_index].terminal_active)
+            {
+                /* Toggle - close if open */
+                if (event->data.mouse.button.data.adjust)
+                    serial_close_terminal(line_index);
+                else
+                    serial_open_terminal(line_index);  /* Bring to front */
+            }
+            else
+            {
+                serial_open_terminal(line_index);
+            }
+            break;
+            
+        case SERIALSTATUS_COLUMN_INIT:
+            /* Init button clicked */
+            debug_printf("serial: Init button clicked for line %d", line_index);
+            serial_reinit_line(line_index);
+            break;
+    }
+    
+    return Desk_bool_TRUE;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Terminal Window Event Handlers                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+static Desk_bool handle_terminal_redraw(Desk_event_pollblock *event, void *ref)
+{
+    int i;
+    
+    Desk_UNUSED(ref);
+    
+    /* Find which terminal this belongs to */
+    for (i = 0; i < serial_line_count; i++)
+    {
+        if (terminal_windows[i] == event->data.openblock.window)
+        {
+            if (serial_lines[i].terminal_active)
+            {
+                ansiterm_redraw(&terminal_states[i], &event->data);
+                return Desk_bool_TRUE;
+            }
+        }
+    }
+    
+    return Desk_bool_FALSE;
+}
+
+static Desk_bool handle_terminal_key(Desk_event_pollblock *event, void *ref)
+{
+    int i;
+    int key_code;
+    int result;
+    char ch;
+    
+    Desk_UNUSED(ref);
+    
+    key_code = event->data.key.code;
+    
+    /* Find which terminal this belongs to */
+    for (i = 0; i < serial_line_count; i++)
+    {
+        if (terminal_windows[i] == event->data.key.caret.window)
+        {
+            if (serial_lines[i].terminal_active)
+            {
+                result = ansiterm_keypress(&terminal_states[i], key_code);
+                
+                if (result > 0)
+                {
+                    /* Send character to serial port */
+                    ch = (char)result;
+                    terminal_send_to_serial(i, &ch, 1);
+                    
+                    /* Local echo */
+                    ansiterm_process_byte(&terminal_states[i], (unsigned char)result);
+                    ansiterm_update_dirty(&terminal_states[i]);
+                }
+                else if (result < 0)
+                {
+                    /* Arrow key - send escape sequence */
+                    const char *seq = NULL;
+                    switch (result)
+                    {
+                        case -1: seq = "\033[D"; break;  /* Left */
+                        case -2: seq = "\033[C"; break;  /* Right */
+                        case -3: seq = "\033[B"; break;  /* Down */
+                        case -4: seq = "\033[A"; break;  /* Up */
+                    }
+                    if (seq)
+                        terminal_send_to_serial(i, seq, 3);
+                }
+                
+                return Desk_bool_TRUE;
+            }
+        }
+    }
+    
+    /* Pass on unhandled keys */
+    Desk_Wimp_ProcessKey(key_code);
     return Desk_bool_TRUE;
 }
 
@@ -694,7 +1109,29 @@ int main(void)
     Desk_Template_UseOutlineFonts();
     Desk_Template_LoadFile("Templates");
 
+    /* Load status window sprites */
+    {
+        int sprite_size = Desk_File_Size("<Converse$Dir>.Resources.Sprites");
+        if (sprite_size > 0)
+        {
+            status_sprites = (Desk_sprite_area)malloc(sprite_size + 4);
+            if (status_sprites)
+            {
+                status_sprites->areasize = sprite_size + 4;
+                status_sprites->numsprites = 0;
+                status_sprites->firstoffset = 16;
+                status_sprites->freeoffset = 16;
+                Desk_Sprite_Load(status_sprites, "<Converse$Dir>.Resources.Sprites");
+                Desk_Template_LinkSpriteArea("serial", status_sprites);
+                debug_printf("serial: Loaded sprites, %d sprites in area", status_sprites->numsprites);
+            }
+        }
+    }
+
     proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+      Desk_Icon_SetText(proginfo_window, 0, app_name);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(proginfo_window, 5, wimp_version);  /* PROGINFO_VERSION = 5 */
+     Desk_Icon_SetText(proginfo_window, 6, app_purpose);  /* PROGINFO_VERSION = 5 */
     wimp.status_window = Desk_Window_Create("serial", Desk_template_TITLEMIN);
     
     debug_printf("serial: Created windows: proginfo=%d, status=%d", 
@@ -711,7 +1148,17 @@ int main(void)
     {
         Desk_Event_Claim(Desk_event_REDRAW, wimp.status_window, Desk_event_ANY,
                          Desk_Handler_NullRedraw, NULL);
+        
+        /* Handle clicks on status window buttons */
+        Desk_Event_Claim(Desk_event_CLICK, wimp.status_window, Desk_event_ANY,
+                         handle_status_click, &wimp);
     }
+    
+    /* Terminal window event handlers - claim for ANY window, handlers check window */
+    Desk_Event_Claim(Desk_event_REDRAW, Desk_event_ANY, Desk_event_ANY,
+                     handle_terminal_redraw, NULL);
+    Desk_Event_Claim(Desk_event_KEY, Desk_event_ANY, Desk_event_ANY,
+                     handle_terminal_key, NULL);
     
     /* Handle open/close events for all windows - required for dragging */
     Desk_Event_Claim(Desk_event_OPEN, Desk_event_ANY, Desk_event_ANY,

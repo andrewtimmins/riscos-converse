@@ -20,17 +20,35 @@
 #include "crypt.h"
 #include "compress.h"
 #include "freq.h"
+#include "version.h"
 
 /* FTN config constants and structures */
 #define SWI_SUPPORT_FTN             0x5AA86
 #define FTN_CONFIG_GET_GLOBAL       0
+#define FTN_CONFIG_GET_DOMAIN       11
+#define FTN_CONFIG_FIND_DOMAIN_BY_NAME  14
+#define FTN_CONFIG_FIND_DOMAIN_BY_ZONE  15
 
 #define B_FTN_MAX_UPLINKS           16
+#define B_FTN_MAX_DOMAINS           8
 #define B_FTN_NAME_LEN              64
+#define B_FTN_DOMAIN_LEN            32
 #define B_FTN_PATH_LEN              256
 #define B_FTN_PASSWORD_LEN          32
 #define B_FTN_GROUPS_LEN            64
 #define B_FTN_MAX_ALIASES           8
+
+/* Domain config structure (must match Support module's FTN_DOMAIN_CONFIG) */
+typedef struct
+{
+    int id;
+    char name[B_FTN_DOMAIN_LEN];
+    char inbound[B_FTN_PATH_LEN];
+    char outbound[B_FTN_PATH_LEN];
+    int default_zone;
+    char idomain[B_FTN_NAME_LEN];   /* internet domain string, NOT int */
+    int alias_for;
+} B_DOMAIN_CFG;
 
 /* FTN global config structures (must match Support module) */
 typedef struct
@@ -81,9 +99,70 @@ typedef struct
     int retry_delay;
     int address_count;
     B_ADDRESS_CFG addresses[8];
+    int domain_count;
+    B_DOMAIN_CFG domains[B_FTN_MAX_DOMAINS];
     int uplink_count;
     B_UPLINK_CFG uplinks[B_FTN_MAX_UPLINKS];
 } B_FTN_GLOBAL_CFG;
+
+/* ******************************************************************************************************************************************************** */
+/* Domain Path Helpers                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Get the inbound path for an address, taking domain into account.
+ * Tries domain lookup by name first, then by zone, falls back to global.
+ */
+static void binkp_get_domain_inbound(char *buffer, size_t size, const FTN_ADDR *addr)
+{
+    _kernel_swi_regs regs;
+    B_DOMAIN_CFG *domain = NULL;
+
+    if (buffer == NULL || size == 0)
+    {
+        return;
+    }
+
+    if (addr == NULL)
+    {
+        strncpy(buffer, mailer.inbound_path, size);
+        buffer[size - 1] = '\0';
+        return;
+    }
+
+    /* Try to find domain by name first */
+    if (addr->domain[0] != '\0')
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_NAME;
+        regs.r[1] = (int)addr->domain;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (B_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* If no domain found by name, try by zone */
+    if (domain == NULL && addr->zone > 0)
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_ZONE;
+        regs.r[1] = addr->zone;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (B_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* Use domain inbound if found and configured, else fall back to global */
+    if (domain != NULL && domain->inbound[0] != '\0')
+    {
+        strncpy(buffer, domain->inbound, size);
+    }
+    else
+    {
+        strncpy(buffer, mailer.inbound_path, size);
+    }
+    buffer[size - 1] = '\0';
+}
 
 /* ******************************************************************************************************************************************************** */
 /* C90 Compatibility - strtok_r implementation                                                                                                              */
@@ -557,7 +636,13 @@ void binkp_send_handshake(MAILER_SESSION *session)
         strftime(time_buf, sizeof(time_buf), "%a %b %d %H:%M:%S %Y UTC", tm_info);
         binkp_send_nul(session, "TIME", time_buf);
     }
-    binkp_send_nul(session, "VER", MAILER_NAME "/" MAILER_VERSION " binkp/" BINKP_VERSION);
+
+    /* Send VER using shared version from version.h */
+    {
+        char ver_buf[128];
+        snprintf(ver_buf, sizeof(ver_buf), "%s/%s binkp/%s", MAILER_NAME, plain_version, BINKP_VERSION);
+        binkp_send_nul(session, "VER", ver_buf);
+    }
 
     /* Build options string: NR ND NDA EXTCMD [GZ] [BZ2] [CRYPT] */
     {
@@ -1662,6 +1747,7 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     char path[MAILER_PATH_SIZE];
     char riscos_filename[MAILER_PATH_SIZE];
     char temp_dir[MAILER_PATH_SIZE];
+    char domain_inbound[MAILER_PATH_SIZE];
     int zone = (session->remote_addr.zone > 0) ? session->remote_addr.zone : 2;
 
     /* Treat -1 (or any negative) offset as 0 - start from beginning */
@@ -1686,8 +1772,11 @@ void binkp_start_receive_file(MAILER_SESSION *session, const char *filename, lon
     /* Convert DOS filename to RISC OS format */
     filename_dos_to_riscos(filename, riscos_filename, sizeof(riscos_filename));
 
+    /* Get domain-specific inbound path for this remote */
+    binkp_get_domain_inbound(domain_inbound, sizeof(domain_inbound), &session->remote_addr);
+
     /* Ensure zone-specific temp inbound directory exists */
-    ftn_format_zone_subpath(temp_dir, sizeof(temp_dir), mailer.inbound_path, zone, "Temp");
+    ftn_format_zone_subpath(temp_dir, sizeof(temp_dir), domain_inbound, zone, "Temp");
     ensure_directory_exists(temp_dir);
 
     /* Build temp path using RISC OS filename */
@@ -1741,6 +1830,7 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
     char final_path[MAILER_PATH_SIZE];
     char riscos_filename[MAILER_PATH_SIZE];
     char zone_path[MAILER_PATH_SIZE];
+    char domain_inbound[MAILER_PATH_SIZE];
     int zone = (session->remote_addr.zone > 0) ? session->remote_addr.zone : 2;
 
     if (ft->file != NULL)
@@ -1755,8 +1845,11 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
         binkp_mark_file_received(session, ft->filename, ft->size, ft->mtime);
     }
 
+    /* Get domain-specific inbound path for this remote */
+    binkp_get_domain_inbound(domain_inbound, sizeof(domain_inbound), &session->remote_addr);
+
     /* Ensure zone-specific inbound directory exists */
-    ftn_format_zone_path(zone_path, sizeof(zone_path), mailer.inbound_path, zone);
+    ftn_format_zone_path(zone_path, sizeof(zone_path), domain_inbound, zone);
     ensure_directory_exists(zone_path);
 
     /* Convert DOS filename to RISC OS format for final path */

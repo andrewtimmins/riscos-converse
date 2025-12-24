@@ -1,0 +1,13 @@
+/* version.h - Version string declarations for Server */
+
+#ifndef VERSION_H
+#define VERSION_H
+
+extern char app_name[];
+extern char app_purpose[];
+extern char plain_version[];
+extern char wimp_version[];
+extern char version_date[];
+extern char last_updated[];
+
+#endif /* VERSION_H */

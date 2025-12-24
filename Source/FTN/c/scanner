@@ -45,6 +45,8 @@
 
 /* FTN config structure sizes */
 #define FTN_MAX_UPLINKS             16
+#define FTN_MAX_DOMAINS             8
+#define FTN_DOMAIN_LEN              32
 #define FTN_NAME_LEN                64
 #define FTN_PATH_LEN                256
 #define FTN_PASSWORD_LEN            32
@@ -385,7 +387,19 @@ SCANNER_FLAVOUR scanner_flags_to_flavour(unsigned short flags)
 /* Uplink Lookup                                                                                                                                            */
 /* ******************************************************************************************************************************************************** */
 
-/* FTN global config structure (must match Support module) */
+/* FTN domain config structure (must match Support module's FTN_DOMAIN_CONFIG) */
+typedef struct
+{
+    int id;
+    char name[FTN_DOMAIN_LEN];
+    char inbound[FTN_PATH_LEN];
+    char outbound[FTN_PATH_LEN];
+    int default_zone;
+    char idomain[FTN_NAME_LEN];   /* internet domain string, NOT int */
+    int alias_for;
+} SCAN_DOMAIN_CFG;
+
+/* FTN uplink config structure (must match Support module) */
 typedef struct
 {
     int id;
@@ -434,6 +448,8 @@ typedef struct
     int retry_delay;
     int address_count;
     SCAN_ADDRESS_CFG addresses[8];
+    int domain_count;
+    SCAN_DOMAIN_CFG domains[FTN_MAX_DOMAINS];
     int uplink_count;
     SCAN_UPLINK_CFG uplinks[FTN_MAX_UPLINKS];
 } SCAN_FTN_GLOBAL_CFG;

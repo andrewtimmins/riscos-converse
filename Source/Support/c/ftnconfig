@@ -2,6 +2,7 @@
 /* Support Module - FTN Configuration                                                                                                                       */
 /* ******************************************************************************************************************************************************** */
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,26 @@
 #include "ftnconfig.h"
 
 static FTN_GLOBAL_CONFIG ftn_config;
+
+/* ******************************************************************************************************************************************************** */
+/* Static Helpers - Case-insensitive compare                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+static int ftn_strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
 
 /* ******************************************************************************************************************************************************** */
 /* Static Helpers                                                                                                                                           */
@@ -40,6 +61,7 @@ static void ftnconfig_set_defaults(void)
     ftn_config.poll_interval = 0;   /* Disabled by default */
     ftn_config.retry_delay = 300;
     ftn_config.address_count = 0;
+    ftn_config.domain_count = 0;
     ftn_config.uplink_count = 0;
     ftn_config.downlink_count = 0;
 }
@@ -83,6 +105,66 @@ static FTN_DOWNLINK_CONFIG *ftnconfig_find_downlink(int downlink_id)
         if (ftn_config.downlinks[i].id == downlink_id)
         {
             return &ftn_config.downlinks[i];
+        }
+    }
+
+    return NULL;
+}
+
+static FTN_DOMAIN_CONFIG *ftnconfig_find_domain(int domain_id)
+{
+    int i;
+
+    for (i = 0; i < ftn_config.domain_count; i++)
+    {
+        if (ftn_config.domains[i].id == domain_id)
+        {
+            return &ftn_config.domains[i];
+        }
+    }
+
+    return NULL;
+}
+
+static FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_name_internal(const char *name)
+{
+    int i;
+    FTN_DOMAIN_CONFIG *domain;
+
+    if (name == NULL || name[0] == '\0')
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < ftn_config.domain_count; i++)
+    {
+        domain = &ftn_config.domains[i];
+        if (ftn_strcasecmp(domain->name, name) == 0)
+        {
+            /* If this is an alias, resolve to canonical domain */
+            if (domain->alias_for > 0)
+            {
+                return ftnconfig_find_domain(domain->alias_for);
+            }
+            return domain;
+        }
+    }
+
+    return NULL;
+}
+
+static FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_zone_internal(int zone)
+{
+    int i;
+    FTN_DOMAIN_CONFIG *domain;
+
+    for (i = 0; i < ftn_config.domain_count; i++)
+    {
+        domain = &ftn_config.domains[i];
+        /* Skip aliases when searching by zone */
+        if (domain->alias_for == 0 && domain->default_zone == zone)
+        {
+            return domain;
         }
     }
 
@@ -381,6 +463,64 @@ void ftnconfig_swi_handler(_kernel_swi_regs *r)
             r->r[0] = ftn_config.downlink_count;
             break;
 
+        case FTN_CONFIG_REASON_GET_DOMAIN:
+        {
+            int domain_id = r->r[1];
+            FTN_DOMAIN_CONFIG *domain = ftnconfig_find_domain(domain_id);
+            r->r[0] = (int)domain;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_SET_DOMAIN:
+        {
+            int domain_id = r->r[1];
+            FTN_DOMAIN_CONFIG *src = (FTN_DOMAIN_CONFIG *)r->r[2];
+            FTN_DOMAIN_CONFIG *domain;
+
+            if (src == NULL)
+            {
+                r->r[0] = -1;
+                break;
+            }
+
+            domain = ftnconfig_find_domain(domain_id);
+            if (domain == NULL)
+            {
+                /* Add new domain */
+                if (ftn_config.domain_count >= FTN_CONFIG_MAX_DOMAINS)
+                {
+                    r->r[0] = -1;
+                    break;
+                }
+                domain = &ftn_config.domains[ftn_config.domain_count++];
+            }
+
+            memcpy(domain, src, sizeof(FTN_DOMAIN_CONFIG));
+            domain->id = domain_id;
+            r->r[0] = 0;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_COUNT_DOMAINS:
+            r->r[0] = ftn_config.domain_count;
+            break;
+
+        case FTN_CONFIG_REASON_FIND_DOMAIN_BY_NAME:
+        {
+            const char *name = (const char *)r->r[1];
+            FTN_DOMAIN_CONFIG *domain = ftnconfig_find_domain_by_name_internal(name);
+            r->r[0] = (int)domain;
+            break;
+        }
+
+        case FTN_CONFIG_REASON_FIND_DOMAIN_BY_ZONE:
+        {
+            int zone = r->r[1];
+            FTN_DOMAIN_CONFIG *domain = ftnconfig_find_domain_by_zone_internal(zone);
+            r->r[0] = (int)domain;
+            break;
+        }
+
         default:
             r->r[0] = -1;
             break;
@@ -409,4 +549,19 @@ const FTN_UPLINK_CONFIG *ftnconfig_get_uplink(int uplink_id)
 const FTN_DOWNLINK_CONFIG *ftnconfig_get_downlink(int downlink_id)
 {
     return ftnconfig_find_downlink(downlink_id);
+}
+
+const FTN_DOMAIN_CONFIG *ftnconfig_get_domain(int domain_id)
+{
+    return ftnconfig_find_domain(domain_id);
+}
+
+const FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_name(const char *name)
+{
+    return ftnconfig_find_domain_by_name_internal(name);
+}
+
+const FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_zone(int zone)
+{
+    return ftnconfig_find_domain_by_zone_internal(zone);
 }

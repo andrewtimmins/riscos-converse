@@ -80,6 +80,19 @@
 
 #define SERIAL_MAX_DRIVER_NAME  32
 #define SERIAL_DRIVER_BLOCK_SIZE 1024  /* Storage for driver binary (ints) */
+#define SERIAL_MAX_DRIVERS      4      /* Maximum different drivers loaded */
+
+/* ============================================================================
+ * Driver Cache Structure (for multi-driver support)
+ * ============================================================================ */
+
+typedef struct
+{
+    char name[SERIAL_MAX_DRIVER_NAME];      /* Driver name */
+    int block[SERIAL_DRIVER_BLOCK_SIZE];    /* Driver binary storage */
+    int (*entry)(int, ...);                 /* Entry point */
+    int loaded;                             /* Is this slot in use? */
+} SERIAL_DRIVER_CACHE_ENTRY;
 
 #ifndef PIPE_TRANSFER_CHUNK
 #define PIPE_TRANSFER_CHUNK     1536
@@ -153,6 +166,12 @@ void serial_pump_to_pipe(int line_index);
  * Pump data from pipe to serial port
  */
 void serial_pump_from_pipe(int line_index);
+
+/*
+ * Pump data from serial port to terminal emulator
+ * Used in terminal mode for direct serial access
+ */
+void serial_pump_to_terminal(int line_index);
 
 /*
  * Initialise all serial lines on startup

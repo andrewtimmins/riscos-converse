@@ -30,6 +30,28 @@
 /* SWI numbers */
 #define SWI_FILER_MESSAGEBASE       0x5AA42
 #define SWI_SUPPORT_MSGBASECONFIG   0x5AA84
+#define SWI_SUPPORT_FTN             0x5AA86
+
+/* FTN config reasons */
+#define FTN_CONFIG_GET_GLOBAL       0
+#define FTN_CONFIG_GET_DOMAIN       11
+#define FTN_CONFIG_COUNT_DOMAINS    13
+
+/* FTN domain config structure (must match Support module's FTN_DOMAIN_CONFIG) */
+#define T_FTN_DOMAIN_LEN            32
+#define T_FTN_PATH_LEN              256
+#define T_FTN_NAME_LEN              64
+
+typedef struct
+{
+    int id;
+    char name[T_FTN_DOMAIN_LEN];
+    char inbound[T_FTN_PATH_LEN];
+    char outbound[T_FTN_PATH_LEN];
+    int default_zone;
+    char idomain[T_FTN_NAME_LEN];   /* internet domain string, NOT int */
+    int alias_for;
+} T_DOMAIN_CFG;
 
 /* Filer messagebase commands */
 #define MSGBASE_CMD_CREATE          0
@@ -1451,25 +1473,90 @@ static void tosser_process_zone_directory(const char *zone_path, int zone, void 
 }
 
 /*
- * Scan inbound directory for .pkt files and process them.
- * RISC OS filenames: xxxxxxpkt (no extension separator)
+ * Scan a single inbound directory for .pkt files and process them.
+ * Used both for domain-specific inbound and legacy global inbound.
  */
-int tosser_process_inbound(void)
+static int tosser_process_inbound_path(const char *inbound_path, const char *domain_name)
 {
     TOSSER_INBOUND_CONTEXT scan;
 
     memset(&scan, 0, sizeof(scan));
 
-    debug_printf("tosser: Scanning inbound: %s", tosser_inbound);
+    if (domain_name != NULL)
+    {
+        debug_printf("tosser: Scanning domain '%s' inbound: %s", domain_name, inbound_path);
+    }
+    else
+    {
+        debug_printf("tosser: Scanning inbound: %s", inbound_path);
+    }
 
-    ftn_enumerate_zone_directories(tosser_inbound, tosser_process_zone_directory, &scan);
+    ftn_enumerate_zone_directories(inbound_path, tosser_process_zone_directory, &scan);
 
     if (scan.packets > 0)
     {
-        mailer_log("Processed %d packets, %d messages total", scan.packets, scan.messages);
+        if (domain_name != NULL)
+        {
+            mailer_log("Domain %s: %d packets, %d messages", domain_name, scan.packets, scan.messages);
+        }
+        else
+        {
+            mailer_log("Processed %d packets, %d messages total", scan.packets, scan.messages);
+        }
     }
 
     return scan.messages;
+}
+
+/*
+ * Scan all inbound directories (domain-specific and legacy) for packets.
+ * RISC OS filenames: xxxxxxpkt (no extension separator)
+ */
+int tosser_process_inbound(void)
+{
+    _kernel_swi_regs regs;
+    int domain_count = 0;
+    int total_messages = 0;
+    int i;
+
+    debug_printf("tosser: ========================================");
+    debug_printf("tosser: PROCESSING ALL INBOUND DIRECTORIES");
+
+    /* First, scan domain-specific inbound directories */
+    regs.r[0] = FTN_CONFIG_COUNT_DOMAINS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL)
+    {
+        domain_count = regs.r[0];
+    }
+
+    debug_printf("tosser: Found %d configured domains", domain_count);
+
+    for (i = 1; i <= domain_count; i++)
+    {
+        T_DOMAIN_CFG *domain;
+
+        regs.r[0] = FTN_CONFIG_GET_DOMAIN;
+        regs.r[1] = i;  /* Domain IDs are 1-based */
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (T_DOMAIN_CFG *)regs.r[0];
+            if (domain->inbound[0] != '\0')
+            {
+                total_messages += tosser_process_inbound_path(domain->inbound, domain->name);
+            }
+        }
+    }
+
+    /* If no domains configured, fall back to legacy single inbound path */
+    if (domain_count == 0 && tosser_inbound[0] != '\0')
+    {
+        debug_printf("tosser: No domains configured, using legacy inbound path");
+        total_messages += tosser_process_inbound_path(tosser_inbound, NULL);
+    }
+
+    debug_printf("tosser: Toss complete: %d total messages", total_messages);
+
+    return total_messages;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1478,6 +1565,7 @@ int tosser_process_inbound(void)
 
 void tosser_move_to_processed(const char *path)
 {
+    char base_path[TOSSER_MAX_PATH];
     char dest_dir[TOSSER_MAX_PATH];
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
@@ -1490,14 +1578,23 @@ void tosser_move_to_processed(const char *path)
         return;
     }
 
-    /* Extract zone from path to keep folders separated */
-    ftn_extract_zone_from_path(tosser_inbound, path, NULL, 0, &zone);
+    /* Discover the base path and zone from the file path itself.
+     * This handles domain-specific paths correctly:
+     * e.g., "<Converse$Dir>.FTN.Inbound.Cnet.040.packet" ->
+     *       base = "<Converse$Dir>.FTN.Inbound.Cnet", zone = 64
+     */
+    if (!ftn_discover_base_from_path(path, base_path, sizeof(base_path), &zone))
+    {
+        /* Fallback to legacy path if no zone segment found */
+        strncpy(base_path, tosser_inbound, sizeof(base_path) - 1);
+        base_path[sizeof(base_path) - 1] = '\0';
+    }
 
     /* Extract leaf name */
     leaf = strrchr(path, '.');
     leaf = leaf ? leaf + 1 : path;
 
-    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), tosser_inbound, zone, "Processed");
+    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), base_path, zone, "Processed");
     tosser_ensure_directory(dest_dir);
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
 
@@ -1526,6 +1623,7 @@ void tosser_move_to_processed(const char *path)
 
 void tosser_move_to_bad(const char *path)
 {
+    char base_path[TOSSER_MAX_PATH];
     char dest_dir[TOSSER_MAX_PATH];
     char dest[TOSSER_MAX_PATH];
     const char *leaf;
@@ -1538,13 +1636,21 @@ void tosser_move_to_bad(const char *path)
         return;
     }
 
-    ftn_extract_zone_from_path(tosser_inbound, path, NULL, 0, &zone);
+    /* Discover the base path and zone from the file path itself.
+     * This handles domain-specific paths correctly.
+     */
+    if (!ftn_discover_base_from_path(path, base_path, sizeof(base_path), &zone))
+    {
+        /* Fallback to legacy path if no zone segment found */
+        strncpy(base_path, tosser_inbound, sizeof(base_path) - 1);
+        base_path[sizeof(base_path) - 1] = '\0';
+    }
 
     /* Extract leaf name */
     leaf = strrchr(path, '.');
     leaf = leaf ? leaf + 1 : path;
 
-    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), tosser_inbound, zone, "Bad");
+    ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), base_path, zone, "Bad");
     tosser_ensure_directory(dest_dir);
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
 

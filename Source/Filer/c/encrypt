@@ -6,7 +6,7 @@
 #include "encrypt.h"
 
 /* 128-bit key as 4 x 32-bit words */
-static const unsigned long xtea_key[4] = ENCRYPTION_KEY;
+static const unsigned int xtea_key[4] = ENCRYPTION_KEY;
 
 /* ******************************************************************************************************************************************************** */
 /* XTEA Core Algorithm                                                                                                                                      */
@@ -16,9 +16,9 @@ static const unsigned long xtea_key[4] = ENCRYPTION_KEY;
  * XTEA block encryption (64-bit block, 128-bit key)
  * Encrypts two 32-bit words in place using 64 rounds (32 cycles)
  */
-static void xtea_encrypt_block(unsigned long *v0, unsigned long *v1)
+static void xtea_encrypt_block(unsigned int *v0, unsigned int *v1)
 {
-    unsigned long sum = 0;
+    unsigned int sum = 0;
     int i;
 
     for (i = 0; i < XTEA_ROUNDS / 2; i++)
@@ -37,10 +37,10 @@ static void xtea_encrypt_block(unsigned long *v0, unsigned long *v1)
  * Generate keystream block for CTR mode
  * Counter format: [nonce:32][block_counter:32]
  */
-static void generate_keystream(unsigned long nonce, unsigned long block_num, 
+static void generate_keystream(unsigned int nonce, unsigned int block_num, 
                                 unsigned char *keystream)
 {
-    unsigned long v0, v1;
+    unsigned int v0, v1;
     
     /* Set up counter block: nonce in high word, block number in low word */
     v0 = nonce;
@@ -63,7 +63,7 @@ static void generate_keystream(unsigned long nonce, unsigned long block_num,
 void encrypt_decrypt_ex(char *data, int size, unsigned int nonce)
 {
     unsigned char keystream[XTEA_BLOCK_SIZE];
-    unsigned long block_num = 0;
+    unsigned int block_num = 0;
     int i;
     int ks_pos = XTEA_BLOCK_SIZE;  /* Force generation of first keystream block */
 
@@ -77,7 +77,7 @@ void encrypt_decrypt_ex(char *data, int size, unsigned int nonce)
         /* Generate new keystream block when needed */
         if (ks_pos >= XTEA_BLOCK_SIZE)
         {
-            generate_keystream((unsigned long)nonce, block_num, keystream);
+            generate_keystream(nonce, block_num, keystream);
             block_num++;
             ks_pos = 0;
         }

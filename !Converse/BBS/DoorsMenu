@@ -1,0 +1,139 @@
+{
+   /* Filebase Test Menu */
+   /* Called from main Postlogon menu */
+
+label filebase_menu
+    script `<Converse$Dir>.BBS.Header`
+    bold
+    fgbg 7 4
+    print `                                .:: Filebase Menu ::.`,cll
+    std
+    print `\r\n\r\n`
+    print `  Current Selection:\r\n`
+    print `    Filebase: %{filebasename} (ID: %{filebaseid})\r\n`
+    print `    Area:     %{filebaseareaname} (ID: %{filebaseareaid})\r\n`
+    print `\r\n`
+    bold
+    print `  Navigation                        File Operations\r\n`
+    std
+    print `    [1] List/Select Filebases        [D] Download File\r\n`
+    print `    [2] List/Select Areas            [U] Upload File\r\n`
+    print `    [3] Reset Selection              [I] File Info\r\n`
+    print `    [4] List Files                   [S] Scan for New\r\n`
+    print `                                     [Q] Return to Main\r\n`
+    print `\r\n`
+    print `  Choice: `
+    prompt choice char echo
+
+    if choice == `1` goto select_base
+    if choice == `2` goto select_area
+    if choice == `3` goto reset_selection
+    if choice == `4` goto list_files
+    if choice == `d` goto download_file
+    if choice == `D` goto download_file
+    if choice == `u` goto upload_file
+    if choice == `U` goto upload_file
+    if choice == `i` goto file_info
+    if choice == `I` goto file_info
+    if choice == `s` goto login_scan
+    if choice == `S` goto login_scan
+    if choice == `q` goto quit_menu
+    if choice == `Q` goto quit_menu
+
+    print `\r\n\r\n[Invalid choice]\r\n`
+    anykey
+    goto filebase_menu
+
+/* List/select a filebase */
+label select_base
+    filebase list
+    goto filebase_menu
+
+/* List/select an area */
+label select_area
+    filebase areas
+    goto filebase_menu
+
+/* Reset selection */
+label reset_selection
+    filebase reset
+    anykey
+    goto filebase_menu
+
+/* List files in current filebase/area */
+label list_files
+    print `\r\n`
+    if %{filebaseid} == 0 then
+        print `[Select a filebase first]\r\n`
+        anykey
+        goto filebase_menu
+    end if
+    doing `Browsing files...`
+    filebase browse
+    anykey
+    doing
+    goto filebase_menu
+
+/* Show file info */
+label file_info
+    print `\r\n\r\n`
+    if %{filebaseid} == 0 then
+        print `[Select a filebase first]\r\n`
+        anykey
+        goto filebase_menu
+    end if
+    print `Enter file ID: `
+    readline file_id
+    if file_id == `` goto filebase_menu
+    filebase info %{file_id}
+    print `\r\n`
+    anykey
+    goto filebase_menu
+
+/* Download a file */
+label download_file
+    print `\r\n\r\n`
+    if %{filebaseid} == 0 then
+        print `[Select a filebase first]\r\n`
+        anykey
+        goto filebase_menu
+    end if
+    print `Enter file ID to download: `
+    readline file_id
+    if file_id == `` goto filebase_menu
+    doing `Downloading file...`
+    sendfile %{file_id} zmodem
+    doing
+    anykey
+    goto filebase_menu
+
+/* Upload a file */
+label upload_file
+    print `\r\n\r\n`
+    if %{filebaseid} == 0 then
+        print `[Select a filebase first]\r\n`
+        anykey
+        goto filebase_menu
+    end if
+    if %{filebaseareaid} == 0 then
+        print `[Select an area first]\r\n`
+        anykey
+        goto filebase_menu
+    end if
+    doing `Uploading file...`
+    receivefile
+    doing
+    anykey
+    goto filebase_menu
+
+/* Scan for new files */
+label login_scan
+    print `\r\n`
+    loginscan
+    anykey
+    goto filebase_menu
+
+/* Return to main menu */
+label quit_menu
+    return
+}

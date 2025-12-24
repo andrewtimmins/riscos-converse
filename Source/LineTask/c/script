@@ -13,6 +13,7 @@
 #include "filebase.h"
 #include "messagebase.h"
 #include "main.h"
+#include "version.h"
 
 #define SCRIPT_DEFAULT_INSTRUCTION_CAPACITY 32
 #define SCRIPT_DEFAULT_LABEL_CAPACITY 16
@@ -6270,7 +6271,15 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         }
         else if (script_stringcasecmp(macro_name, "version") == 0)
         {
-            replacement = APP_VERSION;
+            replacement = plain_version;
+        }
+        else if (script_stringcasecmp(macro_name, "version_date") == 0)
+        {
+            replacement = version_date;
+        }
+        else if (script_stringcasecmp(macro_name, "version_build") == 0)
+        {
+            replacement = last_updated;
         }
         else if (script_stringcasecmp(macro_name, "hour") == 0)
         {

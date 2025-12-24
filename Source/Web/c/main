@@ -47,6 +47,7 @@
 #include "template.h"
 #include "session.h"
 #include "debug.h"
+#include "version.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variables                                                                                                                                         */
@@ -190,6 +191,9 @@ static Desk_bool handle_open_proginfo(Desk_event_pollblock *event, void *ref)
     }
 
     Desk_Dialog2_OpenDialogMenuLeaf(event, (Desk_dialog2_block *)ref);
+    Desk_Icon_SetText(proginfo_window->window, 0, app_name);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(proginfo_window->window, 5, wimp_version);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(proginfo_window->window, 6, app_purpose);  /* PROGINFO_VERSION = 5 */
 
     return Desk_bool_TRUE;
 }
@@ -953,26 +957,33 @@ static void handle_upload_post(int slot, HTTP_REQUEST *req)
      */
     {
         char file_record[512];
+        int temp_int;
+        long temp_long;
         memset(file_record, 0, sizeof(file_record));
         
         /* id = 0 (will be assigned) */
         /* filebaseid = filebase_id */
-        *(int *)(file_record + 4) = filebase_id;
+        temp_int = filebase_id;
+        memcpy(file_record + 4, &temp_int, sizeof(int));
         /* filebaseareaid = area_id */
-        *(int *)(file_record + 8) = area_id;
+        temp_int = area_id;
+        memcpy(file_record + 8, &temp_int, sizeof(int));
         /* deleted = 0 */
         /* accesslevel = 0 */
         /* keys at offset 20 - empty */
         /* name at offset 148 */
         strncpy(file_record + 148, filename, 63);
         /* uploadedby at offset 212 */
-        *(int *)(file_record + 212) = session->user_id;
+        temp_int = session->user_id;
+        memcpy(file_record + 212, &temp_int, sizeof(int));
         /* uploaddate at offset 216 */
-        *(int *)(file_record + 216) = (int)time(NULL);
+        temp_int = (int)time(NULL);
+        memcpy(file_record + 216, &temp_int, sizeof(int));
         /* description at offset 220 */
         strncpy(file_record + 220, description, 255);
         /* filesize at offset 476 */
-        *(long *)(file_record + 476) = file_len;
+        temp_long = file_len;
+        memcpy(file_record + 476, &temp_long, sizeof(long));
         /* downloads at offset 480 = 0 */
         
         /* Call Filer to begin upload */
@@ -1081,7 +1092,7 @@ static void handle_api_areas(int slot, HTTP_REQUEST *req)
         }
         
         area_rec = (char *)regs.r[0];
-        area_id = *(int *)(area_rec + 0);  /* FILEBASE_AREA_RECORD.id */
+        memcpy(&area_id, area_rec + 0, sizeof(int));  /* FILEBASE_AREA_RECORD.id */
         area_name = area_rec + 140;         /* FILEBASE_AREA_RECORD.name at offset 140 (4+4+4+128) */
         
         /* JSON escape the name */

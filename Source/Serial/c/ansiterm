@@ -1,0 +1,1093 @@
+/*
+ * ansiterm.c - ANSI terminal rendering for the Serial module direct device access
+ * Adapted from LineTask's ansiterm implementation
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "debug.h"
+#include "ansiterm.h"
+
+#include "C:Desk.Core.h"
+#include "C:Desk.Window.h"
+#include "C:Desk.Wimp.h"
+#include "C:Desk.WimpSWIs.h"
+#include "C:Desk.GFX.h"
+#include "C:Desk.ColourTran.h"
+
+/* SWI numbers */
+#define SWI_OS_Plot             0x45
+#define SWI_OS_File             0x08
+#define SWI_OS_WriteC           0x00
+#define SWI_Wimp_ForceRedraw    0x400D1
+#define SWI_Wimp_SetCaretPosition 0x400D2
+#define SWI_OS_ReadModeVariable 0x35
+
+/* OS_Plot operations */
+#define PLOT_MOVE               4
+#define PLOT_RECTANGLE_FILL     101
+
+/* Default attribute: white on black (ANSI 7 on 0) */
+#define DEFAULT_ATTR            0x07
+
+/* Wimp palette mapping for ANSI colours */
+static const int ansi_to_wimp_table[16] = {
+    7,   /* 0  black   -> Wimp 7  */
+    11,  /* 1  red     -> Wimp 11 */
+    10,  /* 2  green   -> Wimp 10 */
+    9,   /* 3  yellow  -> Wimp 9  */
+    8,   /* 4  blue    -> Wimp 8  */
+    13,  /* 5  magenta -> Wimp 13 */
+    15,  /* 6  cyan    -> Wimp 15 */
+    0,   /* 7  white   -> Wimp 0  */
+    7,   /* 8  bright black (grey) */
+    11,  /* 9  bright red */
+    10,  /* 10 bright green */
+    9,   /* 11 bright yellow */
+    8,   /* 12 bright blue */
+    13,  /* 13 bright magenta */
+    15,  /* 14 bright cyan */
+    0    /* 15 bright white */
+};
+
+int ansiterm_ansi_to_wimp(int ansi_colour)
+{
+    if (ansi_colour < 0 || ansi_colour > 15)
+        return 0;
+    return ansi_to_wimp_table[ansi_colour];
+}
+
+static void reset_params(ansiterm_state *term)
+{
+    term->parser_state = ANSI_STATE_NORMAL;
+    term->param_count = 0;
+    term->current_param = 0;
+    memset(term->params, 0, sizeof(term->params));
+}
+
+int ansiterm_init(ansiterm_state *term, int line_index)
+{
+    if (!term)
+        return 0;
+
+    memset(term, 0, sizeof(ansiterm_state));
+    term->line_index = line_index;
+    term->fg_color = 7;
+    term->bg_color = 0;
+    term->bold = 0;
+    term->inverse = 0;
+    term->flash = 0;
+    term->flash_visible = 1;
+    term->dirty_top = -1;
+    term->dirty_bottom = -1;
+    term->send_to_serial = NULL;
+    term->input_mode = 1;  /* Enable input by default for serial terminal */
+
+    reset_params(term);
+    ansiterm_clear(term);
+    return 1;
+}
+
+void ansiterm_finalise(ansiterm_state *term)
+{
+    if (!term)
+        return;
+
+    if (term->font_data)
+    {
+        free(term->font_data);
+        term->font_data = NULL;
+    }
+    term->font_loaded = 0;
+}
+
+int ansiterm_load_font(ansiterm_state *term, const char *path)
+{
+    _kernel_swi_regs regs;
+    _kernel_oserror *err;
+    int file_size;
+    int read_bytes;
+    FILE *fp;
+    unsigned char *temp_buffer;
+    int ch, row;
+
+    if (!term || !path)
+        return 0;
+
+    regs.r[0] = 17; /* Read catalogue info */
+    regs.r[1] = (int)path;
+    err = _kernel_swi(SWI_OS_File, &regs, &regs);
+    if (err || regs.r[0] == 0)
+    {
+        debug_printf("ansiterm: font file missing: %s", path);
+        return 0;
+    }
+
+    file_size = regs.r[4];
+    /* Expecting 32 bytes per char (8x8 pixels, 4bpp) * 256 chars = 8192 bytes */
+    if (file_size < 8192)
+    {
+        debug_printf("ansiterm: font file too small (%d bytes, expected 8192)", file_size);
+        return 0;
+    }
+
+    if (term->font_data)
+    {
+        free(term->font_data);
+        term->font_data = NULL;
+    }
+
+    /* Allocate internal buffer: 8 bytes per char (1bpp) * 256 chars = 2048 bytes */
+    term->font_data = (unsigned char *)malloc(2048);
+    if (!term->font_data)
+    {
+        debug_printf("ansiterm: cannot allocate font buffer");
+        return 0;
+    }
+
+    /* Allocate temp buffer for reading 4bpp data */
+    temp_buffer = (unsigned char *)malloc(8192);
+    if (!temp_buffer)
+    {
+        debug_printf("ansiterm: cannot allocate temp buffer");
+        free(term->font_data);
+        term->font_data = NULL;
+        return 0;
+    }
+
+    fp = fopen(path, "rb");
+    if (!fp)
+    {
+        debug_printf("ansiterm: failed to open font file");
+        free(temp_buffer);
+        free(term->font_data);
+        term->font_data = NULL;
+        return 0;
+    }
+
+    read_bytes = fread(temp_buffer, 1, 8192, fp);
+    fclose(fp);
+    if (read_bytes < 8192)
+    {
+        debug_printf("ansiterm: incomplete font read (%d bytes)", read_bytes);
+        free(temp_buffer);
+        free(term->font_data);
+        term->font_data = NULL;
+        return 0;
+    }
+
+    /* Convert 4bpp (32 bytes/char) to 1bpp (8 bytes/char) */
+    for (ch = 0; ch < 256; ch++)
+    {
+        for (row = 0; row < 8; row++)
+        {
+            unsigned char mask = 0;
+            int src_offset = (ch * 32) + (row * 4);
+            
+            unsigned char b0 = temp_buffer[src_offset + 0];
+            unsigned char b1 = temp_buffer[src_offset + 1];
+            unsigned char b2 = temp_buffer[src_offset + 2];
+            unsigned char b3 = temp_buffer[src_offset + 3];
+
+            if ((b0 & 0x0F) != 0) mask |= 0x80;
+            if ((b0 & 0xF0) != 0) mask |= 0x40;
+            if ((b1 & 0x0F) != 0) mask |= 0x20;
+            if ((b1 & 0xF0) != 0) mask |= 0x10;
+            if ((b2 & 0x0F) != 0) mask |= 0x08;
+            if ((b2 & 0xF0) != 0) mask |= 0x04;
+            if ((b3 & 0x0F) != 0) mask |= 0x02;
+            if ((b3 & 0xF0) != 0) mask |= 0x01;
+
+            term->font_data[(ch * 8) + row] = mask;
+        }
+    }
+
+    free(temp_buffer);
+    term->font_loaded = 1;
+    debug_printf("ansiterm: font loaded and converted successfully");
+    return 1;
+}
+
+static void mark_dirty(ansiterm_state *term, int row)
+{
+    if (term->dirty_top < 0)
+    {
+        term->dirty_top = row;
+        term->dirty_bottom = row;
+    }
+    else
+    {
+        if (row < term->dirty_top)
+            term->dirty_top = row;
+        if (row > term->dirty_bottom)
+            term->dirty_bottom = row;
+    }
+}
+
+static unsigned short get_current_attr(const ansiterm_state *term)
+{
+    int fg = term->fg_color;
+    int bg = term->bg_color;
+    unsigned short attr;
+
+    if (term->bold && fg < 8)
+        fg += 8;
+    if (term->inverse)
+    {
+        int tmp = fg;
+        fg = bg;
+        bg = tmp;
+    }
+
+    attr = (unsigned short)((bg << 4) | (fg & 0x0F));
+    if (term->flash)
+        attr |= 0x100;
+        
+    return attr;
+}
+
+static void put_char(ansiterm_state *term, unsigned char ch)
+{
+    if (term->cursor_x >= 0 && term->cursor_x < ANSITERM_COLS &&
+        term->cursor_y >= 0 && term->cursor_y < ANSITERM_ROWS)
+    {
+        term->cells[term->cursor_y][term->cursor_x].ch = ch;
+        term->cells[term->cursor_y][term->cursor_x].attr = get_current_attr(term);
+        mark_dirty(term, term->cursor_y);
+    }
+
+    term->cursor_x++;
+    if (term->cursor_x >= ANSITERM_COLS)
+    {
+        term->cursor_x = 0;
+        term->cursor_y++;
+        if (term->cursor_y >= ANSITERM_ROWS)
+        {
+            ansiterm_scroll_up(term, 1);
+            term->cursor_y = ANSITERM_ROWS - 1;
+        }
+    }
+}
+
+static void execute_csi(ansiterm_state *term, unsigned char cmd)
+{
+    int i, n, m;
+    int param0 = (term->param_count > 0) ? term->params[0] : 0;
+    int param1 = (term->param_count > 1) ? term->params[1] : 0;
+
+    switch (cmd)
+    {
+    case 'A':
+        n = (param0 > 0) ? param0 : 1;
+        term->cursor_y -= n;
+        if (term->cursor_y < 0)
+            term->cursor_y = 0;
+        break;
+
+    case 'B':
+        n = (param0 > 0) ? param0 : 1;
+        term->cursor_y += n;
+        if (term->cursor_y >= ANSITERM_ROWS)
+            term->cursor_y = ANSITERM_ROWS - 1;
+        break;
+
+    case 'C':
+        n = (param0 > 0) ? param0 : 1;
+        term->cursor_x += n;
+        if (term->cursor_x >= ANSITERM_COLS)
+            term->cursor_x = ANSITERM_COLS - 1;
+        break;
+
+    case 'D':
+        n = (param0 > 0) ? param0 : 1;
+        term->cursor_x -= n;
+        if (term->cursor_x < 0)
+            term->cursor_x = 0;
+        break;
+
+    case 'H':
+    case 'f':
+        n = (param0 > 0) ? param0 : 1;
+        m = (param1 > 0) ? param1 : 1;
+        term->cursor_y = n - 1;
+        term->cursor_x = m - 1;
+        if (term->cursor_y < 0)
+            term->cursor_y = 0;
+        if (term->cursor_y >= ANSITERM_ROWS)
+            term->cursor_y = ANSITERM_ROWS - 1;
+        if (term->cursor_x < 0)
+            term->cursor_x = 0;
+        if (term->cursor_x >= ANSITERM_COLS)
+            term->cursor_x = ANSITERM_COLS - 1;
+        break;
+
+    case 'J':
+        n = (term->param_count > 0) ? param0 : 0;
+        switch (n)
+        {
+        case 0:
+            for (i = term->cursor_x; i < ANSITERM_COLS; i++)
+            {
+                term->cells[term->cursor_y][i].ch = ' ';
+                term->cells[term->cursor_y][i].attr = get_current_attr(term);
+            }
+            for (n = term->cursor_y + 1; n < ANSITERM_ROWS; n++)
+            {
+                for (i = 0; i < ANSITERM_COLS; i++)
+                {
+                    term->cells[n][i].ch = ' ';
+                    term->cells[n][i].attr = get_current_attr(term);
+                }
+            }
+            mark_dirty(term, term->cursor_y);
+            term->dirty_bottom = ANSITERM_ROWS - 1;
+            break;
+
+        case 1:
+            for (n = 0; n < term->cursor_y; n++)
+            {
+                for (i = 0; i < ANSITERM_COLS; i++)
+                {
+                    term->cells[n][i].ch = ' ';
+                    term->cells[n][i].attr = get_current_attr(term);
+                }
+            }
+            for (i = 0; i <= term->cursor_x; i++)
+            {
+                term->cells[term->cursor_y][i].ch = ' ';
+                term->cells[term->cursor_y][i].attr = get_current_attr(term);
+            }
+            term->dirty_top = 0;
+            mark_dirty(term, term->cursor_y);
+            break;
+
+        case 2:
+            ansiterm_clear(term);
+            break;
+        }
+        break;
+
+    case 'K':
+        n = (term->param_count > 0) ? param0 : 0;
+        switch (n)
+        {
+        case 0:
+            for (i = term->cursor_x; i < ANSITERM_COLS; i++)
+            {
+                term->cells[term->cursor_y][i].ch = ' ';
+                term->cells[term->cursor_y][i].attr = get_current_attr(term);
+            }
+            break;
+
+        case 1:
+            for (i = 0; i <= term->cursor_x; i++)
+            {
+                term->cells[term->cursor_y][i].ch = ' ';
+                term->cells[term->cursor_y][i].attr = get_current_attr(term);
+            }
+            break;
+
+        case 2:
+            for (i = 0; i < ANSITERM_COLS; i++)
+            {
+                term->cells[term->cursor_y][i].ch = ' ';
+                term->cells[term->cursor_y][i].attr = get_current_attr(term);
+            }
+            break;
+        }
+        mark_dirty(term, term->cursor_y);
+        break;
+
+    case 'L':
+        ansiterm_scroll_down(term, (param0 > 0) ? param0 : 1);
+        break;
+
+    case 'M':
+        ansiterm_scroll_up(term, (param0 > 0) ? param0 : 1);
+        break;
+
+    case 'm':
+        if (term->param_count == 0)
+        {
+            term->fg_color = 7;
+            term->bg_color = 0;
+            term->bold = 0;
+            term->inverse = 0;
+            term->flash = 0;
+        }
+        else
+        {
+            for (i = 0; i < term->param_count; i++)
+            {
+                n = term->params[i];
+                if (n == 0)
+                {
+                    term->fg_color = 7;
+                    term->bg_color = 0;
+                    term->bold = 0;
+                    term->inverse = 0;
+                    term->flash = 0;
+                }
+                else if (n == 1)
+                {
+                    term->bold = 1;
+                }
+                else if (n == 5)
+                {
+                    term->flash = 1;
+                }
+                else if (n == 7)
+                {
+                    term->inverse = 1;
+                }
+                else if (n == 22)
+                {
+                    term->bold = 0;
+                }
+                else if (n == 25)
+                {
+                    term->flash = 0;
+                }
+                else if (n == 27)
+                {
+                    term->inverse = 0;
+                }
+                else if (n >= 30 && n <= 37)
+                {
+                    term->fg_color = n - 30;
+                }
+                else if (n >= 40 && n <= 47)
+                {
+                    term->bg_color = n - 40;
+                }
+                else if (n >= 90 && n <= 97)
+                {
+                    term->fg_color = (n - 90) + 8;
+                }
+                else if (n >= 100 && n <= 107)
+                {
+                    term->bg_color = (n - 100) + 8;
+                }
+            }
+        }
+        break;
+
+    case 'n':
+        if (param0 == 6)
+        {
+            /* Device Status Report (DSR) - Report Cursor Position */
+            if (term->send_to_serial)
+            {
+                char response[32];
+                snprintf(response, sizeof(response), "\033[%d;%dR", 
+                         term->cursor_y + 1, term->cursor_x + 1);
+                term->send_to_serial(term->line_index, response, strlen(response));
+            }
+        }
+        break;
+
+    case 's':
+        term->saved_x = term->cursor_x;
+        term->saved_y = term->cursor_y;
+        break;
+
+    case 'u':
+        term->cursor_x = term->saved_x;
+        term->cursor_y = term->saved_y;
+        break;
+
+    default:
+        break;
+    }
+}
+
+void ansiterm_process_byte(ansiterm_state *term, unsigned char byte)
+{
+    if (!term)
+        return;
+
+    switch (term->parser_state)
+    {
+    case ANSI_STATE_NORMAL:
+        switch (byte)
+        {
+        case 7:
+            break;
+
+        case 8:
+            if (term->cursor_x > 0)
+                term->cursor_x--;
+            break;
+
+        case 9:
+            term->cursor_x = (term->cursor_x + 8) & ~7;
+            if (term->cursor_x >= ANSITERM_COLS)
+                term->cursor_x = ANSITERM_COLS - 1;
+            break;
+
+        case 10:
+        case 11:
+        case 12:
+            if (byte == 12)
+            {
+               ansiterm_clear(term);
+            }
+            else
+            {
+                term->cursor_y++;
+                if (term->cursor_y >= ANSITERM_ROWS)
+                {
+                    ansiterm_scroll_up(term, 1);
+                    term->cursor_y = ANSITERM_ROWS - 1;
+                }
+            }
+            break;
+
+        case 13:
+            term->cursor_x = 0;
+            break;
+
+        case 27:
+            term->parser_state = ANSI_STATE_ESC;
+            break;
+
+        default:
+            if (byte >= 32)
+                put_char(term, byte);
+            break;
+        }
+        break;
+
+    case ANSI_STATE_ESC:
+        if (byte == '[')
+        {
+            term->parser_state = ANSI_STATE_CSI;
+            term->param_count = 0;
+            term->current_param = 0;
+            memset(term->params, 0, sizeof(term->params));
+        }
+        else
+        {
+            term->parser_state = ANSI_STATE_NORMAL;
+        }
+        break;
+
+    case ANSI_STATE_CSI:
+    case ANSI_STATE_PARAM:
+        if (byte >= '0' && byte <= '9')
+        {
+            term->current_param = term->current_param * 10 + (byte - '0');
+            term->parser_state = ANSI_STATE_PARAM;
+        }
+        else if (byte == ';')
+        {
+            if (term->param_count < ANSI_MAX_PARAMS)
+                term->params[term->param_count++] = term->current_param;
+            term->current_param = 0;
+            term->parser_state = ANSI_STATE_PARAM;
+        }
+        else if (byte >= 0x40 && byte <= 0x7E)
+        {
+            if (term->param_count < ANSI_MAX_PARAMS &&
+                (term->current_param > 0 || term->parser_state == ANSI_STATE_PARAM))
+            {
+                term->params[term->param_count++] = term->current_param;
+            }
+            execute_csi(term, byte);
+            reset_params(term);
+        }
+        else
+        {
+            term->parser_state = ANSI_STATE_NORMAL;
+        }
+        break;
+    }
+}
+
+void ansiterm_process_block(ansiterm_state *term, const unsigned char *data, int len)
+{
+    int i;
+
+    if (!term || !data || len <= 0)
+        return;
+
+    for (i = 0; i < len; i++)
+        ansiterm_process_byte(term, data[i]);
+}
+
+static void fill_cell(int x, int y, int bg_colour)
+{
+    _kernel_swi_regs regs;
+
+    Desk_Wimp_SetColour(bg_colour);
+
+    regs.r[0] = PLOT_MOVE;
+    regs.r[1] = x;
+    regs.r[2] = y - ANSITERM_CHAR_HEIGHT + 1;
+    _kernel_swi(SWI_OS_Plot, &regs, &regs);
+
+    regs.r[0] = PLOT_RECTANGLE_FILL;
+    regs.r[1] = x + ANSITERM_CHAR_WIDTH - 1;
+    regs.r[2] = y;
+    _kernel_swi(SWI_OS_Plot, &regs, &regs);
+}
+
+static void draw_pixel_block(int x0, int y0, int width, int height)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = PLOT_MOVE;
+    regs.r[1] = x0;
+    regs.r[2] = y0;
+    _kernel_swi(SWI_OS_Plot, &regs, &regs);
+
+    regs.r[0] = PLOT_RECTANGLE_FILL;
+    regs.r[1] = x0 + width - 1;
+    regs.r[2] = y0 + height - 1;
+    _kernel_swi(SWI_OS_Plot, &regs, &regs);
+}
+
+static void draw_cell_font(ansiterm_state *term, int x, int y,
+                           unsigned char ch, unsigned short attr)
+{
+    int fg = ansiterm_ansi_to_wimp(attr & 0x0F);
+    int bg = ansiterm_ansi_to_wimp((attr >> 4) & 0x0F);
+    unsigned char *glyph;
+    int row, col;
+
+    fill_cell(x, y, bg);
+
+    if ((attr & 0x100) && !term->flash_visible)
+        return;
+
+    if (!term->font_loaded || !term->font_data || ch == 0 || ch == ' ')
+        return;
+
+    glyph = term->font_data + (ch * ANSITERM_FONT_HEIGHT);
+    Desk_Wimp_SetColour(fg);
+
+    for (row = 0; row < ANSITERM_FONT_HEIGHT; row++)
+    {
+        unsigned char mask = glyph[row];
+        int pixel_y = y - (row * 4);
+
+        if (mask == 0)
+            continue;
+
+        for (col = 0; col < ANSITERM_FONT_WIDTH; col++)
+        {
+            if (mask & (0x80 >> col))
+            {
+                int pixel_x = x + (col * 2);
+                draw_pixel_block(pixel_x, pixel_y - 3, 2, 4);
+            }
+        }
+    }
+}
+
+static void draw_cell_sysfont(ansiterm_state *term, int x, int y, unsigned char ch, unsigned short attr)
+{
+    _kernel_swi_regs regs;
+    int fg = ansiterm_ansi_to_wimp(attr & 0x0F);
+    int bg = ansiterm_ansi_to_wimp((attr >> 4) & 0x0F);
+
+    fill_cell(x, y, bg);
+
+    if ((attr & 0x100) && !term->flash_visible)
+        return;
+
+    Desk_Wimp_SetColour(fg);
+
+    regs.r[0] = PLOT_MOVE;
+    regs.r[1] = x;
+    regs.r[2] = y - ANSITERM_CHAR_HEIGHT + 8;
+    _kernel_swi(SWI_OS_Plot, &regs, &regs);
+
+    if (ch >= 32 && ch < 127)
+        _kernel_oswrch(ch);
+    else if (ch != 0 && ch != ' ')
+        _kernel_oswrch('?');
+}
+
+static void draw_row(ansiterm_state *term, int row, int origin_x, int origin_y,
+                     int start_col, int end_col)
+{
+    int col;
+    int y;
+
+    if (row < 0 || row >= ANSITERM_ROWS)
+        return;
+
+    if (start_col < 0)
+        start_col = 0;
+    if (end_col >= ANSITERM_COLS)
+        end_col = ANSITERM_COLS - 1;
+    if (start_col > end_col)
+        return;
+
+    y = origin_y - (row * ANSITERM_CHAR_HEIGHT);
+
+    for (col = start_col; col <= end_col; col++)
+    {
+        int x = origin_x + (col * ANSITERM_CHAR_WIDTH);
+        ansiterm_cell *cell = &term->cells[row][col];
+
+        if (term->font_loaded && term->font_data)
+            draw_cell_font(term, x, y, cell->ch, cell->attr);
+        else
+            draw_cell_sysfont(term, x, y, cell->ch, cell->attr);
+    }
+}
+
+static void ansiterm_refresh_rectangle(ansiterm_state *term,
+                                       Desk_window_redrawblock *redraw)
+{
+    int origin_x;
+    int origin_y;
+    int left;
+    int right;
+    int top;
+    int bottom;
+    int row;
+
+    if (!term || !redraw)
+        return;
+
+    origin_x = redraw->rect.min.x - redraw->scroll.x;
+    origin_y = redraw->rect.max.y - redraw->scroll.y;
+
+    left = (redraw->cliprect.min.x - redraw->rect.min.x + redraw->scroll.x) / ANSITERM_CHAR_WIDTH;
+    right = (redraw->cliprect.max.x - redraw->rect.min.x + redraw->scroll.x) / ANSITERM_CHAR_WIDTH;
+    top = (redraw->rect.max.y - redraw->cliprect.max.y - redraw->scroll.y + 1) / ANSITERM_CHAR_HEIGHT;
+    bottom = (redraw->rect.max.y - redraw->cliprect.min.y - redraw->scroll.y + 1) / ANSITERM_CHAR_HEIGHT;
+
+    if (left < 0)
+        left = 0;
+    if (left >= ANSITERM_COLS)
+        return;
+    if (right < 0)
+        return;
+    if (right >= ANSITERM_COLS)
+        right = ANSITERM_COLS - 1;
+    if (left > right)
+        return;
+
+    if (top < 0)
+        top = 0;
+    if (top >= ANSITERM_ROWS)
+        return;
+    if (bottom >= ANSITERM_ROWS)
+        bottom = ANSITERM_ROWS - 1;
+    if (bottom < top)
+        return;
+
+    for (row = top; row <= bottom; row++)
+        draw_row(term, row, origin_x, origin_y, left, right);
+}
+
+void ansiterm_redraw(ansiterm_state *term, Desk_event_data *event_data)
+{
+    Desk_window_redrawblock redraw;
+    Desk_bool more;
+
+    Desk_UNUSED(event_data);
+
+    if (!term || term->window == 0)
+        return;
+
+    redraw.window = term->window;
+    Desk_Wimp_RedrawWindow(&redraw, &more);
+    while (more)
+    {
+        _kernel_oswrch(5);
+        ansiterm_refresh_rectangle(term, &redraw);
+        Desk_Wimp_GetRectangle(&redraw, &more);
+    }
+
+    term->dirty_top = -1;
+    term->dirty_bottom = -1;
+}
+
+int ansiterm_keypress(ansiterm_state *term, int key_code)
+{
+    if (!term || !term->input_mode)
+        return 0;
+
+    switch (key_code)
+    {
+    case 0x18C: return -1;  /* Left arrow */
+    case 0x18D: return -2;  /* Right arrow */
+    case 0x18E: return -3;  /* Down arrow */
+    case 0x18F: return -4;  /* Up arrow */
+    default:
+        if (key_code >= 32 && key_code < 127)
+            return key_code;
+        if (key_code == 13)
+            return 13;
+        if (key_code == 8 || key_code == 127)
+            return 8;
+        break;
+    }
+    return 0;
+}
+
+void ansiterm_invalidate(ansiterm_state *term)
+{
+    _kernel_swi_regs regs;
+
+    if (!term || !term->window)
+        return;
+
+    regs.r[0] = term->window;
+    regs.r[1] = 0;
+    regs.r[2] = -ANSITERM_HEIGHT;
+    regs.r[3] = ANSITERM_WIDTH;
+    regs.r[4] = 0;
+    _kernel_swi(SWI_Wimp_ForceRedraw, &regs, &regs);
+}
+
+void ansiterm_update_dirty(ansiterm_state *term)
+{
+    _kernel_swi_regs regs;
+    int y_top;
+    int y_bottom;
+
+    if (!term || !term->window)
+        return;
+
+    if (term->dirty_top < 0)
+        return;
+
+    y_top = -(term->dirty_top * ANSITERM_CHAR_HEIGHT);
+    y_bottom = -((term->dirty_bottom + 1) * ANSITERM_CHAR_HEIGHT);
+
+    regs.r[0] = term->window;
+    regs.r[1] = 0;
+    regs.r[2] = y_bottom;
+    regs.r[3] = ANSITERM_WIDTH;
+    regs.r[4] = y_top;
+    _kernel_swi(SWI_Wimp_ForceRedraw, &regs, &regs);
+
+    term->dirty_top = -1;
+    term->dirty_bottom = -1;
+}
+
+void ansiterm_clear(ansiterm_state *term)
+{
+    int row;
+    int col;
+    unsigned short attr;
+
+    if (!term)
+        return;
+
+    attr = get_current_attr(term);
+    for (row = 0; row < ANSITERM_ROWS; row++)
+    {
+        for (col = 0; col < ANSITERM_COLS; col++)
+        {
+            term->cells[row][col].ch = ' ';
+            term->cells[row][col].attr = attr;
+        }
+    }
+
+    term->cursor_x = 0;
+    term->cursor_y = 0;
+    term->dirty_top = 0;
+    term->dirty_bottom = ANSITERM_ROWS - 1;
+}
+
+void ansiterm_set_input(ansiterm_state *term, int enabled)
+{
+    if (term)
+        term->input_mode = enabled ? 1 : 0;
+}
+
+void ansiterm_scroll_up(ansiterm_state *term, int lines)
+{
+    int row;
+    int col;
+    int src_row;
+    unsigned short attr;
+
+    if (!term || lines <= 0)
+        return;
+
+    if (lines >= ANSITERM_ROWS)
+    {
+        ansiterm_clear(term);
+        return;
+    }
+
+    for (row = 0; row < ANSITERM_ROWS - lines; row++)
+    {
+        src_row = row + lines;
+        memcpy(term->cells[row], term->cells[src_row], sizeof(ansiterm_cell) * ANSITERM_COLS);
+    }
+
+    attr = get_current_attr(term);
+    for (row = ANSITERM_ROWS - lines; row < ANSITERM_ROWS; row++)
+    {
+        for (col = 0; col < ANSITERM_COLS; col++)
+        {
+            term->cells[row][col].ch = ' ';
+            term->cells[row][col].attr = attr;
+        }
+    }
+
+    term->dirty_top = 0;
+    term->dirty_bottom = ANSITERM_ROWS - 1;
+}
+
+void ansiterm_scroll_down(ansiterm_state *term, int lines)
+{
+    int row;
+    int col;
+    int src_row;
+    unsigned short attr;
+
+    if (!term || lines <= 0)
+        return;
+
+    if (lines >= ANSITERM_ROWS)
+    {
+        ansiterm_clear(term);
+        return;
+    }
+
+    for (row = ANSITERM_ROWS - 1; row >= lines; row--)
+    {
+        src_row = row - lines;
+        memcpy(term->cells[row], term->cells[src_row], sizeof(ansiterm_cell) * ANSITERM_COLS);
+    }
+
+    attr = get_current_attr(term);
+    for (row = 0; row < lines; row++)
+    {
+        for (col = 0; col < ANSITERM_COLS; col++)
+        {
+            term->cells[row][col].ch = ' ';
+            term->cells[row][col].attr = attr;
+        }
+    }
+
+    term->dirty_top = 0;
+    term->dirty_bottom = ANSITERM_ROWS - 1;
+}
+
+void ansiterm_blink(ansiterm_state *term)
+{
+    int row, col;
+    int min_x, max_x;
+    _kernel_swi_regs regs;
+
+    if (!term || !term->window)
+        return;
+
+    term->flash_visible = !term->flash_visible;
+
+    for (row = 0; row < ANSITERM_ROWS; row++)
+    {
+        min_x = -1;
+        max_x = -1;
+
+        for (col = 0; col < ANSITERM_COLS; col++)
+        {
+            if (term->cells[row][col].attr & 0x100)
+            {
+                if (min_x == -1) min_x = col;
+                max_x = col;
+            }
+        }
+
+        if (min_x != -1)
+        {
+            regs.r[0] = term->window;
+            regs.r[1] = min_x * ANSITERM_CHAR_WIDTH;
+            regs.r[2] = -((row + 1) * ANSITERM_CHAR_HEIGHT);
+            regs.r[3] = (max_x + 1) * ANSITERM_CHAR_WIDTH;
+            regs.r[4] = -(row * ANSITERM_CHAR_HEIGHT);
+            _kernel_swi(SWI_Wimp_ForceRedraw, &regs, &regs);
+        }
+    }
+}
+
+int ansiterm_open_window(ansiterm_state *term, const char *title)
+{
+    Desk_window_state state;
+    int screen_width, screen_height;
+    int window_width = ANSITERM_WIDTH;
+    int window_height = ANSITERM_HEIGHT;
+    _kernel_swi_regs regs;
+    int xeig, yeig, xpixels, ypixels;
+
+    if (!term || term->window == 0)
+        return 0;
+
+    /* Set window title if provided */
+    if (title)
+    {
+        Desk_Window_SetTitle(term->window, (char *)title);
+    }
+
+    /* Get screen dimensions */
+    regs.r[0] = -1;
+    regs.r[1] = 4;
+    _kernel_swi(SWI_OS_ReadModeVariable, &regs, &regs);
+    xeig = regs.r[2];
+
+    regs.r[0] = -1;
+    regs.r[1] = 5;
+    _kernel_swi(SWI_OS_ReadModeVariable, &regs, &regs);
+    yeig = regs.r[2];
+
+    regs.r[0] = -1;
+    regs.r[1] = 11;
+    _kernel_swi(SWI_OS_ReadModeVariable, &regs, &regs);
+    xpixels = regs.r[2] + 1;
+
+    regs.r[0] = -1;
+    regs.r[1] = 12;
+    _kernel_swi(SWI_OS_ReadModeVariable, &regs, &regs);
+    ypixels = regs.r[2] + 1;
+
+    screen_width = xpixels << xeig;
+    screen_height = ypixels << yeig;
+
+    Desk_Wimp_GetWindowState(term->window, &state);
+
+    /* Center the window on screen */
+    state.openblock.screenrect.min.x = (screen_width - window_width) / 2;
+    state.openblock.screenrect.max.x = state.openblock.screenrect.min.x + window_width;
+    state.openblock.screenrect.max.y = (screen_height + window_height) / 2;
+    state.openblock.screenrect.min.y = state.openblock.screenrect.max.y - window_height;
+    state.openblock.scroll.x = 0;
+    state.openblock.scroll.y = 0;
+    state.openblock.behind = -1;
+
+    Desk_Wimp_OpenWindow(&state.openblock);
+
+    /* Set input focus */
+    regs.r[0] = term->window;
+    regs.r[1] = -1;
+    regs.r[2] = 0;
+    regs.r[3] = 0;
+    regs.r[4] = -1;
+    regs.r[5] = 0;
+    _kernel_swi(SWI_Wimp_SetCaretPosition, &regs, &regs);
+
+    return 1;
+}
+
+void ansiterm_close_window(ansiterm_state *term)
+{
+    if (!term || term->window == 0)
+        return;
+
+    Desk_Window_Hide(term->window);
+}

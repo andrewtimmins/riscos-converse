@@ -57,6 +57,7 @@
 #include "debug.h"
 #include "ftnlog.h"
 #include "crypt.h"
+#include "version.h"
 
 /* ******************************************************************************************************************************************************** */
 /* Global Variables                                                                                                                                         */
@@ -163,12 +164,163 @@ int ftn_string_to_addr(const char *str, FTN_ADDR *addr)
     return 1;
 }
 
+/*
+ * Case-insensitive string comparison for domains.
+ */
+static int ftn_domain_strcasecmp(const char *s1, const char *s2)
+{
+    while (*s1 && *s2)
+    {
+        int c1 = tolower((unsigned char)*s1);
+        int c2 = tolower((unsigned char)*s2);
+        if (c1 != c2)
+        {
+            return c1 - c2;
+        }
+        s1++;
+        s2++;
+    }
+    return tolower((unsigned char)*s1) - tolower((unsigned char)*s2);
+}
+
+/*
+ * Full address match including domain.
+ * For multi-network support, domains must match for addresses to be considered equal.
+ */
 int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b)
+{
+    /* Compare domain first (case-insensitive) */
+    if (ftn_domain_strcasecmp(a->domain, b->domain) != 0)
+    {
+        return 0;
+    }
+
+    return (a->zone == b->zone &&
+            a->net == b->net &&
+            a->node == b->node &&
+            a->point == b->point);
+}
+
+/*
+ * Address match ignoring domain (backward compatible).
+ * Use this for routing decisions where numeric address is sufficient.
+ */
+int ftn_addr_match_ignore_domain(const FTN_ADDR *a, const FTN_ADDR *b)
 {
     return (a->zone == b->zone &&
             a->net == b->net &&
             a->node == b->node &&
             a->point == b->point);
+}
+
+/*
+ * Get inbound and outbound paths for an address based on its domain.
+ * Returns 1 if domain found, 0 if using global fallback.
+ */
+int ftn_get_domain_for_addr(const FTN_ADDR *addr, char *inbound, size_t in_size, char *outbound, size_t out_size)
+{
+    _kernel_swi_regs regs;
+
+    /* First try by domain name */
+    if (addr->domain[0] != '\0')
+    {
+        regs.r[0] = 14;  /* FIND_DOMAIN_BY_NAME */
+        regs.r[1] = (int)addr->domain;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            /* Found by name - extract inbound/outbound paths */
+            /* FTN_DOMAIN_CONFIG: id(4) + name(32) + inbound(256) + outbound(256) + zone(4) + idomain(64) + alias_for(4) */
+            char *domain_ptr = (char *)regs.r[0];
+            if (inbound != NULL)
+            {
+                strncpy(inbound, domain_ptr + 4 + 32, in_size - 1);
+                inbound[in_size - 1] = '\0';
+            }
+            if (outbound != NULL)
+            {
+                strncpy(outbound, domain_ptr + 4 + 32 + 256, out_size - 1);
+                outbound[out_size - 1] = '\0';
+            }
+            return 1;
+        }
+    }
+
+    /* Try by zone */
+    regs.r[0] = 15;  /* FIND_DOMAIN_BY_ZONE */
+    regs.r[1] = addr->zone;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        char *domain_ptr = (char *)regs.r[0];
+        if (inbound != NULL)
+        {
+            strncpy(inbound, domain_ptr + 4 + 32, in_size - 1);
+            inbound[in_size - 1] = '\0';
+        }
+        if (outbound != NULL)
+        {
+            strncpy(outbound, domain_ptr + 4 + 32 + 256, out_size - 1);
+            outbound[out_size - 1] = '\0';
+        }
+        return 1;
+    }
+
+    /* Fallback to global paths */
+    if (inbound != NULL)
+    {
+        strncpy(inbound, mailer.inbound_path, in_size - 1);
+        inbound[in_size - 1] = '\0';
+    }
+    if (outbound != NULL)
+    {
+        strncpy(outbound, mailer.outbound_path, out_size - 1);
+        outbound[out_size - 1] = '\0';
+    }
+    return 0;
+}
+
+/*
+ * Get inbound path for an address.
+ */
+int ftn_get_inbound_for_addr(const FTN_ADDR *addr, char *path, size_t size)
+{
+    return ftn_get_domain_for_addr(addr, path, size, NULL, 0);
+}
+
+/*
+ * Get outbound path for an address.
+ */
+int ftn_get_outbound_for_addr(const FTN_ADDR *addr, char *path, size_t size)
+{
+    return ftn_get_domain_for_addr(addr, NULL, 0, path, size);
+}
+
+/*
+ * Expand a partial address using defaults.
+ * Fills in missing domain from defaults or by zone lookup.
+ */
+void ftn_expand_address(FTN_ADDR *addr, const FTN_ADDR *defaults)
+{
+    _kernel_swi_regs regs;
+
+    /* If no domain set, try to find one by zone */
+    if (addr->domain[0] == '\0')
+    {
+        regs.r[0] = 15;  /* FIND_DOMAIN_BY_ZONE */
+        regs.r[1] = addr->zone;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            /* Copy domain name from offset 4 (after id) */
+            char *domain_ptr = (char *)regs.r[0];
+            strncpy(addr->domain, domain_ptr + 4, sizeof(addr->domain) - 1);
+            addr->domain[sizeof(addr->domain) - 1] = '\0';
+        }
+        else if (defaults != NULL && defaults->domain[0] != '\0')
+        {
+            /* Use default domain */
+            strncpy(addr->domain, defaults->domain, sizeof(addr->domain) - 1);
+            addr->domain[sizeof(addr->domain) - 1] = '\0';
+        }
+    }
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1034,6 +1186,7 @@ void mailer_load_config(void)
             char inbound[256];
             char outbound[256];
             char netmail[256];
+            char nodelists[256];
             char freqpath[256];
             char freqexec[256];
             long max_packet_size;
@@ -2116,63 +2269,158 @@ static void mailer_create_directories(void)
 {
     int zones[16];
     int zone_count = 0;
-    int i;
+    int i, d;
+    _kernel_swi_regs regs;
+    int domain_count;
 
     debug_printf("mailer: Creating FTN directory structure...");
 
-    /* Create main FTN directories (zone-specific subdirs created in loop below) */
-    ensure_directory_exists(mailer.inbound_path);
-    ensure_directory_exists(mailer.outbound_path);
-    ensure_directory_exists(mailer.netmail_path);
-
-    /* Collect zones we should provision (always include zone 2) */
-    mailer_add_zone(zones, &zone_count, 2);
-    for (i = 0; i < mailer.our_addr_count; i++)
+    /* Check how many domains are configured */
+    regs.r[0] = 13;  /* COUNT_DOMAINS */
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL)
     {
-        mailer_add_zone(zones, &zone_count, mailer.our_addrs[i].zone);
+        domain_count = regs.r[0];
+    }
+    else
+    {
+        domain_count = 0;
     }
 
-    /* Ensure inbound and outbound subdirectories for each zone */
-    for (i = 0; i < zone_count; i++)
+    /* If domains are configured, create their directory structures */
+    if (domain_count > 0)
     {
-        int zone = zones[i];
-        char inbound_zone[MAILER_PATH_SIZE];
-        char outbound_zone[MAILER_PATH_SIZE];
-        char temp_path[MAILER_PATH_SIZE];
-        char processed_path[MAILER_PATH_SIZE];
-        char bad_path[MAILER_PATH_SIZE];
+        debug_printf("mailer: Creating directories for %d configured domains", domain_count);
 
-        /* Inbound zone directory and subdirs */
-        ftn_format_zone_path(inbound_zone, sizeof(inbound_zone), mailer.inbound_path, zone);
-        ftn_format_zone_subpath(temp_path, sizeof(temp_path), mailer.inbound_path, zone, "Temp");
-        ftn_format_zone_subpath(processed_path, sizeof(processed_path), mailer.inbound_path, zone, "Processed");
-        ftn_format_zone_subpath(bad_path, sizeof(bad_path), mailer.inbound_path, zone, "Bad");
+        for (d = 1; d <= domain_count; d++)
+        {
+            char *domain_ptr;
+            char domain_name[32];
+            char domain_inbound[256];
+            char domain_outbound[256];
+            int domain_zone;
 
-        ensure_directory_exists(inbound_zone);
-        ensure_directory_exists(temp_path);
-        ensure_directory_exists(processed_path);
-        ensure_directory_exists(bad_path);
+            regs.r[0] = 11;  /* GET_DOMAIN */
+            regs.r[1] = d;   /* Domain IDs are 1-based */
+            if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+            {
+                continue;
+            }
 
-        debug_printf("mailer:   Inbound zone %d: %s %s", zone, inbound_zone,
-                     path_exists(inbound_zone) == 2 ? "(OK)" : "(FAILED)");
-        debug_printf("mailer:     Temp: %s %s", temp_path,
-                     path_exists(temp_path) == 2 ? "(OK)" : "(FAILED)");
-        debug_printf("mailer:     Processed: %s %s", processed_path,
-                     path_exists(processed_path) == 2 ? "(OK)" : "(FAILED)");
-        debug_printf("mailer:     Bad: %s %s", bad_path,
-                     path_exists(bad_path) == 2 ? "(OK)" : "(FAILED)");
+            domain_ptr = (char *)regs.r[0];
+            /* FTN_DOMAIN_CONFIG: id(4) + name(32) + inbound(256) + outbound(256) + zone(4) */
+            strncpy(domain_name, domain_ptr + 4, sizeof(domain_name) - 1);
+            domain_name[sizeof(domain_name) - 1] = '\0';
+            strncpy(domain_inbound, domain_ptr + 4 + 32, sizeof(domain_inbound) - 1);
+            domain_inbound[sizeof(domain_inbound) - 1] = '\0';
+            strncpy(domain_outbound, domain_ptr + 4 + 32 + 256, sizeof(domain_outbound) - 1);
+            domain_outbound[sizeof(domain_outbound) - 1] = '\0';
+            memcpy(&domain_zone, domain_ptr + 4 + 32 + 256 + 256, sizeof(int));
 
-        /* Outbound zone directory */
-        ftn_format_zone_path(outbound_zone, sizeof(outbound_zone), mailer.outbound_path, zone);
-        ensure_directory_exists(outbound_zone);
+            debug_printf("mailer: Domain '%s' (zone %d):", domain_name, domain_zone);
 
-        debug_printf("mailer:   Outbound zone %d: %s %s", zone, outbound_zone,
-                     path_exists(outbound_zone) == 2 ? "(OK)" : "(FAILED)");
+            /* Create domain base directories */
+            ensure_directory_exists(domain_inbound);
+            ensure_directory_exists(domain_outbound);
+
+            /* Create zone subdirectory structure for this domain */
+            if (domain_zone > 0)
+            {
+                char zone_inbound[MAILER_PATH_SIZE];
+                char zone_outbound[MAILER_PATH_SIZE];
+                char temp_path[MAILER_PATH_SIZE];
+                char processed_path[MAILER_PATH_SIZE];
+                char bad_path[MAILER_PATH_SIZE];
+
+                ftn_format_zone_path(zone_inbound, sizeof(zone_inbound), domain_inbound, domain_zone);
+                ftn_format_zone_subpath(temp_path, sizeof(temp_path), domain_inbound, domain_zone, "Temp");
+                ftn_format_zone_subpath(processed_path, sizeof(processed_path), domain_inbound, domain_zone, "Processed");
+                ftn_format_zone_subpath(bad_path, sizeof(bad_path), domain_inbound, domain_zone, "Bad");
+
+                ensure_directory_exists(zone_inbound);
+                ensure_directory_exists(temp_path);
+                ensure_directory_exists(processed_path);
+                ensure_directory_exists(bad_path);
+
+                debug_printf("mailer:   Inbound zone %d: %s %s", domain_zone, zone_inbound,
+                             path_exists(zone_inbound) == 2 ? "(OK)" : "(FAILED)");
+
+                ftn_format_zone_path(zone_outbound, sizeof(zone_outbound), domain_outbound, domain_zone);
+                ensure_directory_exists(zone_outbound);
+
+                debug_printf("mailer:   Outbound zone %d: %s %s", domain_zone, zone_outbound,
+                             path_exists(zone_outbound) == 2 ? "(OK)" : "(FAILED)");
+            }
+        }
+
+        /* Netmail directory is still shared */
+        ensure_directory_exists(mailer.netmail_path);
+        debug_printf("mailer:   Netmail: %s %s", mailer.netmail_path,
+                     path_exists(mailer.netmail_path) == 2 ? "(OK)" : "(FAILED)");
+    }
+    else
+    {
+        /* No domains configured - create legacy global directories */
+        ensure_directory_exists(mailer.inbound_path);
+        ensure_directory_exists(mailer.outbound_path);
+        ensure_directory_exists(mailer.netmail_path);
+
+        /* Collect zones we should provision (always include zone 2) */
+        mailer_add_zone(zones, &zone_count, 2);
+        for (i = 0; i < mailer.our_addr_count; i++)
+        {
+            mailer_add_zone(zones, &zone_count, mailer.our_addrs[i].zone);
+        }
+
+        /* Ensure inbound and outbound subdirectories for each zone */
+        for (i = 0; i < zone_count; i++)
+        {
+            int zone = zones[i];
+            char inbound_zone[MAILER_PATH_SIZE];
+            char outbound_zone[MAILER_PATH_SIZE];
+            char temp_path[MAILER_PATH_SIZE];
+            char processed_path[MAILER_PATH_SIZE];
+            char bad_path[MAILER_PATH_SIZE];
+
+            /* Inbound zone directory and subdirs */
+            ftn_format_zone_path(inbound_zone, sizeof(inbound_zone), mailer.inbound_path, zone);
+            ftn_format_zone_subpath(temp_path, sizeof(temp_path), mailer.inbound_path, zone, "Temp");
+            ftn_format_zone_subpath(processed_path, sizeof(processed_path), mailer.inbound_path, zone, "Processed");
+            ftn_format_zone_subpath(bad_path, sizeof(bad_path), mailer.inbound_path, zone, "Bad");
+
+            ensure_directory_exists(inbound_zone);
+            ensure_directory_exists(temp_path);
+            ensure_directory_exists(processed_path);
+            ensure_directory_exists(bad_path);
+
+            debug_printf("mailer:   Inbound zone %d: %s %s", zone, inbound_zone,
+                         path_exists(inbound_zone) == 2 ? "(OK)" : "(FAILED)");
+            debug_printf("mailer:     Temp: %s %s", temp_path,
+                         path_exists(temp_path) == 2 ? "(OK)" : "(FAILED)");
+            debug_printf("mailer:     Processed: %s %s", processed_path,
+                         path_exists(processed_path) == 2 ? "(OK)" : "(FAILED)");
+            debug_printf("mailer:     Bad: %s %s", bad_path,
+                         path_exists(bad_path) == 2 ? "(OK)" : "(FAILED)");
+
+            /* Outbound zone directory */
+            ftn_format_zone_path(outbound_zone, sizeof(outbound_zone), mailer.outbound_path, zone);
+            ensure_directory_exists(outbound_zone);
+
+            debug_printf("mailer:   Outbound zone %d: %s %s", zone, outbound_zone,
+                         path_exists(outbound_zone) == 2 ? "(OK)" : "(FAILED)");
+        }
+
+        /* Log other shared directories */
+        debug_printf("mailer:   Netmail: %s %s", mailer.netmail_path,
+                     path_exists(mailer.netmail_path) == 2 ? "(OK)" : "(FAILED)");
     }
 
-    /* Log other shared directories */
-    debug_printf("mailer:   Netmail: %s %s", mailer.netmail_path,
-                 path_exists(mailer.netmail_path) == 2 ? "(OK)" : "(FAILED)");
+    /* FREQ directory is shared regardless of domain configuration */
+    if (mailer.freq_path[0] != '\0')
+    {
+        ensure_directory_exists(mailer.freq_path);
+        debug_printf("mailer:   FREQ: %s %s", mailer.freq_path,
+                     path_exists(mailer.freq_path) == 2 ? "(OK)" : "(FAILED)");
+    }
 }
 
 void mailer_initialise(void)
@@ -2656,6 +2904,9 @@ int main(int argc, char *argv[])
     create_iconbar_icon();
     create_iconbar_menu();
     proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+    Desk_Icon_SetText(proginfo_window, 5, wimp_version);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(proginfo_window, 6, app_purpose);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(proginfo_window, 0, app_name);  /* PROGINFO_VERSION = 5 */
     wimp.main_window = Desk_Window_Create("status", Desk_template_TITLEMIN);
     ftnstatus_window = Desk_Window_Create("ftnstatus", Desk_template_TITLEMIN);
     ftnlog_window = Desk_Window_Create("ftnlog", Desk_template_TITLEMIN);

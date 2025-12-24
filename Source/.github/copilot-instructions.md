@@ -561,6 +561,14 @@ void log_ftn(char *entry);
   - 5 (SetUplink): R1=UplinkID, R2=FTN_UPLINK_CONFIG ptr
   - 6 (CountAddresses): -> R0=Count
   - 7 (CountUplinks): -> R0=Count
+  - 8 (GetDownlink): R1=DownlinkID -> R0=FTN_DOWNLINK_CONFIG ptr
+  - 9 (SetDownlink): R1=DownlinkID, R2=FTN_DOWNLINK_CONFIG ptr
+  - 10 (CountDownlinks): -> R0=Count
+  - 11 (GetDomain): R1=DomainID -> R0=FTN_DOMAIN_CONFIG ptr
+  - 12 (SetDomain): R1=DomainID, R2=FTN_DOMAIN_CONFIG ptr
+  - 13 (CountDomains): -> R0=Count
+  - 14 (FindDomainByName): R1=NamePtr -> R0=FTN_DOMAIN_CONFIG ptr or 0
+  - 15 (FindDomainByZone): R1=Zone -> R0=FTN_DOMAIN_CONFIG ptr or 0
 - **SerialConfig (0x5AA88)**:
   - 0 (Get): R1=Line -> R0=SERIAL_CONFIG ptr
   - 1 (Set): R1=Line, R2=SERIAL_CONFIG ptr
@@ -1525,6 +1533,84 @@ origin `We're not dead yet!`
 - Max 16 origins, 128 chars each
 - `PACKER_MESSAGE.is_local` flag controls whether to add tearline/origin
 - Locally posted messages have empty origin address in MESSAGE_RECORD (zone=0, net=0)
+
+### Multi-Network Domain Support
+The FTN module supports multiple FTN networks (e.g., Fidonet, CNet, RetroNet) with separate inbound/outbound directories per network. This is achieved through domain configuration blocks.
+
+**Domain Structure (`FTN_DOMAIN_CONFIG`):**
+```c
+typedef struct {
+    int id;                      /* Domain ID (0-based) */
+    char name[32];               /* Domain name (e.g., "fidonet") */
+    char inbound[256];           /* Inbound path for this domain */
+    char outbound[256];          /* Outbound path for this domain */
+    int default_zone;            /* Default zone (for matching addresses) */
+    int idomain;                 /* Internal domain ID for 5D addressing */
+    int alias_for;               /* Domain ID this is an alias for (0=not alias) */
+} FTN_DOMAIN_CONFIG;
+```
+
+**Configuration (`BBS/Config/FTN`):**
+```
+domain 1
+    name            fidonet
+    zone            2
+    inbound         <Converse$Dir>.FTN.Inbound.Fidonet
+    outbound        <Converse$Dir>.FTN.Outbound.Fidonet
+enddomain
+
+domain 2
+    name            cnet
+    zone            64
+    inbound         <Converse$Dir>.FTN.Inbound.Cnet
+    outbound        <Converse$Dir>.FTN.Outbound.Cnet
+enddomain
+```
+
+**Directory Structure with Domains:**
+```
+<Converse$Dir>.FTN/
+├── Inbound/
+│   ├── Fidonet/
+│   │   └── 002/
+│   │       ├── Temp/
+│   │       ├── Processed/
+│   │       └── Bad/
+│   ├── Cnet/
+│   │   └── 040/
+│   └── ... (other domains)
+├── Outbound/
+│   ├── Fidonet/
+│   │   └── 002/
+│   ├── Cnet/
+│   │   └── 040/
+│   └── ... (other domains)
+└── Netmail/
+```
+
+**Address to Domain Matching:**
+When routing mail or receiving files, the mailer determines the domain by:
+1. Check the address's `domain` field (5D addressing)
+2. If empty, look up domain by zone number via `ftn_get_domain_for_addr()`
+3. Fall back to legacy global paths if no domain matches
+
+**Key Functions (`FTN/c/mailer`):**
+```c
+/* Address matching - includes domain comparison */
+int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b);
+int ftn_addr_match_ignore_domain(const FTN_ADDR *a, const FTN_ADDR *b);
+
+/* Domain lookup */
+FTN_DOMAIN_CONFIG *ftn_get_domain_for_addr(const FTN_ADDR *addr);
+int ftn_get_inbound_for_addr(const FTN_ADDR *addr, char *buffer, size_t size);
+int ftn_get_outbound_for_addr(const FTN_ADDR *addr, char *buffer, size_t size);
+void ftn_expand_address(FTN_ADDR *addr);
+```
+
+**Backward Compatibility:**
+- If no domains are configured, the mailer uses the legacy global `inbound`/`outbound` paths
+- The queue scanner checks for domains first, then falls back to legacy paths
+- Existing single-network configurations continue to work unchanged
 
 ### TIC File Processing
 TIC files accompany files in FTN file distribution networks. The TIC module provides

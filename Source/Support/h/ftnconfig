@@ -11,8 +11,10 @@
 #define FTN_CONFIG_MAX_ADDRESSES        8
 #define FTN_CONFIG_MAX_UPLINKS          16
 #define FTN_CONFIG_MAX_DOWNLINKS        32
+#define FTN_CONFIG_MAX_DOMAINS          8
 #define FTN_CONFIG_MAX_ALIASES          8
 #define FTN_CONFIG_NAME_LEN             64
+#define FTN_CONFIG_DOMAIN_LEN           32
 #define FTN_CONFIG_PATH_LEN             256
 #define FTN_CONFIG_PASSWORD_LEN         32
 #define FTN_CONFIG_GROUPS_LEN           64
@@ -30,6 +32,18 @@ typedef struct
     int point;                                  /* point number */
     char type[8];                               /* address type (4d, 5d) */
 } FTN_ADDRESS_CONFIG;
+
+/* FTN domain configuration - maps network names to directory paths */
+typedef struct
+{
+    int id;                                     /* domain ID (1-based) */
+    char name[FTN_CONFIG_DOMAIN_LEN];           /* domain name: "fidonet", "amiganet" */
+    char inbound[FTN_CONFIG_PATH_LEN];          /* inbound path for this domain */
+    char outbound[FTN_CONFIG_PATH_LEN];         /* outbound path for this domain */
+    int default_zone;                           /* default zone for this domain */
+    char idomain[FTN_CONFIG_NAME_LEN];          /* internet domain: "fidonet.binkp.net" */
+    int alias_for;                              /* domain ID this is alias for, or 0 */
+} FTN_DOMAIN_CONFIG;
 
 /* FTN uplink configuration */
 typedef struct
@@ -99,6 +113,10 @@ typedef struct
     int address_count;                          /* number of addresses */
     FTN_ADDRESS_CONFIG addresses[FTN_CONFIG_MAX_ADDRESSES];
 
+    /* Domains */
+    int domain_count;                           /* number of domains */
+    FTN_DOMAIN_CONFIG domains[FTN_CONFIG_MAX_DOMAINS];
+
     /* Uplinks */
     int uplink_count;                           /* number of uplinks */
     FTN_UPLINK_CONFIG uplinks[FTN_CONFIG_MAX_UPLINKS];
@@ -121,7 +139,12 @@ typedef enum
     FTN_CONFIG_REASON_COUNT_UPLINKS = 7,        /* -> R0=count */
     FTN_CONFIG_REASON_GET_DOWNLINK = 8,         /* R1=downlink_id -> R0=FTN_DOWNLINK_CONFIG ptr */
     FTN_CONFIG_REASON_SET_DOWNLINK = 9,         /* R1=downlink_id, R2=FTN_DOWNLINK_CONFIG ptr */
-    FTN_CONFIG_REASON_COUNT_DOWNLINKS = 10      /* -> R0=count */
+    FTN_CONFIG_REASON_COUNT_DOWNLINKS = 10,     /* -> R0=count */
+    FTN_CONFIG_REASON_GET_DOMAIN = 11,          /* R1=domain_id -> R0=FTN_DOMAIN_CONFIG ptr */
+    FTN_CONFIG_REASON_SET_DOMAIN = 12,          /* R1=domain_id, R2=FTN_DOMAIN_CONFIG ptr */
+    FTN_CONFIG_REASON_COUNT_DOMAINS = 13,       /* -> R0=count */
+    FTN_CONFIG_REASON_FIND_DOMAIN_BY_NAME = 14, /* R1=name -> R0=FTN_DOMAIN_CONFIG ptr or 0 */
+    FTN_CONFIG_REASON_FIND_DOMAIN_BY_ZONE = 15  /* R1=zone -> R0=FTN_DOMAIN_CONFIG ptr or 0 */
 } FTN_CONFIG_REASON;
 
 /* Global config fields for SET_GLOBAL */
@@ -162,5 +185,8 @@ const FTN_GLOBAL_CONFIG *ftnconfig_get(void);
 const FTN_ADDRESS_CONFIG *ftnconfig_get_address(int addr_id);
 const FTN_UPLINK_CONFIG *ftnconfig_get_uplink(int uplink_id);
 const FTN_DOWNLINK_CONFIG *ftnconfig_get_downlink(int downlink_id);
+const FTN_DOMAIN_CONFIG *ftnconfig_get_domain(int domain_id);
+const FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_name(const char *name);
+const FTN_DOMAIN_CONFIG *ftnconfig_find_domain_by_zone(int zone);
 
 #endif

@@ -1,0 +1,13 @@
+
+#define MAJOR_VSN "0"
+#define MINOR_VSN "06"
+
+int VERNO=4;
+
+#define VERSION MAJOR_VSN"."MINOR_VSN
+
+char app_name[]="Mailer";
+char app_purpose[]="Converse FTN Mailer";
+char plain_version[]=VERSION;
+char wimp_version[]=VERSION " ("__DATE__")";
+char last_updated[]=__DATE__" at "__TIME__;

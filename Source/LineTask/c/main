@@ -35,6 +35,7 @@
 #include "pipes.h"
 #include "script.h"
 #include "transfer.h"
+#include "version.h" 
 
 #define SWI_OS_BYTE 0x00000006
 #define SWI_Wimp_SetCaretPosition 0x400D2
@@ -1122,7 +1123,7 @@ static void pipes_send_welcome(line_task_state *state) {
   char connected[128];
 
   snprintf(banner, sizeof(banner),
-           "Converse/RISC OS (v0.01) - Compiled on %s\r\n", app_compiled);
+           "Converse/RISC OS v%s [Compiled on: %s]\r\n", wimp_version, last_updated);
   pipes_write_string(state->line_id, banner);
   snprintf(connected, sizeof(connected),
            "Connection established on Line #%d\r\n", state->line_id);

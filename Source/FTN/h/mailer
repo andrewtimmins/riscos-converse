@@ -325,5 +325,12 @@ void ftnstatus_end_transfer(void);
 void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size);
 int ftn_string_to_addr(const char *str, FTN_ADDR *addr);
 int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b);
+int ftn_addr_match_ignore_domain(const FTN_ADDR *a, const FTN_ADDR *b);
+
+/* Domain helpers */
+int ftn_get_domain_for_addr(const FTN_ADDR *addr, char *inbound, size_t in_size, char *outbound, size_t out_size);
+int ftn_get_inbound_for_addr(const FTN_ADDR *addr, char *path, size_t size);
+int ftn_get_outbound_for_addr(const FTN_ADDR *addr, char *path, size_t size);
+void ftn_expand_address(FTN_ADDR *addr, const FTN_ADDR *defaults);
 
 #endif

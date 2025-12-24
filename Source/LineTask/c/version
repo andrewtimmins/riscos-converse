@@ -1,0 +1,12 @@
+
+#define MAJOR_VSN "0"
+#define MINOR_VSN "12"
+
+int VERNO=4;
+
+#define VERSION MAJOR_VSN"."MINOR_VSN
+
+char plain_version[]=VERSION;
+char wimp_version[]=VERSION " ("__DATE__")";
+char version_date[]=__DATE__;
+char last_updated[]=__DATE__" at "__TIME__;

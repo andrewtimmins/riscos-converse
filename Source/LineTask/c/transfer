@@ -133,18 +133,22 @@ int transfer_start_send(transfer_session *session, int line,
     record_ptr = (char *)regs.r[0];
     
     /* Check if file is deleted */
-    if (*(int *)(record_ptr + FILE_RECORD_OFFSET_DELETED) != 0)
     {
-        snprintf(session->error_msg, sizeof(session->error_msg), "File has been deleted");
-        session->state = XFER_ERROR;
-        session->result = XFER_RESULT_FILE_ERROR;
-        return -1;
+        int deleted;
+        memcpy(&deleted, record_ptr + FILE_RECORD_OFFSET_DELETED, sizeof(int));
+        if (deleted != 0)
+        {
+            snprintf(session->error_msg, sizeof(session->error_msg), "File has been deleted");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_FILE_ERROR;
+            return -1;
+        }
     }
     
     /* Extract file info */
     strncpy(session->filename, record_ptr + FILE_RECORD_OFFSET_NAME, TRANSFER_MAX_FILENAME - 1);
     session->filename[TRANSFER_MAX_FILENAME - 1] = '\0';
-    session->file_size = *(long *)(record_ptr + FILE_RECORD_OFFSET_FILESIZE);
+    memcpy(&session->file_size, record_ptr + FILE_RECORD_OFFSET_FILESIZE, sizeof(long));
     
     debug_printf("transfer: starting send of '%s' (%ld bytes) via protocol %d\n",
                  session->filename, session->file_size, protocol);

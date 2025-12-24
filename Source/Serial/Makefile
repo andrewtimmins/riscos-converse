@@ -1,7 +1,7 @@
 # Make file for Serial Handler
 
 COMPONENT   = Serial
-OBJS        = debug main serial
+OBJS        = debug version main serial ansiterm
 LIBS        = C:Desk.o.Desk OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C: -apcs 3/32bit -Wcdp -throwback -fan
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -12,6 +12,7 @@ o.debug:	c.debug
 o.debug:	C:h.kernel
 o.debug:	C:h.swis
 o.debug:	h.debug
+o.version:	c.version
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -43,10 +44,17 @@ o.main:	C:Desk.h.Pointer
 o.main:	C:Desk.h.Dialog2
 o.main:	C:Desk.h.Error
 o.main:	C:Desk.h.Error
+o.main:	C:Desk.h.Sprite
+o.main:	C:Desk.h.File
+o.main:	C:Desk.h.SWI
 o.main:	h.main
 o.main:	C:Desk.h.Wimp
 o.main:	h.serial
+o.main:	h.ansiterm
+o.main:	C:Desk.h.Wimp
+o.main:	C:Desk.h.Window
 o.main:	h.debug
+o.main:	h.version
 o.serial:	c.serial
 o.serial:	C:h.kernel
 o.serial:	C:h.swis
@@ -55,4 +63,42 @@ o.serial:	C:Desk.h.Wimp
 o.serial:	C:Desk.h.Core
 o.serial:	C:h.kernel
 o.serial:	h.serial
+o.serial:	h.ansiterm
+o.serial:	C:Desk.h.Wimp
+o.serial:	C:Desk.h.Window
+o.serial:	C:Desk.h.WimpSWIs
+o.serial:	C:Desk.h.Error2
+o.serial:	C:Desk.h.Error
+o.serial:	C:Desk.h.JumpRaw
+o.serial:	C:Desk.h.Debug
+o.serial:	C:Desk.h.Pointer
+o.serial:	C:Desk.h.Icon
+o.serial:	C:Desk.h.DragASpr
+o.serial:	C:Desk.h.Coord
+o.serial:	C:Desk.h.Core
 o.serial:	h.debug
+o.ansiterm:	c.ansiterm
+o.ansiterm:	C:h.kernel
+o.ansiterm:	C:h.swis
+o.ansiterm:	h.debug
+o.ansiterm:	h.ansiterm
+o.ansiterm:	C:Desk.h.Wimp
+o.ansiterm:	C:Desk.h.Core
+o.ansiterm:	C:h.kernel
+o.ansiterm:	C:Desk.h.Window
+o.ansiterm:	C:Desk.h.WimpSWIs
+o.ansiterm:	C:Desk.h.Error2
+o.ansiterm:	C:Desk.h.Error
+o.ansiterm:	C:Desk.h.JumpRaw
+o.ansiterm:	C:Desk.h.Debug
+o.ansiterm:	C:Desk.h.Pointer
+o.ansiterm:	C:Desk.h.Icon
+o.ansiterm:	C:Desk.h.DragASpr
+o.ansiterm:	C:Desk.h.Coord
+o.ansiterm:	C:Desk.h.Core
+o.ansiterm:	C:Desk.h.Core
+o.ansiterm:	C:Desk.h.Window
+o.ansiterm:	C:Desk.h.Wimp
+o.ansiterm:	C:Desk.h.WimpSWIs
+o.ansiterm:	C:Desk.h.GFX
+o.ansiterm:	C:Desk.h.ColourTran

@@ -15,6 +15,8 @@
 #define SERIAL_MAX_LINES        32
 #define SERIAL_POLL_DELAY       1       /* centiseconds between null polls (10ms) */
 #define PIPE_TRANSFER_CHUNK     1536    /* Transfer buffer size */
+#define RING_TIMEOUT_CS         500     /* Ring count reset timeout (5 seconds in centiseconds) */
+#define ESCAPE_GUARD_TIME_CS    100     /* +++ escape guard time (1 second in centiseconds) */
 
 /* ============================================================================
  * Status Window Configuration
@@ -27,13 +29,16 @@
 #define SERIALSTATUS_COLUMN_START       8
 #define SERIALSTATUS_COLUMN_GAP         8
 #define SERIALSTATUS_LINE_WIDTH         88
-#define SERIALSTATUS_STATUS_WIDTH       1630
+#define SERIALSTATUS_STATUS_WIDTH       600     /* Activity/status text column */
+#define SERIALSTATUS_BUTTON_WIDTH       64      /* Sprite button with border */
 
 /* Dynamic icon layout - icons created after template static icons */
-#define SERIALSTATUS_ICON_BASE          2       /* First dynamic icon number */
-#define SERIALSTATUS_ICONS_PER_LINE     2       /* Icons per serial line row */
+#define SERIALSTATUS_ICON_BASE          3       /* First dynamic icon number (template modified) */
+#define SERIALSTATUS_ICONS_PER_LINE     4       /* Icons per serial line row */
 #define SERIALSTATUS_COLUMN_LINE        0       /* Line number column */
 #define SERIALSTATUS_COLUMN_STATUS      1       /* Status column */
+#define SERIALSTATUS_COLUMN_TERMINAL    2       /* Terminal button column */
+#define SERIALSTATUS_COLUMN_INIT        3       /* Init button column */
 
 /* ============================================================================
  * Wimp Messages
@@ -97,6 +102,9 @@
 #define PIPE_CONTROL_CONNECT        'C'
 #define PIPE_CONTROL_DISCONNECT     'D'
 
+/* Forward declaration for terminal state */
+struct ansiterm_state_tag;
+
 /* ============================================================================
  * Serial Line Configuration (from Support module)
  * ============================================================================ */
@@ -136,12 +144,22 @@ typedef struct
     int ring_count;                 /* Rings observed so far */
     int ring_match_index;           /* Current match position within ring string */
     clock_t last_activity;          /* Last activity time */
+    clock_t last_ring_time;         /* Time of last ring detection (for timeout) */
     char driver_name[32];           /* Driver name for debug */
 
     /* Pending write buffer for partial serial/pipe writes */
     char pending_serial[PIPE_TRANSFER_CHUNK];
     int pending_serial_offset;
     int pending_serial_length;
+
+    /* +++ escape sequence guard */
+    int escape_plus_count;          /* Consecutive '+' characters seen */
+    clock_t escape_silence_start;   /* Start of silence period before +++ */
+    int escape_guard_active;        /* Currently in escape guard state */
+
+    /* Terminal mode (exclusive serial access) */
+    int terminal_active;            /* Terminal window is open */
+    struct ansiterm_state_tag *terminal;  /* Terminal state (if active) */
 } SERIAL_LINE_STATE;
 
 /* ============================================================================
@@ -152,6 +170,8 @@ typedef struct
 {
     char *line_text;                /* Line number display buffer */
     char *status_text;              /* Status text display buffer */
+    char *terminal_text;            /* Terminal button text buffer (empty) */
+    char *init_text;                /* Init button text buffer (empty) */
 } SERIAL_STATUS_ROW;
 
 /* ============================================================================
@@ -207,5 +227,13 @@ void serialstatus_free_icons(void);
 void serialstatus_set_extent(void);
 void serialstatus_update_line(int line_index, const char *status);
 int serialstatus_icon_index(int line_index, int column);
+
+/* Terminal functions */
+void serial_open_terminal(int line_index);
+void serial_close_terminal(int line_index);
+int serial_terminal_active(int line_index);
+
+/* Init functions */
+void serial_reinit_line(int line_index);
 
 #endif /* MAIN_H */

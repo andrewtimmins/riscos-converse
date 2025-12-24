@@ -128,6 +128,7 @@ void ftn_format_zone_path(char *buffer, size_t size, const char *base_path, int 
 void ftn_format_zone_subpath(char *buffer, size_t size, const char *base_path, int zone, const char *suffix);
 int ftn_extract_zone_from_path(const char *base_path, const char *full_path,
                                char *zone_path, size_t zone_path_size, int *zone_out);
+int ftn_discover_base_from_path(const char *full_path, char *base_path, size_t base_size, int *zone_out);
 int ftn_enumerate_zone_directories(const char *base_path, FTN_ZONE_ENUM_CALLBACK callback, void *ctx);
 
 /* Status */

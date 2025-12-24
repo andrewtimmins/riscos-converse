@@ -28,6 +28,7 @@
 #include "main.h"
 #include "iconnames.h"
 #include "debug.h"
+#include "version.h"
 
 /* Global state */
 WIMP_STATE wimp_state;
@@ -803,6 +804,9 @@ static int initialise(void)
 
     /* Create windows from templates */
     wimp_state.proginfo_window = Desk_Window_Create("proginfo", Desk_template_TITLEMIN);
+    Desk_Icon_SetText(wimp_state.proginfo_window, 0, app_name);  /* PROGINFO_NAME = 0 */
+    Desk_Icon_SetText(wimp_state.proginfo_window, 5, wimp_version);  /* PROGINFO_VERSION = 5 */
+    Desk_Icon_SetText(wimp_state.proginfo_window, 6, app_purpose);  /* PROGINFO_PURPOSE = 6 */
     wimp_state.main_window = Desk_Window_Create("usereditor", Desk_template_TITLEMIN);
     wimp_state.pane_window = Desk_Window_Create("userinfo", Desk_template_TITLEMIN);
     wimp_state.notice_window = Desk_Window_Create("notice", Desk_template_TITLEMIN);

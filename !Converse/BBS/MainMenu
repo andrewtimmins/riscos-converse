@@ -10,7 +10,7 @@ label main_menu
     print `                               .:: Main Menu ::.`,cll
     print `\r\n`
     fgbg 7 1
-    print `                           Time is: %{hour}:%{minute} - Line #%{line}`,cll
+    print `   Build Version: v%{version} [%{version_build}] - Time is: %{hour}:%{minute} - Line #%{line}`,cll
     print `\r\n\r\n\r\n`
     std
     print `      [F] Filebase                                [M] Messagebase\r\n`

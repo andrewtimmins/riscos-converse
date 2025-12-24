@@ -20,14 +20,32 @@
 #define SWI_SUPPORT_FTN     0x5AA86
 
 /* FTN config reasons */
-#define FTN_CONFIG_GET_GLOBAL       0
-#define FTN_CONFIG_COUNT_UPLINKS    7
-#define FTN_CONFIG_GET_UPLINK       4
+#define FTN_CONFIG_GET_GLOBAL           0
+#define FTN_CONFIG_COUNT_UPLINKS        7
+#define FTN_CONFIG_GET_UPLINK           4
+#define FTN_CONFIG_GET_DOMAIN           11
+#define FTN_CONFIG_COUNT_DOMAINS        13
+#define FTN_CONFIG_FIND_DOMAIN_BY_NAME  14
+#define FTN_CONFIG_FIND_DOMAIN_BY_ZONE  15
 
 /* FTN config structure sizes */
 #define Q_FTN_MAX_UPLINKS           16
 #define Q_FTN_NAME_LEN              64
 #define Q_FTN_PATH_LEN              256
+#define Q_FTN_MAX_DOMAINS           8
+#define Q_FTN_DOMAIN_LEN            32
+
+/* Domain config structure (must match Support module's FTN_DOMAIN_CONFIG) */
+typedef struct
+{
+    int id;
+    char name[Q_FTN_DOMAIN_LEN];
+    char inbound[Q_FTN_PATH_LEN];
+    char outbound[Q_FTN_PATH_LEN];
+    int default_zone;
+    char idomain[Q_FTN_NAME_LEN];   /* internet domain string, NOT int */
+    int alias_for;
+} Q_DOMAIN_CFG;
 #define Q_FTN_PASSWORD_LEN          32
 #define Q_FTN_GROUPS_LEN            64
 #define Q_FTN_MAX_ALIASES           8
@@ -81,6 +99,8 @@ typedef struct
     int retry_delay;
     int address_count;
     Q_ADDRESS_CFG addresses[8];
+    int domain_count;
+    Q_DOMAIN_CFG domains[Q_FTN_MAX_DOMAINS];
     int uplink_count;
     Q_UPLINK_CFG uplinks[Q_FTN_MAX_UPLINKS];
 } Q_FTN_GLOBAL_CFG;
@@ -116,6 +136,121 @@ void queue_finalise(void)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Domain Helpers                                                                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * Get the outbound path for an address, taking domain into account.
+ * If the address has a domain name set, looks up that domain.
+ * Otherwise, looks up a domain by the address's zone.
+ * Falls back to mailer.outbound_path if no domain found.
+ */
+static void queue_get_domain_outbound(char *buffer, size_t size, const FTN_ADDR *addr)
+{
+    _kernel_swi_regs regs;
+    Q_DOMAIN_CFG *domain = NULL;
+
+    if (buffer == NULL || size == 0)
+    {
+        return;
+    }
+
+    if (addr == NULL)
+    {
+        strncpy(buffer, mailer.outbound_path, size);
+        buffer[size - 1] = '\0';
+        return;
+    }
+
+    /* Try to find domain by name first */
+    if (addr->domain[0] != '\0')
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_NAME;
+        regs.r[1] = (int)addr->domain;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (Q_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* If no domain found by name, try by zone */
+    if (domain == NULL && addr->zone > 0)
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_ZONE;
+        regs.r[1] = addr->zone;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (Q_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* Use domain outbound if found and configured, else fall back to global */
+    if (domain != NULL && domain->outbound[0] != '\0')
+    {
+        strncpy(buffer, domain->outbound, size);
+    }
+    else
+    {
+        strncpy(buffer, mailer.outbound_path, size);
+    }
+    buffer[size - 1] = '\0';
+}
+
+/*
+ * Get the inbound path for an address, taking domain into account.
+ */
+static void queue_get_domain_inbound(char *buffer, size_t size, const FTN_ADDR *addr)
+{
+    _kernel_swi_regs regs;
+    Q_DOMAIN_CFG *domain = NULL;
+
+    if (buffer == NULL || size == 0)
+    {
+        return;
+    }
+
+    if (addr == NULL)
+    {
+        strncpy(buffer, mailer.inbound_path, size);
+        buffer[size - 1] = '\0';
+        return;
+    }
+
+    /* Try to find domain by name first */
+    if (addr->domain[0] != '\0')
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_NAME;
+        regs.r[1] = (int)addr->domain;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (Q_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* If no domain found by name, try by zone */
+    if (domain == NULL && addr->zone > 0)
+    {
+        regs.r[0] = FTN_CONFIG_FIND_DOMAIN_BY_ZONE;
+        regs.r[1] = addr->zone;
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (Q_DOMAIN_CFG *)regs.r[0];
+        }
+    }
+
+    /* Use domain inbound if found and configured, else fall back to global */
+    if (domain != NULL && domain->inbound[0] != '\0')
+    {
+        strncpy(buffer, domain->inbound, size);
+    }
+    else
+    {
+        strncpy(buffer, mailer.inbound_path, size);
+    }
+    buffer[size - 1] = '\0';
+}
+
+/* ******************************************************************************************************************************************************** */
 /* BSO Path Helpers                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
@@ -148,10 +283,14 @@ void queue_finalise(void)
 
 void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr)
 {
+    char domain_outbound[MAILER_PATH_SIZE];
     char zone_dir[MAILER_PATH_SIZE];
 
+    /* Get domain-specific outbound path, falling back to global */
+    queue_get_domain_outbound(domain_outbound, sizeof(domain_outbound), addr);
+
     /* Get zone directory using shared helper */
-    ftn_format_zone_path(zone_dir, sizeof(zone_dir), mailer.outbound_path, addr->zone);
+    ftn_format_zone_path(zone_dir, sizeof(zone_dir), domain_outbound, addr->zone);
 
     if (addr->point == 0)
     {
@@ -166,10 +305,14 @@ void queue_format_bso_path(char *buffer, size_t size, const FTN_ADDR *addr)
 
 void queue_format_outbound_name(char *buffer, size_t size, const FTN_ADDR *addr, const char *ext)
 {
+    char domain_outbound[MAILER_PATH_SIZE];
     char zone_dir[MAILER_PATH_SIZE];
 
+    /* Get domain-specific outbound path, falling back to global */
+    queue_get_domain_outbound(domain_outbound, sizeof(domain_outbound), addr);
+
     /* Get zone directory using shared helper */
-    ftn_format_zone_path(zone_dir, sizeof(zone_dir), mailer.outbound_path, addr->zone);
+    ftn_format_zone_path(zone_dir, sizeof(zone_dir), domain_outbound, addr->zone);
 
     if (addr->point == 0)
     {
@@ -561,10 +704,87 @@ int ftn_enumerate_zone_directories(const char *base_path, FTN_ZONE_ENUM_CALLBACK
     return count;
 }
 
+int ftn_discover_base_from_path(const char *full_path, char *base_path, size_t base_size, int *zone_out)
+{
+    const char *p;
+    int zone = 0;
+    size_t base_len;
+
+    if (full_path == NULL)
+    {
+        return 0;
+    }
+
+    /* Scan through the path looking for zone segment pattern .XXX
+     * where XXX is 3 hex digits (e.g., .002, .040, .0ff)
+     * Start from the beginning and find the FIRST zone segment
+     */
+    for (p = full_path; *p != '\0'; p++)
+    {
+        if (*p == '.')
+        {
+            /* Check if next 3 chars are hex digits */
+            if (p[1] != '\0' && p[2] != '\0' && p[3] != '\0' &&
+                isxdigit((unsigned char)p[1]) &&
+                isxdigit((unsigned char)p[2]) &&
+                isxdigit((unsigned char)p[3]))
+            {
+                /* Check that it's followed by . or end of string */
+                if (p[4] == '.' || p[4] == '\0')
+                {
+                    /* Check it's not a reserved subdir like "bad", "tmp" */
+                    char seg[4];
+                    seg[0] = tolower((unsigned char)p[1]);
+                    seg[1] = tolower((unsigned char)p[2]);
+                    seg[2] = tolower((unsigned char)p[3]);
+                    seg[3] = '\0';
+
+                    if (!queue_is_reserved_subdir(seg))
+                    {
+                        /* Found a valid zone segment */
+                        zone = (int)strtol(seg, NULL, 16);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (zone == 0)
+    {
+        /* No zone segment found */
+        return 0;
+    }
+
+    /* Extract base path (everything before the zone segment) */
+    base_len = (size_t)(p - full_path);
+
+    if (base_path != NULL && base_size > 0)
+    {
+        if (base_len >= base_size)
+        {
+            base_len = base_size - 1;
+        }
+        memcpy(base_path, full_path, base_len);
+        base_path[base_len] = '\0';
+    }
+
+    if (zone_out != NULL)
+    {
+        *zone_out = zone;
+    }
+
+    return 1;
+}
+
 static void queue_get_zone_directory(char *buffer, size_t size, const FTN_ADDR *addr)
 {
+    char domain_outbound[MAILER_PATH_SIZE];
     int zone = (addr != NULL) ? addr->zone : 2;
-    ftn_format_zone_path(buffer, size, mailer.outbound_path, zone);
+
+    /* Get domain-specific outbound path, falling back to global */
+    queue_get_domain_outbound(domain_outbound, sizeof(domain_outbound), addr);
+    ftn_format_zone_path(buffer, size, domain_outbound, zone);
 }
 
 void queue_ensure_outbound_directories(const FTN_ADDR *addr)
@@ -1302,7 +1522,11 @@ static int scan_zone_directory(const char *path, int zone)
     return count;
 }
 
-void queue_scan_outbound(void)
+/*
+ * Scan a single outbound base path for zone directories and queue files.
+ * Returns number of files found.
+ */
+static int queue_scan_outbound_path(const char *outbound_path, const char *domain_name)
 {
     _kernel_swi_regs regs;
     char buffer[280];
@@ -1312,31 +1536,36 @@ void queue_scan_outbound(void)
     int dirs_found = 0;
     int dirs_valid = 0;
 
-    debug_printf("queue: ========================================");
-    debug_printf("queue: SCANNING OUTBOUND: %s", mailer.outbound_path);
-    ftnlog_printf("Scanning outbound: %s", mailer.outbound_path);
+    if (outbound_path == NULL || outbound_path[0] == '\0')
+    {
+        return 0;
+    }
+
+    if (domain_name != NULL)
+    {
+        debug_printf("queue: Scanning domain '%s' outbound: %s", domain_name, outbound_path);
+        ftnlog_printf("Scanning domain '%s' outbound: %s", domain_name, outbound_path);
+    }
+    else
+    {
+        debug_printf("queue: Scanning outbound: %s", outbound_path);
+        ftnlog_printf("Scanning outbound: %s", outbound_path);
+    }
 
     /* Check if outbound path exists */
     regs.r[0] = 17;  /* OS_File 17 = Read catalogue info */
-    regs.r[1] = (int)mailer.outbound_path;
+    regs.r[1] = (int)outbound_path;
     if (_kernel_swi(OS_File, &regs, &regs) != NULL || regs.r[0] != 2)
     {
-        debug_printf("queue: ERROR - Outbound path does not exist or is not a directory!");
-        ftnlog_printf("ERROR: Outbound path not found!");
-        return;
+        debug_printf("queue: Outbound path does not exist or is not a directory");
+        return 0;
     }
 
-    debug_printf("queue: Outbound path exists, clearing queue...");
-
-    /* Clear existing queue */
-    outbound_queue.node_count = 0;
-
     /* Scan all zone subdirectories within the outbound directory */
-    /* Zone directories are named with 3-digit hex: 001, 002, 003, etc. */
     do
     {
         regs.r[0] = 12;  /* Read entries with info */
-        regs.r[1] = (int)mailer.outbound_path;
+        regs.r[1] = (int)outbound_path;
         regs.r[2] = (int)buffer;
         regs.r[3] = 1;
         regs.r[4] = context;
@@ -1354,17 +1583,11 @@ void queue_scan_outbound(void)
 
         if (read_count > 0)
         {
-            /* OS_GBPB 12 buffer format:
-             * Offset 0:  Load (4), Offset 4: Exec (4), Offset 8: Length (4)
-             * Offset 12: Attrs (4), Offset 16: Object type (4), Offset 20: File type (4)
-             * Offset 24: Name (null-terminated string)
-             */
-            const char *name = buffer + 24;  /* Name starts at offset 24 */
+            const char *name = buffer + 24;
             int objtype = *((int *)(buffer + 16));
 
             debug_printf("queue: Found entry '%s' type=%d", name, objtype);
 
-            /* Looking for zone subdirectories (3 hex digit names) */
             if (objtype == 2)  /* Directory */
             {
                 int zone;
@@ -1379,7 +1602,7 @@ void queue_scan_outbound(void)
                     int files;
 
                     dirs_valid++;
-                    snprintf(zone_path, sizeof(zone_path), "%s.%s", mailer.outbound_path, name);
+                    snprintf(zone_path, sizeof(zone_path), "%s.%s", outbound_path, name);
                     files = scan_zone_directory(zone_path, zone);
                     total_files += files;
                     debug_printf("queue: Zone %d (%s): %d files", zone, zone_path, files);
@@ -1388,7 +1611,57 @@ void queue_scan_outbound(void)
         }
     } while (context != -1);
 
-    debug_printf("queue: Enumerated %d dirs, %d valid zone dirs", dirs_found, dirs_valid);
+    debug_printf("queue: Enumerated %d dirs, %d valid zone dirs, %d files", 
+                 dirs_found, dirs_valid, total_files);
+
+    return total_files;
+}
+
+void queue_scan_outbound(void)
+{
+    _kernel_swi_regs regs;
+    int total_files = 0;
+    int domain_count = 0;
+    int i;
+
+    debug_printf("queue: ========================================");
+    debug_printf("queue: SCANNING ALL OUTBOUND DIRECTORIES");
+    ftnlog_printf("Scanning all outbound directories");
+
+    /* Clear existing queue */
+    outbound_queue.node_count = 0;
+
+    /* First, scan domain-specific outbound directories */
+    regs.r[0] = FTN_CONFIG_COUNT_DOMAINS;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL)
+    {
+        domain_count = regs.r[0];
+    }
+
+    debug_printf("queue: Found %d configured domains", domain_count);
+
+    for (i = 1; i <= domain_count; i++)
+    {
+        Q_DOMAIN_CFG *domain;
+
+        regs.r[0] = FTN_CONFIG_GET_DOMAIN;
+        regs.r[1] = i;  /* Domain IDs are 1-based */
+        if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) == NULL && regs.r[0] != 0)
+        {
+            domain = (Q_DOMAIN_CFG *)regs.r[0];
+            if (domain->outbound[0] != '\0')
+            {
+                total_files += queue_scan_outbound_path(domain->outbound, domain->name);
+            }
+        }
+    }
+
+    /* If no domains configured, fall back to legacy single outbound path */
+    if (domain_count == 0 && mailer.outbound_path[0] != '\0')
+    {
+        debug_printf("queue: No domains configured, using legacy outbound path");
+        total_files += queue_scan_outbound_path(mailer.outbound_path, NULL);
+    }
 
     outbound_queue.last_scan = time(NULL);
 

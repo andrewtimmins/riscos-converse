@@ -1,7 +1,7 @@
 # Make file for Web Server
 
 COMPONENT   = Web
-OBJS        = debug http template session main
+OBJS        = debug http version template session main
 LIBS        = C:Desk.o.Desk TCPIPLibs:o.Socklib TCPIPLibs:o.Inetlib OSLib:o.OSLib32
 CFLAGS      = -c -depend !Depend -I,C:,TCPIPLibs: -apcs 3/32bit -Wcdp -throwback -fan
 OBJASMFLAGS = -throwback -NoCache -depend !Depend
@@ -48,6 +48,7 @@ o.session:	C:h.kernel
 o.session:	C:h.swis
 o.session:	h.session
 o.session:	h.debug
+o.version:	c.version
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis
@@ -121,3 +122,4 @@ o.main:	h.template
 o.main:	h.session
 o.main:	h.session
 o.main:	h.debug
+o.main:	h.version

@@ -156,7 +156,8 @@ typedef enum
     PARSE_STATE_FILEBASE_AREA,
     PARSE_STATE_ADDRESS,
     PARSE_STATE_UPLINK,
-    PARSE_STATE_DOWNLINK
+    PARSE_STATE_DOWNLINK,
+    PARSE_STATE_DOMAIN
 } PARSE_STATE;
 
 /* Global msgbase config */
@@ -1011,6 +1012,7 @@ typedef struct
 } FTN_UPLINK_RECORD;
 
 #define FTN_REASON_SET_DOWNLINK     9
+#define FTN_REASON_SET_DOMAIN       12
 
 /* FTN downlink structure for EchoFix - matches FTN_DOWNLINK_CONFIG in Support module */
 typedef struct
@@ -1028,6 +1030,18 @@ typedef struct
     int max_files;                           /* Max fileecho subscriptions (0=unlimited) */
 } FTN_DOWNLINK_RECORD;
 
+/* FTN domain structure for multi-network support - matches FTN_DOMAIN_CONFIG in Support module */
+typedef struct
+{
+    int id;
+    char name[32];                           /* Domain name (e.g., "fidonet") */
+    char inbound[256];                       /* Domain-specific inbound path */
+    char outbound[256];                      /* Domain-specific outbound path */
+    int default_zone;                        /* Default zone for this domain */
+    char idomain[64];                        /* Internet domain (e.g., "fidonet.binkp.net") */
+    int alias_for;                           /* Domain ID this is an alias for (0=not an alias) */
+} FTN_DOMAIN_RECORD;
+
 void load_ftn_config(void)
 {
     FILE *file;
@@ -1038,10 +1052,12 @@ void load_ftn_config(void)
     FTN_ADDR_RECORD current_addr;
     FTN_UPLINK_RECORD current_uplink;
     FTN_DOWNLINK_RECORD current_downlink;
+    FTN_DOMAIN_RECORD current_domain;
 
     memset(&current_addr, 0, sizeof(current_addr));
     memset(&current_uplink, 0, sizeof(current_uplink));
     memset(&current_downlink, 0, sizeof(current_downlink));
+    memset(&current_domain, 0, sizeof(current_domain));
 
     debug_printf("config: Opening <Converse$Dir>.Config.FTN");
     file = fopen("<Converse$Dir>.Config.FTN", "r");
@@ -1241,6 +1257,14 @@ void load_ftn_config(void)
                     state = PARSE_STATE_DOWNLINK;
                     debug_printf("config: Parsing FTN downlink %d", current_downlink.id);
                 }
+                else if (strcmp(key, "domain") == 0 && value != NULL)
+                {
+                    /* Start domain block */
+                    memset(&current_domain, 0, sizeof(current_domain));
+                    current_domain.id = atoi(value);
+                    state = PARSE_STATE_DOMAIN;
+                    debug_printf("config: Parsing FTN domain %d", current_domain.id);
+                }
                 break;
 
             case PARSE_STATE_ADDRESS:
@@ -1390,6 +1414,45 @@ void load_ftn_config(void)
                 else if (strcmp(key, "max_files") == 0 && value != NULL)
                 {
                     current_downlink.max_files = atoi(value);
+                }
+                break;
+
+            case PARSE_STATE_DOMAIN:
+                if (strcmp(key, "enddomain") == 0)
+                {
+                    /* Push domain to Support via SWI */
+                    regs.r[0] = FTN_REASON_SET_DOMAIN;
+                    regs.r[1] = current_domain.id;
+                    regs.r[2] = (int)&current_domain;
+                    _kernel_swi(SWI_SUPPORT_FTN, &regs, &regs);
+                    debug_printf("config: Stored FTN domain %d: %s (zone %d)",
+                                 current_domain.id, current_domain.name, current_domain.default_zone);
+                    state = PARSE_STATE_GLOBAL;
+                }
+                else if (strcmp(key, "name") == 0 && value != NULL)
+                {
+                    strncpy(current_domain.name, value, sizeof(current_domain.name) - 1);
+                }
+                else if (strcmp(key, "inbound") == 0 && value != NULL)
+                {
+                    strncpy(current_domain.inbound, value, sizeof(current_domain.inbound) - 1);
+                }
+                else if (strcmp(key, "outbound") == 0 && value != NULL)
+                {
+                    strncpy(current_domain.outbound, value, sizeof(current_domain.outbound) - 1);
+                }
+                else if (strcmp(key, "zone") == 0 && value != NULL)
+                {
+                    current_domain.default_zone = atoi(value);
+                }
+                else if (strcmp(key, "idomain") == 0 && value != NULL)
+                {
+                    strncpy(current_domain.idomain, value, sizeof(current_domain.idomain) - 1);
+                    current_domain.idomain[sizeof(current_domain.idomain) - 1] = '\0';
+                }
+                else if (strcmp(key, "alias_for") == 0 && value != NULL)
+                {
+                    current_domain.alias_for = atoi(value);
                 }
                 break;
 

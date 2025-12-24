@@ -10,11 +10,62 @@ phone               -Unpublished-
 speed               115200
 flags               CM,TCP,BINKP
 
-; Paths
+; Paths (legacy global paths - used when no domain matches)
 inbound             <Converse$Dir>.FTN.Inbound
 outbound            <Converse$Dir>.FTN.Outbound
 netmail             <Converse$Dir>.FTN.Netmail
 nodelists           <Converse$Dir>.FTN.Nodelists
+
+; ----------------------------------------------------------------------------
+; Domains
+; Define separate inbound/outbound paths for each FTN network
+; This enables multi-network support with isolated mail directories
+; zone = default zone for this domain (used to match addresses)
+; idomain = internal domain ID for 5D addressing (optional)
+; alias_for = domain ID this is an alias for (optional)
+; ----------------------------------------------------------------------------
+
+domain 1
+    name            fidonet
+    zone            2
+    inbound         <Converse$Dir>.FTN.Inbound.Fidonet
+    outbound        <Converse$Dir>.FTN.Outbound.Fidonet
+enddomain
+
+domain 2
+    name            cnet
+    zone            64
+    inbound         <Converse$Dir>.FTN.Inbound.Cnet
+    outbound        <Converse$Dir>.FTN.Outbound.Cnet
+enddomain
+
+domain 3
+    name            pinet
+    zone            314
+    inbound         <Converse$Dir>.FTN.Inbound.Pinet
+    outbound        <Converse$Dir>.FTN.Outbound.Pinet
+enddomain
+
+domain 4
+    name            retronet
+    zone            80
+    inbound         <Converse$Dir>.FTN.Inbound.Retronet
+    outbound        <Converse$Dir>.FTN.Outbound.Retronet
+enddomain
+
+domain 5
+    name            hobbynet
+    zone            954
+    inbound         <Converse$Dir>.FTN.Inbound.Hobbynet
+    outbound        <Converse$Dir>.FTN.Outbound.Hobbynet
+enddomain
+
+domain 6
+    name            amiganet
+    zone            39
+    inbound         <Converse$Dir>.FTN.Inbound.Amiganet
+    outbound        <Converse$Dir>.FTN.Outbound.Amiganet
+enddomain
 
 ; FREQ (File Request) settings
 ; freqpath is the directory where requestable files are stored
