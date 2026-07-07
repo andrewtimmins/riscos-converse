@@ -3,15 +3,19 @@
 PIPEDRV_MAX_PORTS       EQU     32
 PIPEDRV_BUFFER_CAP      EQU     4096
 
-SWI_PIPES_RESETSTATE    EQU     &5AA0A
-SWI_PIPES_CLEARINPUT    EQU     &5AA06
-SWI_PIPES_CLEAROUTPUT   EQU     &5AA07
-SWI_PIPES_INPUTSTATUS   EQU     &5AA02
-SWI_PIPES_OUTPUTSTATUS  EQU     &5AA04
-SWI_PIPES_INPUTWRITE    EQU     &5AA08
-SWI_PIPES_OUTPUTREAD    EQU     &5AA09
-SWI_PIPES_INPUTWBLK     EQU     &5AA0D
-SWI_PIPES_OUTPUTRBLK    EQU     &5AA0E
+; Use the X (bit 17) form of every Pipes SWI so an error returns with V set and
+; an error pointer in r0, instead of entering the OS error handler and unwinding
+; through this driver blob (which Serial invoked by APCS, not via a SWI).
+X_BIT                   EQU     &20000
+SWI_PIPES_RESETSTATE    EQU     &5AA0A :OR: X_BIT
+SWI_PIPES_CLEARINPUT    EQU     &5AA06 :OR: X_BIT
+SWI_PIPES_CLEAROUTPUT   EQU     &5AA07 :OR: X_BIT
+SWI_PIPES_INPUTSTATUS   EQU     &5AA02 :OR: X_BIT
+SWI_PIPES_OUTPUTSTATUS  EQU     &5AA04 :OR: X_BIT
+SWI_PIPES_INPUTWRITE    EQU     &5AA08 :OR: X_BIT
+SWI_PIPES_OUTPUTREAD    EQU     &5AA09 :OR: X_BIT
+SWI_PIPES_INPUTWBLK     EQU     &5AA0D :OR: X_BIT
+SWI_PIPES_OUTPUTRBLK    EQU     &5AA0E :OR: X_BIT
 
 MODEM_PRESENT           EQU     &0B     ; CTS|DSR|DCD high
 
@@ -171,6 +175,7 @@ func_putbyte
 func_getbyte
         MOV     r0,r1                   ; port
         SWI     SWI_PIPES_OUTPUTREAD
+        BVS     func_err                ; error -> return -1, not the error ptr
         ; r0 = byte or -1
         LDMFD   r13!,{pc}
 
@@ -180,6 +185,7 @@ func_putblock
         MOV     r1,r2                   ; ptr
         MOV     r2,r3                   ; count
         SWI     SWI_PIPES_INPUTWBLK
+        BVS     func_ret0               ; error -> 0 bytes transferred
         ; r0 = bytes transferred
         LDMFD   r13!,{pc}
 
@@ -189,6 +195,7 @@ func_getblock
         MOV     r1,r2                   ; ptr
         MOV     r2,r3                   ; count
         SWI     SWI_PIPES_OUTPUTRBLK
+        BVS     func_ret0               ; error -> 0 bytes transferred
         ; r0 = bytes transferred
         LDMFD   r13!,{pc}
 

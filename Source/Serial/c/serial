@@ -181,6 +181,20 @@ int serial_load_driver(const char *name, int (**driver_out)(int, ...))
     }
     fclose(drv);
 
+    /* The driver binary was just written through the DATA cache, but it is about
+       to be executed as ARM code. On ARMv7 (RISC OS 5) the instruction cache is
+       separate and may hold stale lines for this address range (garbage, or a
+       previously-loaded driver in the same slot). Synchronise the code area
+       before the first call, otherwise the CPU can fetch stale instructions and
+       take a prefetch/data abort. (Harmless no-op on older cores.) */
+    {
+        _kernel_swi_regs sync_regs;
+        sync_regs.r[0] = 1;                          /* R1,R2 give the range */
+        sync_regs.r[1] = (int)entry->block;
+        sync_regs.r[2] = (int)entry->block + (int)len;
+        _kernel_swi(0x2006F /* OS_SynchroniseCodeAreas */, &sync_regs, &sync_regs);
+    }
+
     /* Store driver info in cache */
     strncpy(entry->name, name, sizeof(entry->name) - 1);
     entry->name[sizeof(entry->name) - 1] = '\0';

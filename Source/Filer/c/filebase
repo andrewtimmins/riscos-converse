@@ -527,6 +527,13 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      if (length > FILER_MAX_TRANSFER_BLOCK)
+      {
+        filebase_log("Filebase %d upload block length %u rejected", base_id, (unsigned)length);
+        r->r[0] = -1;
+        return;
+      }
+
       if (!filebase_find_file_record(base_id, file_id, &record))
       {
         r->r[0] = -1;
@@ -584,6 +591,13 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      if (request > FILER_MAX_TRANSFER_BLOCK)
+      {
+        filebase_log("Filebase %d download block request %u rejected", base_id, (unsigned)request);
+        r->r[0] = -1;
+        return;
+      }
+
       if (!filebase_find_file_record(base_id, file_id, &record))
       {
         r->r[0] = -1;
@@ -595,7 +609,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
-      
+
       /* Use cached file handle for performance */
       file = transfer_cache_get_handle(base_id, file_id, 'r', path);
       if (file == NULL)

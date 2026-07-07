@@ -90,5 +90,9 @@ void accessconfig_swi_handler(_kernel_swi_regs *r)
             }
             break;
         }
+
+        default:
+            r->r[0] = -1;   /* Unknown reason code */
+            break;
     }
 }

@@ -158,6 +158,12 @@ void filebaseconfig_swi_handler(_kernel_swi_regs *r)
 
             memcpy(base, src, sizeof(FILEBASE_CONFIG));
             base->id = base_id;
+            /* Clamp caller-supplied area_count so a bad value can't later drive
+               an out-of-bounds scan over areas[] (GET_AREA / *BBS_FileBases). */
+            if (base->area_count < 0)
+                base->area_count = 0;
+            else if (base->area_count > FILEBASE_CONFIG_MAX_AREAS)
+                base->area_count = FILEBASE_CONFIG_MAX_AREAS;
             r->r[0] = 0;
             break;
         }

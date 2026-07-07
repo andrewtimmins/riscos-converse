@@ -517,6 +517,13 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      if (length > FILER_MAX_TRANSFER_BLOCK)
+      {
+        debug_printf("UPLOAD_BLOCK: length %u rejected", (unsigned)length);
+        r->r[0] = -1;
+        return;
+      }
+
       if (!messagebase_find_message_record(base_id, message_id, &record))
       {
         debug_printf("UPLOAD_BLOCK: message not found");
@@ -582,6 +589,13 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
       if (base_id <= 0 || message_id <= 0 || target == NULL)
       {
         debug_printf("DOWNLOAD_BLOCK: invalid params");
+        r->r[0] = -1;
+        return;
+      }
+
+      if (request > FILER_MAX_TRANSFER_BLOCK)
+      {
+        debug_printf("DOWNLOAD_BLOCK: request %u rejected", (unsigned)request);
         r->r[0] = -1;
         return;
       }
@@ -876,6 +890,12 @@ void messagebase_swi_handler(_kernel_swi_regs *r)
         debug_printf("find_unexported: invalid params");
         r->r[0] = 0;
         return;
+      }
+
+      /* Clamp caller-supplied count so a bad value can't overrun id_buffer */
+      if (max_count > FILER_MAX_UNEXPORTED_IDS)
+      {
+        max_count = FILER_MAX_UNEXPORTED_IDS;
       }
 
       messagebase_format_message_db_path(path, sizeof(path), base_id);
