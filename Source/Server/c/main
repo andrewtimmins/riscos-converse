@@ -1893,6 +1893,7 @@ void check_listener(void)
             shutdown(orphaned_socket, 0);
             socketclose(orphaned_socket);
          }
+         return;
       	}
 
 		/* Find a free TELNET line - skip serial and local lines */
@@ -1959,6 +1960,22 @@ void check_listener(void)
 
 			/* Make the client socket non-blocking so we don't hang waiting for data */
 			socketioctl(line_configuration[socket_poll].socket, FIONBIO, &nonblock);
+		}
+
+		/* No free telnet line was available - reject the pending connection instead
+		   of falling through and writing a phantom / out-of-bounds line slot
+		   (socket_poll == line_configurations here, up to MAX_LINES). */
+		if (socket_poll >= line_configurations)
+		{
+			int orphaned_socket = accept(listening_socket, (struct sockaddr *)0, (int *)0);
+			if (orphaned_socket != -1)
+			{
+				strcpy(socket_buffer, error_busy);
+				socketwrite(orphaned_socket, socket_buffer, strlen(socket_buffer));
+				shutdown(orphaned_socket, 0);
+				socketclose(orphaned_socket);
+			}
+			return;
 		}
 
 		line_configuration[socket_poll].connectedtime = clock();

@@ -672,7 +672,10 @@ int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len)
         return 0;
     }
     
-    clean_capacity = raw_len + 1;
+    /* raw_len + 2: a final body line with no trailing CR/LF emits one more
+       output byte ('\n') than it consumed, so clean_len can reach raw_len + 1;
+       leave room for that plus the terminating NUL. */
+    clean_capacity = raw_len + 2;
     clean_body = malloc(clean_capacity);
     if (clean_body == NULL)
     {
@@ -1334,7 +1337,15 @@ static int tosser_process_arcmail(const char *arc_path, const char *zone_path)
         if (unzip_get_entry(&archive, i, &entry) == UNZIP_OK)
         {
             size_t name_len = strlen(entry.filename);
-            
+
+            /* Reject entries whose (remote-controlled) name could escape the
+               Temp directory via RISC OS path metacharacters. */
+            if (!ftn_filename_safe(entry.filename))
+            {
+                mailer_log("Rejected unsafe arcmail entry: %s", entry.filename);
+                continue;
+            }
+
             /* Check for .pkt extension (RISC OS style: ends in 'pkt') */
             if (name_len >= 3 &&
                 str_casecmp(entry.filename + name_len - 3, "pkt") == 0)

@@ -101,12 +101,12 @@ static int scanner_strcasecmp(const char *s1, const char *s2)
 }
 
 /* Extract next token from comma-separated list. Updates *pos. Returns token start or NULL. */
-static char *get_next_group(char *buf, const char **pos)
+static char *get_next_group(char *buf, size_t bufsize, const char **pos)
 {
     const char *p = *pos;
     char *out = buf;
 
-    if (p == NULL || *p == '\0')
+    if (p == NULL || *p == '\0' || bufsize == 0)
     {
         return NULL;
     }
@@ -123,12 +123,20 @@ static char *get_next_group(char *buf, const char **pos)
         return NULL;
     }
 
-    /* Copy token until comma, space, or end */
-    while (*p != '\0' && *p != ',' && *p != ' ')
+    /* Copy token until comma, space, or end - bounded to bufsize-1 chars so a
+       long (config-supplied) group token cannot overflow the caller's buffer. */
+    while (*p != '\0' && *p != ',' && *p != ' ' &&
+           (size_t)(out - buf) < bufsize - 1)
     {
         *out++ = *p++;
     }
     *out = '\0';
+
+    /* Discard any remaining characters of an over-long token */
+    while (*p != '\0' && *p != ',' && *p != ' ')
+    {
+        p++;
+    }
 
     /* Skip trailing spaces */
     while (*p == ' ')
@@ -159,10 +167,10 @@ static int groups_match(const char *area_groups, const char *uplink_groups)
 
     /* Check each group in area_groups against uplink_groups */
     p1 = area_groups;
-    while (get_next_group(g1, &p1) != NULL)
+    while (get_next_group(g1, sizeof(g1), &p1) != NULL)
     {
         p2 = uplink_groups;
-        while (get_next_group(g2, &p2) != NULL)
+        while (get_next_group(g2, sizeof(g2), &p2) != NULL)
         {
             if (scanner_strcasecmp(g1, g2) == 0)
             {

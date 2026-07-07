@@ -1107,20 +1107,37 @@ static void handle_api_areas(int slot, HTTP_REQUEST *req)
         }
         *dst = '\0';
         
-        if (!first)
         {
-            *p++ = ',';
-        }
-        first = 0;
-        
-        p += sprintf(p, "{\"id\":%d,\"name\":\"%s\"}", area_id, escaped_name);
-        
-        if (p >= json + sizeof(json) - 100)
-        {
-            break;  /* Safety limit */
+            int remaining = (int)sizeof(json) - (int)(p - json);
+            int written;
+
+            /* Ensure the whole object (plus a leading comma and the closing ']'
+               and NUL added after the loop) fits BEFORE writing anything - the
+               previous code wrote first and checked afterwards, overflowing
+               json[] on a long area name. Checking before the comma also avoids
+               emitting a trailing comma (invalid JSON) when we stop. */
+            if (remaining < (int)sizeof(escaped_name) + 64)
+            {
+                break;
+            }
+
+            if (!first)
+            {
+                *p++ = ',';
+                remaining--;
+            }
+            first = 0;
+
+            written = snprintf(p, remaining, "{\"id\":%d,\"name\":\"%s\"}",
+                               area_id, escaped_name);
+            if (written < 0 || written >= remaining)
+            {
+                break;  /* would have truncated */
+            }
+            p += written;
         }
     }
-    
+
     *p++ = ']';
     *p = '\0';
     

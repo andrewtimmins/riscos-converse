@@ -321,6 +321,9 @@ void ftnstatus_end_transfer(void);
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/* Filename safety (reject remote path-traversal). Returns 1 if safe. */
+int ftn_filename_safe(const char *name);
+
 /* Address formatting */
 void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size);
 int ftn_string_to_addr(const char *str, FTN_ADDR *addr);

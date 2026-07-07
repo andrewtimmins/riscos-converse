@@ -111,6 +111,48 @@ enum
 /* Utility Functions                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/* Reject filenames supplied by a remote node that could escape the directory
+   they are about to be appended to. On RISC OS the path separator is '.', so an
+   attacker-controlled name containing '^' (parent), '$'/'&'/'%'/'@' (roots),
+   ':' (drive / filing-system) or '\' can traverse out of the intended tree.
+   Wildcards ('*','?','#') and embedded '.'/'/' are permitted - they cannot
+   escape upwards and are needed for legitimate FREQ / sub-area requests.
+   Returns 1 if the name is safe to append to a base directory, 0 otherwise. */
+int ftn_filename_safe(const char *name)
+{
+    const char *p;
+
+    if (name == NULL || name[0] == '\0')
+        return 0;
+
+    if (name[0] == '.')          /* leading separator */
+        return 0;
+
+    for (p = name; *p != '\0'; p++)
+    {
+        unsigned char c = (unsigned char)*p;
+
+        if (c < 32)              /* control characters */
+            return 0;
+
+        switch (c)
+        {
+            case '^':            /* parent directory */
+            case '$':            /* disc root */
+            case '&':            /* user root */
+            case '%':            /* library */
+            case '@':            /* currently selected directory */
+            case ':':            /* drive / filing-system specifier */
+            case '\\':           /* stray separator */
+                return 0;
+            default:
+                break;
+        }
+    }
+
+    return 1;
+}
+
 void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size)
 {
     if (addr->point == 0)
@@ -1712,6 +1754,23 @@ static void process_session_rx(MAILER_SESSION *session)
                 session->state = SESSION_STATE_ERROR;
                 return;
             }
+        }
+    }
+
+    /* Guard against a peer declaring a frame larger than the receive buffer can
+       ever hold. binkp_frame_complete needs (2 + frame_len) bytes buffered, but
+       rx_buffer holds at most sizeof(rx_buffer) bytes, so a declared length above
+       sizeof(rx_buffer) - 2 would never complete - the session would sit filling
+       the buffer until timeout (a cheap way to tie up all session slots). */
+    if (session->rx_length >= 2)
+    {
+        int declared = binkp_get_frame_length(session->rx_buffer);
+        if (declared > (int)sizeof(session->rx_buffer) - 2)
+        {
+            debug_printf("mailer: Oversized frame declared (%d bytes), dropping session", declared);
+            ftnlog_printf("Protocol error: oversized frame (%d bytes)", declared);
+            session->state = SESSION_STATE_ERROR;
+            return;
         }
     }
 

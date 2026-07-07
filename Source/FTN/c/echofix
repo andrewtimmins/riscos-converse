@@ -823,13 +823,23 @@ static void response_add(ECHOFIX_RESPONSE *resp, const char *fmt, ...)
 {
     va_list args;
     int space;
-    
+    int written;
+
     space = ECHOFIX_RESPONSE_SIZE - resp->body_len - 1;
     if (space <= 0) return;
-    
+
     va_start(args, fmt);
-    resp->body_len += vsnprintf(resp->body + resp->body_len, space, fmt, args);
+    written = vsnprintf(resp->body + resp->body_len, space, fmt, args);
     va_end(args);
+
+    /* vsnprintf returns the length it WOULD have written; on truncation that
+       exceeds the buffer, so clamp to what actually landed (space - 1 chars +
+       NUL). Otherwise body_len overshoots and the response send over-reads. */
+    if (written < 0)
+        return;
+    if (written >= space)
+        written = space - 1;
+    resp->body_len += written;
 }
 
 static void response_add_help(ECHOFIX_RESPONSE *resp, ECHOFIX_TYPE type)
