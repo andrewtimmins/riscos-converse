@@ -210,6 +210,7 @@ RiscBBS doors). Add the "update Docs when changing SWIs" rule to CI/review.
 ---
 
 ## Progress log
+- **Phase 0 — DONE** (except deferred H3): tosser/scanner/echofix struct copies corrected to canonical + magic offsets fixed + `sizeof==748` guards; LineTask FTN address read (H4) and outbound `orgaddr` (LT10) fixed. **Deferred:** H3 FileFix filebase config read (fail-closed now; needs filebase structs + a FileFix access-policy decision).
 - **Phase 1 — DONE** (branch `security-hotfixes`): C1, SEC1/2 (shared `ftn_filename_safe` + FREQ auth gate), SEC3, SEC4, SEC5, SEC6, SEC7/8/9.
 - **Phase 2 — mostly DONE**: RO1 (Serial `OS_SynchroniseCodeAreas`), MOD1 (Filer block length caps), MOD2 (Support area/base count clamp), MOD3 (FIND_UNEXPORTED clamp), MOD5 (AccessConfig default), RO2 (block-driver X-form SWIs + BVS), RO3 logging-buffer slice.
   - **RO2 caveat:** block drivers ship as pre-assembled `,ffa` binaries — the `.s` fix needs re-assembly via `Pipes/blockdrivers/Mk,feb` (objasm) to take effect.
