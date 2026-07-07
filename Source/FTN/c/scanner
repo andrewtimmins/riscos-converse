@@ -279,12 +279,12 @@ int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out)
 {
     _kernel_swi_regs regs;
 
-    /* MESSAGE_RECORD structure - only need dstaddr field */
-    /* Offsets from Filer/h/structs MESSAGE_RECORD: */
-    /* id(4), msgbaseid(4), msgbaseareaid(4), type(4), deleted(4), accesslevel(4), */
-    /* keys(128), subject(256), sentby(4), receivedby(4), */
-    /* orgaddr: domain(100)+zone(4)+net(4)+node(4)+point(4) = 116 bytes */
-    /* dstaddr starts at offset: 4+4+4+4+4+4+128+256+4+4+116 = 532 */
+    /* MESSAGE_RECORD (see Filer/h/structs) - we only need dstaddr.
+       Field offsets: id@0, msgbaseid@4, msgbaseareaid@8, type@12, deleted@16,
+       accesslevel@20, keys[128]@24, sentby@152, receivedby@156,
+       orgaddr(116)@160, dstaddr(116)@276.  subject/flags come LATER (after
+       bodysize); an earlier version placed subject before sentby and read
+       dstaddr at 532, routing netmail to garbage addresses. */
     typedef struct {
         char domain[100];
         int zone;
@@ -311,7 +311,7 @@ int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out)
     /* Parse destination address from MESSAGE_RECORD */
     {
         unsigned char *record = (unsigned char *)regs.r[0];
-        MSG_FTN_ADDR *dstaddr = (MSG_FTN_ADDR *)(record + 532);
+        MSG_FTN_ADDR *dstaddr = (MSG_FTN_ADDR *)(record + 276);
 
         dest_out->zone = dstaddr->zone;
         dest_out->net = dstaddr->net;
@@ -356,14 +356,13 @@ int scanner_get_message_flags(int base_id, int message_id, unsigned short *flags
         return 0;
     }
 
-    /* MESSAGE_RECORD.flags is at the end of the structure */
-    /* After exported(4) comes flags(2) */
-    /* Offset: see structs.h - exported is near end, flags follows it */
-    /* Calculate: ~660 bytes before exported, then flags at offset + 664 */
+    /* MESSAGE_RECORD.flags is the LAST field (see Filer/h/structs):
+       bodysize@408, subject[256]@412, fromname[36]@668, toname[36]@704,
+       exported@740, flags@744.  (An earlier version used 664, which lands
+       inside subject[] and produced random crash/hold/direct flavours.) */
     {
         unsigned char *record = (unsigned char *)regs.r[0];
-        /* exported is at offset 660, flags at offset 664 */
-        *flags_out = *((unsigned short *)(record + 664));
+        *flags_out = *((unsigned short *)(record + 744));
     }
 
     return 1;
@@ -974,6 +973,9 @@ int scanner_scan_outbound(void)
         char groups[64];
     } SCAN_AREA_CFG;
 
+    /* Must match MSGBASE_CONFIG in Support/h/msgbaseconfig exactly - NO
+       readonly/path (those are FILEBASE_CONFIG fields). Their presence here
+       pushed area_count 260 bytes off, so outbound echomail was never scanned. */
     typedef struct
     {
         int id;
@@ -981,8 +983,6 @@ int scanner_scan_outbound(void)
         int type;
         int accesslevel;
         char keys[128];
-        int readonly;
-        char path[256];
         int area_count;
         SCAN_AREA_CFG areas[64];
     } SCAN_BASE_CFG;

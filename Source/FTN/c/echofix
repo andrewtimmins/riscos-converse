@@ -730,17 +730,25 @@ int echofix_is_area_allowed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char 
         return 0;  /* Inactive account */
     }
     
-    /* Get global config for area lookup */
+    /* Get global config for area lookup.
+       KNOWN LIMITATION (FileFix): ECHOFIX_GLOBAL_CONFIG mirrors the MSGBASE
+       layout, but FILEBASE_GLOBAL_CONFIG/FILEBASE_CONFIG differ (filebase bases
+       carry readonly+path, and filebase AREAS have neither areatype nor per-area
+       groups). Reading filebase data through this msgbase-shaped struct makes the
+       FileFix branch read area_count from the wrong offset (the readonly flag),
+       so it currently grants nothing - fail-closed, but non-functional. A proper
+       fix needs filebase-shaped structs AND a FileFix access policy (filebase has
+       no per-area groups to overlap). Tracked as a follow-up. AreaFix is correct. */
     swi_num = (type == ECHOFIX_TYPE_AREAFIX) ? SWI_SUPPORT_MSGBASE : SWI_SUPPORT_FILEBASE;
-    
+
     regs.r[0] = 0;  /* GET_GLOBAL */
     if (_kernel_swi(swi_num, &regs, &regs) != NULL || regs.r[0] == 0)
     {
         return 0;
     }
-    
+
     cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
-    
+
     /* Find the area and check if downlink's groups allow access */
     for (b = 0; b < cfg->base_count; b++)
     {
@@ -1117,7 +1125,10 @@ int echofix_send_response(const ECHOFIX_RESPONSE *resp)
     _kernel_swi_regs regs;
     const char *type_name;
     
-    /* Structure matching MESSAGE_RECORD for storing */
+    /* Must match MESSAGE_RECORD in Filer/h/structs exactly. subject[] belongs
+       AFTER bodysize (not after keys), and flags is the final field - the old
+       order stored the destination into the subject and corrupted To/From, so
+       AreaFix/FileFix replies never reached the requester. */
     typedef struct
     {
         int id;
@@ -1127,7 +1138,6 @@ int echofix_send_response(const ECHOFIX_RESPONSE *resp)
         int deleted;
         int accesslevel;
         char keys[128];
-        char subject[256];
         int sentby;
         int receivedby;
         struct { char domain[100]; int zone, net, node, point; } orgaddr;
@@ -1137,11 +1147,16 @@ int echofix_send_response(const ECHOFIX_RESPONSE *resp)
         time_t read;
         int timesread;
         long bodysize;
+        char subject[256];
         char fromname[36];
         char toname[36];
         int exported;
+        unsigned short flags;
     } MSG_REC;
-    
+
+    /* Compile-time guard: MESSAGE_RECORD must be 748 bytes (see Filer/h/structs) */
+    typedef char msg_rec_size_check[(sizeof(MSG_REC) == 748) ? 1 : -1];
+
     MSG_REC record;
     int msg_id;
     

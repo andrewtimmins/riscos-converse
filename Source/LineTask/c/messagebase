@@ -3857,6 +3857,13 @@ int messagebase_composer_send(messagebase_session *session,
         memcpy(&msg.dstaddr, &session->composer.to_ftn_address, sizeof(msg.dstaddr));
     }
 
+    /* Stamp our originating AKA (set from the area's akause) so exported
+       echomail/netmail carries a valid origin instead of 0:0/0. */
+    if (session->composer.from_ftn_address.zone > 0)
+    {
+        memcpy(&msg.orgaddr, &session->composer.from_ftn_address, sizeof(msg.orgaddr));
+    }
+
     msg.sent = now;
     msg.bodysize = body_len;
 
@@ -3918,6 +3925,20 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
     int count;
     int i;
 
+    /* Must match FTN_ADDRESS_CONFIG in Support/h/ftnconfig: zone/net/node/point
+       come AFTER id and network[64], not at the start. The old code read
+       addr_config[0..3] (= id and the first bytes of the network name), so the
+       wrong origin address was stamped on outbound FTN mail. */
+    typedef struct
+    {
+        int id;
+        char network[64];
+        int zone;
+        int net;
+        int node;
+        int point;
+    } FTN_ADDR_CFG;
+
     if (aka == NULL || zone <= 0)
     {
         return 0;
@@ -3936,15 +3957,14 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
         regs.r[1] = i;
         if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
         {
-            int *addr_config = (int *)regs.r[0];
-            int addr_zone = addr_config[0];
+            FTN_ADDR_CFG *cfg = (FTN_ADDR_CFG *)regs.r[0];
 
-            if (addr_zone == zone)
+            if (cfg->zone == zone)
             {
-                aka->zone = addr_config[0];
-                aka->net = addr_config[1];
-                aka->node = addr_config[2];
-                aka->point = addr_config[3];
+                aka->zone = cfg->zone;
+                aka->net = cfg->net;
+                aka->node = cfg->node;
+                aka->point = cfg->point;
                 return 1;
             }
         }
@@ -3954,11 +3974,11 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
     regs.r[1] = 0;
     if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
     {
-        int *addr_config = (int *)regs.r[0];
-        aka->zone = addr_config[0];
-        aka->net = addr_config[1];
-        aka->node = addr_config[2];
-        aka->point = addr_config[3];
+        FTN_ADDR_CFG *cfg = (FTN_ADDR_CFG *)regs.r[0];
+        aka->zone = cfg->zone;
+        aka->net = cfg->net;
+        aka->node = cfg->node;
+        aka->point = cfg->point;
         return 1;
     }
 

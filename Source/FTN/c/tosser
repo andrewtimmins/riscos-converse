@@ -834,6 +834,9 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
     _kernel_swi_regs regs;
     
     /* Global config structure from Support module */
+    /* Must match MSGBASE_AREA_CONFIG in Support/h/msgbaseconfig exactly.
+       (The trailing groups[64] was previously missing, giving the wrong array
+       stride so areas[1..] and area_count were read from the wrong offsets.) */
     typedef struct
     {
         int id;
@@ -844,8 +847,13 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
         int akause;
         int accesslevel;
         char keys[128];
+        char groups[64];
     } AREA_CFG;
 
+    /* Must match MSGBASE_CONFIG in Support/h/msgbaseconfig exactly. Note there
+       is NO readonly/path here - those belong to FILEBASE_CONFIG; including them
+       (a copy-paste from the filebase struct) pushed area_count 260 bytes past
+       where the module writes it, so echomail matched no area or crashed. */
     typedef struct
     {
         int id;
@@ -853,8 +861,6 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
         int type;
         int accesslevel;
         char keys[128];
-        int readonly;
-        char path[256];
         int area_count;
         AREA_CFG areas[64];
     } BASE_CFG;
@@ -927,7 +933,10 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
     _kernel_swi_regs regs;
     int message_id;
     
-    /* MESSAGE_RECORD structure matching Filer module */
+    /* MESSAGE_RECORD structure matching Filer/h/structs exactly. The trailing
+       'flags' was previously missing (744 vs the module's 748 bytes), so the
+       module over-read this struct and imported messages had random routing
+       flags. The size assert below fails the build if the layout drifts again. */
     typedef struct
     {
         int id;
@@ -950,8 +959,12 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
         char fromname[36];
         char toname[36];
         int exported;
+        unsigned short flags;
     } MSG_REC;
-    
+
+    /* Compile-time guard: MESSAGE_RECORD must be 748 bytes (see Filer/h/structs) */
+    typedef char msg_rec_size_check[(sizeof(MSG_REC) == 748) ? 1 : -1];
+
     MSG_REC record;
     
     if (msg == NULL || base_id <= 0)
