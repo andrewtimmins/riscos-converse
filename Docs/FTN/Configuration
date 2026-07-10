@@ -16,7 +16,7 @@ Before configuring FTN, you need:
 Configuration File
 ------------------
 The FTN configuration is stored in:
-  <Converse$Dir>.Resources.Config.FTN
+  <Converse$Dir>.Config.FTN
 
 The Server reads this file on startup and pushes values to the Support module,
 where the FTN mailer retrieves them.
@@ -328,7 +328,7 @@ enduplink
 Enabling FTN Mail
 -----------------
 To enable the FTN mailer, set the following in your System configuration:
-  <Converse$Dir>.Resources.Config.System
+  <Converse$Dir>.Config.System
 
 Add or modify:
   ftnmail             yes

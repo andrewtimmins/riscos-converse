@@ -2,117 +2,120 @@
 
 ## Overview
 
-The ARCbbsDoors emulator module provides compatibility for legacy ARCbbs doors to run on Converse BBS. It emulates the original ARCbbsDoors SWI interface (chunk base &41040) while internally bridging I/O through the Converse Pipes module.
+The ARCbbsDoors emulator module (`ARCbbs,ffa`) lets legacy ARCbbs-style doors run
+under Converse BBS. It presents the ARCbbsDoors SWI interface (chunk base
+`&41040`) and bridges door I/O to the caller (LineTask) through per-line
+circular buffers.
 
-## Original ARCbbsDoors Protocol
+> NOTE: Earlier revisions of this document described a fictional SWI set
+> (`GetBuffer`/`GetByte`/`PutByte`/`GetLine`/`PutLine`/`GetStatus`/`SetStatus`/
+> `Flush`). Those names were never implemented. The table below is the real
+> interface as built by `Source/ARCbbs/Doors` (`cmhg/arcbbsHdr`).
 
-ARCbbsDoors uses a status byte handshake protocol for door communication:
+## Status-byte handshake
 
-1. **Host sets status** to door number (1-254) to request a specific door
-2. **Door polls GetStatus** until it sees its own door number
-3. **Door sets status to 255** to accept the connection
-4. **Door uses GetByte/PutByte** for I/O with the user
-5. **Door sets status to 0** when finished (idle)
-6. **Host detects status=0** and knows door has finished
+ARCbbs doors are driven by a per-line status byte:
 
-Unlike RiscBBS doors which use Wimp messages, ARCbbs doors poll shared buffers directly.
+1. **Host requests a door** by writing the door number (1-254) to the line's
+   status (`WriteStatus`) and launching the door task.
+2. **Door polls `ReadStatus`** until it sees its own door number.
+3. **Door accepts** by writing `255` (`ARCBBS_STATUS_ACTIVE`) with `WriteStatus`.
+4. **Door does I/O** using `InputRead`/`OutputWrite` (or the block variants).
+5. **Door exits** by writing `0` (`ARCBBS_STATUS_IDLE`) to the status.
+6. **Host detects status `0`** and reclaims the line.
 
-## SWI Interface
+Unlike RiscBBS doors (which use Wimp messages), ARCbbs doors poll the shared
+per-line buffers directly.
 
-### Original ARCbbsDoors SWIs (Compatible)
+| Status value | Meaning |
+|--------------|---------|
+| 0 (`ARCBBS_STATUS_IDLE`)     | Idle - no door running, or the door has finished |
+| 1-254                        | Door number - host is requesting this door to start |
+| 255 (`ARCBBS_STATUS_ACTIVE`) | The door has accepted and is running |
+
+## SWI interface (chunk base &41040)
+
+All SWIs take the line number in R0. `ARCbbsDoors` (&41040 itself) is the module
+base/error SWI.
+
+### Door-facing SWIs
 
 | SWI Number | Name | Entry | Exit |
 |------------|------|-------|------|
-| &41040 | GetBuffer | R0=line | R0=input ptr, R1=output ptr, R2=size |
-| &41041 | GetByte | R0=line | R0=byte or -1 (door reads from host) |
-| &41042 | PutByte | R0=line, R1=byte | R0=0/-1 (door writes to host) |
-| &41043 | GetLine | R0=line, R1=buf, R2=size | R0=bytes read |
-| &41044 | PutLine | R0=line, R1=string | R0=bytes written |
-| &41045 | GetStatus | R0=line | R0=status byte |
-| &41046 | SetStatus | R0=line, R1=status | R0=0/-1 |
-| &41047 | Flush | R0=line | R0=0/-1 |
-| &41048 | ClearInput | R0=line | R0=0/-1 |
-| &41049 | ClearOutput | R0=line | R0=0/-1 |
-| &4104A | InputStatus | R0=line | R0=bytes available |
-| &4104B | OutputStatus | R0=line | R0=bytes free |
+| &41040 | ReadStatus   | R0=line | R0=status byte |
+| &41041 | WriteStatus  | R0=line, R1=status (0-255) | R0=0/-1 |
+| &41042 | SendRequest  | R0=line, R1=request code (+args) | R0=0/-1 (door asks the host to perform a service) |
+| &41043 | GetReply     | R0=line | R0=reply to the last SendRequest |
+| &41044 | SetUserInfo  | R0=line, R1=ptr to `ARCBBS_DOOR_USER` | R0=0/-1 (host->module; see below) |
+| &41045 | *(reserved)* | - | R0=-1 |
+| &41046 | InputStatus  | R0=line | R0=bytes available to read (user->door) |
+| &41047 | InputRead    | R0=line | R0=byte, or -1 if none |
+| &41048 | OutputStatus | R0=line | R0=bytes free in the output buffer |
+| &41049 | OutputWrite  | R0=line, R1=byte | R0=0/-1 (door->user) |
+| &4104A | ClearInput   | R0=line | R0=0/-1 |
+| &4104B | ClearOutput  | R0=line | R0=0/-1 |
 
-### Host-Side SWIs (Extensions)
-
-These SWIs are used by LineTask to communicate with doors:
+### Host-facing SWIs (used by LineTask)
 
 | SWI Number | Name | Entry | Exit |
 |------------|------|-------|------|
-| &4104C | HostWrite | R0=line, R1=byte | R0=0/-1 (host writes to door) |
-| &4104D | HostRead | R0=line | R0=byte or -1 (host reads from door) |
-| &4104E | Activate | R0=line | R0=0/-1 |
-| &4104F | Deactivate | R0=line | R0=0/-1 |
+| &4104C | HostWrite      | R0=line, R1=byte | R0=0/-1 (host writes a user keystroke into the door's input buffer) |
+| &4104D | HostRead       | R0=line | R0=byte or -1 (host reads the door's output) |
+| &4104E | Activate       | R0=line | R0=0/-1 (allocate/enable the line's buffers) |
+| &4104F | Deactivate     | R0=line | R0=0/-1 (free the line; a running door's status poll then exits) |
+| &41050 | HostWriteBlock | R0=line, R1=buffer, R2=length | R0=bytes written |
+| &41051 | HostReadBlock  | R0=line, R1=buffer, R2=max length | R0=bytes read |
 
-## Status Byte Values
+### SetUserInfo (`&41044`) and `ARCBBS_DOOR_USER`
 
-| Value | Meaning |
-|-------|---------|
-| 0 | Idle - no door running, or door finished |
-| 1-254 | Door number - host requests this door to start |
-| 255 | Active - door has accepted and is running |
+Slot `&41044` (historically "Reserved4") is used by LineTask to push the real
+logged-in user to the door so it no longer sees a hard-coded Guest/sysop
+(fix DR3). R1 points to an `ARCBBS_DOOR_USER` record. LineTask calls this at
+launch (after `Activate`, before the door accepts); the door then reads the real
+user id / access level / username via the request/reply mechanism.
 
-## Door Number Handshake
+## Buffer layout
 
-The door number protocol allows multiple door programs to coexist:
+Each active line has two 1 KB circular buffers:
 
-1. Host sets status to the door number (e.g., 42 for door #42)
-2. Door polls GetStatus looking for its own number
-3. When door sees its number, it calls SetStatus(255) to accept
-4. Host sees status=255 and knows door is now active
-5. Door performs its function using GetByte/PutByte
-6. Door calls SetStatus(0) when finished
-7. Host sees status=0 and resumes normal operation
+- **Input buffer** - host writes (`HostWrite`), door reads (`InputRead`): user keystrokes.
+- **Output buffer** - door writes (`OutputWrite`), host reads (`HostRead`): display text.
 
-This allows a door program to ignore lines where a different door was requested.
+## CLI commands
 
-## Buffer Layout
+- `*ARCbbsDoors_Status` - display the state of all lines.
 
-Each line has two 1KB circular buffers:
-- **Input buffer**: Host writes, door reads (user keystrokes)
-- **Output buffer**: Door writes, host reads (display text)
-
-## CLI Commands
-
-- `*ARCbbsDoors_Status` - Display the current state of all lines
-
-## Script Usage
-
-To launch an ARCbbs door from a Converse script:
+## Launching from a Converse script
 
 ```
 call arcbbsdoor <door_number> `<path to door> <arguments>`
 ```
 
-Where `<door_number>` is 1-254 and must match what the door expects.
+`<door_number>` is 1-254 and must match what the door expects (it polls
+`ReadStatus` for its own number). The script engine waits for the door to finish
+(status returns to 0) before continuing.
 
-Example:
+Examples:
+
 ```
-call arcbbsdoor 1 `<Converse$Dir>.BBS.Doors.!Cookie.!Run`
+call arcbbsdoor 1  `<Converse$Dir>.BBS.Doors.!Cookie.!Run`
 call arcbbsdoor 42 `<Converse$Dir>.BBS.Doors.LegacyDoor %{line}`
 ```
 
-The script engine will wait for the door to complete before continuing.
+## LineTask integration
 
-## Integration with LineTask
+For an ARCbbs door LineTask:
 
-LineTask handles ARCbbs doors by:
+1. calls `Activate` to prepare the line's buffers,
+2. `SetUserInfo` to hand the door the logged-in user (DR3),
+3. `WriteStatus` to the requested door number (1-254),
+4. launches the door with `Wimp_StartTask`,
+5. polls `ReadStatus` until the door writes `255` (accepted) - aborting on a
+   launch timeout,
+6. bridges I/O between the line's pipe and the ARCbbs buffers
+   (`HostWrite`/`HostRead`),
+7. detects status `0` (door exited) and calls `Deactivate` to clean up.
 
-1. Calling `ARCbbsDoors_Activate` to prepare the line
-2. Setting status to the requested door number (1-254)
-3. Launching the door with `Wimp_StartTask`
-4. Polling GetStatus until door sets it to 255 (accepted)
-5. Bridging I/O between Pipes and ARCbbsDoors buffers
-6. Detecting status=0 to know the door has finished
-7. Calling `ARCbbsDoors_Deactivate` to clean up
-
-If the door does not accept (set status to 255) within the timeout period, LineTask aborts the launch and notifies the user.
-
-## Differences from Original ARCbbsDoors
-
-1. **Buffer activation**: Lines must be explicitly activated before use (via Activate SWI)
-2. **Host-side SWIs**: Additional SWIs for host-side I/O (HostWrite, HostRead)
-3. **No direct buffer access**: While GetBuffer returns pointers, using HostWrite/HostRead is preferred
+`Deactivate` is also used to force a running door to quit (e.g. when the sysop
+takes the line for a chat): the door's next `ReadStatus` no longer returns
+`255`, so it exits.

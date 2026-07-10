@@ -252,6 +252,28 @@ ConverseDoors_ReceiveMessage (&5AAD0)
     4 = Time warning (5 minutes remaining)
     5 = Force disconnect requested
 
+  (SendMessage/ReceiveMessage are single-slot per-session mailboxes and are now
+  fully implemented - earlier builds returned -1 stubs. The message data pointer
+  is copied to/from a fixed DOORS_MSG_DATA_SIZE (64-byte) buffer; the event types
+  above carry no payload, so a null (R1/R2 = 0) pointer is fine.)
+
+
+Host-facing SWIs (used by LineTask, not by doors)
+-------------------------------------------------
+These SWIs let the host (LineTask) drive a door session from the other side of
+the per-line buffers/mailboxes. All take the line number in R0.
+
+  ConverseDoors_HostWrite         (&5AAD1)  R0=line, R1=buf, R2=len -> R0=bytes written (into the door's input)
+  ConverseDoors_HostRead          (&5AAD2)  R0=line, R1=buf, R2=max -> R0=bytes read (from the door's output)
+  ConverseDoors_HostIsRegistered  (&5AAD3)  R0=line -> R0=1 if a door is registered, else 0
+  ConverseDoors_HostSetUserInfo   (&5AAD4)  R0=line, R1=ptr DOOR_USER_INFO -> R0=0/-1 (push the logged-in user before the door registers)
+  ConverseDoors_HostReceiveMessage(&5AAD5)  R0=line, R1=buf -> R0=message type (door->host: 0/1/2) or -1 if none
+  ConverseDoors_HostSendMessage   (&5AAD6)  R0=line, R1=type, R2=data -> R0=0/-1 (queue a host->door message: 3/4/5)
+
+LineTask uses HostReceiveMessage each poll to notice a door exiting (types 0/1,
+which close the session) or requesting sysop chat (type 2); it uses
+HostSendMessage to push DISCONNECT (type 5) when the sysop takes the line.
+
 
 *Commands
 ---------
