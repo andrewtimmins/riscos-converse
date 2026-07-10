@@ -94,7 +94,38 @@ int door_native_host_read(int line_id, unsigned char *buffer, int max_len)
     {
         return 0;
     }
-    
+
+    return regs.r[0];
+}
+
+/* Collect a message a door posted with ConverseDoors_SendMessage.
+   Returns the message type (DOOR_MSG_EXIT_NORMAL/ERROR or CHAT_REQUEST), or -1. */
+int door_native_host_receive_message(int line_id, char *buffer)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = (int)buffer;
+    if (_kernel_swi(SWI_CONVERSEDOORS_HOSTRECEIVEMESSAGE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
+    return regs.r[0];
+}
+
+/* Queue a message for the door to collect with ConverseDoors_ReceiveMessage
+   (DOOR_MSG_SYSOP_CHAT/TIME_WARNING/DISCONNECT). Returns 0 on success. */
+int door_native_host_send_message(int line_id, int type, const char *data)
+{
+    _kernel_swi_regs regs;
+
+    regs.r[0] = line_id;
+    regs.r[1] = type;
+    regs.r[2] = (int)data;
+    if (_kernel_swi(SWI_CONVERSEDOORS_HOSTSENDMESSAGE, &regs, &regs) != NULL)
+    {
+        return -1;
+    }
     return regs.r[0];
 }
 
@@ -145,6 +176,7 @@ void door_native_reset_state(line_task_state *state)
     state->native.active = Desk_bool_FALSE;
     state->native.launch_pending = Desk_bool_FALSE;
     state->native.launch_deadline = 0;
+    state->native.task_handle = 0;
 
     /* Clear any pending partial write buffers */
     state->pending.pipe_out_offset = 0;
@@ -275,7 +307,50 @@ void door_native_process(line_task_state *state)
                 }
             }
         }
+
+        /* Poll for a message the door posted with ConverseDoors_SendMessage. A
+           door can signal it is exiting (so we close the session cleanly rather
+           than wait for deregister/timeout) or request a chat with the sysop. */
+        {
+            char msgbuf[DOOR_MSG_DATA_SIZE];
+            int mtype = door_native_host_receive_message(state->line_id, msgbuf);
+            if (mtype == DOOR_MSG_EXIT_NORMAL)
+            {
+                door_native_close_session(state, "\r\n[Door exited]\r\n");
+                return;
+            }
+            if (mtype == DOOR_MSG_EXIT_ERROR)
+            {
+                door_native_close_session(state, "\r\n[Door exited with an error]\r\n");
+                return;
+            }
+            if (mtype == DOOR_MSG_CHAT_REQUEST)
+            {
+                pipes_write_string(state->line_id,
+                    "\r\n[The door has requested a chat with the sysop.]\r\n");
+                debug_printf("LineTask Native: door on line %d requested sysop chat\n",
+                             state->line_id);
+            }
+        }
     }
+}
+
+/* Ask the door's Wimp task to quit (Message_Quit). Best-effort: does nothing if
+   we never captured a task handle. Pair with a DOOR_MSG_DISCONNECT for doors
+   that poll ReceiveMessage instead of honouring Wimp messages. */
+void door_native_send_quit(line_task_state *state)
+{
+    Desk_message_block message;
+
+    if (state == NULL || state->native.task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 20;
+    message.header.action = (Desk_message_action)0;   /* Message_Quit */
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->native.task_handle, NULL);
 }
 
 void door_native_close_session(line_task_state *state, const char *message)
@@ -284,7 +359,7 @@ void door_native_close_session(line_task_state *state, const char *message)
     {
         pipes_write_string(state->line_id, message);
     }
-    
+
     door_native_reset_state(state);
     script_notify_door_closed(&state->script);
 }
@@ -347,8 +422,20 @@ void door_native_launch(line_task_state *state, const char *command_line, int us
 
     debug_printf("LineTask Door: launching '%s'\n", final_command);
 
-    /* Launch the door */
-    Desk_Wimp_StartTask(final_command);
+    /* Launch the door. Use the raw Wimp_StartTask SWI (Desk_Wimp_StartTask
+       returns void) so we can capture the door's Wimp task handle - it lets us
+       send the task a Message_Quit to force it out (e.g. when the sysop takes
+       the line for a chat). Handle stays 0 if the SWI fails or the command is
+       not a Wimp task. */
+    {
+        _kernel_swi_regs regs;
+        state->native.task_handle = 0;
+        regs.r[0] = (int)final_command;
+        if (_kernel_swi(0x400DE /* Wimp_StartTask */, &regs, &regs) == NULL)
+        {
+            state->native.task_handle = regs.r[0];
+        }
+    }
 
     /* Enter launch pending state - wait for door to register */
     state->native.launch_pending = Desk_bool_TRUE;

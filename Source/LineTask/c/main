@@ -231,6 +231,7 @@ static void perform_session_disconnect(line_task_state *state);
 static void send_user_message(int line_id, const char *real_name);
 static void save_user_stats(line_task_state *state);
 static void poll_idle(void);
+static int line_force_quit_door(line_task_state *state);
 static int upload_copy_start(line_task_state *state, int base_id, int area_id,
                              const char *temp_path, const char *filename,
                              const char *description, int uploaded_by,
@@ -770,6 +771,36 @@ static void perform_session_disconnect(line_task_state *state) {
 
   log_line_event(state->line_id, "Session disconnected");
   script_stop_session(state);
+}
+
+/* Force any active door to quit and hand the line back to LineTask. Each door
+   type gets its quit signal, then the session is closed (which resets state so
+   the user's input routes to the BBS/chat again instead of the now-dead door).
+   Returns 1 if a door was closed, 0 if none was active. Used when the sysop
+   jumps into chat - otherwise the door keeps running and swallows the user's
+   keystrokes so they can never reach the chat. */
+static int line_force_quit_door(line_task_state *state) {
+  if (state->riscbbs.active != Desk_bool_FALSE ||
+      state->riscbbs.launch_pending != Desk_bool_FALSE) {
+    door_riscbbs_send_quit(state);
+    door_riscbbs_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  if (state->arcbbs.active != Desk_bool_FALSE ||
+      state->arcbbs.launch_pending != Desk_bool_FALSE) {
+    /* close_session deactivates the line; the door's status-poll loop then
+       sees it is no longer active and exits. */
+    door_arcbbs_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  if (state->native.active != Desk_bool_FALSE ||
+      state->native.launch_pending != Desk_bool_FALSE) {
+    door_native_host_send_message(state->line_id, DOOR_MSG_DISCONNECT, NULL);
+    door_native_send_quit(state);
+    door_native_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  return 0;
 }
 
 /* LT4: copy at most this many bytes of a received upload into the filebase per
@@ -3051,6 +3082,10 @@ static Desk_bool handle_maininfo_click(Desk_event_pollblock *event, void *ref) {
   if (icon == MAININFO_CHAT) {
     /* Start chat with the user (if logged in) */
     if (state->user.id > 0 && !state->chat.active) {
+      /* If the user is in a door, make it quit and hand the line back first -
+         otherwise the door keeps running and eats the user's keystrokes, so
+         they could never talk to the sysop. */
+      line_force_quit_door(state);
       chat_start_pager(state, "Sysop initiated chat");
     }
     return Desk_bool_TRUE;

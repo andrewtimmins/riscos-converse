@@ -239,6 +239,14 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
             doors_swi_hostisregistered(r);
             break;
             
+        case SWI_HOSTRECEIVEMESSAGE:
+            doors_swi_hostreceivemessage(r);
+            break;
+
+        case SWI_HOSTSENDMESSAGE:
+            doors_swi_hostsendmessage(r);
+            break;
+
         case SWI_HOSTSETUSERINFO:
             doors_swi_hostsetuserinfo(r);
             break;
@@ -838,19 +846,81 @@ void doors_swi_getsysteminfo(_kernel_swi_regs *r)
 }
 
 /*
- * ConverseDoors_SendMessage (0x5AACF) - Future expansion
+ * ConverseDoors_SendMessage (0x5AACF)
+ * Entry: R0 = line (session handle), R1 = message type, R2 = data ptr (or 0)
+ * Exit:  R0 = 0 on success, -1 on error
+ *
+ * A door posts a message to the host (LineTask): DOOR_MSG_EXIT_NORMAL,
+ * DOOR_MSG_EXIT_ERROR or DOOR_MSG_CHAT_REQUEST. The message waits in the
+ * session's door->host slot until the host collects it (HostReceiveMessage).
  */
 void doors_swi_sendmessage(_kernel_swi_regs *r)
 {
-    r->r[0] = -1;  /* Not implemented yet */
+    int line = r->r[0];
+    int type = r->r[1];
+    const char *data = (const char *)r->r[2];
+    DOOR_SESSION *s;
+
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    s = &sessions[line];
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    s->d2h_type = type;
+    if (data != NULL)
+    {
+        memcpy(s->d2h_data, data, DOORS_MSG_DATA_SIZE);
+        s->d2h_data[DOORS_MSG_DATA_SIZE - 1] = '\0';
+    }
+    else
+    {
+        s->d2h_data[0] = '\0';
+    }
+    s->d2h_pending = 1;
+
+    debug_printf("ConverseDoors: line %d door->host message type %d\n", line, type);
+    r->r[0] = 0;
 }
 
 /*
- * ConverseDoors_ReceiveMessage (0x5AAD0) - Future expansion
+ * ConverseDoors_ReceiveMessage (0x5AAD0)
+ * Entry: R0 = line (session handle), R1 = buffer for message data (or 0)
+ * Exit:  R0 = message type, or -1 if no message pending
+ *
+ * A door collects a pending host->door message (DOOR_MSG_SYSOP_CHAT,
+ * DOOR_MSG_TIME_WARNING or DOOR_MSG_DISCONNECT). Returns -1 when none waits.
  */
 void doors_swi_receivemessage(_kernel_swi_regs *r)
 {
-    r->r[0] = -1;  /* Not implemented yet */
+    int line = r->r[0];
+    char *buffer = (char *)r->r[1];
+    DOOR_SESSION *s;
+
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    s = &sessions[line];
+    if (s->state == DOOR_STATE_INACTIVE || !s->h2d_pending)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    if (buffer != NULL)
+    {
+        memcpy(buffer, s->h2d_data, DOORS_MSG_DATA_SIZE);
+    }
+    s->h2d_pending = 0;
+    r->r[0] = s->h2d_type;
 }
 
 /* ******************************************************************************************************************************************************** */
@@ -1025,7 +1095,85 @@ void doors_swi_hostsetuserinfo(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
     }
-    
+
     doors_host_set_user_info(line, info);
+    r->r[0] = 0;
+}
+
+/*
+ * ConverseDoors_HostReceiveMessage (0x5AAD5)
+ * Entry: R0 = line, R1 = buffer for message data (or 0)
+ * Exit:  R0 = message type, or -1 if no message pending
+ *
+ * The host (LineTask) collects a message a door posted with SendMessage
+ * (DOOR_MSG_EXIT_NORMAL/ERROR or CHAT_REQUEST). Mirrors ReceiveMessage for the
+ * direction.
+ */
+void doors_swi_hostreceivemessage(_kernel_swi_regs *r)
+{
+    int line = r->r[0];
+    char *buffer = (char *)r->r[1];
+    DOOR_SESSION *s;
+
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    s = &sessions[line];
+    if (s->state == DOOR_STATE_INACTIVE || !s->d2h_pending)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    if (buffer != NULL)
+    {
+        memcpy(buffer, s->d2h_data, DOORS_MSG_DATA_SIZE);
+    }
+    s->d2h_pending = 0;
+    r->r[0] = s->d2h_type;
+}
+
+/*
+ * ConverseDoors_HostSendMessage (0x5AAD6)
+ * Entry: R0 = line, R1 = message type, R2 = data ptr (or 0)
+ * Exit:  R0 = 0 on success, -1 on error
+ *
+ * The host (LineTask) queues a message for the door to collect with
+ * ReceiveMessage (DOOR_MSG_SYSOP_CHAT/TIME_WARNING/DISCONNECT).
+ */
+void doors_swi_hostsendmessage(_kernel_swi_regs *r)
+{
+    int line = r->r[0];
+    int type = r->r[1];
+    const char *data = (const char *)r->r[2];
+    DOOR_SESSION *s;
+
+    if (!valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+    s = &sessions[line];
+    if (s->state == DOOR_STATE_INACTIVE)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    s->h2d_type = type;
+    if (data != NULL)
+    {
+        memcpy(s->h2d_data, data, DOORS_MSG_DATA_SIZE);
+        s->h2d_data[DOORS_MSG_DATA_SIZE - 1] = '\0';
+    }
+    else
+    {
+        s->h2d_data[0] = '\0';
+    }
+    s->h2d_pending = 1;
+
+    debug_printf("ConverseDoors: line %d host->door message type %d\n", line, type);
     r->r[0] = 0;
 }

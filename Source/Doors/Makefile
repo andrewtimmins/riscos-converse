@@ -15,6 +15,8 @@ o.debug:	c.debug
 o.debug:	C:h.kernel
 o.debug:	C:h.swis
 o.debug:	h.debug
+h.DoorsHdr:	cmhg.DoorsHdr
+o.DoorsHdr:	cmhg.DoorsHdr
 o.doors:	c.doors
 o.doors:	C:h.kernel
 o.doors:	C:h.swis
@@ -22,5 +24,3 @@ o.doors:	h.doorshdr
 o.doors:	h.doors
 o.doors:	C:h.kernel
 o.doors:	h.debug
-h.DoorsHdr:	cmhg.DoorsHdr
-o.DoorsHdr:	cmhg.DoorsHdr

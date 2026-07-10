@@ -170,6 +170,23 @@ void door_riscbbs_send_user_byte(line_task_state *state, unsigned char byte)
     Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->riscbbs.task_handle, NULL);
 }
 
+/* Ask the RiscBBS door's Wimp task to quit (Message_Quit). Best-effort: does
+   nothing if we don't have the door's task handle. */
+void door_riscbbs_send_quit(line_task_state *state)
+{
+    Desk_message_block message;
+
+    if (state == NULL || state->riscbbs.task_handle == 0)
+    {
+        return;
+    }
+
+    memset(&message, 0, sizeof(message));
+    message.header.size = 20;
+    message.header.action = (Desk_message_action)0;   /* Message_Quit */
+    Desk_Wimp_SendMessage(Desk_event_SEND, &message, state->riscbbs.task_handle, NULL);
+}
+
 void door_riscbbs_close_session(line_task_state *state, const char *message)
 {
     if (message != NULL)

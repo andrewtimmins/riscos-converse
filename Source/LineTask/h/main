@@ -101,6 +101,7 @@ typedef struct door_native_state
     Desk_bool active;
     Desk_bool launch_pending;
     clock_t launch_deadline;
+    int task_handle;              /* Wimp task handle of the door (0 if unknown) */
 } door_native_state;
 
 /* Botstopper state - anti-bot challenge system */

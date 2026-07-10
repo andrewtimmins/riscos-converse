@@ -74,8 +74,22 @@ typedef enum
     SWI_HOSTWRITE = 17,       /* 0x5AAD1: Host writes to door input buffer */
     SWI_HOSTREAD = 18,        /* 0x5AAD2: Host reads from door output buffer */
     SWI_HOSTISREGISTERED = 19, /* 0x5AAD3: Check if door is registered */
-    SWI_HOSTSETUSERINFO = 20  /* 0x5AAD4: Set user info for line */
+    SWI_HOSTSETUSERINFO = 20,  /* 0x5AAD4: Set user info for line */
+    SWI_HOSTRECEIVEMESSAGE = 21, /* 0x5AAD5: Host reads a door->host message */
+    SWI_HOSTSENDMESSAGE = 22   /* 0x5AAD6: Host queues a host->door message */
 } DOORS_SWI;
+
+/* Inter-process message types (SendMessage/ReceiveMessage). */
+#define DOOR_MSG_EXIT_NORMAL    0   /* door -> host: door exiting normally */
+#define DOOR_MSG_EXIT_ERROR     1   /* door -> host: door exiting with error */
+#define DOOR_MSG_CHAT_REQUEST   2   /* door -> host: request chat with sysop */
+#define DOOR_MSG_SYSOP_CHAT     3   /* host -> door: sysop initiated chat */
+#define DOOR_MSG_TIME_WARNING   4   /* host -> door: time warning (5 min left) */
+#define DOOR_MSG_DISCONNECT     5   /* host -> door: force disconnect requested */
+
+/* Payload carried alongside a message (message-type dependent; unused for the
+   simple event types above but kept general for future typed messages). */
+#define DOORS_MSG_DATA_SIZE     64
 
 /* Door registration flags */
 typedef enum
@@ -135,6 +149,17 @@ typedef struct
     
     /* Cached user info */
     DOOR_USER_INFO user_info;
+
+    /* Inter-process messaging (SendMessage/ReceiveMessage). Single-slot
+       mailboxes in each direction: a door->host message waits until the host
+       collects it with HostReceiveMessage; a host->door message waits until the
+       door collects it with ReceiveMessage. */
+    int  d2h_pending;                     /* door->host message waiting */
+    int  d2h_type;                        /* DOOR_MSG_EXIT_NORMAL/ERROR or CHAT_REQUEST */
+    char d2h_data[DOORS_MSG_DATA_SIZE];
+    int  h2d_pending;                     /* host->door message waiting */
+    int  h2d_type;                        /* DOOR_MSG_SYSOP_CHAT/TIME_WARNING/DISCONNECT */
+    char h2d_data[DOORS_MSG_DATA_SIZE];
 } DOOR_SESSION;
 
 /* Command numbers */
@@ -177,6 +202,8 @@ void doors_swi_hostwrite(_kernel_swi_regs *r);
 void doors_swi_hostread(_kernel_swi_regs *r);
 void doors_swi_hostisregistered(_kernel_swi_regs *r);
 void doors_swi_hostsetuserinfo(_kernel_swi_regs *r);
+void doors_swi_hostreceivemessage(_kernel_swi_regs *r);
+void doors_swi_hostsendmessage(_kernel_swi_regs *r);
 
 /* Host (LineTask) functions */
 int doors_host_write(int line, const unsigned char *data, int len);
