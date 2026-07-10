@@ -18,6 +18,17 @@
     #define MAX_NAME                    64
     #define MAX_DESC                    256
 
+    /* Upper bound on a single up/download block. The block SWIs read/write
+       through a caller-supplied pointer using a caller-supplied length while in
+       privileged mode; legitimate callers use small blocks (<=1KB), so reject
+       anything above this to stop a bad length corrupting memory. */
+    #define FILER_MAX_TRANSFER_BLOCK    65536
+
+    /* Upper bound on how many message IDs FIND_UNEXPORTED will write into the
+       caller's buffer, so a bad max_count cannot overrun it. Comfortably above
+       the only real caller (the FTN scanner, 256). */
+    #define FILER_MAX_UNEXPORTED_IDS    4096
+
     typedef enum
     {
         FILER_SWI_LOGGING = 0,

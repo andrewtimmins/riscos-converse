@@ -1274,11 +1274,10 @@ Desk_bool wimp_handle_line_control_message(Desk_event_pollblock *event, void *re
 		return Desk_bool_FALSE;
 	}
 
-	if (line_configurations <= 1)
-	{
-		return Desk_bool_FALSE;
-	}
-
+	/* LC2: do NOT bail out on single-line boards here — a LOGOFF must still be
+	   processed so the line is closed, otherwise a 1-line board leaves the line
+	   stuck busy forever. The line_id bounds check below rejects invalid /
+	   no-line cases. */
 	line_id = event->data.message.data.words[0];
 	reason = event->data.message.data.words[1];
 
@@ -1893,6 +1892,7 @@ void check_listener(void)
             shutdown(orphaned_socket, 0);
             socketclose(orphaned_socket);
          }
+         return;
       	}
 
 		/* Find a free TELNET line - skip serial and local lines */
@@ -1961,6 +1961,22 @@ void check_listener(void)
 			socketioctl(line_configuration[socket_poll].socket, FIONBIO, &nonblock);
 		}
 
+		/* No free telnet line was available - reject the pending connection instead
+		   of falling through and writing a phantom / out-of-bounds line slot
+		   (socket_poll == line_configurations here, up to MAX_LINES). */
+		if (socket_poll >= line_configurations)
+		{
+			int orphaned_socket = accept(listening_socket, (struct sockaddr *)0, (int *)0);
+			if (orphaned_socket != -1)
+			{
+				strcpy(socket_buffer, error_busy);
+				socketwrite(orphaned_socket, socket_buffer, strlen(socket_buffer));
+				shutdown(orphaned_socket, 0);
+				socketclose(orphaned_socket);
+			}
+			return;
+		}
+
 		line_configuration[socket_poll].connectedtime = clock();
 		line_configuration[socket_poll].last_activity = line_configuration[socket_poll].connectedtime;
 		line_configuration[socket_poll].timer = timer_set(100);
@@ -1999,6 +2015,18 @@ void check_socket(int line_id, int socket)
 	{
 		close_line_connection(line_id);
 		return;
+	}
+	if (change_length < 0)
+	{
+		/* LC6: recv error on a non-blocking socket. EWOULDBLOCK/EAGAIN just
+		   means no data is waiting yet — keep the line open. Any other error
+		   (e.g. ECONNRESET from an abrupt client drop) means the connection is
+		   dead, so reclaim the line now instead of only on the idle timeout. */
+		if (errno != EWOULDBLOCK && errno != EAGAIN)
+		{
+			close_line_connection(line_id);
+			return;
+		}
 	}
 
 	if(timer_action(line_configuration[line_id].timer)) /* update timer */

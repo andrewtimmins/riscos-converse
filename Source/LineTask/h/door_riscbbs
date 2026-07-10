@@ -74,6 +74,9 @@ Desk_bool door_riscbbs_handle_message(Desk_event_pollblock *event, struct line_t
  */
 void door_riscbbs_send_user_byte(struct line_task_state *state, unsigned char byte);
 
+/* Ask the RiscBBS door's Wimp task to quit (Message_Quit). */
+void door_riscbbs_send_quit(struct line_task_state *state);
+
 /*
  * Close the door session with an optional message.
  * Resets state and notifies script engine.

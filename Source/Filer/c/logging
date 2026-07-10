@@ -227,8 +227,11 @@ void log_line_footer(int line_id)
 
 void log_system(char *log_entry)
 {
-    char timestamp[50];
-    char timestamped_log_entry[500];
+    /* static: keeps 550 bytes off the SVC stack in these log helpers, which are
+       called from deep inside module SWI handler chains. Safe because module
+       SWIs run atomically under the cooperative Wimp (no re-entry mid-call). */
+    static char timestamp[50];
+    static char timestamped_log_entry[500];
     time_t now;
     struct tm *t;
 
@@ -249,8 +252,11 @@ void log_system(char *log_entry)
 
 void log_line(int line_id, char *log_entry)
 {
-    char timestamp[50];
-    char timestamped_log_entry[500];
+    /* static: keeps 550 bytes off the SVC stack in these log helpers, which are
+       called from deep inside module SWI handler chains. Safe because module
+       SWIs run atomically under the cooperative Wimp (no re-entry mid-call). */
+    static char timestamp[50];
+    static char timestamped_log_entry[500];
     time_t now;
     struct tm *t;
 
@@ -279,8 +285,11 @@ void log_line(int line_id, char *log_entry)
 
 void log_call(int line_id, int user_id, int status_id)
 {
-    char timestamp[50];
-    char timestamped_log_entry[500];
+    /* static: keeps 550 bytes off the SVC stack in these log helpers, which are
+       called from deep inside module SWI handler chains. Safe because module
+       SWIs run atomically under the cooperative Wimp (no re-entry mid-call). */
+    static char timestamp[50];
+    static char timestamped_log_entry[500];
     char status[10];
     time_t now;
     struct tm *t;
@@ -322,8 +331,11 @@ void log_call(int line_id, int user_id, int status_id)
 
 void log_ftn(char *log_entry)
 {
-    char timestamp[50];
-    char timestamped_log_entry[500];
+    /* static: keeps 550 bytes off the SVC stack in these log helpers, which are
+       called from deep inside module SWI handler chains. Safe because module
+       SWIs run atomically under the cooperative Wimp (no re-entry mid-call). */
+    static char timestamp[50];
+    static char timestamped_log_entry[500];
     time_t now;
     struct tm *t;
 
@@ -344,8 +356,11 @@ void log_ftn(char *log_entry)
 
 void log_web(char *log_entry)
 {
-    char timestamp[50];
-    char timestamped_log_entry[500];
+    /* static: keeps 550 bytes off the SVC stack in these log helpers, which are
+       called from deep inside module SWI handler chains. Safe because module
+       SWIs run atomically under the cooperative Wimp (no re-entry mid-call). */
+    static char timestamp[50];
+    static char timestamped_log_entry[500];
     time_t now;
     struct tm *t;
 

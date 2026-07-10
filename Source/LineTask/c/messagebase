@@ -287,7 +287,14 @@ int messagebase_can_read_message(messagebase_session *session, const LINETASK_ME
 
     /* Check area type - Private and Netmail areas only show messages for this user */
     area_type = messagebase_get_area_type(session, session->current_area);
-    
+
+    /* Fail closed (LT3): if the area type can't be determined (-1), deny rather
+       than risk exposing messages that belong to a private/netmail area. */
+    if (area_type < 0)
+    {
+        return 0;
+    }
+
     /* Private area (areatype 4): only show messages received by or sent by this user */
     if (area_type == 4)
     {
@@ -616,7 +623,9 @@ int messagebase_list_bases(messagebase_session *session,
     int index = 0;
     /* Collect entries to render side-by-side - limit to avoid stack overflow */
     #define MAX_MB_ENTRIES 64
-    struct mb_entry
+    /* LT8: static (workspace) scratch, not a ~5KB stack frame. Safe because
+       this listing runs to completion without yielding (non-reentrant). */
+    static struct mb_entry
     {
         int id;
         char name[64];
@@ -628,7 +637,7 @@ int messagebase_list_bases(messagebase_session *session,
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
         regs.r[1] = index;
@@ -638,7 +647,7 @@ int messagebase_list_bases(messagebase_session *session,
             break;
         }
 
-        if (regs.r[0] == -1)
+        if (regs.r[0] == -1 || regs.r[0] == 0)
         {
             break;
         }
@@ -746,7 +755,9 @@ int messagebase_list_areas(messagebase_session *session,
     int index = 0;
     /* Collect entries so we can render two columns side-by-side */
     #define MAX_AREA_ENTRIES 256
-    struct area_entry
+    /* LT8: static (workspace) scratch, not a ~21.5KB stack frame. Safe because
+       this listing runs to completion without yielding (non-reentrant). */
+    static struct area_entry
     {
         int id;
         char name[64];
@@ -770,7 +781,7 @@ int messagebase_list_areas(messagebase_session *session,
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = session->current_messagebase;
@@ -781,7 +792,7 @@ int messagebase_list_areas(messagebase_session *session,
             break;
         }
 
-        if (regs.r[0] == -1)
+        if (regs.r[0] == -1 || regs.r[0] == 0)
         {
             break;
         }
@@ -1152,7 +1163,7 @@ int messagebase_viewer_show_header(messagebase_session *session,
         return 0;
     }
 
-    if (regs.r[0] == 0)
+    if (regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Message not found.]\r\n");
         return 0;
@@ -1360,6 +1371,7 @@ int messagebase_viewer_show_body(messagebase_session *session,
                 if (ch == '\r' && i + 1 < bytes_read && buffer[i + 1] == '\n')
                 {
                     i++;
+                    session->viewer.body_offset++;
                 }
             }
             else if (line_pos < MAX_LINE_WIDTH - 1)
@@ -2993,7 +3005,7 @@ int messagebase_composer_start_post(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO;
     regs.r[1] = session->current_messagebase;
     regs.r[2] = session->current_area;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error getting area info.]\r\n");
         return 0;
@@ -3098,7 +3110,7 @@ static int messagebase_quote_original(messagebase_session *session,
         regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO;
         regs.r[1] = base_id;
         regs.r[2] = message_id;
-        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
         {
             return session->composer.body_lines;
         }
@@ -3142,6 +3154,7 @@ static int messagebase_quote_original(messagebase_session *session,
                     if (ch == '\r' && i + 1 < bytes_read && buffer[i + 1] == '\n')
                     {
                         i++;
+                        offset++;
                     }
                 }
                 else if (line_pos < MAX_LINE_WIDTH - 4) /* Leave room for "> " prefix */
@@ -3212,7 +3225,7 @@ int messagebase_composer_start_reply(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO;
     regs.r[1] = session->current_messagebase;
     regs.r[2] = message_id;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error getting message.]\r\n");
         return 0;
@@ -3223,7 +3236,7 @@ int messagebase_composer_start_reply(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO;
     regs.r[1] = session->current_messagebase;
     regs.r[2] = msg_ptr->messagebaseareaid;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error getting area info.]\r\n");
         return 0;
@@ -3234,7 +3247,7 @@ int messagebase_composer_start_reply(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO;
     regs.r[1] = session->current_messagebase;
     regs.r[2] = message_id;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error re-reading message.]\r\n");
         return 0;
@@ -3789,7 +3802,9 @@ int messagebase_composer_send(messagebase_session *session,
                                void *ctx)
 {
     _kernel_swi_regs regs;
-    char body_buffer[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
+    /* LT8: static (workspace) scratch, not an ~8KB stack frame. Safe because
+       composer_send runs to completion without yielding (non-reentrant). */
+    static char body_buffer[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
     int body_len = 0;
     int i;
     int message_id;
@@ -3857,6 +3872,13 @@ int messagebase_composer_send(messagebase_session *session,
         memcpy(&msg.dstaddr, &session->composer.to_ftn_address, sizeof(msg.dstaddr));
     }
 
+    /* Stamp our originating AKA (set from the area's akause) so exported
+       echomail/netmail carries a valid origin instead of 0:0/0. */
+    if (session->composer.from_ftn_address.zone > 0)
+    {
+        memcpy(&msg.orgaddr, &session->composer.from_ftn_address, sizeof(msg.orgaddr));
+    }
+
     msg.sent = now;
     msg.bodysize = body_len;
 
@@ -3891,6 +3913,14 @@ int messagebase_composer_send(messagebase_session *session,
 
     if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL)
     {
+        /* LT9: still issue END_UPLOAD so the module flushes and closes the
+           cached file handle opened by BEGIN_UPLOAD, rather than leaking it
+           (and the partial message) on the failure path. */
+        regs.r[0] = FILER_MESSAGEBASE_CMD_END_UPLOAD;
+        regs.r[1] = session->current_messagebase;
+        regs.r[2] = message_id;
+        _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+
         output(ctx, "\r\n[Error writing message body.]\r\n");
         return 0;
     }
@@ -3908,6 +3938,200 @@ int messagebase_composer_send(messagebase_session *session,
     return message_id;
 }
 
+/* Split a CR/LF- or LF-separated body string into the composer's line buffer.
+   Over-long lines are truncated to the composer width; excess lines dropped. */
+static void composer_set_body_from_string(messagebase_session *session,
+                                          const char *body)
+{
+    int line = 0, col = 0;
+    const char *p = (body != NULL) ? body : "";
+
+    while (*p != '\0' && line < MAX_COMPOSER_LINES)
+    {
+        if (*p == '\n')
+        {
+            session->composer.body[line][col] = '\0';
+            line++;
+            col = 0;
+        }
+        else if (*p == '\r')
+        {
+            /* skip - line breaks are driven by '\n' */
+        }
+        else if (col < MAX_LINE_WIDTH - 1)
+        {
+            session->composer.body[line][col++] = *p;
+        }
+        p++;
+    }
+    /* Commit a final line with no trailing newline. */
+    if (col > 0 && line < MAX_COMPOSER_LINES)
+    {
+        session->composer.body[line][col] = '\0';
+        line++;
+    }
+    session->composer.body_lines = line;
+}
+
+/* F1: send a private message to a local user non-interactively (scripted
+   SENDMAIL). Sets up the composer state the way the interactive private
+   composer would have by send-time, then stores via messagebase_composer_send.
+   `body` is a CR/LF- or LF-separated string. Returns the new message id (>0),
+   or 0 on failure (a diagnostic has already been written via `output`). The
+   caller's current messagebase/area selection is preserved. */
+int messagebase_send_private_direct(messagebase_session *session,
+                                    const char *to_username,
+                                    const char *subject, const char *body,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx)
+{
+    LINETASK_MESSAGEBASE_AREA_RECORD area;
+    char realname[MAX_FROM_NAME];
+    int base_id = 0, area_id = 0, to_user_id = 0, message_id;
+    int saved_base, saved_area;
+
+    if (session == NULL || output == NULL ||
+        to_username == NULL || to_username[0] == '\0')
+    {
+        return 0;
+    }
+
+    if (!messagebase_find_private_area_global(&base_id, &area_id))
+    {
+        output(ctx, "\r\n\033[1;31m[No Private Mail area configured]\033[0m\r\n");
+        return 0;
+    }
+    if (!messagebase_get_area_info(base_id, area_id, &area))
+    {
+        output(ctx, "\r\n\033[1;31m[Error getting area info]\033[0m\r\n");
+        return 0;
+    }
+    if (!messagebase_lookup_user_by_name(to_username, &to_user_id) ||
+        to_user_id <= 0)
+    {
+        output(ctx, "\r\n\033[1;31m[User not found]\033[0m\r\n");
+        return 0;
+    }
+
+    saved_base = session->current_messagebase;
+    saved_area = session->current_area;
+
+    messagebase_composer_init(session, 0);
+    session->current_messagebase = base_id;
+    session->current_area = area_id;
+    session->composer.area_type = area.areatype;
+    session->composer.area_id = area_id;
+    strncpy(session->composer.area_name, area.name,
+            sizeof(session->composer.area_name) - 1);
+    session->composer.area_name[sizeof(session->composer.area_name) - 1] = '\0';
+    session->composer.is_ftn = 0;
+    session->composer.is_netmail = 0;
+    session->composer.is_private = 1;
+    session->composer.to_user_id = to_user_id;
+    if (messagebase_lookup_user_by_id(to_user_id, realname, sizeof(realname)))
+    {
+        strncpy(session->composer.to_name, realname,
+                sizeof(session->composer.to_name) - 1);
+    }
+    else
+    {
+        strncpy(session->composer.to_name, to_username,
+                sizeof(session->composer.to_name) - 1);
+    }
+    session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
+    if (subject != NULL)
+    {
+        strncpy(session->composer.subject, subject,
+                sizeof(session->composer.subject) - 1);
+        session->composer.subject[sizeof(session->composer.subject) - 1] = '\0';
+    }
+    composer_set_body_from_string(session, body);
+
+    message_id = messagebase_composer_send(session, output, ctx);
+
+    /* composer_send resets the composer; restore the caller's selection. */
+    session->current_messagebase = saved_base;
+    session->current_area = saved_area;
+    return message_id;
+}
+
+/* F1: queue an FTN netmail to an address non-interactively (scripted
+   SENDNETMAIL). Mirrors the interactive netmail composer's setup (netmail area,
+   originating AKA, parsed destination) then stores. Returns message id (>0) or
+   0 on failure. Caller's messagebase/area selection preserved. */
+int messagebase_send_netmail_direct(messagebase_session *session,
+                                    const char *to_address, const char *to_name,
+                                    const char *subject, const char *body,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx)
+{
+    LINETASK_MESSAGEBASE_AREA_RECORD area;
+    LINETASK_FTN_ADDRESS dest;
+    int base_id = 0, area_id = 0, message_id;
+    int saved_base, saved_area;
+
+    if (session == NULL || output == NULL ||
+        to_address == NULL || to_address[0] == '\0')
+    {
+        return 0;
+    }
+
+    if (!messagebase_parse_ftn_address(to_address, &dest))
+    {
+        output(ctx, "\r\n\033[1;31m[Invalid FTN address format]\033[0m\r\n");
+        return 0;
+    }
+    if (!messagebase_find_netmail_area_global(&base_id, &area_id))
+    {
+        output(ctx, "\r\n\033[1;31m[No Netmail area configured]\033[0m\r\n");
+        return 0;
+    }
+    if (!messagebase_get_area_info(base_id, area_id, &area))
+    {
+        output(ctx, "\r\n\033[1;31m[Error getting area info]\033[0m\r\n");
+        return 0;
+    }
+
+    saved_base = session->current_messagebase;
+    saved_area = session->current_area;
+
+    messagebase_composer_init(session, 0);
+    session->current_messagebase = base_id;
+    session->current_area = area_id;
+    session->composer.area_type = area.areatype;
+    session->composer.area_id = area_id;
+    strncpy(session->composer.area_name, area.name,
+            sizeof(session->composer.area_name) - 1);
+    session->composer.area_name[sizeof(session->composer.area_name) - 1] = '\0';
+    session->composer.is_ftn = 1;
+    session->composer.is_netmail = 1;
+    session->composer.is_private = 1;
+    messagebase_get_aka(area.akause, &session->composer.from_ftn_address);
+    memcpy(&session->composer.to_ftn_address, &dest, sizeof(dest));
+    strncpy(session->composer.to_address_str, to_address,
+            sizeof(session->composer.to_address_str) - 1);
+    session->composer.to_address_str[sizeof(session->composer.to_address_str) - 1] = '\0';
+    if (to_name != NULL)
+    {
+        strncpy(session->composer.to_name, to_name,
+                sizeof(session->composer.to_name) - 1);
+        session->composer.to_name[sizeof(session->composer.to_name) - 1] = '\0';
+    }
+    if (subject != NULL)
+    {
+        strncpy(session->composer.subject, subject,
+                sizeof(session->composer.subject) - 1);
+        session->composer.subject[sizeof(session->composer.subject) - 1] = '\0';
+    }
+    composer_set_body_from_string(session, body);
+
+    message_id = messagebase_composer_send(session, output, ctx);
+
+    session->current_messagebase = saved_base;
+    session->current_area = saved_area;
+    return message_id;
+}
+
 /* ============================================================
  * FTN AKA Lookup Helpers
  * ============================================================ */
@@ -3917,6 +4141,20 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
     _kernel_swi_regs regs;
     int count;
     int i;
+
+    /* Must match FTN_ADDRESS_CONFIG in Support/h/ftnconfig: zone/net/node/point
+       come AFTER id and network[64], not at the start. The old code read
+       addr_config[0..3] (= id and the first bytes of the network name), so the
+       wrong origin address was stamped on outbound FTN mail. */
+    typedef struct
+    {
+        int id;
+        char network[64];
+        int zone;
+        int net;
+        int node;
+        int point;
+    } FTN_ADDR_CFG;
 
     if (aka == NULL || zone <= 0)
     {
@@ -3934,17 +4172,16 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
     {
         regs.r[0] = 2;
         regs.r[1] = i;
-        if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
+        if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0 && regs.r[0] != -1)
         {
-            int *addr_config = (int *)regs.r[0];
-            int addr_zone = addr_config[0];
+            FTN_ADDR_CFG *cfg = (FTN_ADDR_CFG *)regs.r[0];
 
-            if (addr_zone == zone)
+            if (cfg->zone == zone)
             {
-                aka->zone = addr_config[0];
-                aka->net = addr_config[1];
-                aka->node = addr_config[2];
-                aka->point = addr_config[3];
+                aka->zone = cfg->zone;
+                aka->net = cfg->net;
+                aka->node = cfg->node;
+                aka->point = cfg->point;
                 return 1;
             }
         }
@@ -3952,13 +4189,13 @@ int messagebase_get_aka_for_zone(int zone, LINETASK_FTN_ADDRESS *aka)
 
     regs.r[0] = 2;
     regs.r[1] = 0;
-    if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0)
+    if (_kernel_swi(SWI_SUPPORT_FTNCONFIG, &regs, &regs) == NULL && regs.r[0] != 0 && regs.r[0] != -1)
     {
-        int *addr_config = (int *)regs.r[0];
-        aka->zone = addr_config[0];
-        aka->net = addr_config[1];
-        aka->node = addr_config[2];
-        aka->point = addr_config[3];
+        FTN_ADDR_CFG *cfg = (FTN_ADDR_CFG *)regs.r[0];
+        aka->zone = cfg->zone;
+        aka->net = cfg->net;
+        aka->node = cfg->node;
+        aka->point = cfg->point;
         return 1;
     }
 
@@ -3979,7 +4216,7 @@ int messagebase_get_area_type(messagebase_session *session, int area_id)
     regs.r[1] = session->current_messagebase;
     regs.r[2] = area_id;
 
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         return -1;
     }
@@ -4005,7 +4242,7 @@ int messagebase_get_next_message_id(messagebase_session *session, int current_id
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4056,7 +4293,7 @@ int messagebase_get_prev_message_id(messagebase_session *session, int current_id
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4103,7 +4340,7 @@ int messagebase_get_first_message_id(messagebase_session *session)
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4140,7 +4377,7 @@ int messagebase_get_last_message_id(messagebase_session *session)
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4178,7 +4415,7 @@ int messagebase_get_newest_unread_id(messagebase_session *session)
     }
 
     /* Iterate through messages finding the first unread one (read_time == 0) */
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4226,7 +4463,7 @@ int messagebase_count_messages(messagebase_session *session)
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4263,7 +4500,7 @@ int messagebase_get_message_position(messagebase_session *session, int message_i
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
         regs.r[1] = session->current_messagebase;
@@ -4304,7 +4541,7 @@ int messagebase_get_next_area_id(messagebase_session *session)
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = session->current_messagebase;
@@ -4345,7 +4582,7 @@ int messagebase_get_prev_area_id(messagebase_session *session)
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = session->current_messagebase;
@@ -4387,7 +4624,7 @@ int messagebase_find_private_area_global(int *base_id_out, int *area_id_out)
     }
 
     /* Iterate through all messagebases */
-    while (1)
+    while (base_index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
         regs.r[1] = base_index;
@@ -4428,7 +4665,7 @@ int messagebase_find_netmail_area_global(int *base_id_out, int *area_id_out)
     }
 
     /* Iterate through all messagebases */
-    while (1)
+    while (base_index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
         regs.r[1] = base_index;
@@ -4489,7 +4726,7 @@ int messagebase_composer_start_private(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO;
     regs.r[1] = base_id;
     regs.r[2] = area_id;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error getting area info]\r\n");
         return 0;
@@ -4589,7 +4826,7 @@ int messagebase_composer_start_netmail(messagebase_session *session,
     regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO;
     regs.r[1] = base_id;
     regs.r[2] = area_id;
-    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0 || regs.r[0] == -1)
     {
         output(ctx, "\r\n[Error getting area info]\r\n");
         return 0;
@@ -4663,7 +4900,7 @@ int messagebase_find_private_area(int base_id)
     LINETASK_MESSAGEBASE_AREA_RECORD *area_ptr;
     int index = 0;
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = base_id;
@@ -4692,7 +4929,7 @@ int messagebase_find_netmail_area(int base_id)
     LINETASK_MESSAGEBASE_AREA_RECORD *area_ptr;
     int index = 0;
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = base_id;

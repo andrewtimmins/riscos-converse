@@ -405,6 +405,20 @@ int messagebase_composer_send(messagebase_session *session,
                                void (*output)(void *ctx, const char *text),
                                void *ctx);
 
+/* F1: non-interactive scripted mail (SENDMAIL / SENDNETMAIL). Compose and store
+   a message in one call. `body` is CR/LF- or LF-separated. Return the new
+   message id (>0) or 0 on failure (a diagnostic is written via `output`). */
+int messagebase_send_private_direct(messagebase_session *session,
+                                    const char *to_username,
+                                    const char *subject, const char *body,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+int messagebase_send_netmail_direct(messagebase_session *session,
+                                    const char *to_address, const char *to_name,
+                                    const char *subject, const char *body,
+                                    void (*output)(void *ctx, const char *text),
+                                    void *ctx);
+
 /* Composer header display */
 void messagebase_composer_show_header(messagebase_session *session,
                                       void (*output)(void *ctx, const char *text),

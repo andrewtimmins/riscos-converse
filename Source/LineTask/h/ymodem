@@ -1,0 +1,102 @@
+/* ******************************************************************************************************************************************************** */
+/* YMODEM / YMODEM-G Protocol Implementation                                                                                                                  */
+/*                                                                                                                                                            */
+/* YMODEM = XMODEM-1K framing + a "block 0" carrying the exact filename and byte                                                                              */
+/* length, so the receiver truncates to the true size (no ^Z padding, unlike plain                                                                            */
+/* XMODEM). YMODEM-G is the same but streamed: the receiver sends 'G' and the sender                                                                          */
+/* never waits for per-block ACKs (any error aborts the transfer).                                                                                            */
+/* Called by the transfer dispatcher - do not use directly.                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_YMODEM_H
+#define LINETASK_YMODEM_H
+
+#include "transfer.h"
+
+/* Control bytes (shared with XMODEM) */
+#define YMODEM_SOH          0x01    /* 128-byte block */
+#define YMODEM_STX          0x02    /* 1024-byte block */
+#define YMODEM_EOT          0x04    /* End of transmission */
+#define YMODEM_ACK          0x06    /* Acknowledge */
+#define YMODEM_NAK          0x15    /* Negative acknowledge */
+#define YMODEM_CAN          0x18    /* Cancel */
+#define YMODEM_C            0x43    /* 'C' - CRC-mode start request */
+#define YMODEM_G            0x47    /* 'G' - YMODEM-G streaming start request */
+#define YMODEM_CTRLZ        0x1A    /* Padding for the tail of the final block */
+
+#define YMODEM_BLOCK_128    128
+#define YMODEM_BLOCK_1K     1024
+
+#define YMODEM_MAX_ERRORS   10
+#define YMODEM_MAX_START    10
+
+/* Timeouts in centiseconds */
+#define YMODEM_TIMEOUT_START    6000
+#define YMODEM_TIMEOUT_ACK      300
+#define YMODEM_TIMEOUT_CHAR     100
+
+typedef enum
+{
+    /* Send */
+    YM_SEND_WAIT_START,     /* waiting for C/G to send block 0 */
+    YM_SEND_BLOCK0_ACK,     /* sent block 0, waiting for ACK */
+    YM_SEND_WAIT_DATA_C,    /* block 0 ACKed, waiting for C/G to start data */
+    YM_SEND_DATA,           /* build+send next data block */
+    YM_SEND_DATA_ACK,       /* waiting for ACK of a data block (non-G) */
+    YM_SEND_EOT,            /* send EOT */
+    YM_SEND_EOT_ACK,        /* waiting for ACK of EOT */
+    YM_SEND_FINAL_C,        /* EOT ACKed, waiting for C/G before terminating block */
+    YM_SEND_FINAL_ACK,      /* sent terminating null block 0, waiting for ACK */
+
+    /* Receive */
+    YM_RECV_START,          /* send C/G, wait for block 0 header */
+    YM_RECV_READ,           /* reading a block (header+data+crc) */
+    YM_RECV_VERIFY,         /* verify block just read */
+    YM_RECV_WAIT_HEADER,    /* between blocks: wait for SOH/STX/EOT */
+
+    /* Terminal */
+    YM_COMPLETE,
+    YM_ERROR
+} ymodem_state;
+
+typedef struct
+{
+    ymodem_state state;
+
+    int streaming;          /* 1 = YMODEM-G (no per-block ACK) */
+    int start_char;         /* YMODEM_C or YMODEM_G, per streaming */
+
+    int block_number;       /* next block number to send/expect (0 = block 0) */
+    int block_size;         /* current block size for the block being read (recv) */
+
+    int consecutive_errors;
+    int start_attempts;
+    int eot_attempts;
+
+    uint8_t block_buffer[YMODEM_BLOCK_1K];
+    int buffer_pos;
+    int buffer_expected;
+
+    uint16_t received_crc;
+    int crc_bytes_read;
+    uint8_t received_block_num;
+    uint8_t received_complement;
+    int header_bytes_read;
+
+    int bytes_in_block;     /* real data bytes in the current send block */
+    int eof_reached;
+
+    int can_count;
+
+    long remaining;         /* receive: bytes still expected (from block 0 size) */
+    int have_size;          /* receive: block 0 provided a size */
+    int got_block0;         /* receive: block 0 processed */
+} ymodem_protocol_state;
+
+int ymodem_init_send(transfer_session *session);
+int ymodem_init_receive(transfer_session *session);
+int ymodem_poll(transfer_session *session);
+void ymodem_cleanup(transfer_session *session);
+void ymodem_send_cancel(transfer_session *session);
+
+#endif /* LINETASK_YMODEM_H */

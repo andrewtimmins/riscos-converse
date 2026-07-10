@@ -672,7 +672,10 @@ int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len)
         return 0;
     }
     
-    clean_capacity = raw_len + 1;
+    /* raw_len + 2: a final body line with no trailing CR/LF emits one more
+       output byte ('\n') than it consumed, so clean_len can reach raw_len + 1;
+       leave room for that plus the terminating NUL. */
+    clean_capacity = raw_len + 2;
     clean_body = malloc(clean_capacity);
     if (clean_body == NULL)
     {
@@ -831,6 +834,9 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
     _kernel_swi_regs regs;
     
     /* Global config structure from Support module */
+    /* Must match MSGBASE_AREA_CONFIG in Support/h/msgbaseconfig exactly.
+       (The trailing groups[64] was previously missing, giving the wrong array
+       stride so areas[1..] and area_count were read from the wrong offsets.) */
     typedef struct
     {
         int id;
@@ -841,8 +847,13 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
         int akause;
         int accesslevel;
         char keys[128];
+        char groups[64];
     } AREA_CFG;
 
+    /* Must match MSGBASE_CONFIG in Support/h/msgbaseconfig exactly. Note there
+       is NO readonly/path here - those belong to FILEBASE_CONFIG; including them
+       (a copy-paste from the filebase struct) pushed area_count 260 bytes past
+       where the module writes it, so echomail matched no area or crashed. */
     typedef struct
     {
         int id;
@@ -850,8 +861,6 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
         int type;
         int accesslevel;
         char keys[128];
-        int readonly;
-        char path[256];
         int area_count;
         AREA_CFG areas[64];
     } BASE_CFG;
@@ -924,7 +933,10 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
     _kernel_swi_regs regs;
     int message_id;
     
-    /* MESSAGE_RECORD structure matching Filer module */
+    /* MESSAGE_RECORD structure matching Filer/h/structs exactly. The trailing
+       'flags' was previously missing (744 vs the module's 748 bytes), so the
+       module over-read this struct and imported messages had random routing
+       flags. The size assert below fails the build if the layout drifts again. */
     typedef struct
     {
         int id;
@@ -947,8 +959,12 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
         char fromname[36];
         char toname[36];
         int exported;
+        unsigned short flags;
     } MSG_REC;
-    
+
+    /* Compile-time guard: MESSAGE_RECORD must be 748 bytes (see Filer/h/structs) */
+    typedef char msg_rec_size_check[(sizeof(MSG_REC) == 748) ? 1 : -1];
+
     MSG_REC record;
     
     if (msg == NULL || base_id <= 0)
@@ -1334,7 +1350,15 @@ static int tosser_process_arcmail(const char *arc_path, const char *zone_path)
         if (unzip_get_entry(&archive, i, &entry) == UNZIP_OK)
         {
             size_t name_len = strlen(entry.filename);
-            
+
+            /* Reject entries whose (remote-controlled) name could escape the
+               Temp directory via RISC OS path metacharacters. */
+            if (!ftn_filename_safe(entry.filename))
+            {
+                mailer_log("Rejected unsafe arcmail entry: %s", entry.filename);
+                continue;
+            }
+
             /* Check for .pkt extension (RISC OS style: ends in 'pkt') */
             if (name_len >= 3 &&
                 str_casecmp(entry.filename + name_len - 3, "pkt") == 0)

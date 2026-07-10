@@ -10,7 +10,13 @@
 /* Maximum cache sizes - keep small to fit in RMA static data
  * Total static data should be < 128KB for module compatibility on older systems */
 #define CACHE_MAX_BASES         8
-#define CACHE_MAX_AREAS         16
+/* Per-cache area capacity (filebase and messagebase caches are separate arrays
+ * of this size). Must be >= the largest configured area count in any one base:
+ * the demo messagebase alone has 24 areas, so 16 silently dropped areas 17-24
+ * (Private Mail, netmail-adjacent, sysop areas) from ENUMERATE_AREAS. 48 gives
+ * headroom for both caches; the ~10KB bump stays well under the 128KB budget
+ * (the large MESSAGES/FILES caches are unchanged). */
+#define CACHE_MAX_AREAS         48
 #define CACHE_MAX_FILES         64
 #define CACHE_MAX_MESSAGES      64
 #define CACHE_MAX_USERS         16

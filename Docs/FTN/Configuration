@@ -16,7 +16,7 @@ Before configuring FTN, you need:
 Configuration File
 ------------------
 The FTN configuration is stored in:
-  <Converse$Dir>.Resources.Config.FTN
+  <Converse$Dir>.Config.FTN
 
 The Server reads this file on startup and pushes values to the Support module,
 where the FTN mailer retrieves them.
@@ -164,18 +164,20 @@ Automatic Toss and Poll
 The mailer can automatically toss inbound packets and poll uplinks on
 configurable intervals.
 
-tossinterval        300
-pollinterval        3600
+toss_interval       300
+poll_interval       3600
 
-  tossinterval  - Seconds between automatic toss runs (0 = disabled)
-  pollinterval  - Seconds between automatic uplink polls (0 = disabled)
+  toss_interval - Seconds between automatic toss runs (default 0 = disabled)
+  poll_interval - Seconds between automatic uplink polls (default 0 = disabled)
 
 Example:
-  tossinterval    300     ; Toss every 5 minutes
-  pollinterval    3600    ; Poll uplinks every hour
+  toss_interval   300     ; Toss every 5 minutes
+  poll_interval   3600    ; Poll uplinks every hour
 
-The intervals are checked during null poll events. Setting either to 0
-disables that automatic operation (manual only via menu).
+Both default to 0 (disabled - manual only via the menu). The intervals are
+checked during null poll events. Related runtime keys (with their defaults):
+listen_port (24554), max_sessions (4), connect_timeout (60), session_timeout
+(300), scan_interval (60), retry_delay (300), max_packet_size (32768).
 
 
 Network Addresses
@@ -190,8 +192,6 @@ address <id>
     node            <node_number>
     point           <point_number>
     type            5d
-    packet_password <optional_password>
-    areafix_password <optional_password>
 endaddress
 
 Example - FidoNet address 2:2500/622:
@@ -203,11 +203,11 @@ address 1
     node            622
     point           0
     type            5d
-    packet_password 
-    areafix_password
 endaddress
 
-Fields:
+Fields (these are all the fields the address block supports - there is no
+per-address packet/areafix password; session and AreaFix/FileFix passwords are
+configured per uplink/downlink, below):
   id              - Unique identifier (1-8)
   network         - Name of the network (e.g., Fidonet, Amiganet)
   zone            - Zone number (1=North America, 2=Europe, 3=Oceania, etc.)
@@ -215,8 +215,6 @@ Fields:
   node            - Node number within the network
   point           - Point number (0 for a full node)
   type            - Address type: 5d (5-dimensional with domain)
-  packet_password - Password for creating/validating packets (optional)
-  areafix_password- Password for areafix requests (optional)
 
 
 FTN Address Format
@@ -258,14 +256,16 @@ uplink 1
 enduplink
 
 Fields:
-  id        - Unique identifier (1-8)
+  id        - Unique identifier (1-16; up to 16 uplinks)
   address   - Primary FTN address of your uplink hub
   host      - Hostname or IP address for outbound connections
   port      - TCP port (default 24554)
   network   - Network this uplink serves
   password  - BinkP session password (used for authentication and encryption)
+  areafix_password - Password sent with AreaFix requests to this uplink (optional)
+  filefix_password - Password sent with FileFix requests to this uplink (optional)
   groups    - Echo area groups to route to this uplink (A-Z, comma-separated)
-  alias     - Alternate addresses for this uplink (multiple allowed)
+  alias     - Alternate addresses for this uplink (multiple allowed; up to 8)
 
 Uplink Aliases:
   FTN hubs often have multiple addresses (AKAs). When a hub connects or
@@ -277,6 +277,65 @@ Group Filtering:
   When scanning outbound echomail, messages are only routed to uplinks
   whose groups overlap with the message area's groups. Empty groups on
   either side means "match all".
+
+
+Downlinks
+---------
+Downlinks are the points/nodes you feed. Up to 32 may be defined. A downlink
+subscribes to echomail and file echoes from you, self-service, via the AreaFix
+and FileFix robots (see below).
+
+downlink <id>
+    address          <ftn_address>
+    name             <descriptive_name>
+    password         <binkp_session_password>
+    areafix_password <password>
+    filefix_password <password>
+    allowed_groups   <A,B,C>       ; echo groups they may subscribe to
+    allowed_files    <TAG,TAG,...> ; file echo tags they may subscribe to
+    allowed_echoes   <TAG,TAG,...> ; specific echo tags they may subscribe to
+    max_echoes       <n>           ; cap on echo subscriptions (0=unlimited)
+    max_files        <n>           ; cap on file subscriptions (0=unlimited)
+enddownlink
+
+  - AreaFix access is gated by allowed_groups (group overlap with the area).
+  - FileFix access is gated by allowed_files (the file echo's FTN tag must be in
+    the list). An EMPTY allowed_groups/allowed_files means "allow all", matching
+    the uplink group convention.
+
+
+Domains
+-------
+Domains map a network name to its own inbound/outbound directories and default
+zone (up to 8). Useful when running several FidoNet-style networks.
+
+domain <id>
+    name         <fidonet|amiganet|...>
+    inbound      <path>
+    outbound     <path>
+    default_zone <n>
+    idomain      <fidonet.binkp.net>   ; internet domain for DNS lookups
+    alias_for    <domain_id>           ; 0, or the id this domain aliases
+enddomain
+
+
+AreaFix / FileFix (self-service subscriptions)
+----------------------------------------------
+A downlink manages its own feed by sending a netmail addressed to the robot
+"AreaFix" (echomail) or "FileFix" (file echoes) at one of your addresses, with
+the matching areafix_password/filefix_password on the subject line. The message
+body carries commands, one per line:
+
+  <ECHOTAG>        subscribe to an echo/file area
+  -<ECHOTAG>       unsubscribe
+  %LIST            list areas available to this downlink
+  %QUERY           list areas currently subscribed
+  %HELP            return the command help
+  %PAUSE / %RESUME suspend/resume the downlink's feed
+
+The robot replies by netmail with the result. Access is checked per the
+downlink's allowed_groups (AreaFix) / allowed_files (FileFix); requests for
+areas the downlink is not permitted are refused in the reply.
 
 
 Multiple Networks
@@ -328,7 +387,7 @@ enduplink
 Enabling FTN Mail
 -----------------
 To enable the FTN mailer, set the following in your System configuration:
-  <Converse$Dir>.Resources.Config.System
+  <Converse$Dir>.Config.System
 
 Add or modify:
   ftnmail             yes

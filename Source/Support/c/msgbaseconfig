@@ -168,6 +168,13 @@ void msgbaseconfig_swi_handler(_kernel_swi_regs *r)
 
             memcpy(base, src, sizeof(MSGBASE_CONFIG));
             base->id = base_id;
+            /* The caller's area_count is copied verbatim and later used to bound
+               loops over areas[]; clamp it so a bad/hostile value can't drive an
+               out-of-bounds scan on a subsequent GET_AREA or *BBS_MsgBases. */
+            if (base->area_count < 0)
+                base->area_count = 0;
+            else if (base->area_count > MSGBASE_CONFIG_MAX_AREAS)
+                base->area_count = MSGBASE_CONFIG_MAX_AREAS;
             r->r[0] = 0;
             break;
         }

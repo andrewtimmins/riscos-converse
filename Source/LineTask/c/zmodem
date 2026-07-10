@@ -1,0 +1,720 @@
+/* ******************************************************************************************************************************************************** */
+/* ZMODEM Protocol Implementation                                                                                                                             */
+/*                                                                                                                                                            */
+/* Non-blocking state machine. Streams data with CRC-32 subpackets and ZDLE                                                                                  */
+/* escaping; carries the exact file size so received files are byte-exact. We run                                                                            */
+/* over TCP (telnet), which is lossless, so the happy path dominates - but ZRPOS,                                                                            */
+/* ZNAK and ZCAN are still handled for correctness against real clients.                                                                                     */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "zmodem.h"
+#include "transfer.h"
+#include "pipes.h"
+#include "crc.h"
+#include "debug.h"
+
+
+/* ======================================================================= */
+/* Low-level send helpers                                                    */
+/* ======================================================================= */
+
+/* Append byte c to buf (ZDLE-escaped as required). */
+static void zesc(uint8_t *buf, int *n, int c, int escctl)
+{
+    c &= 0xFF;
+    /* 0xFF is telnet IAC and gets doubled by the transport, and 0x7F is the
+       ZMODEM rubout escape - always send both via their ZDLE forms so the wire
+       stays 8-bit clean over telnet (ZMODEM ESC8). */
+    if (c == 0xFF) { buf[(*n)++] = ZDLE; buf[(*n)++] = ZRUB1; return; }
+    if (c == 0x7F) { buf[(*n)++] = ZDLE; buf[(*n)++] = ZRUB0; return; }
+    switch (c)
+    {
+        case ZDLE:
+            buf[(*n)++] = ZDLE; buf[(*n)++] = ZDLEE; return;
+        case 0x10: case 0x11: case 0x13: case 0x90: case 0x91: case 0x93:
+            buf[(*n)++] = ZDLE; buf[(*n)++] = (uint8_t)(c ^ 0x40); return;
+        case 0x0D: case 0x8D:
+            /* escape CR to avoid the "@<CR>" telnet/modem hazard */
+            if (escctl) { buf[(*n)++] = ZDLE; buf[(*n)++] = (uint8_t)(c ^ 0x40); return; }
+            break;
+        default:
+            break;
+    }
+    if (escctl && (c & 0x60) == 0)   /* control char (7- or 8-bit) */
+    {
+        buf[(*n)++] = ZDLE; buf[(*n)++] = (uint8_t)(c ^ 0x40); return;
+    }
+    buf[(*n)++] = (uint8_t)c;
+}
+
+static const char HEXD[] = "0123456789abcdef";
+
+static void zsend_hex_header(transfer_session *s, int type, const uint8_t p[4],
+                             int no_xon)
+{
+    uint8_t out[64]; int n = 0; int i; uint16_t crc;
+    uint8_t hdr[5];
+    hdr[0] = (uint8_t)type; hdr[1] = p[0]; hdr[2] = p[1]; hdr[3] = p[2]; hdr[4] = p[3];
+    crc = crc16(hdr, 5);
+
+    out[n++] = ZPAD; out[n++] = ZPAD; out[n++] = ZDLE; out[n++] = ZHEX;
+    for (i = 0; i < 5; i++) { out[n++] = HEXD[(hdr[i] >> 4) & 0xF]; out[n++] = HEXD[hdr[i] & 0xF]; }
+    out[n++] = HEXD[(crc >> 12) & 0xF]; out[n++] = HEXD[(crc >> 8) & 0xF];
+    out[n++] = HEXD[(crc >> 4) & 0xF]; out[n++] = HEXD[crc & 0xF];
+    out[n++] = 0x0D; out[n++] = 0x0A;
+    if (!no_xon) out[n++] = 0x11;   /* XON */
+    pipes_write_block(s->line, out, n);
+}
+
+static void zsend_bin_header(transfer_session *s, int type, const uint8_t p[4],
+                             int use32, int escctl)
+{
+    uint8_t out[64]; int n = 0; int i;
+    uint8_t hdr[5];
+    hdr[0] = (uint8_t)type; hdr[1] = p[0]; hdr[2] = p[1]; hdr[3] = p[2]; hdr[4] = p[3];
+
+    out[n++] = ZPAD; out[n++] = ZDLE;
+    out[n++] = use32 ? ZBIN32 : ZBIN;
+    for (i = 0; i < 5; i++) zesc(out, &n, hdr[i], escctl);
+    if (use32)
+    {
+        uint32_t c = crc32(hdr, 5);
+        zesc(out, &n, c & 0xFF, escctl);
+        zesc(out, &n, (c >> 8) & 0xFF, escctl);
+        zesc(out, &n, (c >> 16) & 0xFF, escctl);
+        zesc(out, &n, (c >> 24) & 0xFF, escctl);
+    }
+    else
+    {
+        uint16_t c = crc16(hdr, 5);
+        zesc(out, &n, (c >> 8) & 0xFF, escctl);
+        zesc(out, &n, c & 0xFF, escctl);
+    }
+    pipes_write_block(s->line, out, n);
+}
+
+/* Send a data subpacket ending in `frameend` (ZCRCG/ZCRCE/ZCRCQ/ZCRCW). */
+static void zsend_data(transfer_session *s, const uint8_t *data, int len,
+                       int frameend, int use32, int escctl)
+{
+    uint8_t out[ZM_MAX_SUBPACKET * 2 + 16]; int n = 0; int i;
+    for (i = 0; i < len; i++) zesc(out, &n, data[i], escctl);
+    out[n++] = ZDLE; out[n++] = (uint8_t)frameend;
+    if (use32)
+    {
+        uint32_t c = crc32_update(0xFFFFFFFF, data, len);
+        uint8_t fe = (uint8_t)frameend;
+        c = crc32_update(c, &fe, 1) ^ 0xFFFFFFFF;
+        zesc(out, &n, c & 0xFF, escctl);
+        zesc(out, &n, (c >> 8) & 0xFF, escctl);
+        zesc(out, &n, (c >> 16) & 0xFF, escctl);
+        zesc(out, &n, (c >> 24) & 0xFF, escctl);
+    }
+    else
+    {
+        uint16_t c = crc16_update(0, data, len);
+        uint8_t fe = (uint8_t)frameend;
+        c = crc16_update(c, &fe, 1);
+        zesc(out, &n, (c >> 8) & 0xFF, escctl);
+        zesc(out, &n, c & 0xFF, escctl);
+    }
+    pipes_write_block(s->line, out, n);
+}
+
+void zmodem_send_cancel(transfer_session *session)
+{
+    uint8_t can[10]; int i;
+    for (i = 0; i < 8; i++) can[i] = ZDLE;   /* 8x CAN */
+    for (i = 8; i < 10; i++) can[i] = 0x08;  /* backspaces */
+    pipes_write_block(session->line, can, 10);
+}
+
+/* ======================================================================= */
+/* Receive-side raw buffer + un-escape                                       */
+/* ======================================================================= */
+
+static void zrx_pull(transfer_session *s, zmodem_protocol_state *z)
+{
+    while (pipes_bytes_available(s->line) > 0 && z->rxlen < ZM_RXBUF)
+    {
+        z->rxbuf[z->rxlen++] = (uint8_t)pipes_read_byte(s->line);
+    }
+}
+
+static void zrx_consume(zmodem_protocol_state *z, int upto)
+{
+    if (upto <= 0) return;
+    if (upto >= z->rxlen) { z->rxlen = 0; return; }
+    memmove(z->rxbuf, z->rxbuf + upto, z->rxlen - upto);
+    z->rxlen -= upto;
+}
+
+/* Read one logical (un-escaped) byte from rxbuf at *cur.
+   Returns 1 = data byte in *out; 2 = frame-end marker in *out; 0 = need more. */
+static int zde(const uint8_t *buf, int len, int *cur, int *out)
+{
+    int c, e;
+    if (*cur >= len) return 0;
+    c = buf[*cur];
+    if (c != ZDLE) { (*cur)++; *out = c; return 1; }
+    if (*cur + 1 >= len) return 0;   /* need the escaped byte */
+    e = buf[*cur + 1];
+    *cur += 2;
+    if (e >= ZCRCE && e <= ZCRCW) { *out = e; return 2; }
+    if (e == ZRUB0) { *out = 0x7F; return 1; }
+    if (e == ZRUB1) { *out = 0xFF; return 1; }
+    *out = e ^ 0x40; return 1;
+}
+
+/* Try to parse a header from the front of rxbuf.
+   Returns frame type (>=0) with z->rxflags/z->rxpos set and consumes it, or
+   -1 = need more data, -2 = bad/garbage (caller may resync). */
+static int zget_header(zmodem_protocol_state *z)
+{
+    int i, fmt = -1, start = -1;
+
+    /* ZMODEM cancel: the peer aborts by sending a run of CAN bytes (CAN == ZDLE
+       == 0x18). The header scan below only matches ZDLE followed by a *format*
+       byte, so a CAN run would be silently drained and the cancel ignored
+       (receiver could not abort a download). On the send side rxbuf only ever
+       holds the receiver's hex headers, so >=5 consecutive 0x18 is unambiguous.
+       Report it as ZCAN so the caller aborts and frees the line. */
+    {
+        int run = 0;
+        for (i = 0; i < z->rxlen; i++)
+        {
+            if (z->rxbuf[i] == ZDLE)
+            {
+                if (++run >= 5) { zrx_consume(z, i + 1); return ZCAN; }
+            }
+            else
+            {
+                run = 0;
+            }
+        }
+    }
+
+    /* locate ZDLE followed by a format byte */
+    for (i = 0; i + 1 < z->rxlen; i++)
+    {
+        if (z->rxbuf[i] == ZDLE &&
+            (z->rxbuf[i+1] == ZHEX || z->rxbuf[i+1] == ZBIN || z->rxbuf[i+1] == ZBIN32))
+        {
+            start = i; fmt = z->rxbuf[i+1]; break;
+        }
+    }
+    if (start < 0)
+    {
+        /* keep only a trailing partial ZDLE so we don't lose a split intro */
+        if (z->rxlen > 1) zrx_consume(z, z->rxlen - 1);
+        return -1;
+    }
+
+    if (fmt == ZHEX)
+    {
+        int cur = start + 2, j; uint8_t hdr[5]; uint8_t crcb[2]; uint16_t crc;
+        int need = 14; /* 5 header + 2 crc = 7 bytes = 14 hex */
+        if (z->rxlen - cur < need) return -1;
+        {
+            int v[7];
+            for (j = 0; j < 7; j++)
+            {
+                int hi = z->rxbuf[cur + j*2], lo = z->rxbuf[cur + j*2 + 1];
+                #define HX(x) ((x>='0'&&x<='9')?(x-'0'):((x>='a'&&x<='f')?(x-'a'+10):((x>='A'&&x<='F')?(x-'A'+10):-1)))
+                int h = HX(hi), l = HX(lo);
+                #undef HX
+                if (h < 0 || l < 0) { zrx_consume(z, start + 2); return -2; }
+                v[j] = (h << 4) | l;
+            }
+            for (j = 0; j < 5; j++) hdr[j] = (uint8_t)v[j];
+            crcb[0] = (uint8_t)v[5]; crcb[1] = (uint8_t)v[6];
+        }
+        crc = crc16(hdr, 5);
+        if (((crc >> 8) & 0xFF) != crcb[0] || (crc & 0xFF) != crcb[1])
+        { zrx_consume(z, start + 2); return -2; }
+        cur += need;
+        /* swallow trailing CR/LF/XON */
+        while (cur < z->rxlen && (z->rxbuf[cur] == 0x0D || z->rxbuf[cur] == 0x0A ||
+               z->rxbuf[cur] == 0x11 || z->rxbuf[cur] == 0x13 || z->rxbuf[cur] == 0x8A)) cur++;
+        z->rxtype = hdr[0];
+        for (j = 0; j < 4; j++) z->rxflags[j] = hdr[j+1];
+        z->rxpos = (long)hdr[1] | ((long)hdr[2] << 8) | ((long)hdr[3] << 16) | ((long)hdr[4] << 24);
+        zrx_consume(z, cur);
+        return z->rxtype;
+    }
+    else
+    {
+        int use32 = (fmt == ZBIN32);
+        int cur = start + 2, j, out, r; uint8_t hdr[5];
+        int ncrc = use32 ? 4 : 2; uint8_t cb[4];
+        for (j = 0; j < 5; j++)
+        {
+            r = zde(z->rxbuf, z->rxlen, &cur, &out);
+            if (r == 0) return -1;
+            if (r != 1) { zrx_consume(z, start + 2); return -2; }
+            hdr[j] = (uint8_t)out;
+        }
+        for (j = 0; j < ncrc; j++)
+        {
+            r = zde(z->rxbuf, z->rxlen, &cur, &out);
+            if (r == 0) return -1;
+            if (r != 1) { zrx_consume(z, start + 2); return -2; }
+            cb[j] = (uint8_t)out;
+        }
+        if (use32)
+        {
+            uint32_t crc = crc32(hdr, 5);
+            uint32_t got = (uint32_t)cb[0] | ((uint32_t)cb[1] << 8) | ((uint32_t)cb[2] << 16) | ((uint32_t)cb[3] << 24);
+            if (crc != got) { zrx_consume(z, start + 2); return -2; }
+        }
+        else
+        {
+            uint16_t crc = crc16(hdr, 5);
+            if (((crc >> 8) & 0xFF) != cb[0] || (crc & 0xFF) != cb[1]) { zrx_consume(z, start + 2); return -2; }
+        }
+        z->rxtype = hdr[0];
+        for (j = 0; j < 4; j++) z->rxflags[j] = hdr[j+1];
+        z->rxpos = (long)hdr[1] | ((long)hdr[2] << 8) | ((long)hdr[3] << 16) | ((long)hdr[4] << 24);
+        zrx_consume(z, cur);
+        return z->rxtype;
+    }
+}
+
+/* Parse a data subpacket from rxbuf. Fills out and outlen; sets frameend.
+   Returns 1 = complete, 0 = need more, -1 = crc error. */
+static int zget_subpacket(zmodem_protocol_state *z, int use32,
+                          uint8_t *out, int maxlen, int *outlen, int *frameend)
+{
+    int cur = 0, r, b, n = 0, fe = 0, j, ncrc = use32 ? 4 : 2;
+    uint8_t cb[4];
+    for (;;)
+    {
+        r = zde(z->rxbuf, z->rxlen, &cur, &b);
+        if (r == 0) return 0;                 /* need more */
+        if (r == 2) { fe = b; break; }        /* frame-end marker */
+        if (n >= maxlen) return -1;           /* overflow */
+        out[n++] = (uint8_t)b;
+    }
+    for (j = 0; j < ncrc; j++)
+    {
+        r = zde(z->rxbuf, z->rxlen, &cur, &b);
+        if (r == 0) return 0;
+        if (r != 1) return -1;
+        cb[j] = (uint8_t)b;
+    }
+    /* verify crc over data + frame-end byte */
+    if (use32)
+    {
+        uint32_t crc = crc32_update(0xFFFFFFFF, out, n);
+        uint8_t fb = (uint8_t)fe;
+        uint32_t got;
+        crc = crc32_update(crc, &fb, 1) ^ 0xFFFFFFFF;
+        got = (uint32_t)cb[0] | ((uint32_t)cb[1] << 8) | ((uint32_t)cb[2] << 16) | ((uint32_t)cb[3] << 24);
+        if (crc != got) { zrx_consume(z, cur); return -1; }
+    }
+    else
+    {
+        uint16_t crc = crc16_update(0, out, n);
+        uint8_t fb = (uint8_t)fe;
+        crc = crc16_update(crc, &fb, 1);
+        if (((crc >> 8) & 0xFF) != cb[0] || (crc & 0xFF) != cb[1]) { zrx_consume(z, cur); return -1; }
+    }
+    zrx_consume(z, cur);
+    *outlen = n; *frameend = fe;
+    return 1;
+}
+
+static void put_pos(uint8_t p[4], long pos)
+{
+    p[0] = (uint8_t)(pos & 0xFF);
+    p[1] = (uint8_t)((pos >> 8) & 0xFF);
+    p[2] = (uint8_t)((pos >> 16) & 0xFF);
+    p[3] = (uint8_t)((pos >> 24) & 0xFF);
+}
+
+/* ======================================================================= */
+/* Send (download to caller)                                                 */
+/* ======================================================================= */
+
+static int zmodem_poll_send(transfer_session *session)
+{
+    zmodem_protocol_state *z = (zmodem_protocol_state *)session->protocol_state;
+    uint8_t p[4];
+    int t;
+
+    zrx_pull(session, z);
+
+    switch (z->state)
+    {
+        case ZS_SEND_RQINIT:
+        {
+            /* "rz\r" auto-start hint, then ZRQINIT */
+            uint8_t rz[3]; rz[0]='r'; rz[1]='z'; rz[2]=0x0D;
+            pipes_write_block(session->line, rz, 3);
+            memset(p, 0, 4);
+            zsend_hex_header(session, ZRQINIT, p, 0);
+            transfer_set_timeout(session, ZM_TIMEOUT_START);
+            z->state = ZS_WAIT_ZRINIT;
+            break;
+        }
+
+        case ZS_WAIT_ZRINIT:
+            t = zget_header(z);
+            if (t == -1)
+            {
+                if (transfer_timeout_expired(session))
+                {
+                    if (++z->start_attempts >= 10)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "No ZRINIT from receiver");
+                        z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT; return 0;
+                    }
+                    memset(p, 0, 4); zsend_hex_header(session, ZRQINIT, p, 0);
+                    transfer_set_timeout(session, ZM_TIMEOUT_START);
+                }
+                return 1;
+            }
+            if (t == ZRINIT)
+            {
+                z->peer_flags = z->rxflags[3];
+                z->use32 = (z->peer_flags & CANFC32) ? 1 : 0;
+                /* Always escape control chars regardless of the peer's ESCCTL
+                   request: the telnet transport is not 8-bit clean (it doubles
+                   IAC/0xFF and may touch CR/LF), so escaping keeps the wire
+                   safe. A receiver un-escapes unconditionally, so escaping more
+                   than it asked for is fine. */
+                z->escctl = 1;
+                z->got_zrinit = 1;
+                /* send ZFILE + file-info subpacket */
+                {
+                    uint8_t info[ZM_MAX_SUBPACKET]; int in = 0;
+                    const char *name = session->filename ? session->filename : "file.dat";
+                    size_t nl = strlen(name); size_t k;
+                    if (nl > 200) nl = 200;
+                    for (k = 0; k < nl; k++) info[in++] = (uint8_t)name[k];
+                    info[in++] = 0;
+                    in += snprintf((char *)&info[in], 64, "%ld 0 0 0 1 %ld", session->file_size, session->file_size);
+                    memset(p, 0, 4);
+                    zsend_bin_header(session, ZFILE, p, z->use32, z->escctl);
+                    zsend_data(session, info, in, ZCRCW, z->use32, z->escctl);
+                }
+                transfer_set_timeout(session, ZM_TIMEOUT_ACK);
+                z->state = ZS_WAIT_ZRPOS;
+            }
+            else if (t == ZRPOS) { z->pos = z->rxpos; z->state = ZS_SEND_DATA; }
+            else if (t == ZCAN || t == ZABORT) { snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled"); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_REMOTE_CANCEL; return 0; }
+            break;
+
+        case ZS_WAIT_ZRPOS:
+            t = zget_header(z);
+            if (t == -1)
+            {
+                if (transfer_timeout_expired(session))
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No ZRPOS from receiver");
+                    z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT; return 0;
+                }
+                return 1;
+            }
+            if (t == ZRPOS) { z->pos = z->rxpos; session->bytes_transferred = z->pos; put_pos(p, z->pos); zsend_bin_header(session, ZDATA, p, z->use32, z->escctl); z->state = ZS_SEND_DATA; }
+            else if (t == ZRINIT) { /* stray - resend ZFILE next tick via re-enter */ }
+            else if (t == ZSKIP) { z->state = ZS_SEND_EOF; }
+            else if (t == ZFERR || t == ZABORT || t == ZCAN) { snprintf(session->error_msg, sizeof(session->error_msg), "Receiver aborted"); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_REMOTE_CANCEL; return 0; }
+            break;
+
+        case ZS_SEND_DATA:
+        {
+            int chunk;
+            long left = session->file_size - z->pos;
+            if (left <= 0) { z->state = ZS_SEND_EOF; break; }
+            /* flow control: leave room for a fully-escaped subpacket (every data
+               byte can expand to 2 bytes, plus frame-end + escaped CRC). */
+            if (pipes_space_available(session->line) < (2 * ZM_MAX_SUBPACKET + 64)) return 1;
+            chunk = (left > ZM_MAX_SUBPACKET) ? ZM_MAX_SUBPACKET : (int)left;
+            {
+                int got = transfer_read_file_block(session, z->sendbuf, z->pos, chunk);
+                if (got < 0) { snprintf(session->error_msg, sizeof(session->error_msg), "File read error"); zmodem_send_cancel(session); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_FILE_ERROR; return 0; }
+                /* EOF reached before the advertised file_size (e.g. the filebase
+                   record's size is larger than the stored blob). Truncate the
+                   advertised size to what we actually read so ZEOF reports the
+                   real length and the receiver stops asking for the missing
+                   bytes (otherwise it loops on ZRPOS forever). */
+                if (got == 0) { session->file_size = z->pos; z->state = ZS_SEND_EOF; break; }
+                z->pos += got;
+                session->bytes_transferred = z->pos;
+                if (z->pos >= session->file_size)
+                    zsend_data(session, z->sendbuf, got, ZCRCE, z->use32, z->escctl);  /* last */
+                else
+                    zsend_data(session, z->sendbuf, got, ZCRCG, z->use32, z->escctl);  /* stream */
+            }
+            /* opportunistically check for a ZRPOS/ZCAN from the receiver */
+            t = zget_header(z);
+            if (t == ZRPOS) { z->pos = z->rxpos; session->bytes_transferred = z->pos; put_pos(p, z->pos); zsend_bin_header(session, ZDATA, p, z->use32, z->escctl); }
+            else if (t == ZCAN || t == ZABORT) { snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled"); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_REMOTE_CANCEL; return 0; }
+            break;
+        }
+
+        case ZS_SEND_EOF:
+            put_pos(p, z->pos);   /* actual bytes sent (== file_size on the happy path) */
+            zsend_bin_header(session, ZEOF, p, z->use32, z->escctl);
+            transfer_set_timeout(session, ZM_TIMEOUT_START);
+            z->state = ZS_WAIT_EOF_ACK;
+            break;
+
+        case ZS_WAIT_EOF_ACK:
+            t = zget_header(z);
+            if (t == -1)
+            {
+                /* Receiver went silent. Resend EOF, but bounded: if it never
+                   acks, give up instead of resending forever (which, with the
+                   idle-poll fix, would otherwise tie up the line). */
+                if (transfer_timeout_expired(session))
+                {
+                    if (++z->consecutive_errors > ZM_MAX_ERRORS) { snprintf(session->error_msg, sizeof(session->error_msg), "No EOF ack from receiver"); zmodem_send_cancel(session); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT; return 0; }
+                    z->state = ZS_SEND_EOF;
+                }
+                return 1;
+            }
+            if (t == ZRINIT) { z->consecutive_errors = 0; memset(p, 0, 4); zsend_hex_header(session, ZFIN, p, 1); transfer_set_timeout(session, ZM_TIMEOUT_START); z->state = ZS_WAIT_FIN; }
+            else if (t == ZRPOS)
+            {
+                if (z->rxpos >= session->file_size)
+                {
+                    /* Receiver is asking for data at/beyond our actual EOF
+                       (e.g. a filebase record whose size exceeds the stored
+                       blob). We have nothing more to send; re-assert EOF a
+                       bounded number of times, then abort so the line does not
+                       wedge in an endless ZRPOS<->ZEOF ping-pong. */
+                    if (++z->consecutive_errors > ZM_MAX_ERRORS) { snprintf(session->error_msg, sizeof(session->error_msg), "Receiver stuck past EOF"); zmodem_send_cancel(session); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_PROTOCOL_ERROR; return 0; }
+                    z->state = ZS_SEND_EOF;
+                }
+                else
+                {
+                    z->consecutive_errors = 0; z->pos = z->rxpos; put_pos(p, z->pos); zsend_bin_header(session, ZDATA, p, z->use32, z->escctl); z->state = ZS_SEND_DATA;
+                }
+            }
+            else if (t == ZCAN || t == ZABORT) { snprintf(session->error_msg, sizeof(session->error_msg), "Receiver cancelled"); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_REMOTE_CANCEL; return 0; }
+            break;
+
+        case ZS_WAIT_FIN:
+            t = zget_header(z);
+            if (t == -1)
+            {
+                if (transfer_timeout_expired(session)) { z->state = ZM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK; return 0; }
+                return 1;
+            }
+            if (t == ZFIN)
+            {
+                uint8_t oo[2]; oo[0]='O'; oo[1]='O';
+                pipes_write_block(session->line, oo, 2);
+                z->state = ZM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK; return 0;
+            }
+            break;
+
+        case ZM_COMPLETE:
+        case ZM_ERROR:
+            return 0;
+        default:
+            z->state = ZM_ERROR; session->state = XFER_ERROR; return 0;
+    }
+    return 1;
+}
+
+/* ======================================================================= */
+/* Receive (upload from caller)                                              */
+/* ======================================================================= */
+
+static void zr_send_rinit(transfer_session *s, zmodem_protocol_state *z)
+{
+    uint8_t p[4];
+    (void)z;
+    memset(p, 0, 4);
+    p[3] = (uint8_t)(CANFDX | CANOVIO | CANFC32 | ESCCTL);   /* ZF0 capabilities */
+    zsend_hex_header(s, ZRINIT, p, 0);
+}
+
+static int zmodem_poll_receive(transfer_session *session)
+{
+    zmodem_protocol_state *z = (zmodem_protocol_state *)session->protocol_state;
+    uint8_t p[4];
+    int t;
+
+    zrx_pull(session, z);
+
+    switch (z->state)
+    {
+        case ZR_SEND_RINIT:
+            if (transfer_timeout_expired(session))
+            {
+                if (++z->start_attempts >= 10)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No ZFILE from sender");
+                    z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT; return 0;
+                }
+                zr_send_rinit(session, z);
+                transfer_set_timeout(session, ZM_TIMEOUT_START / 4);
+            }
+            t = zget_header(z);
+            if (t < 0) return 1;
+            if (t == ZFILE)
+            {
+                z->use32 = 1;    /* we advertised CRC-32; sender should use it */
+                z->escctl = 1;
+                /* the ZFILE header is followed by the file-info subpacket */
+                {
+                    uint8_t info[ZM_MAX_SUBPACKET]; int inlen = 0, fe = 0, r;
+                    r = zget_subpacket(z, z->use32, info, sizeof(info), &inlen, &fe);
+                    if (r == 0) { /* wait for the rest of the subpacket */ z->rxtype = ZFILE; return 1; }
+                    if (r < 0) { zsend_hex_header(session, ZNAK, (memset(p,0,4),p), 0); return 1; }
+                    /* parse "filename\0size ..." */
+                    {
+                        const char *nm = (const char *)info;
+                        size_t nl = strlen(nm);
+                        if (session->filename[0] == '\0' && nl > 0)
+                        {
+                            if (nl >= TRANSFER_MAX_FILENAME) nl = TRANSFER_MAX_FILENAME - 1;
+                            memcpy(session->filename, nm, nl); session->filename[nl] = '\0';
+                            session->filename_from_protocol = 1;
+                        }
+                        {
+                            const char *sz = nm + strlen(nm) + 1;
+                            long fsz = atol(sz);
+                            if (fsz > 0) { session->file_size = fsz; z->remaining = fsz; z->have_size = 1; }
+                        }
+                    }
+                    z->pos = 0;
+                    put_pos(p, 0);
+                    zsend_hex_header(session, ZRPOS, p, 0);
+                    transfer_set_timeout(session, ZM_TIMEOUT_START);
+                    z->state = ZR_RECV_DATA; z->rxtype = -1;
+                }
+            }
+            else if (t == ZRQINIT) { zr_send_rinit(session, z); }
+            else if (t == ZFIN) { zsend_hex_header(session, ZFIN, (memset(p,0,4),p), 1); z->state = ZM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK; return 0; }
+            return 1;
+
+        case ZR_RECV_DATA:
+        {
+            /* Expect a ZDATA header, then data subpackets until ZEOF. */
+            if (z->rxtype != ZDATA)
+            {
+                t = zget_header(z);
+                if (t == -1)
+                {
+                    if (transfer_timeout_expired(session)) { put_pos(p, z->pos); zsend_hex_header(session, ZRPOS, p, 0); transfer_set_timeout(session, ZM_TIMEOUT_START); }
+                    return 1;
+                }
+                if (t == ZDATA)
+                {
+                    if (z->rxpos != z->pos) { put_pos(p, z->pos); zsend_hex_header(session, ZRPOS, p, 0); return 1; }
+                    z->rxtype = ZDATA;   /* now read subpackets */
+                }
+                else if (t == ZEOF)
+                {
+                    zr_send_rinit(session, z);         /* ready for next / ZFIN */
+                    z->state = ZR_SEND_RINIT;          /* reuse: waits for ZFILE or ZFIN */
+                    z->rxtype = -1;
+                    transfer_set_timeout(session, ZM_TIMEOUT_START);
+                    return 1;
+                }
+                else if (t == ZFIN) { zsend_hex_header(session, ZFIN, (memset(p,0,4),p), 1); z->state = ZM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK; return 0; }
+                else if (t == ZCAN || t == ZABORT) { snprintf(session->error_msg, sizeof(session->error_msg), "Sender cancelled"); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_REMOTE_CANCEL; return 0; }
+                return 1;
+            }
+            /* reading data subpackets */
+            {
+                uint8_t data[ZM_MAX_SUBPACKET]; int dlen = 0, fe = 0, r;
+                r = zget_subpacket(z, z->use32, data, sizeof(data), &dlen, &fe);
+                if (r == 0) return 1;                    /* need more */
+                if (r < 0)
+                {
+                    if (++z->consecutive_errors >= ZM_MAX_ERRORS) { snprintf(session->error_msg, sizeof(session->error_msg), "Too many CRC errors"); zmodem_send_cancel(session); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS; return 0; }
+                    put_pos(p, z->pos); zsend_hex_header(session, ZRPOS, p, 0);
+                    z->rxtype = -1;
+                    return 1;
+                }
+                /* write only real bytes (truncate to the exact size) */
+                {
+                    int tw = dlen;
+                    if (z->have_size) { if (z->remaining <= 0) tw = 0; else if (z->remaining < dlen) tw = (int)z->remaining; }
+                    if (tw > 0)
+                    {
+                        if (transfer_write_file_block(session, data, tw) < 0) { snprintf(session->error_msg, sizeof(session->error_msg), "File write error"); zmodem_send_cancel(session); z->state = ZM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_FILE_ERROR; return 0; }
+                        session->bytes_transferred += tw;
+                        if (z->have_size) z->remaining -= tw;
+                    }
+                    z->pos += dlen;
+                }
+                z->consecutive_errors = 0;
+                if (fe == ZCRCE) { z->rxtype = -1; }               /* frame ends, header follows */
+                else if (fe == ZCRCG) { /* keep reading */ }
+                else if (fe == ZCRCQ) { put_pos(p, z->pos); zsend_hex_header(session, ZACK, p, 1); }
+                else if (fe == ZCRCW) { put_pos(p, z->pos); zsend_hex_header(session, ZACK, p, 1); z->rxtype = -1; }
+                transfer_set_timeout(session, ZM_TIMEOUT_START);
+            }
+            return 1;
+        }
+
+        case ZM_COMPLETE:
+        case ZM_ERROR:
+            return 0;
+        default:
+            z->state = ZM_ERROR; session->state = XFER_ERROR; return 0;
+    }
+}
+
+/* ======================================================================= */
+/* Public API                                                                */
+/* ======================================================================= */
+
+static zmodem_protocol_state *zalloc(transfer_session *session)
+{
+    zmodem_protocol_state *z = (zmodem_protocol_state *)malloc(sizeof(zmodem_protocol_state));
+    if (z == NULL) { snprintf(session->error_msg, sizeof(session->error_msg), "Out of memory"); return NULL; }
+    memset(z, 0, sizeof(zmodem_protocol_state));
+    return z;
+}
+
+int zmodem_init_send(transfer_session *session)
+{
+    zmodem_protocol_state *z = zalloc(session);
+    if (z == NULL) return -1;
+    z->state = ZS_SEND_RQINIT;
+    z->use32 = 1; z->escctl = 1;
+    session->protocol_state = z;
+    transfer_set_timeout(session, ZM_TIMEOUT_START);
+    return 0;
+}
+
+int zmodem_init_receive(transfer_session *session)
+{
+    zmodem_protocol_state *z = zalloc(session);
+    if (z == NULL) return -1;
+    z->state = ZR_SEND_RINIT;
+    z->use32 = 1; z->escctl = 1;
+    session->protocol_state = z;
+    while (pipes_bytes_available(session->line) > 0) pipes_read_byte(session->line);
+    zr_send_rinit(session, z);
+    transfer_set_timeout(session, ZM_TIMEOUT_START / 4);
+    return 0;
+}
+
+int zmodem_poll(transfer_session *session)
+{
+    if (session == NULL || session->protocol_state == NULL) return 0;
+    if (session->direction == TRANSFER_DIR_SEND) return zmodem_poll_send(session);
+    return zmodem_poll_receive(session);
+}
+
+void zmodem_cleanup(transfer_session *session)
+{
+    if (session != NULL && session->protocol_state != NULL)
+    {
+        free(session->protocol_state);
+        session->protocol_state = NULL;
+    }
+}

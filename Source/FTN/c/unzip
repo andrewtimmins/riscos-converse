@@ -855,6 +855,17 @@ int unzip_extract_to_memory(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry,
     if (buffer_size < entry->uncompressed_size)
         return UNZIP_ERR_MEMORY;
 
+    /* Reject entries whose (attacker-controlled) declared sizes are absurd,
+       before allocating/reading them - a small archive could otherwise demand
+       a huge allocation (zip bomb / DoS) on a memory-constrained machine. */
+    if (entry->compressed_size > UNZIP_MAX_ENTRY_SIZE ||
+        entry->uncompressed_size > UNZIP_MAX_ENTRY_SIZE)
+    {
+        debug_printf("unzip: Entry too large (comp=%lu uncomp=%lu)",
+                     entry->compressed_size, entry->uncompressed_size);
+        return UNZIP_ERR_TOOBIG;
+    }
+
     fp = (FILE *)archive->fp;
 
     /* Seek to local file header */
@@ -937,6 +948,13 @@ int unzip_extract_entry(UNZIP_ARCHIVE *archive, UNZIP_ENTRY *entry, const char *
     {
         /* Empty file or directory */
         return UNZIP_OK;
+    }
+
+    if (entry->uncompressed_size > UNZIP_MAX_ENTRY_SIZE)
+    {
+        debug_printf("unzip: Entry too large to extract (%lu bytes)",
+                     entry->uncompressed_size);
+        return UNZIP_ERR_TOOBIG;
     }
 
     buffer = (unsigned char *)malloc(entry->uncompressed_size);
@@ -1041,6 +1059,7 @@ const char *unzip_error_string(int error)
         case UNZIP_ERR_WRITE:       return "Cannot write output file";
         case UNZIP_ERR_MEMORY:      return "Memory allocation failed";
         case UNZIP_ERR_INFLATE:     return "Decompression error";
+        case UNZIP_ERR_TOOBIG:      return "Entry too large";
         default:                    return "Unknown error";
     }
 }

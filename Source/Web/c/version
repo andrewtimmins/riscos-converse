@@ -1,4 +1,6 @@
 
+#include "version.h"
+
 #define MAJOR_VSN "0"
 #define MINOR_VSN "02"
 

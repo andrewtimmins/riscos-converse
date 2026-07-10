@@ -29,6 +29,17 @@ struct line_task_state;
 #define SWI_CONVERSEDOORS_HOSTREAD        (CONVERSEDOORS_SWI_BASE + 18)
 #define SWI_CONVERSEDOORS_HOSTISREGISTERED (CONVERSEDOORS_SWI_BASE + 19)
 #define SWI_CONVERSEDOORS_HOSTSETUSERINFO (CONVERSEDOORS_SWI_BASE + 20)
+#define SWI_CONVERSEDOORS_HOSTRECEIVEMESSAGE (CONVERSEDOORS_SWI_BASE + 21)
+#define SWI_CONVERSEDOORS_HOSTSENDMESSAGE (CONVERSEDOORS_SWI_BASE + 22)
+
+/* Inter-process message types (match Doors module DOOR_MSG_*) */
+#define DOOR_MSG_EXIT_NORMAL    0   /* door -> host: exiting normally */
+#define DOOR_MSG_EXIT_ERROR     1   /* door -> host: exiting with error */
+#define DOOR_MSG_CHAT_REQUEST   2   /* door -> host: request chat with sysop */
+#define DOOR_MSG_SYSOP_CHAT     3   /* host -> door: sysop initiated chat */
+#define DOOR_MSG_TIME_WARNING   4   /* host -> door: time warning */
+#define DOOR_MSG_DISCONNECT     5   /* host -> door: force disconnect */
+#define DOOR_MSG_DATA_SIZE      64  /* must match Doors module DOORS_MSG_DATA_SIZE */
 
 /* Door timeout in clock ticks (5 seconds) */
 #ifndef CLOCKS_PER_SEC
@@ -85,6 +96,14 @@ int door_native_host_write(int line_id, const unsigned char *data, int len);
  * Returns number of bytes read.
  */
 int door_native_host_read(int line_id, unsigned char *buffer, int max_len);
+
+/* Inter-process messaging: collect a door->host message (returns type or -1),
+   or queue a host->door message (returns 0/-1). */
+int door_native_host_receive_message(int line_id, char *buffer);
+int door_native_host_send_message(int line_id, int type, const char *data);
+
+/* Ask the native door's Wimp task to quit (Message_Quit). */
+void door_native_send_quit(struct line_task_state *state);
 
 /*
  * Set user info in the ConverseDoors module.

@@ -15,6 +15,9 @@
 #include "filebase.h"
 #include "debug.h"
 
+/* Safety limit for enumeration loops to prevent infinite loops on corrupted data */
+#define MAX_ENUM_ITERATIONS 100000
+
 /* ******************************************************************************************************************************************************** */
 /* Session Management                                                                                                                                       */
 /* ******************************************************************************************************************************************************** */
@@ -104,6 +107,36 @@ int filebase_get_info(int base_id, LINETASK_FILEBASE_RECORD *record_out)
     result = (LINETASK_FILEBASE_RECORD *)regs.r[0];
     debug_printf("filebase_get_info: found record name='%s' id=%d\n", result->name, result->id);
     memcpy(record_out, result, sizeof(LINETASK_FILEBASE_RECORD));
+
+    return 1;
+}
+
+int filebase_get_file_info(int base_id, int file_id, LINETASK_FILE_RECORD *record_out)
+{
+    _kernel_swi_regs regs;
+    LINETASK_FILE_RECORD *result;
+
+    if (base_id <= 0 || file_id <= 0 || record_out == NULL)
+    {
+        return 0;
+    }
+
+    regs.r[0] = FILEBASE_CMD_FILE_INFO;
+    regs.r[1] = base_id;
+    regs.r[2] = file_id;
+
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL)
+    {
+        return 0;
+    }
+
+    if (regs.r[0] == -1 || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    result = (LINETASK_FILE_RECORD *)regs.r[0];
+    memcpy(record_out, result, sizeof(LINETASK_FILE_RECORD));
 
     return 1;
 }
@@ -240,7 +273,7 @@ void filebase_format_size(long bytes, char *buffer, int buffer_size)
     {
         snprintf(buffer, buffer_size, "%ld.%ld GB",
                  bytes / (1024L * 1024L * 1024L),
-                 (bytes % (1024L * 1024L * 1024L)) * 10 / (1024L * 1024L * 1024L));
+                 (bytes % (1024L * 1024L * 1024L)) / (1024L * 1024L * 1024L / 10L));
     }
 }
 
@@ -307,7 +340,7 @@ int filebase_list_bases(filebase_session *session,
         return 0;
     }
 
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         _kernel_oserror *err;
 
@@ -320,7 +353,7 @@ int filebase_list_bases(filebase_session *session,
             break;
         }
 
-        if (regs.r[0] == -1)
+        if (regs.r[0] == -1 || regs.r[0] == 0)
         {
             break;
         }
@@ -459,7 +492,7 @@ int filebase_list_areas(filebase_session *session,
     total_count++;
 
     /* Enumerate areas via SWI */
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILEBASE_CMD_ENUMERATE_AREAS;
         regs.r[1] = session->current_filebase;
@@ -470,7 +503,7 @@ int filebase_list_areas(filebase_session *session,
             break;
         }
 
-        if (regs.r[0] == -1)
+        if (regs.r[0] == -1 || regs.r[0] == 0)
         {
             break;
         }
@@ -594,7 +627,7 @@ int filebase_list_files(filebase_session *session,
     output(ctx, "\033[1;30m----- ------------------------------ ---------- ---------- ---\033[0m\r\n");
 
     /* Enumerate files via SWI - Filer handles area filtering and skips deleted */
-    while (1)
+    while (index < MAX_ENUM_ITERATIONS)
     {
         regs.r[0] = FILEBASE_CMD_ENUMERATE_FILES;
         regs.r[1] = session->current_filebase;
@@ -606,7 +639,7 @@ int filebase_list_files(filebase_session *session,
             break;
         }
 
-        if (regs.r[0] == -1)
+        if (regs.r[0] == -1 || regs.r[0] == 0)
         {
             break;
         }
@@ -955,8 +988,6 @@ int filebase_register_upload(int base_id, int area_id, const char *temp_path,
 /* Continuous File Browser                                                                                                                                  */
 /* ******************************************************************************************************************************************************** */
 
-/* Safety limit for enumeration loops to prevent infinite loops on corrupted data */
-#define MAX_ENUM_ITERATIONS 100000
 
 /* ============================================================
  * HELPER FUNCTIONS - Sequential Enumeration
@@ -1452,7 +1483,7 @@ int filebase_viewer_show_file(filebase_session *session,
         name_regs.r[0] = 3; /* USERDB_CMD_SEARCH */
         name_regs.r[1] = record_ptr->uploadedby;
         
-        if (_kernel_swi(0x5AA41, &name_regs, &name_regs) == NULL && name_regs.r[0] != 0)
+        if (_kernel_swi(0x5AA41, &name_regs, &name_regs) == NULL && name_regs.r[0] != 0 && name_regs.r[0] != -1)
         {
             char *record = (char *)name_regs.r[0];
             char *realname = record + 4 + 32; /* Offset to realname */

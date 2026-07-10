@@ -3,6 +3,8 @@
 #ifndef VERSION_H
 #define VERSION_H
 
+extern int VERNO;
+
 extern char app_name[];
 extern char app_purpose[];
 extern char plain_version[];

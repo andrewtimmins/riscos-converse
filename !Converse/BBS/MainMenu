@@ -1,88 +1,112 @@
 {
-   /* Main Menu */
-   /* Called from Postlogon after login scan */
+   /* Main Menu - ANSI. Draws Screens.MainMenu then dispatches the hot-key. */
 
 label main_menu
-    doing `Main menu...`
-    script `<Converse$Dir>.BBS.Header`
-    bold
-    fgbg 7 4
-    print `                               .:: Main Menu ::.`,cll
-    print `\r\n`
-    fgbg 7 1
-    print `   Build Version: v%{version} [%{version_build}] - Time is: %{hour}:%{minute} - Line #%{line}`,cll
-    print `\r\n\r\n\r\n`
-    std
-    print `      [F] Filebase                                [M] Messagebase\r\n`
-    print `\r\n`
-    print `      [C] Chat to Sysop                           [O] Who's Online\n\n`
-    print `\r\n`
-    print `      [D] Doors / Utils / Games                   [S] Scan for New Content\r\n`
-    print `\r\n\r\n`
-    print `      [Q] Quit / Logoff\r\n`
-    print `\r\n`
-    pos 0 24
-    print `  Choice: `
-    pos 11 24
-    prompt choice char echo
+   doing `Main menu`
+   type `<Converse$Dir>.BBS.Screens.MainMenu`
+   pos 16 20
+   prompt choice char echo
 
-    if choice == `m` goto messagebase
-    if choice == `M` goto messagebase
-    if choice == `f` goto filebase
-    if choice == `F` goto filebase
-    if choice == `s` goto login_scan
-    if choice == `S` goto login_scan
-    if choice == `q` goto quit
-    if choice == `Q` goto quit
-    if choice == `C` goto chat
-    if choice == `c` goto chat
-    if choice == `O` goto online
-    if choice == `o` goto online
+   if choice == `m` goto go_msg
+   if choice == `M` goto go_msg
+   if choice == `f` goto go_file
+   if choice == `F` goto go_file
+   if choice == `d` goto go_doors
+   if choice == `D` goto go_doors
+   if choice == `s` goto go_scan
+   if choice == `S` goto go_scan
+   if choice == `i` goto go_inbox
+   if choice == `I` goto go_inbox
+   if choice == `o` goto go_online
+   if choice == `O` goto go_online
+   if choice == `c` goto go_chat
+   if choice == `C` goto go_chat
+   if choice == `w` goto go_wall
+   if choice == `W` goto go_wall
+   if choice == `b` goto go_bull
+   if choice == `B` goto go_bull
+   if choice == `l` goto go_last
+   if choice == `L` goto go_last
+   if choice == `u` goto go_set
+   if choice == `U` goto go_set
+   if choice == `g` goto go_feed
+   if choice == `G` goto go_feed
+   if choice == `h` goto go_stats
+   if choice == `H` goto go_stats
+   if choice == `v` goto go_vote
+   if choice == `V` goto go_vote
+   if choice == `?` goto go_help
+   if choice == `q` goto go_quit
+   if choice == `Q` goto go_quit
+   goto main_menu
 
-    pos 11 24
-    print `Invalid choice...`
-    pause 250
-    goto main_menu
+label go_msg
+   script `<Converse$Dir>.BBS.Messagebase`
+   goto main_menu
+label go_file
+   script `<Converse$Dir>.BBS.Filebase`
+   goto main_menu
+label go_doors
+   script `<Converse$Dir>.BBS.DoorsMenu`
+   goto main_menu
+label go_wall
+   script `<Converse$Dir>.BBS.Oneliners`
+   goto main_menu
+label go_bull
+   script `<Converse$Dir>.BBS.Bulletins`
+   goto main_menu
+label go_last
+   script `<Converse$Dir>.BBS.LastCallers`
+   goto main_menu
+label go_set
+   script `<Converse$Dir>.BBS.Settings`
+   goto main_menu
+label go_feed
+   script `<Converse$Dir>.BBS.Feedback`
+   goto main_menu
+label go_stats
+   script `<Converse$Dir>.BBS.Stats`
+   goto main_menu
+label go_vote
+   script `<Converse$Dir>.BBS.Voting`
+   goto main_menu
+label go_help
+   script `<Converse$Dir>.BBS.Help`
+   goto main_menu
 
-/* Messagebase tester submenu */
-label messagebase
-    script `<Converse$Dir>.BBS.Messagebase`
-    goto main_menu
+label go_scan
+   cls
+   doing `Scanning for new content...`
+   loginscan
+   doing
+   anykey
+   goto main_menu
+label go_inbox
+   cls
+   doing `Reading inbox...`
+   more 0
+   messagebase inbox
+   more 1
+   doing
+   anykey
+   goto main_menu
+label go_online
+   cls
+   doing `Who's online...`
+   online
+   doing
+   anykey
+   goto main_menu
+label go_chat
+   cls
+   doing `Paging the sysop...`
+   sysopchat
+   doing
+   anykey
+   goto main_menu
 
-/* Filebase tester submenu */
-label filebase
-    script `<Converse$Dir>.BBS.Filebase`
-    goto main_menu
-
-/* Scan for new content */
-label login_scan
-    cls
-    doing `Scanning new content...`
-    loginscan
-    anykey
-    goto main_menu
-
-/* Online */
-label online
-    doing `Seeing who's online...`
-    cls
-    online
-    anykey
-    goto main_menu
-
-/* Chat */
-label chat
-    doing `Chatting to sysop...`
-    cls
-    sysopchat
-    anykey
-    goto main_menu
-
-/* Quit */
-label quit
-    print `\r\n\r\n`
-    bold
-    print `Goodbye!\r\n`
-    std
-    logoff
+label go_quit
+   type `<Converse$Dir>.BBS.Screens.Goodbye`
+   pause 1500
+   logoff
 }

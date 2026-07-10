@@ -1,0 +1,128 @@
+/* ******************************************************************************************************************************************************** */
+/* ZMODEM Protocol Implementation                                                                                                                             */
+/*                                                                                                                                                            */
+/* Streaming batch protocol with CRC-32 data subpackets, ZDLE escaping and rz                                                                                */
+/* auto-start. Carries the exact file size (like YMODEM) so received files are                                                                               */
+/* byte-exact. Called by the transfer dispatcher - do not use directly.                                                                                       */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef LINETASK_ZMODEM_H
+#define LINETASK_ZMODEM_H
+
+#include "transfer.h"
+
+/* Framing */
+#define ZPAD        0x2A    /* '*' pad */
+#define ZDLE        0x18    /* data-link escape (CAN) */
+#define ZDLEE       0x58    /* escaped ZDLE */
+#define ZBIN        0x41    /* 'A' binary header, CRC-16 */
+#define ZHEX        0x42    /* 'B' hex header */
+#define ZBIN32      0x43    /* 'C' binary header, CRC-32 */
+
+/* Frame types */
+#define ZRQINIT     0
+#define ZRINIT      1
+#define ZSINIT      2
+#define ZACK        3
+#define ZFILE       4
+#define ZSKIP       5
+#define ZNAK        6
+#define ZABORT      7
+#define ZFIN        8
+#define ZRPOS       9
+#define ZDATA       10
+#define ZEOF        11
+#define ZFERR       12
+#define ZCRC        13
+#define ZCHALLENGE  14
+#define ZCOMPL      15
+#define ZCAN        16
+#define ZFREECNT    17
+#define ZCOMMAND    18
+#define ZSTDERR     19
+
+/* ZDLE sequences */
+#define ZCRCE       0x68    /* 'h' CRC next, frame ends, header follows */
+#define ZCRCG       0x69    /* 'i' CRC next, frame continues nonstop */
+#define ZCRCQ       0x6A    /* 'j' CRC next, frame continues, ZACK expected */
+#define ZCRCW       0x6B    /* 'k' CRC next, frame ends, ZACK expected */
+#define ZRUB0       0x6C    /* 'l' translate to 0x7F */
+#define ZRUB1       0x6D    /* 'm' translate to 0xFF */
+
+/* ZRINIT ZF0 capability flags */
+#define CANFDX      0x01    /* full duplex */
+#define CANOVIO     0x02    /* overlap I/O */
+#define CANBRK      0x04
+#define CANCRY      0x08
+#define CANLZW      0x10
+#define CANFC32     0x20    /* CRC-32 */
+#define ESCCTL      0x40    /* escape all control chars */
+#define ESC8        0x80
+
+/* ZSINIT / ZFILE ZF0 conversion/management flags left at 0 (binary, new file). */
+
+#define ZM_MAX_SUBPACKET  1024
+#define ZM_RXBUF          4096
+
+#define ZM_TIMEOUT_START  6000   /* cs */
+#define ZM_TIMEOUT_ACK    1000
+#define ZM_MAX_ERRORS     20
+
+typedef enum
+{
+    /* send (download to caller) */
+    ZS_SEND_RQINIT,
+    ZS_WAIT_ZRINIT,
+    ZS_SEND_FILE,
+    ZS_WAIT_ZRPOS,
+    ZS_SEND_DATA,
+    ZS_SEND_EOF,
+    ZS_WAIT_EOF_ACK,
+    ZS_SEND_FIN,
+    ZS_WAIT_FIN,
+    /* receive (upload from caller) */
+    ZR_SEND_RINIT,
+    ZR_WAIT_FILE,
+    ZR_RECV_DATA,
+    ZR_WAIT_EOF,
+    /* terminal */
+    ZM_COMPLETE,
+    ZM_ERROR
+} zmodem_state;
+
+typedef struct
+{
+    zmodem_state state;
+
+    int use32;              /* CRC-32 negotiated */
+    int escctl;             /* escape all control chars */
+    int peer_flags;         /* ZF0 from peer ZRINIT */
+
+    long pos;               /* current file position (send/recv) */
+    long remaining;         /* recv: bytes still expected */
+    int have_size;
+
+    int consecutive_errors;
+    int start_attempts;
+    int got_zrinit;
+
+    /* raw receive buffer (bytes pulled from the pipe, parsed incrementally) */
+    uint8_t rxbuf[ZM_RXBUF];
+    int rxlen;
+
+    /* last decoded header */
+    int rxtype;
+    long rxpos;             /* 4 position/flag bytes as a little-endian long */
+    uint8_t rxflags[4];
+
+    /* subpacket assembly for send */
+    uint8_t sendbuf[ZM_MAX_SUBPACKET];
+} zmodem_protocol_state;
+
+int zmodem_init_send(transfer_session *session);
+int zmodem_init_receive(transfer_session *session);
+int zmodem_poll(transfer_session *session);
+void zmodem_cleanup(transfer_session *session);
+void zmodem_send_cancel(transfer_session *session);
+
+#endif /* LINETASK_ZMODEM_H */

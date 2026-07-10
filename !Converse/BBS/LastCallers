@@ -1,0 +1,6 @@
+{
+   /* Last Callers - display screen */
+   type `<Converse$Dir>.BBS.Screens.LastCall`
+   anykey
+   return
+}

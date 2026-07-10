@@ -231,6 +231,12 @@ static void perform_session_disconnect(line_task_state *state);
 static void send_user_message(int line_id, const char *real_name);
 static void save_user_stats(line_task_state *state);
 static void poll_idle(void);
+static int line_force_quit_door(line_task_state *state);
+static int upload_copy_start(line_task_state *state, int base_id, int area_id,
+                             const char *temp_path, const char *filename,
+                             const char *description, int uploaded_by,
+                             const char *size_str);
+static void upload_copy_step(line_task_state *state);
 static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_key(Desk_event_pollblock *event, void *ref);
@@ -280,8 +286,25 @@ static void send_user_message(int line_id, const char *real_name) {
   Desk_Wimp_SendMessage(Desk_event_SEND, &message, 0, NULL);
 }
 
+/* LC5: on abnormal exit (crash / abort / uncaught error) the normal shutdown
+   path may not run, which would leave the line stuck "connected" in the Support
+   module until the server is restarted. Registered with atexit() so the
+   connected flag is cleared on the way out regardless, using only a raw SWI
+   (safe after Desk_Event_CloseDown or mid-error). */
+static void line_task_atexit(void) {
+  _kernel_swi_regs regs;
+  regs.r[0] = LINE_REASON_SET;
+  regs.r[1] = task_state.line_id;
+  regs.r[2] = LINE_FIELD_CONNECTED;
+  regs.r[3] = 0;
+  _kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs);
+}
+
 int main(int argc, char **argv) {
   initialise_task_state(&task_state, argc, argv);
+
+  /* LC5: ensure the line is marked disconnected even on abnormal exit. */
+  atexit(line_task_atexit);
 
   {
     char task_name[32];
@@ -650,6 +673,67 @@ static void show_main_window(void) {
   }
 }
 
+/* Reset all per-session line state to a clean slate. Shared by the DISCONNECT
+   path and, defensively, by CONNECT (LC4): a DISCONNECT byte can be dropped by
+   pipes_reset_line's ClearInput, so every connection must start clean rather
+   than inherit the previous caller's user / access / base / transfer / chat
+   state. Emits no user-facing messages and does not touch todaytime or the
+   script — callers handle those around it. */
+static void reset_line_session_state(line_task_state *state) {
+  state->session_active = 0;
+  state->botstopper.state = BOTSTOPPER_STATE_INACTIVE;
+  state->user.connect_time = 0;           /* Clear connection time */
+  state->user.current_activity[0] = '\0'; /* Clear activity text */
+
+  if (state->riscbbs.active != Desk_bool_FALSE ||
+      state->riscbbs.launch_pending != Desk_bool_FALSE) {
+    door_riscbbs_close_session(state, "\r\n[Door session ended]\r\n");
+  }
+  if (state->arcbbs.active != Desk_bool_FALSE ||
+      state->arcbbs.launch_pending != Desk_bool_FALSE) {
+    door_arcbbs_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
+  }
+  if (state->native.active != Desk_bool_FALSE ||
+      state->native.launch_pending != Desk_bool_FALSE) {
+    door_native_close_session(state, "\r\n[Native door session ended]\r\n");
+  }
+
+  /* End any in-progress file transfer so its open file handle and allocated
+     protocol state (and the module's "transfer active" flag) are not leaked
+     into the next caller (LC1). transfer_cleanup is a no-op if inactive. */
+  transfer_cleanup(&state->xfer_session);
+
+  /* LT4: abandon any in-progress post-upload copy so its temp FILE* is not
+     leaked and the next caller can't inherit a half-finished copy. */
+  if (state->upload_copy.active) {
+    if (state->upload_copy.temp_file != NULL) {
+      fclose((FILE *)state->upload_copy.temp_file);
+      state->upload_copy.temp_file = NULL;
+    }
+    state->upload_copy.active = 0;
+  }
+
+  /* Tear down any active sysop chat / pager so its state cannot leak into the
+     next caller on this line and misroute their input (LC3). */
+  if (state->chat.paging != Desk_bool_FALSE) {
+    Desk_Window_Hide(chatpager_window_handle);
+  }
+  chat_reset_state(state);
+
+  /* Reset filebase and messagebase session state */
+  filebase_session_reset(&state->fb_session);
+  messagebase_session_reset(&state->mb_session);
+
+  state->user.id = 0;
+  state->user.accesslevel = 0;
+  state->user.sysop = 0;
+  state->user.keys[0] = '\0';
+  state->user.username[0] = '\0';
+  state->user.realname[0] = '\0';
+  memset(&state->user.stats, 0, sizeof(state->user.stats));
+  memset(&state->user.flags, 0, sizeof(state->user.flags));
+}
+
 static void perform_session_disconnect(line_task_state *state) {
   if (state->session_active != 0) {
     if (state->local.active) {
@@ -671,36 +755,7 @@ static void perform_session_disconnect(line_task_state *state) {
     }
   }
 
-  state->session_active = 0;
-  state->botstopper.state = BOTSTOPPER_STATE_INACTIVE;
-  state->user.connect_time = 0;           /* Clear connection time */
-  state->user.current_activity[0] = '\0'; /* Clear activity text */
-
-  if (state->riscbbs.active != Desk_bool_FALSE ||
-      state->riscbbs.launch_pending != Desk_bool_FALSE) {
-    door_riscbbs_close_session(state, "\r\n[Door session ended]\r\n");
-  }
-  if (state->arcbbs.active != Desk_bool_FALSE ||
-      state->arcbbs.launch_pending != Desk_bool_FALSE) {
-    door_arcbbs_close_session(state, "\r\n[ARCbbs door session ended]\r\n");
-  }
-  if (state->native.active != Desk_bool_FALSE ||
-      state->native.launch_pending != Desk_bool_FALSE) {
-    door_native_close_session(state, "\r\n[Native door session ended]\r\n");
-  }
-
-  /* Reset filebase and messagebase session and user state on disconnect */
-  filebase_session_reset(&state->fb_session);
-  messagebase_session_reset(&state->mb_session);
-
-  state->user.id = 0;
-  state->user.accesslevel = 0;
-  state->user.sysop = 0;
-  state->user.keys[0] = '\0';
-  state->user.username[0] = '\0';
-  state->user.realname[0] = '\0';
-  memset(&state->user.stats, 0, sizeof(state->user.stats));
-  memset(&state->user.flags, 0, sizeof(state->user.flags));
+  reset_line_session_state(state);
 
   /* Reset user display in Server status window */
   send_user_message(state->line_id, NULL);
@@ -716,6 +771,149 @@ static void perform_session_disconnect(line_task_state *state) {
 
   log_line_event(state->line_id, "Session disconnected");
   script_stop_session(state);
+}
+
+/* Force any active door to quit and hand the line back to LineTask. Each door
+   type gets its quit signal, then the session is closed (which resets state so
+   the user's input routes to the BBS/chat again instead of the now-dead door).
+   Returns 1 if a door was closed, 0 if none was active. Used when the sysop
+   jumps into chat - otherwise the door keeps running and swallows the user's
+   keystrokes so they can never reach the chat. */
+static int line_force_quit_door(line_task_state *state) {
+  if (state->riscbbs.active != Desk_bool_FALSE ||
+      state->riscbbs.launch_pending != Desk_bool_FALSE) {
+    door_riscbbs_send_quit(state);
+    door_riscbbs_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  if (state->arcbbs.active != Desk_bool_FALSE ||
+      state->arcbbs.launch_pending != Desk_bool_FALSE) {
+    /* close_session deactivates the line; the door's status-poll loop then
+       sees it is no longer active and exits. */
+    door_arcbbs_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  if (state->native.active != Desk_bool_FALSE ||
+      state->native.launch_pending != Desk_bool_FALSE) {
+    door_native_host_send_message(state->line_id, DOOR_MSG_DISCONNECT, NULL);
+    door_native_send_quit(state);
+    door_native_close_session(state, "\r\n[Door closed for sysop chat]\r\n");
+    return 1;
+  }
+  return 0;
+}
+
+/* LT4: copy at most this many bytes of a received upload into the filebase per
+   Wimp poll, so a large upload doesn't freeze the guest during the copy. */
+#define UPLOAD_COPY_CHUNK 32768
+
+/* Begin an incremental temp->filebase copy: open the temp file, reserve a file
+   id, and record the state. The bytes are copied by upload_copy_step() across
+   subsequent polls. Returns the new file id (>0), or -1 if nothing started. */
+static int upload_copy_start(line_task_state *state, int base_id, int area_id,
+                             const char *temp_path, const char *filename,
+                             const char *description, int uploaded_by,
+                             const char *size_str) {
+  FILE *fp;
+  long size;
+  int file_id;
+
+  fp = fopen(temp_path, "rb");
+  if (fp == NULL) {
+    return -1;
+  }
+  fseek(fp, 0, SEEK_END);
+  size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  if (size <= 0) {
+    fclose(fp);
+    return -1;
+  }
+
+  file_id = filebase_begin_upload(base_id, area_id, filename, description,
+                                  uploaded_by, 0, NULL);
+  if (file_id <= 0) {
+    fclose(fp);
+    return -1;
+  }
+
+  memset(&state->upload_copy, 0, sizeof(state->upload_copy));
+  state->upload_copy.temp_file = (void *)fp;
+  strncpy(state->upload_copy.temp_path, temp_path,
+          sizeof(state->upload_copy.temp_path) - 1);
+  state->upload_copy.base_id = base_id;
+  state->upload_copy.file_id = file_id;
+  state->upload_copy.file_size = size;
+  state->upload_copy.bytes_done = 0;
+  strncpy(state->upload_copy.filename, filename,
+          sizeof(state->upload_copy.filename) - 1);
+  if (size_str != NULL) {
+    strncpy(state->upload_copy.size_str, size_str,
+            sizeof(state->upload_copy.size_str) - 1);
+  }
+  state->upload_copy.active = 1;
+  return file_id;
+}
+
+/* Copy up to UPLOAD_COPY_CHUNK bytes of the pending upload into the filebase,
+   one call per Wimp poll. On completion (or a write/read error) it finalises
+   the filebase file, removes the temp, reports to the caller, and resumes the
+   script (which has been parked in WAIT_TRANSFER since the transfer started). */
+static void upload_copy_step(line_task_state *state) {
+  upload_copy_state *uc = &state->upload_copy;
+  char buffer[4096];
+  long copied = 0;
+  int failed = 0;
+
+  if (!uc->active) {
+    return;
+  }
+
+  while (copied < UPLOAD_COPY_CHUNK) {
+    size_t n = fread(buffer, 1, sizeof(buffer), (FILE *)uc->temp_file);
+    if (n == 0) {
+      break; /* EOF, or a read error caught by ferror() below */
+    }
+    if (filebase_upload_block(uc->base_id, uc->file_id, buffer, (int)n) < 0) {
+      failed = 1;
+      break;
+    }
+    uc->bytes_done += (long)n;
+    copied += (long)n;
+  }
+
+  if (!failed && ferror((FILE *)uc->temp_file)) {
+    failed = 1;
+  }
+
+  if (!failed && uc->bytes_done < uc->file_size) {
+    return; /* more to copy on the next poll */
+  }
+
+  /* Finished or failed: close, flush the filebase handle, drop the temp. */
+  fclose((FILE *)uc->temp_file);
+  uc->temp_file = NULL;
+  filebase_end_upload(uc->base_id, uc->file_id);
+  remove(uc->temp_path);
+
+  if (!failed) {
+    char msg[256];
+    snprintf(
+        msg, sizeof(msg),
+        "\r\n\033[1;32mUpload complete! %s received (File ID: %d)\033[0m\r\n",
+        uc->size_str, uc->file_id);
+    pipes_write_string(state->line_id, msg);
+    snprintf(msg, sizeof(msg), "Upload registered: %s (file_id=%d, %s)",
+             uc->filename, uc->file_id, uc->size_str);
+    log_line_event(state->line_id, msg);
+  } else {
+    pipes_write_string(
+        state->line_id,
+        "\r\n\033[1;33mFile received but registration failed.\033[0m\r\n");
+  }
+
+  uc->active = 0;
+  script_notify_transfer_complete(&state->script);
 }
 
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref) {
@@ -860,7 +1058,9 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
   /* Poll file transfer if active - do this FIRST to consume raw bytes */
   if (transfer_is_active(&state->xfer_session)) {
     if (!transfer_poll(&state->xfer_session)) {
-      /* Transfer completed - notify script engine */
+      /* Transfer completed - notify script engine (unless we kick off a
+         deferred, chunked upload copy that will notify when it finishes). */
+      int defer_notify = 0;
       if (state->xfer_session.result == XFER_RESULT_OK) {
         /* Calculate KB transferred (round up) */
         int kb_transferred =
@@ -903,25 +1103,15 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
           int area_id = area_str ? atoi(area_str) : 0;
 
           if (base_id > 0 && filename && filename[0] != '\0') {
-            int file_id = filebase_register_upload(
-                base_id, area_id, state->xfer_session.temp_path, filename,
-                description,       /* Now using the user's description */
-                state->user.id, 0, /* Default access level */
-                NULL               /* No keys required */
-            );
-
-            if (file_id > 0) {
-              char msg[256];
-              snprintf(msg, sizeof(msg),
-                       "\r\n\033[1;32mUpload complete! %s received (File ID: "
-                       "%d)\033[0m\r\n",
-                       size_str, file_id);
-              pipes_write_string(state->line_id, msg);
-
-              snprintf(msg, sizeof(msg),
-                       "Upload registered: %s (file_id=%d, %s)", filename,
-                       file_id, size_str);
-              log_line_event(state->line_id, msg);
+            /* LT4: copy the temp file into the filebase incrementally across
+               Wimp polls (upload_copy_step) rather than in one blocking loop,
+               so a large upload no longer freezes the guest. The script stays
+               parked in WAIT_TRANSFER until the copy finishes and
+               upload_copy_step calls script_notify_transfer_complete. */
+            if (upload_copy_start(state, base_id, area_id,
+                                  state->xfer_session.temp_path, filename,
+                                  description, state->user.id, size_str) > 0) {
+              defer_notify = 1;
             } else {
               char msg[256];
               snprintf(msg, sizeof(msg),
@@ -955,9 +1145,27 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
                                              : "Unknown error");
         pipes_write_string(state->line_id, msg);
       }
-      script_notify_transfer_complete(&state->script);
+      if (defer_notify) {
+        /* A chunked upload copy is now running; upload_copy_step will notify
+           the script (and print the completion message) when it finishes. */
+      } else if (state->xfer_session.stalled) {
+        /* The transfer stalled because the peer vanished mid-transfer (client
+           disconnected or went silent). The DISCONNECT control byte, if any,
+           was consumed by the transfer's raw pipe read, so returning to the
+           menu script would leave the line "connected" forever with no one
+           reading it. Drop the dead session so the line frees for reuse. */
+        log_line_event(state->line_id,
+                       "Transfer stalled - dropping dead session");
+        perform_session_disconnect(state);
+      } else {
+        script_notify_transfer_complete(&state->script);
+      }
     }
     /* Don't process normal input during active transfer */
+  } else if (state->upload_copy.active) {
+    /* LT4: finishing a chunked upload copy - advance it a bounded amount this
+       poll and skip normal input (the script is parked in WAIT_TRANSFER). */
+    upload_copy_step(state);
   } else {
     /* Normal input processing when no transfer is active */
     process_server_stream(state);
@@ -988,7 +1196,13 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
 
 static Desk_bool handle_message_event(Desk_event_pollblock *event, void *ref) {
   line_task_state *state = (line_task_state *)ref;
-  unsigned int action = event->data.message.header.action;
+  unsigned int action;
+
+  if (state == NULL || event == NULL) {
+    return Desk_bool_FALSE;
+  }
+
+  action = event->data.message.header.action;
 
   if (action == Desk_message_QUIT) {
     state->quit_requested = Desk_bool_TRUE;
@@ -1089,6 +1303,13 @@ static void handle_server_stream(line_task_state *state, const char *buffer,
     state->control_stage = 0;
 
     if (state->control_code == PIPE_CONTROL_CONNECT) {
+      /* Defensive full reset (LC4): a prior DISCONNECT byte can be dropped by
+         pipes_reset_line's ClearInput, so never assume the line was cleaned up.
+         Start every connection from a clean slate so the new caller cannot
+         inherit the previous user's access / name / base / transfer / chat. */
+      script_stop_session(state);
+      reset_line_session_state(state);
+
       state->session_active = 1;
       state->user.connect_time = time(NULL);  /* Record connection time */
       state->user.current_activity[0] = '\0'; /* Clear activity text */
@@ -1150,11 +1371,24 @@ static void menu_handle_user_byte(line_task_state *state, unsigned char byte) {
     return;
   }
 
+  if (state->native.active != Desk_bool_FALSE) {
+    /* Route user input to the native door (DR1). Without this branch the byte
+       is consumed by the normal BBS handler below, so the door receives no
+       input and hangs at its first prompt. */
+    unsigned char input_byte = byte;
+    door_native_host_write(state->line_id, &input_byte, 1);
+    return;
+  }
+
   if (state->riscbbs.launch_pending != Desk_bool_FALSE) {
     return;
   }
 
   if (state->arcbbs.launch_pending != Desk_bool_FALSE) {
+    return;
+  }
+
+  if (state->native.launch_pending != Desk_bool_FALSE) {
     return;
   }
 
@@ -2219,8 +2453,9 @@ static int script_host_authenticate_user(void *context, const char *username,
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_INVISIBLE));
       state->user.flags.chataccess =
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_CHATACCESS));
-      state->user.flags.ratios =
-          *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_RATIOS));
+      /* AC3: up/download ratio enforcement is NOT implemented — this flag was
+         loaded but never read by any download path. Left unloaded rather than
+         implying a policy that does not exist (see docs reconciliation). */
       state->user.flags.maxtime =
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_MAXTIME));
       state->user.flags.defaultprotocol =
@@ -2320,11 +2555,8 @@ static int script_host_start_transfer(void *context, int base_id, int file_id,
     default: proto = TRANSFER_PROTO_XMODEM_CRC; break;
   }
 
-  /* Only XMODEM variants currently implemented */
-  if (proto > TRANSFER_PROTO_XMODEM_1K) {
-    pipes_write_string(state->line_id, "\r\n\033[1;31m[Protocol not yet implemented]\033[0m\r\n");
-    return 0;
-  }
+  /* All protocols (XMODEM / YMODEM / YMODEM-G / ZMODEM) are implemented. */
+  (void)proto;
 
   /* Clear any previous session */
   transfer_cleanup(&state->xfer_session);
@@ -2372,11 +2604,8 @@ static int script_host_start_receive_transfer(void *context,
     default: proto = TRANSFER_PROTO_XMODEM_CRC; break;
   }
 
-  /* Only XMODEM variants currently implemented */
-  if (proto > TRANSFER_PROTO_XMODEM_1K) {
-    pipes_write_string(state->line_id, "\r\n\033[1;31m[Protocol not yet implemented]\033[0m\r\n");
-    return 0;
-  }
+  /* All protocols (XMODEM / YMODEM / YMODEM-G / ZMODEM) are implemented. */
+  (void)proto;
 
   /* Get filename and description from script variables */
   filename = script_get_variable(&state->script, "_upload_filename");
@@ -2853,6 +3082,10 @@ static Desk_bool handle_maininfo_click(Desk_event_pollblock *event, void *ref) {
   if (icon == MAININFO_CHAT) {
     /* Start chat with the user (if logged in) */
     if (state->user.id > 0 && !state->chat.active) {
+      /* If the user is in a door, make it quit and hand the line back first -
+         otherwise the door keeps running and eats the user's keystrokes, so
+         they could never talk to the sysop. */
+      line_force_quit_door(state);
       chat_start_pager(state, "Sysop initiated chat");
     }
     return Desk_bool_TRUE;

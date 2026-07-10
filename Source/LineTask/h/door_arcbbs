@@ -36,6 +36,7 @@ struct line_task_state;
 #define SWI_ARCBBSDOORS_DEACTIVATE   (ARCBBS_SWI_BASE + 15)  /* Extended: Deactivate line */
 #define SWI_ARCBBSDOORS_HOSTWRITEBLOCK (ARCBBS_SWI_BASE + 16) /* Extended: Host writes block */
 #define SWI_ARCBBSDOORS_HOSTREADBLOCK  (ARCBBS_SWI_BASE + 17) /* Extended: Host reads block */
+#define SWI_ARCBBSDOORS_SETUSERINFO    (ARCBBS_SWI_BASE + 4)  /* DR3: push real user info (reserved slot 4) */
 
 /* ARCbbsDoors status byte values */
 #define ARCBBS_STATUS_IDLE           0
@@ -81,6 +82,7 @@ void door_arcbbs_close_session(struct line_task_state *state, const char *messag
  * If use_26bit is set, uses Aemulor to run legacy doors.
  */
 void door_arcbbs_launch(struct line_task_state *state, int door_number, const char *command_line, int use_26bit);
+void door_arcbbs_set_user_info(struct line_task_state *state);
 
 /*
  * Write a single byte to the door's input buffer.

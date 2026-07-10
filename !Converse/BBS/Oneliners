@@ -1,0 +1,6 @@
+{
+   /* The Wall / one-liners - display screen */
+   type `<Converse$Dir>.BBS.Screens.Oneliner`
+   anykey
+   return
+}

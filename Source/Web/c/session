@@ -25,18 +25,27 @@ static int session_count = 0;
 /* ******************************************************************************************************************************************************** */
 
 /*
- * Generate a random hex token using OS_ReadMonotonicTime and simple mixing.
- * Not cryptographically secure but sufficient for session tokens.
+ * Generate a random hex token.
+ *
+ * RISC OS offers no cryptographic RNG, so we gather what weak entropy we can
+ * (monotonic time, wall clock, CPU clock and a live stack address), mix it into
+ * a 64-bit xorshift128 state once, and re-fold fresh monotonic time plus an
+ * advancing counter on every call. This is still NOT cryptographically secure,
+ * but it removes the previous generator's fatal weaknesses: a 32-bit LCG seeded
+ * purely from monotonic time, whose whole state (and therefore every other
+ * user's session token) could be recovered from a single observed token or a
+ * rough estimate of uptime.
  */
 static void generate_token(char *buffer, size_t len)
 {
-    static unsigned int seed = 0;
+    static unsigned int s0 = 0, s1 = 0;   /* 64-bit PRNG state */
+    static unsigned int counter = 0;
     _kernel_swi_regs regs;
     unsigned int mono_time;
     size_t i;
-    
-    /* Get monotonic time for entropy */
-    if (_kernel_swi(0x42, &regs, &regs) == NULL)
+
+    /* Read monotonic time (centiseconds since boot) for entropy */
+    if (_kernel_swi(0x42 /* OS_ReadMonotonicTime */, &regs, &regs) == NULL)
     {
         mono_time = (unsigned int)regs.r[0];
     }
@@ -44,18 +53,39 @@ static void generate_token(char *buffer, size_t len)
     {
         mono_time = (unsigned int)time(NULL);
     }
-    
-    /* Mix with previous seed */
-    if (seed == 0)
+
+    /* One-time seeding from several independent (if weak) sources */
+    if (s0 == 0 && s1 == 0)
     {
-        seed = mono_time ^ 0xDEADBEEF;
+        unsigned int a = mono_time;
+        unsigned int b = (unsigned int)time(NULL);
+        unsigned int c = (unsigned int)clock();
+        unsigned int d = (unsigned int)&regs;    /* live stack address */
+
+        s0 = a ^ (b << 13) ^ (c >> 7) ^ 0x9E3779B9u;
+        s1 = d ^ (a << 11) ^ (b >> 5) ^ 0x7F4A7C15u;
+        if (s0 == 0) s0 = 0xA5A5A5A5u;
+        if (s1 == 0) s1 = 0x5A5A5A5Au;
     }
-    
+
+    /* Per-call reseed so one observed token does not reveal the state */
+    counter++;
+    s0 ^= mono_time + counter * 2654435761u;
+    s1 ^= (unsigned int)buffer;
+
     for (i = 0; i < len; i++)
     {
-        /* Simple LCG random number generator */
-        seed = seed * 1103515245 + 12345 + mono_time;
-        buffer[i] = "0123456789abcdef"[(seed >> 16) & 0x0F];
+        unsigned int x = s0;
+        unsigned int y = s1;
+
+        /* xorshift128 step over the 64-bit (s0,s1) state */
+        s0 = y;
+        x ^= x << 23;
+        x ^= x >> 17;
+        x ^= y ^ (y >> 26);
+        s1 = x;
+
+        buffer[i] = "0123456789abcdef"[((x + y) >> 24) & 0x0F];
     }
     buffer[len] = '\0';
 }

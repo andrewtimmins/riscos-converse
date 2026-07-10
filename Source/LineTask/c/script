@@ -20,7 +20,19 @@
 #define SCRIPT_DEFAULT_VARIABLE_CAPACITY 8
 #define SCRIPT_INPUT_BUFFER_CHUNK 64
 #define SCRIPT_LITERAL_BUFFER_CHUNK 256
+
+/* LT7: buffer size for expanding IF/WHILE comparison operands (and PRINT
+   text). Larger than the old 512 so realistic operands are not silently
+   truncated in a way that could flip a comparison. Operands longer than this
+   are still truncated (documented limit). */
+#define SCRIPT_EXPAND_BUFFER_SIZE 1024
 #define SCRIPT_MAX_INSTRUCTIONS_PER_POLL 1000  /* Prevent infinite loops from locking up */
+#define SCRIPT_MAX_SCAN_ITEMS 100000  /* LT4: cap loginscan enumeration so corrupt module data can't cause a permanent freeze */
+#define SCRIPT_SCAN_CHUNK 128  /* LT4: enumerate SWIs per Wimp poll during LOGINSCAN (keeps each poll short so the guest stays responsive) */
+/* LOGINSCAN scan phases (state->scan.phase) */
+#define SCAN_PHASE_MSG  0
+#define SCAN_PHASE_FILE 1
+#define SCAN_PHASE_DONE 2
 #define SCRIPT_ANSI_DETECT_TIMEOUT_CS 300  /* 3 second timeout in centiseconds */
 #define SCRIPT_MAX_IF_DEPTH 16  /* Maximum nesting depth for IF/THEN blocks */
 #define SCRIPT_MAX_LOOP_DEPTH 16  /* Maximum nesting depth for loops */
@@ -93,6 +105,7 @@ static void script_write_output(script_state *state, const char *text);
 void script_set_variable_value(script_state *state, const char *name, const char *value);
 static const char *script_get_variable_value(const script_state *state, const char *name);
 static int script_parse_backtick_string(const char *input, size_t *consumed, char **output);
+static int script_arg_next(char **pp, char **out);
 static char *script_trim(char *text);
 static int script_is_empty_or_comment(const char *line);
 static void script_free_instruction(script_instruction *instruction);
@@ -107,6 +120,7 @@ static void script_send_clear_screen(script_state *state);
 static void script_send_clear_to_eol(script_state *state);
 static void script_move_cursor(script_state *state, const char *row_text, const char *col_text);
 static void script_display_file(script_state *state, const char *source, int trim_newlines);
+static void script_loginscan_step(script_state *state);
 static void script_start_receive_transfer(script_state *state, int protocol);
 static int script_parse_protocol(const char *name);
 static void script_buffer_init(script_buffer *buffer);
@@ -151,12 +165,15 @@ void script_initialise(script_state *state, const script_host *host)
 
     state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
     state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+    if (state->instructions == NULL) { state->instruction_capacity = 0; }
 
     state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
     state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+    if (state->labels == NULL) { state->label_capacity = 0; }
 
     state->variable_capacity = SCRIPT_DEFAULT_VARIABLE_CAPACITY;
     state->variables = (script_variable *)calloc(state->variable_capacity, sizeof(script_variable));
+    if (state->variables == NULL) { state->variable_capacity = 0; }
 
     state->input_capacity = SCRIPT_INPUT_BUFFER_CHUNK;
     state->input_buffer = (char *)malloc(state->input_capacity);
@@ -165,13 +182,20 @@ void script_initialise(script_state *state, const script_host *host)
         state->input_buffer[0] = '\0';
     }
 
+    /* Clear any stale saved "more" preference left by a previous session on
+       this line so it cannot leak into the new session (LT12). */
+    composer_more_saved = -1;
+    protocol_more_saved = -1;
+
     state->status = SCRIPT_STATUS_IDLE;
-    
+
     /* More prompt state: -1 = use user setting */
     state->more_override = -1;
     state->more_line_count = 0;
     state->more_screen_lines = 24;
     state->more_pending_text = NULL;
+    state->more_in_prompt = 0;
+    state->scan.active = 0;
 }
 
 void script_dispose(script_state *state)
@@ -277,6 +301,13 @@ void script_stop(script_state *state)
      * Variables are only cleared on session disconnect via script_reset_session
      * Also do NOT clear call_depth here - subscripts may be active
      */
+    /* LT4: if a LOGINSCAN was mid-flight, restore the pager it suppressed and
+       drop the scan so a stale cursor can't run against the next script. */
+    if (state->scan.active)
+    {
+        state->more_override = state->scan.saved_more;
+        state->scan.active = 0;
+    }
     state->program_counter = 0;
     state->status = SCRIPT_STATUS_IDLE;
     script_reset_input(state);
@@ -330,11 +361,373 @@ void script_reset_session(script_state *state)
     state->more_screen_lines = 24;
     free(state->more_pending_text);
     state->more_pending_text = NULL;
+    state->more_in_prompt = 0;
+    state->scan.active = 0;
     state->pending_upload_filename[0] = '\0';
     state->pending_upload_description[0] = '\0';
     state->pending_upload_filebase = 0;
     state->pending_upload_area = 0;
     state->pending_upload_stage = SCRIPT_UPLOAD_STAGE_NONE;
+}
+
+/*
+ * LT4: advance an in-progress LOGINSCAN by up to SCRIPT_SCAN_CHUNK enumerate
+ * SWIs, then return. Called from script_process while status == WAIT_SCAN, once
+ * per Wimp poll, so the guest stays responsive during a scan of a large board.
+ * When the scan completes it prints the summary, updates the lastscan
+ * timestamp, restores the saved session/pager state and sets status back to
+ * RUNNING so the script resumes at the instruction after LOGINSCAN.
+ */
+static void script_loginscan_step(script_state *state)
+{
+    _kernel_swi_regs regs;
+    int budget = SCRIPT_SCAN_CHUNK;
+    char line[256];
+
+    if (state == NULL || !state->scan.active)
+    {
+        return;
+    }
+
+    while (budget > 0 && state->scan.phase != SCAN_PHASE_DONE)
+    {
+        if (state->scan.phase == SCAN_PHASE_MSG)
+        {
+            messagebase_session *msg_session = NULL;
+            if (state->host.get_messagebase_session != NULL)
+                msg_session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            if (msg_session == NULL)
+            {
+                state->scan.phase = SCAN_PHASE_FILE;
+                state->scan.base_index = 0; state->scan.have_base = 0; state->scan.have_area = 0;
+                continue;
+            }
+
+            if (!state->scan.have_base)
+            {
+                LINETASK_MESSAGEBASE_RECORD *base_rec;
+                if (state->scan.base_index >= SCRIPT_MAX_SCAN_ITEMS)  /* corrupt-data guard */
+                {
+                    state->scan.phase = SCAN_PHASE_FILE;
+                    state->scan.base_index = 0; state->scan.have_base = 0; state->scan.have_area = 0;
+                    continue;
+                }
+                regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
+                regs.r[1] = state->scan.base_index;
+                budget--;
+                if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                {
+                    state->scan.phase = SCAN_PHASE_FILE;
+                    state->scan.base_index = 0; state->scan.have_base = 0; state->scan.have_area = 0;
+                    continue;
+                }
+                base_rec = (LINETASK_MESSAGEBASE_RECORD *)regs.r[0];
+                if (base_rec == NULL)
+                {
+                    state->scan.phase = SCAN_PHASE_FILE;
+                    state->scan.base_index = 0; state->scan.have_base = 0; state->scan.have_area = 0;
+                    continue;
+                }
+                if (!messagebase_check_access(base_rec->accesslevel, base_rec->keys,
+                                              state->scan.user_accesslevel, state->scan.user_keys))
+                {
+                    state->scan.base_index++;
+                    continue;
+                }
+                state->scan.cur_base_id = base_rec->id;
+                strncpy(state->scan.cur_base_name, base_rec->name, sizeof(state->scan.cur_base_name) - 1);
+                state->scan.cur_base_name[sizeof(state->scan.cur_base_name) - 1] = '\0';
+                state->scan.area_index = 0;
+                state->scan.have_base = 1;
+                state->scan.have_area = 0;
+                continue;
+            }
+
+            if (!state->scan.have_area)
+            {
+                LINETASK_MESSAGEBASE_AREA_RECORD *area_rec;
+                if (state->scan.area_index >= SCRIPT_MAX_SCAN_ITEMS)
+                {
+                    state->scan.have_base = 0; state->scan.base_index++;
+                    continue;
+                }
+                regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+                regs.r[1] = state->scan.cur_base_id;
+                regs.r[2] = state->scan.area_index;
+                budget--;
+                if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                {
+                    state->scan.have_base = 0; state->scan.base_index++;
+                    continue;
+                }
+                area_rec = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+                state->scan.cur_area_id = area_rec->id;
+                state->scan.cur_area_type = area_rec->areatype;
+                strncpy(state->scan.cur_area_name, area_rec->name, sizeof(state->scan.cur_area_name) - 1);
+                state->scan.cur_area_name[sizeof(state->scan.cur_area_name) - 1] = '\0';
+                state->scan.item_index = 0;
+                state->scan.area_new_count = 0;
+                state->scan.have_area = 1;
+                continue;
+            }
+
+            {
+                LINETASK_MESSAGE_RECORD *msg_rec;
+                int end_of_area = 0;
+                if (state->scan.item_index >= SCRIPT_MAX_SCAN_ITEMS)
+                {
+                    end_of_area = 1;
+                }
+                else
+                {
+                    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+                    regs.r[1] = state->scan.cur_base_id;
+                    regs.r[2] = state->scan.cur_area_id;
+                    regs.r[3] = state->scan.item_index;
+                    budget--;
+                    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                    {
+                        end_of_area = 1;
+                    }
+                }
+                if (end_of_area)
+                {
+                    if (state->scan.area_new_count > 0)
+                    {
+                        snprintf(line, sizeof(line),
+                                 "\033[1;33m%d new message(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
+                                 state->scan.area_new_count, state->scan.cur_base_name, state->scan.cur_area_name);
+                        script_write_output(state, line);
+                    }
+                    state->scan.have_area = 0; state->scan.area_index++;
+                    continue;
+                }
+                msg_rec = (LINETASK_MESSAGE_RECORD *)regs.r[0];
+                {
+                    int restricted = (state->scan.cur_area_type == 2 || state->scan.cur_area_type == 4);
+                    if (msg_rec->deleted == 0 &&
+                        (state->scan.last_scan_time == 0 || msg_rec->imported > state->scan.last_scan_time) &&
+                        (restricted
+                            ? (msg_rec->receivedby == state->scan.user_id && msg_rec->read_time == 0)
+                            : 1))
+                    {
+                        state->scan.area_new_count++;
+                        state->scan.new_messages++;
+                    }
+                }
+                state->scan.item_index++;
+                continue;
+            }
+        }
+        else /* SCAN_PHASE_FILE */
+        {
+            filebase_session *file_session = NULL;
+            if (state->host.get_filebase_session != NULL)
+                file_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            if (file_session == NULL)
+            {
+                state->scan.phase = SCAN_PHASE_DONE;
+                continue;
+            }
+
+            if (!state->scan.have_base)
+            {
+                LINETASK_FILEBASE_RECORD *base_rec;
+                if (state->scan.base_index >= SCRIPT_MAX_SCAN_ITEMS)
+                {
+                    state->scan.phase = SCAN_PHASE_DONE;
+                    continue;
+                }
+                regs.r[0] = FILEBASE_CMD_ENUMERATE_BASES;
+                regs.r[1] = state->scan.base_index;
+                budget--;
+                if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                {
+                    state->scan.phase = SCAN_PHASE_DONE;
+                    continue;
+                }
+                base_rec = (LINETASK_FILEBASE_RECORD *)regs.r[0];
+                if (base_rec == NULL)
+                {
+                    state->scan.phase = SCAN_PHASE_DONE;
+                    continue;
+                }
+                if (!filebase_check_access(base_rec->accesslevel, base_rec->keys,
+                                           state->scan.user_accesslevel, state->scan.user_keys))
+                {
+                    state->scan.base_index++;
+                    continue;
+                }
+                state->scan.cur_base_id = base_rec->id;
+                strncpy(state->scan.cur_base_name, base_rec->name, sizeof(state->scan.cur_base_name) - 1);
+                state->scan.cur_base_name[sizeof(state->scan.cur_base_name) - 1] = '\0';
+                state->scan.area_index = 0;
+                state->scan.have_base = 1;
+                state->scan.have_area = 0;
+                continue;
+            }
+
+            if (!state->scan.have_area)
+            {
+                LINETASK_FILEBASE_AREA_RECORD *area_rec;
+                if (state->scan.area_index >= SCRIPT_MAX_SCAN_ITEMS)
+                {
+                    state->scan.have_base = 0; state->scan.base_index++;
+                    continue;
+                }
+                regs.r[0] = FILEBASE_CMD_ENUMERATE_AREAS;
+                regs.r[1] = state->scan.cur_base_id;
+                regs.r[2] = state->scan.area_index;
+                budget--;
+                if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                {
+                    state->scan.have_base = 0; state->scan.base_index++;
+                    continue;
+                }
+                area_rec = (LINETASK_FILEBASE_AREA_RECORD *)regs.r[0];
+                if (!filebase_check_access(area_rec->accesslevel, area_rec->keys,
+                                           state->scan.user_accesslevel, state->scan.user_keys))
+                {
+                    state->scan.area_index++;
+                    continue;
+                }
+                state->scan.cur_area_id = area_rec->id;
+                strncpy(state->scan.cur_area_name, area_rec->name, sizeof(state->scan.cur_area_name) - 1);
+                state->scan.cur_area_name[sizeof(state->scan.cur_area_name) - 1] = '\0';
+                state->scan.item_index = 0;
+                state->scan.area_new_count = 0;
+                state->scan.have_area = 1;
+                continue;
+            }
+
+            {
+                LINETASK_FILE_RECORD *file_rec;
+                int end_of_area = 0;
+                if (state->scan.item_index >= SCRIPT_MAX_SCAN_ITEMS)
+                {
+                    end_of_area = 1;
+                }
+                else
+                {
+                    regs.r[0] = FILEBASE_CMD_ENUMERATE_FILES;
+                    regs.r[1] = state->scan.cur_base_id;
+                    regs.r[2] = state->scan.cur_area_id;
+                    regs.r[3] = state->scan.item_index;
+                    budget--;
+                    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+                    {
+                        end_of_area = 1;
+                    }
+                }
+                if (end_of_area)
+                {
+                    if (state->scan.area_new_count > 0)
+                    {
+                        snprintf(line, sizeof(line),
+                                 "\033[1;32m%d new file(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
+                                 state->scan.area_new_count, state->scan.cur_base_name, state->scan.cur_area_name);
+                        script_write_output(state, line);
+                    }
+                    state->scan.have_area = 0; state->scan.area_index++;
+                    continue;
+                }
+                file_rec = (LINETASK_FILE_RECORD *)regs.r[0];
+                if (file_rec->deleted == 0 &&
+                    (state->scan.last_scan_time == 0 || file_rec->uploaddate > state->scan.last_scan_time))
+                {
+                    if (filebase_check_access(file_rec->accesslevel, file_rec->keys,
+                                              state->scan.user_accesslevel, state->scan.user_keys))
+                    {
+                        state->scan.area_new_count++;
+                        state->scan.new_files++;
+                    }
+                }
+                state->scan.item_index++;
+                continue;
+            }
+        }
+    }
+
+    if (state->scan.phase != SCAN_PHASE_DONE)
+    {
+        return;  /* budget exhausted for this poll - resume on the next one */
+    }
+
+    /* ---- scan complete: summary, lastscan update, restore, resume ---- */
+    if (state->scan.new_messages == 0 && state->scan.new_files == 0)
+    {
+        script_write_output(state, "\r\n\033[1;32mNo new messages or files since your last scan.\033[0m\r\n");
+    }
+    else
+    {
+        snprintf(line, sizeof(line),
+                 "\033[1;36mScan complete: \033[1;33m%d\033[1;36m new message(s), \033[1;32m%d\033[1;36m new file(s).\033[0m\r\n",
+                 state->scan.new_messages, state->scan.new_files);
+        script_write_output(state, line);
+    }
+
+    if (state->scan.user_id > 0 && state->host.get_user_stats != NULL)
+    {
+        const script_user_stats *user_stats = state->host.get_user_stats(state->host.context);
+        if (user_stats != NULL)
+        {
+            typedef struct {
+                time_t lastlogon;
+                time_t lastscan;
+                int calls;
+                int todaytime;
+                int uploadskb;
+                int downloadskb;
+                int uploads;
+                int downloads;
+            } LOGINSCAN_USER_STATS;
+            LOGINSCAN_USER_STATS updated_stats;
+            time_t now = time(NULL);
+
+            updated_stats.lastlogon = user_stats->lastlogon;
+            updated_stats.lastscan = now;
+            updated_stats.calls = user_stats->calls;
+            updated_stats.todaytime = user_stats->todaytime;
+            updated_stats.uploadskb = user_stats->uploadskb;
+            updated_stats.downloadskb = user_stats->downloadskb;
+            updated_stats.uploads = user_stats->uploads;
+            updated_stats.downloads = user_stats->downloads;
+
+            regs.r[0] = 6;  /* FILER_USERDB_CMD_UPDATE_STATS */
+            regs.r[1] = state->scan.user_id;
+            regs.r[2] = (int)&updated_stats;
+            _kernel_swi(0x5AA41, &regs, &regs);  /* SWI_FILER_USERDB */
+
+            if (state->host.update_lastscan != NULL)
+            {
+                state->host.update_lastscan(state->host.context, now);
+            }
+        }
+    }
+
+    /* Restore session cursors (defensive parity with the original) and the
+       pager, end the scan, and resume the script. */
+    {
+        messagebase_session *msg_session = NULL;
+        filebase_session *file_session = NULL;
+        if (state->host.get_messagebase_session != NULL)
+            msg_session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+        if (msg_session != NULL)
+        {
+            msg_session->current_messagebase = state->scan.saved_msg_base;
+            msg_session->current_area = state->scan.saved_msg_area;
+        }
+        if (state->host.get_filebase_session != NULL)
+            file_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+        if (file_session != NULL)
+        {
+            file_session->current_filebase = state->scan.saved_file_base;
+            file_session->current_area = state->scan.saved_file_area;
+        }
+    }
+    state->more_override = state->scan.saved_more;
+    state->scan.active = 0;
+    state->status = SCRIPT_STATUS_RUNNING;
 }
 
 void script_process(script_state *state)
@@ -369,6 +762,14 @@ void script_process(script_state *state)
             state->input_context = SCRIPT_INPUT_CTX_NONE;
             state->status = SCRIPT_STATUS_RUNNING;
         }
+    }
+
+    /* LT4: drive an in-progress LOGINSCAN one bounded chunk per poll. When the
+       scan finishes, script_loginscan_step sets status back to RUNNING and the
+       loop below resumes the script from the instruction after LOGINSCAN. */
+    if (state->status == SCRIPT_STATUS_WAIT_SCAN)
+    {
+        script_loginscan_step(state);
     }
 
     while (state->status == SCRIPT_STATUS_RUNNING && state->program_counter < state->instruction_count)
@@ -915,13 +1316,21 @@ static int input_complete_newuser_email(script_state *state)
 
 static int input_complete_newuser_confirm(script_state *state)
 {
-    /* This is called for Y key press - create the account */
     int user_id = 0;
 
-    if (state->host.write_text != NULL)
+    /* AC1: honour the actual Y/N keypress. The YESNO input handler has already
+       echoed the letter + CRLF and stored the response in input_buffer; any
+       answer other than Yes cancels instead of creating the account regardless
+       of the key (the old code always echoed "Y" and created it). */
+    if (state->input_buffer[0] != 'Y' && state->input_buffer[0] != 'y')
     {
-        state->host.write_text(state->host.context, "Y\r\n\r\n");
+        script_write_output(state, "\r\n\033[1;33mAccount creation cancelled.\033[0m\r\n\r\n");
+        memset(state->newuser_password, 0, sizeof(state->newuser_password));
+        state->status = SCRIPT_STATUS_RUNNING;
+        return 1;
     }
+
+    script_write_output(state, "\r\n");
 
     /* Create the user account */
     if (state->host.create_user != NULL)
@@ -1979,6 +2388,10 @@ static void script_clear_program(script_state *state)
     
     /* Reset IF block parsing state */
     script_reset_if_state();
+
+    /* Reset FOR/WHILE loop parsing state (LT5) — otherwise script_loop_depth
+       leaks from an aborted loop into the next sub-script. */
+    script_reset_loop_state();
 }
 
 static void script_reset_if_state(void)
@@ -2023,9 +2436,9 @@ static int script_evaluate_condition(script_state *state, const char *condition_
         char *next_op = NULL;
         int is_and = 0;
         char *clause_end;
-        char clause[256];
+        char clause[SCRIPT_EXPAND_BUFFER_SIZE];
         char var[128], op[16], val[256];
-        char var_expanded[512], val_expanded[512];
+        char var_expanded[SCRIPT_EXPAND_BUFFER_SIZE], val_expanded[SCRIPT_EXPAND_BUFFER_SIZE];
         const char *var_value;
         int clause_result = 0;
 
@@ -2540,18 +2953,46 @@ static int script_parse_line(script_state *state, const char *line, int line_num
     }
 
     len = strlen(trimmed);
-    if (len > 0 && trimmed[len - 1] == ':')
+    if (len > 1 && trimmed[len - 1] == ':')
     {
-        trimmed[len - 1] = '\0';
-        trimmed = script_trim(trimmed);
-        if (!script_register_label(state, trimmed))
+        /* A label is a single token followed by ':'. Guard against ordinary
+           command lines that merely end in ':' (e.g. `print Choose an
+           option:`) being swallowed as labels and never executed (LT6). */
+        size_t label_len = len - 1;
+        size_t k;
+        int is_label = 1;
+
+        while (label_len > 0 &&
+               (trimmed[label_len - 1] == ' ' || trimmed[label_len - 1] == '\t'))
         {
-            script_set_error(state, "Unable to register label on line %d", line_number);
-            free(line_copy);
-            return 0;
+            label_len--;
         }
-        free(line_copy);
-        return 1;
+        if (label_len == 0)
+        {
+            is_label = 0;
+        }
+        for (k = 0; k < label_len; k++)
+        {
+            if (trimmed[k] == ' ' || trimmed[k] == '\t')
+            {
+                is_label = 0;
+                break;
+            }
+        }
+
+        if (is_label)
+        {
+            trimmed[len - 1] = '\0';
+            trimmed = script_trim(trimmed);
+            if (!script_register_label(state, trimmed))
+            {
+                script_set_error(state, "Unable to register label on line %d", line_number);
+                free(line_copy);
+                return 0;
+            }
+            free(line_copy);
+            return 1;
+        }
     }
 
     memset(&instruction, 0, sizeof(instruction));
@@ -3400,6 +3841,46 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "sendmail") == 0)
+    {
+        /* SENDMAIL <username> <subject> <body>  (subject/body backtick-quoted).
+           Args parsed here (backtick-aware) and macro-expanded at execute. */
+        char *rest = strtok(NULL, "");
+        char *a1 = NULL, *a2 = NULL, *a3 = NULL;
+        char *p = rest;
+
+        script_arg_next(&p, &a1);
+        script_arg_next(&p, &a2);
+        script_arg_next(&p, &a3);
+
+        instruction->type = SCRIPT_CMD_SENDMAIL;
+        instruction->arg1 = (a1 != NULL) ? a1 : script_duplicate_string("");
+        instruction->arg2 = (a2 != NULL) ? a2 : script_duplicate_string("");
+        instruction->arg3 = (a3 != NULL) ? a3 : script_duplicate_string("");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "sendnetmail") == 0)
+    {
+        /* SENDNETMAIL <address> <name> <subject> <body> (name/subject/body
+           backtick-quoted). Parsed backtick-aware; macro-expanded at execute. */
+        char *rest = strtok(NULL, "");
+        char *a1 = NULL, *a2 = NULL, *a3 = NULL, *a4 = NULL;
+        char *p = rest;
+
+        script_arg_next(&p, &a1);
+        script_arg_next(&p, &a2);
+        script_arg_next(&p, &a3);
+        script_arg_next(&p, &a4);
+
+        instruction->type = SCRIPT_CMD_SENDNETMAIL;
+        instruction->arg1 = (a1 != NULL) ? a1 : script_duplicate_string("");
+        instruction->arg2 = (a2 != NULL) ? a2 : script_duplicate_string("");
+        instruction->arg3 = (a3 != NULL) ? a3 : script_duplicate_string("");
+        instruction->arg4 = (a4 != NULL) ? a4 : script_duplicate_string("");
+        return 1;
+    }
+
     /* Math commands: add, sub, mul, div, mod
      * Syntax: add <result_var> <operand1> <operand2>
      */
@@ -3728,7 +4209,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
     {
         case SCRIPT_CMD_PRINT:
         {
-            char buffer[512];
+            char buffer[SCRIPT_EXPAND_BUFFER_SIZE];
             const char *text = instruction->arg1 != NULL ? instruction->arg1 : "";
             script_expand_macros(state, text, buffer, sizeof(buffer));
             script_translate_escapes(buffer);
@@ -3814,9 +4295,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     char *next_op = NULL;
                     int is_and = 0;
                     char *clause_end;
-                    char clause[256];
+                    char clause[SCRIPT_EXPAND_BUFFER_SIZE];
                     char var[128], op[16], val[256];
-                    char var_expanded[512], val_expanded[512];
+                    char var_expanded[SCRIPT_EXPAND_BUFFER_SIZE], val_expanded[SCRIPT_EXPAND_BUFFER_SIZE];
                     const char *var_value;
                     int clause_result = 0;
 
@@ -4106,7 +4587,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
         {
             if (instruction->arg1 != NULL)
             {
-                char buffer[512];
+                char buffer[SCRIPT_EXPAND_BUFFER_SIZE];
                 const char *value_text = instruction->arg2 != NULL ? instruction->arg2 : "";
                 script_expand_macros(state, value_text, buffer, sizeof(buffer));
                 script_set_variable_value(state, instruction->arg1, buffer);
@@ -4868,7 +5349,7 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
             else if (script_stringcasecmp(action, "message") == 0)
             {
-                char buffer[512];
+                char buffer[SCRIPT_EXPAND_BUFFER_SIZE];
                 const char *text = instruction->arg2 != NULL ? instruction->arg2 : "";
                 script_expand_macros(state, text, buffer, sizeof(buffer));
                 script_write_output(state, buffer);
@@ -4915,7 +5396,18 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_TYPE:
         {
+            /* TYPE dumps a designed screen (menu/art) that is authored to fit
+               one page, so it must never paginate mid-screen: a full-screen
+               file arrives as a single chunk whose newline count alone exceeds
+               the page, which would fire "More?" on a blank screen. Suppress
+               the pager for the duration and reset the page counter afterwards
+               so the following prompt/anykey starts a fresh page. */
+            int saved_override = state->more_override;
+            state->more_override = 0;
+            state->more_line_count = 0;
             script_display_file(state, instruction->arg1, 1);
+            state->more_line_count = 0;
+            state->more_override = saved_override;
         }
         break;
 
@@ -5255,13 +5747,20 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_OSCLI:
         {
-            char expanded[512];
+            char expanded[SCRIPT_EXPAND_BUFFER_SIZE];
+            _kernel_swi_regs oscli_regs;
             if (instruction->arg1 != NULL)
             {
                 script_expand_macros(state, instruction->arg1, expanded, sizeof(expanded));
                 if (expanded[0] != '\0')
                 {
-                    system(expanded);
+                    /* LT4: launch via Wimp_StartTask instead of system(), which
+                       blocks the entire Wimp poll (freezing every line) for the
+                       command's whole duration. StartTask multitasks Wimp-app
+                       commands and is the Wimp-safe way to run a command from a
+                       task; command output is not captured either way. */
+                    oscli_regs.r[0] = (int)expanded;
+                    _kernel_swi(Wimp_StartTask, &oscli_regs, &oscli_regs);
                 }
             }
         }
@@ -5351,326 +5850,63 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_LOGINSCAN:
         {
-            /* Login scan - find new messages and files for the user since last scan */
+            /* LT4: set up an incremental scan and yield. The enumeration itself
+               runs in script_loginscan_step, one bounded chunk of SWIs per Wimp
+               poll while status == WAIT_SCAN, so a large board no longer freezes
+               the guest for the whole duration of the scan. */
+            const script_user_stats *user_stats = NULL;
             messagebase_session *msg_session = NULL;
             filebase_session *file_session = NULL;
-            const script_user_stats *user_stats = NULL;
-            time_t last_scan_time = 0;
-            int user_id = 0;
-            int user_accesslevel = 0;
             const char *user_keys = NULL;
-            int new_messages = 0;
-            int new_files = 0;
-            _kernel_swi_regs regs;
-            char line[256];
-            int base_index;
 
-            /* Get user info */
+            memset(&state->scan, 0, sizeof(state->scan));
+
             if (state->host.get_user_id != NULL)
-            {
-                user_id = state->host.get_user_id(state->host.context);
-            }
+                state->scan.user_id = state->host.get_user_id(state->host.context);
             if (state->host.get_user_accesslevel != NULL)
-            {
-                user_accesslevel = state->host.get_user_accesslevel(state->host.context);
-            }
+                state->scan.user_accesslevel = state->host.get_user_accesslevel(state->host.context);
             if (state->host.get_user_keys != NULL)
-            {
                 user_keys = state->host.get_user_keys(state->host.context);
+            if (user_keys != NULL)
+            {
+                strncpy(state->scan.user_keys, user_keys, sizeof(state->scan.user_keys) - 1);
+                state->scan.user_keys[sizeof(state->scan.user_keys) - 1] = '\0';
             }
             if (state->host.get_user_stats != NULL)
-            {
                 user_stats = state->host.get_user_stats(state->host.context);
-            }
-
             if (user_stats != NULL)
+                state->scan.last_scan_time = user_stats->lastscan;
+
+            /* Remember the session cursors so the scan can restore them when done
+               (the enumerate SWIs take explicit ids and shouldn't move them, but
+               match the original's defensive save/restore). */
+            if (state->host.get_messagebase_session != NULL)
+                msg_session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+            if (msg_session != NULL)
             {
-                last_scan_time = user_stats->lastscan;
+                state->scan.saved_msg_base = msg_session->current_messagebase;
+                state->scan.saved_msg_area = msg_session->current_area;
+            }
+            if (state->host.get_filebase_session != NULL)
+                file_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+            if (file_session != NULL)
+            {
+                state->scan.saved_file_base = file_session->current_filebase;
+                state->scan.saved_file_area = file_session->current_area;
             }
 
             script_write_output(state, "\r\n\033[1;33mScanning for new messages and files...\033[0m\r\n");
 
-            /* Get sessions */
-            if (state->host.get_messagebase_session != NULL)
-            {
-                msg_session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
-            }
-            if (state->host.get_filebase_session != NULL)
-            {
-                file_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
-            }
+            /* Suppress the pager during the scan: its output must not enter the
+               More? input-wait state, which would collide with WAIT_SCAN. */
+            state->scan.saved_more = state->more_override;
+            state->more_override = 0;
 
-            /* Scan messagebases for new messages addressed to user */
-            if (msg_session != NULL && user_id > 0)
-            {
-                int saved_base = msg_session->current_messagebase;
-                int saved_area = msg_session->current_area;
-
-                /* Enumerate all messagebases */
-                base_index = 0;
-                while (1)
-                {
-                    LINETASK_MESSAGEBASE_RECORD *base_rec;
-                    int area_index;
-
-                    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
-                    regs.r[1] = base_index;
-
-                    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                    {
-                        break;
-                    }
-
-                    base_rec = (LINETASK_MESSAGEBASE_RECORD *)regs.r[0];
-                    if (base_rec == NULL)
-                    {
-                        break;
-                    }
-
-                    /* Check access to this messagebase */
-                    if (!messagebase_check_access(base_rec->accesslevel, base_rec->keys,
-                                                  user_accesslevel, user_keys != NULL ? user_keys : ""))
-                    {
-                        base_index++;
-                        continue;
-                    }
-
-                    /* Enumerate all areas in this messagebase */
-                    area_index = 0;
-                    while (1)
-                    {
-                        LINETASK_MESSAGEBASE_AREA_RECORD *area_rec;
-                        int msg_index;
-                        int area_new_count = 0;
-
-                        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
-                        regs.r[1] = base_rec->id;
-                        regs.r[2] = area_index;
-
-                        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                        {
-                            break;
-                        }
-
-                        area_rec = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
-
-                        /* Enumerate messages in this area */
-                        msg_index = 0;
-                        while (1)
-                        {
-                            LINETASK_MESSAGE_RECORD *msg_rec;
-
-                            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
-                            regs.r[1] = base_rec->id;
-                            regs.r[2] = area_rec->id;
-                            regs.r[3] = msg_index;
-
-                            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                            {
-                                break;
-                            }
-
-                            msg_rec = (LINETASK_MESSAGE_RECORD *)regs.r[0];
-
-                            /* Check if this message is for the user and is new */
-                            if (msg_rec->deleted == 0 &&
-                                msg_rec->receivedby == user_id &&
-                                (last_scan_time == 0 || msg_rec->imported > last_scan_time) &&
-                                msg_rec->read_time == 0)
-                            {
-                                area_new_count++;
-                                new_messages++;
-                            }
-
-                            msg_index++;
-                        }
-
-                        /* Report if new messages found in this area */
-                        if (area_new_count > 0)
-                        {
-                            snprintf(line, sizeof(line),
-                                     "\033[1;33m%d new message(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
-                                     area_new_count, base_rec->name, area_rec->name);
-                            script_write_output(state, line);
-                        }
-
-                        area_index++;
-                    }
-
-                    base_index++;
-                }
-
-                /* Restore session state */
-                msg_session->current_messagebase = saved_base;
-                msg_session->current_area = saved_area;
-            }
-
-            /* Scan filebases for new files */
-            if (file_session != NULL)
-            {
-                int saved_base = file_session->current_filebase;
-                int saved_area = file_session->current_area;
-
-                /* Enumerate all filebases */
-                base_index = 0;
-                while (1)
-                {
-                    LINETASK_FILEBASE_RECORD *base_rec;
-                    int area_index;
-
-                    regs.r[0] = FILEBASE_CMD_ENUMERATE_BASES;
-                    regs.r[1] = base_index;
-
-                    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                    {
-                        break;
-                    }
-
-                    base_rec = (LINETASK_FILEBASE_RECORD *)regs.r[0];
-                    if (base_rec == NULL)
-                    {
-                        break;
-                    }
-
-                    /* Check access to this filebase */
-                    if (!filebase_check_access(base_rec->accesslevel, base_rec->keys,
-                                               user_accesslevel, user_keys != NULL ? user_keys : ""))
-                    {
-                        base_index++;
-                        continue;
-                    }
-
-                    /* Enumerate all areas in this filebase */
-                    area_index = 0;
-                    while (1)
-                    {
-                        LINETASK_FILEBASE_AREA_RECORD *area_rec;
-                        int file_index;
-                        int area_new_count = 0;
-
-                        regs.r[0] = FILEBASE_CMD_ENUMERATE_AREAS;
-                        regs.r[1] = base_rec->id;
-                        regs.r[2] = area_index;
-
-                        if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                        {
-                            break;
-                        }
-
-                        area_rec = (LINETASK_FILEBASE_AREA_RECORD *)regs.r[0];
-
-                        /* Check access to this area */
-                        if (!filebase_check_access(area_rec->accesslevel, area_rec->keys,
-                                                   user_accesslevel, user_keys != NULL ? user_keys : ""))
-                        {
-                            area_index++;
-                            continue;
-                        }
-
-                        /* Enumerate files in this area */
-                        file_index = 0;
-                        while (1)
-                        {
-                            LINETASK_FILE_RECORD *file_rec;
-
-                            regs.r[0] = FILEBASE_CMD_ENUMERATE_FILES;
-                            regs.r[1] = base_rec->id;
-                            regs.r[2] = area_rec->id;
-                            regs.r[3] = file_index;
-
-                            if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1)
-                            {
-                                break;
-                            }
-
-                            file_rec = (LINETASK_FILE_RECORD *)regs.r[0];
-
-                            /* Check if this file is new since last scan */
-                            if (file_rec->deleted == 0 &&
-                                (last_scan_time == 0 || file_rec->uploaddate > last_scan_time))
-                            {
-                                /* Check access to this file */
-                                if (filebase_check_access(file_rec->accesslevel, file_rec->keys,
-                                                          user_accesslevel, user_keys != NULL ? user_keys : ""))
-                                {
-                                    area_new_count++;
-                                    new_files++;
-                                }
-                            }
-
-                            file_index++;
-                        }
-
-                        /* Report if new files found in this area */
-                        if (area_new_count > 0)
-                        {
-                            snprintf(line, sizeof(line),
-                                     "\033[1;32m%d new file(s)\033[0m in \033[1;37m%s\033[0m > \033[1;37m%s\033[0m\r\n",
-                                     area_new_count, base_rec->name, area_rec->name);
-                            script_write_output(state, line);
-                        }
-
-                        area_index++;
-                    }
-
-                    base_index++;
-                }
-
-                /* Restore session state */
-                file_session->current_filebase = saved_base;
-                file_session->current_area = saved_area;
-            }
-
-            /* Summary */
-            if (new_messages == 0 && new_files == 0)
-            {
-                script_write_output(state, "\r\n\033[1;32mNo new messages or files since your last scan.\033[0m\r\n");
-            }
-            else
-            {
-                snprintf(line, sizeof(line),
-                         "\033[1;36mScan complete: \033[1;33m%d\033[1;36m new message(s), \033[1;32m%d\033[1;36m new file(s).\033[0m\r\n",
-                         new_messages, new_files);
-                script_write_output(state, line);
-            }
-
-            /* Update lastscan timestamp in user record */
-            if (user_id > 0 && user_stats != NULL)
-            {
-                typedef struct {
-                    time_t lastlogon;
-                    time_t lastscan;
-                    int calls;
-                    int todaytime;
-                    int uploadskb;
-                    int downloadskb;
-                    int uploads;
-                    int downloads;
-                } LOGINSCAN_USER_STATS;
-
-                LOGINSCAN_USER_STATS updated_stats;
-                time_t now = time(NULL);
-                
-                updated_stats.lastlogon = user_stats->lastlogon;
-                updated_stats.lastscan = now;  /* Update to current time */
-                updated_stats.calls = user_stats->calls;
-                updated_stats.todaytime = user_stats->todaytime;
-                updated_stats.uploadskb = user_stats->uploadskb;
-                updated_stats.downloadskb = user_stats->downloadskb;
-                updated_stats.uploads = user_stats->uploads;
-                updated_stats.downloads = user_stats->downloads;
-
-                regs.r[0] = 6;  /* FILER_USERDB_CMD_UPDATE_STATS */
-                regs.r[1] = user_id;
-                regs.r[2] = (int)&updated_stats;
-                _kernel_swi(0x5AA41, &regs, &regs);  /* SWI_FILER_USERDB */
-                
-                /* Also update the host's local copy so subsequent saves include the new value */
-                if (state->host.update_lastscan != NULL)
-                {
-                    state->host.update_lastscan(state->host.context, now);
-                }
-            }
+            /* Skip the messagebase phase entirely if there is no logged-in user
+               (personal-mail scan needs a user id); files still scan. */
+            state->scan.phase = (state->scan.user_id > 0) ? SCAN_PHASE_MSG : SCAN_PHASE_FILE;
+            state->scan.active = 1;
+            state->status = SCRIPT_STATUS_WAIT_SCAN;
         }
         break;
 
@@ -5913,6 +6149,25 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     break;
                 }
 
+                /* AC2: enforce per-file access level / keys before downloading,
+                   just like filebase select/area do — the direct "download <id>"
+                   command previously bypassed the check entirely. */
+                {
+                    LINETASK_FILE_RECORD file_record;
+                    if (!filebase_get_file_info(session->current_filebase, file_id, &file_record))
+                    {
+                        script_write_output(state, "\r\n[File not found]\r\n");
+                        break;
+                    }
+                    if (file_record.deleted ||
+                        !filebase_check_access(file_record.accesslevel, file_record.keys,
+                                               session->user_accesslevel, session->user_keys))
+                    {
+                        script_write_output(state, "\r\n\033[1;31m[Access denied]\033[0m\r\n");
+                        break;
+                    }
+                }
+
                 if (state->host.filebase_download != NULL)
                 {
                     if (state->host.filebase_download(state->host.context, session->current_filebase, file_id))
@@ -5977,6 +6232,69 @@ static void script_execute_instruction(script_state *state, script_instruction *
             /* Wait for username input */
             script_begin_input(state, SCRIPT_INPUT_MODE_LINE, SCRIPT_INPUT_CTX_NEWUSER_USER);
             return;
+        }
+
+        case SCRIPT_CMD_SENDMAIL:
+        {
+            /* F1: SENDMAIL <username> <subject> <body> - send a private message
+               to a local user without the interactive composer. Args are macro-
+               expanded; the body's \r\n escapes become real line breaks. Static
+               scratch (handler is non-reentrant) avoids large stack frames. */
+            static char sm_user[64];
+            static char sm_subj[MB_MAX_DESC];
+            static char sm_body[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
+            messagebase_session *mb = NULL;
+
+            sm_user[0] = sm_subj[0] = sm_body[0] = '\0';
+            if (instruction->arg1 != NULL)
+                script_expand_macros(state, instruction->arg1, sm_user, sizeof(sm_user));
+            if (instruction->arg2 != NULL)
+                script_expand_macros(state, instruction->arg2, sm_subj, sizeof(sm_subj));
+            if (instruction->arg3 != NULL)
+                script_expand_macros(state, instruction->arg3, sm_body, sizeof(sm_body));
+            script_translate_escapes(sm_body);
+
+            if (state->host.get_messagebase_session != NULL)
+                mb = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+
+            if (mb == NULL)
+                script_write_output(state, "\r\n\033[1;31m[Messagebase unavailable]\033[0m\r\n");
+            else
+                messagebase_send_private_direct(mb, sm_user, sm_subj, sm_body,
+                    (void (*)(void *, const char *))script_write_output, state);
+            break;
+        }
+
+        case SCRIPT_CMD_SENDNETMAIL:
+        {
+            /* F1: SENDNETMAIL <address> <name> <subject> <body> - queue an FTN
+               netmail without the interactive composer. */
+            static char nm_addr[64];
+            static char nm_name[64];
+            static char nm_subj[MB_MAX_DESC];
+            static char nm_body[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
+            messagebase_session *mb = NULL;
+
+            nm_addr[0] = nm_name[0] = nm_subj[0] = nm_body[0] = '\0';
+            if (instruction->arg1 != NULL)
+                script_expand_macros(state, instruction->arg1, nm_addr, sizeof(nm_addr));
+            if (instruction->arg2 != NULL)
+                script_expand_macros(state, instruction->arg2, nm_name, sizeof(nm_name));
+            if (instruction->arg3 != NULL)
+                script_expand_macros(state, instruction->arg3, nm_subj, sizeof(nm_subj));
+            if (instruction->arg4 != NULL)
+                script_expand_macros(state, instruction->arg4, nm_body, sizeof(nm_body));
+            script_translate_escapes(nm_body);
+
+            if (state->host.get_messagebase_session != NULL)
+                mb = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+
+            if (mb == NULL)
+                script_write_output(state, "\r\n\033[1;31m[Messagebase unavailable]\033[0m\r\n");
+            else
+                messagebase_send_netmail_direct(mb, nm_addr, nm_name, nm_subj, nm_body,
+                    (void (*)(void *, const char *))script_write_output, state);
+            break;
         }
 
         case SCRIPT_CMD_SENDFILE:
@@ -6089,7 +6407,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
             {
                 script_expand_macros(state, arg2_str, expanded2, sizeof(expanded2));
             }
-            
+
+            /* Require a real file area before accepting an upload. Without a
+               selected area the file would register into a root "area 0" bucket
+               that is not listed in any browsable area (it is only reachable by
+               file id). Refuse here so every upload lands in a proper area. */
+            {
+                filebase_session *fb_session = NULL;
+                if (state->host.get_filebase_session != NULL)
+                {
+                    fb_session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+                }
+                if (fb_session == NULL || fb_session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n\033[1;31mPlease select a file area first (A - Areas & Libs) before uploading.\033[0m\r\n");
+                    return;
+                }
+            }
+
             /* Reset upload state */
             state->pending_upload_filename[0] = '\0';
             state->pending_upload_description[0] = '\0';
@@ -7153,10 +7488,15 @@ static void script_write_output(script_state *state, const char *text)
     
     /* Check if more prompts are active */
     screen_lines = script_more_active(state);
-    
-    if (screen_lines == 0)
+
+    if (screen_lines == 0 || state->more_in_prompt)
     {
-        /* More prompts disabled - just output directly */
+        /* More prompts disabled, OR we are currently rendering the More?
+           prompt itself. In the latter case the prompt's own text must NOT be
+           run back through the pager: once more_line_count has reached the
+           page boundary, paginating a zero-newline prompt string re-triggers
+           this branch and recurses into script_display_file() forever, which
+           overflows the stack and aborts the line task. Output directly. */
         state->host.write_text(state->host.context, text);
         return;
     }
@@ -7167,10 +7507,14 @@ static void script_write_output(script_state *state, const char *text)
     /* Check if outputting this would exceed the limit BEFORE we output */
     if (state->more_line_count + pending_lines >= screen_lines - 1)
     {
-        /* We would exceed - save text for later and show More? prompt */
+        /* We would exceed - save text for later and show More? prompt.
+           Set more_in_prompt so that any output produced while drawing the
+           prompt (the configured more file passes its text back through
+           script_write_output) bypasses the pager instead of recursing. */
         free(state->more_pending_text);
         state->more_pending_text = script_duplicate_string(text);
-        
+        state->more_in_prompt = 1;
+
         /* Display configured more file if available, otherwise use default text */
         if (state->host.get_more_file != NULL)
         {
@@ -7190,7 +7534,8 @@ static void script_write_output(script_state *state, const char *text)
             /* No callback - use default */
             state->host.write_text(state->host.context, "\033[7mMore?\033[0m ");
         }
-        
+
+        state->more_in_prompt = 0;
         script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MORE);
         return;
     }
@@ -7261,6 +7606,61 @@ static int script_parse_backtick_string(const char *input, size_t *consumed, cha
     }
     memcpy(*output, start, (size_t)(end - start));
     (*output)[end - start] = '\0';
+    return 1;
+}
+
+/* F1 helper: extract the next SENDMAIL/SENDNETMAIL argument from *pp, advancing
+   *pp past it. A backtick-quoted argument (`...`) may contain spaces; an
+   unquoted argument runs to the next whitespace. Returns 1 with a malloc'd
+   string in *out (owned by the caller), or 0 (and *out = NULL) when none left. */
+static int script_arg_next(char **pp, char **out)
+{
+    char *p;
+    const char *start;
+    size_t len;
+
+    *out = NULL;
+    if (pp == NULL || *pp == NULL)
+    {
+        return 0;
+    }
+    p = *pp;
+    while (*p == ' ' || *p == '\t')
+    {
+        p++;
+    }
+    if (*p == '\0')
+    {
+        *pp = p;
+        return 0;
+    }
+
+    if (*p == '`')
+    {
+        size_t consumed = 0;
+        if (script_parse_backtick_string(p, &consumed, out))
+        {
+            *pp = p + consumed;
+            return 1;
+        }
+        /* Unterminated backtick: fall through and treat as a bare token. */
+    }
+
+    start = p;
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+    {
+        p++;
+    }
+    len = (size_t)(p - start);
+    *out = (char *)malloc(len + 1);
+    if (*out == NULL)
+    {
+        *pp = p;
+        return 0;
+    }
+    memcpy(*out, start, len);
+    (*out)[len] = '\0';
+    *pp = p;
     return 1;
 }
 

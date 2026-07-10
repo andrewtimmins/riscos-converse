@@ -92,6 +92,11 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
             break;
 
         case SWI_RESERVED_4:
+            /* DR3: repurposed as SetUserInfo — LineTask pushes the real
+               logged-in user so doors don't see a hard-coded Guest / sysop. */
+            buffer_swi_setuserinfo(r);
+            break;
+
         case SWI_RESERVED_5:
             /* Reserved - return error */
             r->r[0] = -1;

@@ -23,7 +23,8 @@ Driver IDs are allocated per the xat.nl BlockDriver registry:
 Port/Line Mapping
 -----------------
 The port number passed to the BlockDriver API maps directly to the Pipes line
-number (0-31). Maximum port count is 31 (reported in flags bits 24-31).
+number. Ports 0-31 are valid, i.e. 32 ports; the highest port *number* is 31,
+which is what flags bits 24-31 report ("maximum port number", not a count).
 
 Binary Layout (per BlockDriver v2.31 spec)
 ------------------------------------------

@@ -136,6 +136,7 @@ void filebase_session_set_access(filebase_session *session, int accesslevel, con
 /* Filebase operations via SWI */
 int filebase_get_info(int base_id, LINETASK_FILEBASE_RECORD *record_out);
 int filebase_get_area_info(int base_id, int area_id, LINETASK_FILEBASE_AREA_RECORD *record_out);
+int filebase_get_file_info(int base_id, int file_id, LINETASK_FILE_RECORD *record_out);
 
 /* List operations - return formatted text for display */
 int filebase_list_bases(filebase_session *session, 

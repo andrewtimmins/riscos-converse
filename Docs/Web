@@ -1,0 +1,69 @@
+# Converse Web Server
+
+## Overview
+
+The Web app (`Web,ff8`) is an optional HTTP server that gives users a browser
+front-end to the BBS: browsing/downloading filebases, reading message areas, and
+uploading files. It runs as a Wimp task alongside the Server and shares the
+Filer databases and Support config.
+
+Enable it with the `webserver yes` key in `<Converse$Dir>.Config.System`.
+
+## Configuration / limits (compiled defaults)
+
+| Setting | Default | Notes |
+|---------|---------|-------|
+| Listen port          | 80 | `WEB_DEFAULT_PORT` |
+| Document root        | `<Converse$Dir>.Web` | `WEB_DOCROOT` - HTML templates + static assets |
+| Max concurrent clients | 8 | `WEB_MAX_CLIENTS` |
+| Max upload size      | 2 MB | `WEB_MAX_UPLOAD_SIZE` |
+| Client timeout       | 60 s | `WEB_CLIENT_TIMEOUT` |
+
+Activity is logged to `<Converse$Dir>.Logs.Web`.
+
+## HTTP endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET  | `/`            | Index page (template) |
+| POST | `/login`       | Authenticate a user; establishes a session |
+| GET  | `/logout`      | End the session |
+| POST | `/upload`      | Upload a file into a filebase area (<= 2 MB) |
+| GET  | `/api/areas`   | JSON list of accessible file areas |
+| GET  | `/download/<file>` | Download a file from a filebase |
+
+Static files under the document root are served directly; files that contain
+template tags (see below) are processed first.
+
+## Sessions
+
+`/login` checks the supplied credentials against the user database (the same
+accounts as the BBS). On success a session is created and tracked server-side;
+subsequent requests are associated with it until `/logout` or timeout. Access to
+file/message areas and downloads is gated by the logged-in user's access level
+and keys, exactly as on the BBS side.
+
+## Template tags
+
+HTML files served from the document root may contain `{{...}}` tags, expanded
+per request. A file is only processed if it contains `{{`; otherwise it is served
+verbatim.
+
+| Tag | Expands to |
+|-----|------------|
+| `{{bbsname}}`     | The BBS name (from System config) |
+| `{{username}}`    | The logged-in user's username (empty if not logged in) |
+| `{{realname}}`    | The logged-in user's real name |
+| `{{loggedin}}`    | Content block shown only when a user is logged in |
+| `{{loggedout}}`   | Content block shown only when NOT logged in |
+| `{{loginform}}`   | The login form HTML |
+| `{{uploadform}}`  | The file-upload form HTML |
+| `{{filebase}}`    | Rendered list of accessible file areas/files |
+| `{{messagebase}}` | Rendered list of accessible message areas |
+
+## Notes
+
+- The server is intentionally small (single-threaded Wimp poll, capped client
+  slots); it is a convenience front-end, not a general-purpose web server.
+- It respects the same access control as the BBS: unauthenticated users only see
+  public areas, and per-area access levels/keys apply.

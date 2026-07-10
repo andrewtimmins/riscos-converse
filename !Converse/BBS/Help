@@ -1,0 +1,6 @@
+{
+   /* Help / command reference - display screen */
+   type `<Converse$Dir>.BBS.Screens.Help`
+   anykey
+   return
+}

@@ -99,6 +99,7 @@ typedef enum
     SCRIPT_STATUS_WAIT_SLEEP,       /* Waiting for timer */
     SCRIPT_STATUS_WAIT_TRANSFER,    /* Waiting for file transfer */
     SCRIPT_STATUS_WAIT_CHAT,        /* In active chat session */
+    SCRIPT_STATUS_WAIT_SCAN,        /* LOGINSCAN in progress - resumes across Wimp polls (LT4) */
     SCRIPT_STATUS_COMPLETED,
     SCRIPT_STATUS_ERROR
     
@@ -227,7 +228,10 @@ typedef enum
     SCRIPT_CMD_WHILE,
     SCRIPT_CMD_ENDWHILE,
     SCRIPT_CMD_BREAK,
-    SCRIPT_CMD_CONTINUE
+    SCRIPT_CMD_CONTINUE,
+    /* F1: direct scripted mail */
+    SCRIPT_CMD_SENDMAIL,
+    SCRIPT_CMD_SENDNETMAIL
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */
@@ -330,6 +334,36 @@ typedef struct script_state
     int more_line_count;            /* Current line count since last reset */
     int more_screen_lines;          /* Lines per screen (from user settings, default 24) */
     char *more_pending_text;        /* Text waiting to be output after More? response */
+    int more_in_prompt;             /* Re-entrancy guard: non-zero while the More? prompt
+                                       itself is being rendered, so drawing it never
+                                       recurses back into the pager (would stack-overflow). */
+    /* LOGINSCAN incremental-scan cursor (LT4). A whole-base scan runs one bounded
+       chunk of enumerate SWIs per Wimp poll while status == WAIT_SCAN, so a large
+       board no longer freezes the guest for the duration of the scan. */
+    struct {
+        int active;                 /* 1 while a scan is running */
+        int phase;                  /* 0 = messagebases, 1 = filebases, 2 = done */
+        int base_index;             /* enumerate cursor: base within phase */
+        int area_index;             /* enumerate cursor: area within current base */
+        int item_index;             /* enumerate cursor: message/file within area */
+        int have_base;              /* a base is fetched, accessible, cached below */
+        int have_area;              /* an area is fetched, accessible, cached below */
+        int cur_base_id;
+        int cur_area_id;
+        int cur_area_type;          /* messagebase area type (2=netmail, 4=private) */
+        char cur_base_name[64];
+        char cur_area_name[64];
+        int area_new_count;         /* new items counted in the current area */
+        int new_messages;
+        int new_files;
+        int user_id;
+        int user_accesslevel;
+        char user_keys[128];        /* captured copy of the caller's keys */
+        time_t last_scan_time;
+        int saved_msg_base, saved_msg_area;    /* session cursor to restore at end */
+        int saved_file_base, saved_file_area;
+        int saved_more;             /* more_override to restore after the scan */
+    } scan;
     /* New user registration state */
     char newuser_username[32];
     char newuser_password[32];

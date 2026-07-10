@@ -246,7 +246,7 @@ void create_listener(int port)
     memset(&saddr, 0, sizeof(saddr));
     saddr.sin_family = AF_INET;
     saddr.sin_port = htons(port);
-    saddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    saddr.sin_addr.s_addr = (unsigned int)htonl(INADDR_ANY);
 
     bind_result = bind(listen_socket, (struct sockaddr *)&saddr, sizeof(saddr));
     debug_printf("web: bind to port %d result=%d, INADDR_ANY=0x%08X\n", 
@@ -829,8 +829,7 @@ static void handle_login_post(int slot, HTTP_REQUEST *req)
     close_client(slot);
 }
 
-/* Filer filebase SWIs */
-#define SWI_FILER_FILEBASE              0x5AA43
+/* Filer filebase SWIs (SWI_FILER_FILEBASE defined above) */
 #define FILER_FILEBASE_CMD_BEGIN_UPLOAD 3
 #define FILER_FILEBASE_CMD_UPLOAD_BLOCK 4
 #define FILER_FILEBASE_CMD_END_UPLOAD   12
@@ -1107,20 +1106,37 @@ static void handle_api_areas(int slot, HTTP_REQUEST *req)
         }
         *dst = '\0';
         
-        if (!first)
         {
-            *p++ = ',';
-        }
-        first = 0;
-        
-        p += sprintf(p, "{\"id\":%d,\"name\":\"%s\"}", area_id, escaped_name);
-        
-        if (p >= json + sizeof(json) - 100)
-        {
-            break;  /* Safety limit */
+            int remaining = (int)sizeof(json) - (int)(p - json);
+            int written;
+
+            /* Ensure the whole object (plus a leading comma and the closing ']'
+               and NUL added after the loop) fits BEFORE writing anything - the
+               previous code wrote first and checked afterwards, overflowing
+               json[] on a long area name. Checking before the comma also avoids
+               emitting a trailing comma (invalid JSON) when we stop. */
+            if (remaining < (int)sizeof(escaped_name) + 64)
+            {
+                break;
+            }
+
+            if (!first)
+            {
+                *p++ = ',';
+                remaining--;
+            }
+            first = 0;
+
+            written = snprintf(p, remaining, "{\"id\":%d,\"name\":\"%s\"}",
+                               area_id, escaped_name);
+            if (written < 0 || written >= remaining)
+            {
+                break;  /* would have truncated */
+            }
+            p += written;
         }
     }
-    
+
     *p++ = ']';
     *p = '\0';
     

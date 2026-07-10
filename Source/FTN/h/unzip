@@ -21,6 +21,11 @@
 #define UNZIP_ERR_WRITE         -5      /* Cannot write output file */
 #define UNZIP_ERR_MEMORY        -6      /* Memory allocation failed */
 #define UNZIP_ERR_INFLATE       -7      /* Decompression error */
+#define UNZIP_ERR_TOOBIG        -8      /* Entry exceeds size limit (zip bomb) */
+
+/* Reject entries whose declared compressed or uncompressed size exceeds this.
+   Arcmail packets are small; this caps memory a hostile archive can demand. */
+#define UNZIP_MAX_ENTRY_SIZE    (16 * 1024 * 1024)
 
 /* ZIP compression methods we support */
 #define ZIP_METHOD_STORE        0       /* No compression */

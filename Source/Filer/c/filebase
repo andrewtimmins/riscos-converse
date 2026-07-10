@@ -527,6 +527,13 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      if (length > FILER_MAX_TRANSFER_BLOCK)
+      {
+        filebase_log("Filebase %d upload block length %u rejected", base_id, (unsigned)length);
+        r->r[0] = -1;
+        return;
+      }
+
       if (!filebase_find_file_record(base_id, file_id, &record))
       {
         r->r[0] = -1;
@@ -584,6 +591,13 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         return;
       }
 
+      if (request > FILER_MAX_TRANSFER_BLOCK)
+      {
+        filebase_log("Filebase %d download block request %u rejected", base_id, (unsigned)request);
+        r->r[0] = -1;
+        return;
+      }
+
       if (!filebase_find_file_record(base_id, file_id, &record))
       {
         r->r[0] = -1;
@@ -595,7 +609,7 @@ void filebase_swi_handler(_kernel_swi_regs *r)
         r->r[0] = -1;
         return;
       }
-      
+
       /* Use cached file handle for performance */
       file = transfer_cache_get_handle(base_id, file_id, 'r', path);
       if (file == NULL)
@@ -866,46 +880,39 @@ static void filebase_format_base_path(char *buffer, size_t length, int base_id)
   snprintf(buffer, length, "%s.%0*d", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
+/* RO3b: these path builders formerly each declared a char[300] scratch and
+   nested (file_path -> group_dir -> area_dir -> files_dir -> base), stacking
+   ~1.5KB of locals in one chain on the small SVC stack. They now format
+   directly into the caller's buffer (leaves via a single snprintf; the nested
+   ones append in place), so a whole path chain costs one caller buffer. */
 static void filebase_format_file_db_path(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.FileDB", base);
+  snprintf(buffer, length, "%s.%0*d.FileDB", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_file_idx_path(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.FileIDX", base);
+  snprintf(buffer, length, "%s.%0*d.FileIDX", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_files_dir(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.Files", base);
+  snprintf(buffer, length, "%s.%0*d.Files", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_area_db_path(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.AreaDB", base);
+  snprintf(buffer, length, "%s.%0*d.AreaDB", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_area_temp_path(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.AreaTMP", base);
+  snprintf(buffer, length, "%s.%0*d.AreaTMP", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_area_idx_path(char *buffer, size_t length, int base_id)
 {
-  char base[300];
-  filebase_format_base_path(base, sizeof(base), base_id);
-  snprintf(buffer, length, "%s.AreaIDX", base);
+  snprintf(buffer, length, "%s.%0*d.AreaIDX", FILEBASE_ROOT_DIR, FILEBASE_BASE_WIDTH, base_id);
 }
 
 static void filebase_format_area_dir(char *buffer, size_t length, int base_id, int area_id)
@@ -915,16 +922,15 @@ static void filebase_format_area_dir(char *buffer, size_t length, int base_id, i
     return;
   }
 
-  if (area_id <= 0)
-  {
-    filebase_format_files_dir(buffer, length, base_id);
-    return;
-  }
+  filebase_format_files_dir(buffer, length, base_id);
 
+  if (area_id > 0)
   {
-    char files_dir[300];
-    filebase_format_files_dir(files_dir, sizeof(files_dir), base_id);
-    snprintf(buffer, length, "%s.A%0*d", files_dir, FILEBASE_AREA_WIDTH, area_id);
+    size_t used = strlen(buffer);
+    if (used < length)
+    {
+      snprintf(buffer + used, length - used, ".A%0*d", FILEBASE_AREA_WIDTH, area_id);
+    }
   }
 }
 
@@ -940,45 +946,61 @@ static int filebase_file_group_index(int file_id)
 
 static int filebase_format_group_dir(char *buffer, size_t length, int base_id, int area_id, int file_id)
 {
-  char area_dir[300];
   int group = filebase_file_group_index(file_id);
+  size_t used;
 
   if (group < 0 || group >= FILEBASE_MAX_FILE_GROUPS)
   {
     return 0;
   }
 
-  filebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
-  snprintf(buffer, length, "%s.G%02d", area_dir, group);
+  filebase_format_area_dir(buffer, length, base_id, area_id);
+  used = strlen(buffer);
+  if (used < length)
+  {
+    snprintf(buffer + used, length - used, ".G%02d", group);
+  }
   return 1;
 }
 
 static int filebase_ensure_group_directory(int base_id, int area_id, int file_id)
 {
-  char group_dir[300];
-  char area_dir[300];
+  char path[300];
+  int group = filebase_file_group_index(file_id);
+  size_t used;
 
-  if (!filebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  if (group < 0 || group >= FILEBASE_MAX_FILE_GROUPS)
   {
     return 0;
   }
 
-  filebase_format_area_dir(area_dir, sizeof(area_dir), base_id, area_id);
-  filebase_create_directory(area_dir);
-  filebase_create_directory(group_dir);
+  /* Build the area dir, create it, then append the group and create that -
+     one buffer instead of two nested char[300] (RO3b). */
+  filebase_format_area_dir(path, sizeof(path), base_id, area_id);
+  filebase_create_directory(path);
+  used = strlen(path);
+  if (used < sizeof(path))
+  {
+    snprintf(path + used, sizeof(path) - used, ".G%02d", group);
+  }
+  filebase_create_directory(path);
   return 1;
 }
 
 static int filebase_format_file_path(char *buffer, size_t length, int base_id, int area_id, int file_id)
 {
-  char group_dir[300];
+  size_t used;
 
-  if (!filebase_format_group_dir(group_dir, sizeof(group_dir), base_id, area_id, file_id))
+  if (!filebase_format_group_dir(buffer, length, base_id, area_id, file_id))
   {
     return 0;
   }
 
-  snprintf(buffer, length, "%s.%0*d", group_dir, FILEBASE_FILE_WIDTH, file_id);
+  used = strlen(buffer);
+  if (used < length)
+  {
+    snprintf(buffer + used, length - used, ".%0*d", FILEBASE_FILE_WIDTH, file_id);
+  }
   return 1;
 }
 

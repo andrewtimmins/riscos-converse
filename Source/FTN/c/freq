@@ -322,7 +322,23 @@ FREQ_STATUS freq_process_request(MAILER_SESSION *session, const char *filename)
     {
         return FREQ_STATUS_ERROR;
     }
-    
+
+    /* Only honour file requests once the session has completed its handshake,
+       and never let a remote-supplied name escape the FREQ directory. */
+    if (!session->authenticated)
+    {
+        debug_printf("freq: Rejected FREQ before authentication: %s", filename);
+        ftnlog_printf("FREQ denied (unauthenticated): %s", filename);
+        return FREQ_STATUS_ACCESS_DENIED;
+    }
+
+    if (!ftn_filename_safe(filename))
+    {
+        debug_printf("freq: Rejected unsafe FREQ filename: %s", filename);
+        ftnlog_printf("FREQ denied (unsafe path): %s", filename);
+        return FREQ_STATUS_ACCESS_DENIED;
+    }
+
     debug_printf("freq: Processing request for: %s", filename);
     ftnlog_printf("FREQ request: %s from %d:%d/%d.%d",
                   filename,

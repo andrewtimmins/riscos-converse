@@ -373,14 +373,29 @@ USER_RECORD (size ~712 bytes)
 | 656    | user_history | USER_HISTORY| 16     |
 | 672    | user_stats   | USER_STATS  | 40     |
 
-USER_FLAGS (size 76 bytes)
+USER_FLAGS (size 76 bytes - 19 ints; corrected against Filer/h/structs)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-| Offset | Field       | Type | Description              |
-|--------|-------------|------|--------------------------|
-| +0     | locked      | int  | Account locked flag      |
-| +4     | validated   | int  | Email validated flag     |
-| +20    | sysop       | int  | Sysop privilege flag     |
-| +60    | accesslevel | int  | Access level (0-255)     |
+| Offset | Field           | Type | Description |
+|--------|-----------------|------|-------------|
+| +0     | deleted         | int  | User is deleted |
+| +4     | ansi            | int  | Terminal supports ANSI |
+| +8     | more            | int  | Wants More? paging |
+| +12    | lines           | int  | Screen lines before More? |
+| +16    | cls             | int  | Wants screen-clear codes |
+| +20    | sysop           | int  | Sysop privileges |
+| +24    | cli             | int  | Has CLI access |
+| +28    | registered      | int  | Registered with the system |
+| +32    | expert          | int  | Expert menus |
+| +36    | lockedout       | int  | Barred from entry |
+| +40    | nolimit         | int  | No time limits |
+| +44    | invisible       | int  | Hidden from online/userlist |
+| +48    | userdir         | int  | Has a private directory |
+| +52    | chataccess      | int  | 0=normal, 1=always, 2=never |
+| +56    | resettime       | int  | Reset time on login |
+| +60    | accesslevel     | int  | Access level |
+| +64    | ratios          | int  | Upload/download ratio |
+| +68    | maxtime         | int  | Minutes allowed per day |
+| +72    | defaultprotocol | int  | Default transfer protocol (0-5) |
 
 USER_HISTORY (size 16 bytes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -391,17 +406,18 @@ USER_HISTORY (size 16 bytes)
 | +8     | filebase        | int  | Last selected filebase ID    |
 | +12    | filebasearea    | int  | Last selected area ID        |
 
-USER_STATS (size 40 bytes)
+USER_STATS (size 32 bytes; corrected against Filer/h/structs, time_t = 4 bytes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-| Offset | Field         | Type   | Description              |
-|--------|---------------|--------|--------------------------|
-| +0     | firstlogin    | time_t | First login timestamp    |
-| +4     | lastlogin     | time_t | Last login timestamp     |
-| +8     | totalcalls    | int    | Total login count        |
-| +12    | totalmessages | int    | Total messages posted    |
-| +16    | totaluploads  | int    | Total files uploaded     |
-| +20    | totaldownloads| int    | Total files downloaded   |
-| +24    | lastscan      | time_t | Last newfiles scan time  |
+| Offset | Field       | Type   | Description |
+|--------|-------------|--------|-------------|
+| +0     | lastlogon   | time_t | Last logon time |
+| +4     | lastscan    | time_t | Last message/file newscan |
+| +8     | calls       | int    | Calls made so far |
+| +12    | todaytime   | int    | Minutes used today |
+| +16    | uploadskb   | int    | Kilobytes uploaded |
+| +20    | downloadskb | int    | Kilobytes downloaded |
+| +24    | uploads     | int    | Number of uploads |
+| +28    | downloads   | int    | Number of downloads |
 
 FILEBASE_RECORD (size ~464 bytes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -442,27 +458,45 @@ MESSAGEBASE_RECORD (size ~464 bytes)
 | 140    | name           | char[] | 64     |
 | 204    | messagebasedir | char[] | 256    |
 
-MESSAGE_RECORD (size ~512 bytes)
+MESSAGE_RECORD (size 748 bytes)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-| Offset | Field           | Type        | Size   |
-|--------|-----------------|-------------|--------|
-| 0      | id              | int         | 4      |
-| 4      | messagebaseid   | int         | 4      |
-| 8      | messagebaseareaid| int        | 4      |
-| 12     | type            | int         | 4      |
-| 16     | deleted         | int         | 4      |
-| 20     | accesslevel     | int         | 4      |
-| 24     | keys            | char[]      | 128    |
-| 152    | subject         | char[]      | 256    |
-| 408    | sentby          | int         | 4      |
-| 412    | receivedby      | int         | 4      |
-| 416    | orgaddr         | FTN_ADDRESS | 8      |
-| 424    | dstaddr         | FTN_ADDRESS | 8      |
-| 432    | imported        | time_t      | 4      |
-| 436    | sent            | time_t      | 4      |
-| 440    | read            | time_t      | 4      |
-| 444    | timesread       | int         | 4      |
-| 448    | bodysize        | long        | 4      |
-| 452    | exported        | int         | 4      |
+Corrected against Filer/h/structs. Key points: FTN_ADDRESS is 116 bytes (not 8);
+subject/fromname/toname/exported/flags come AFTER the addresses (an earlier
+revision placed subject right after keys and omitted fromname/toname/flags -
+the same layout drift that corrupted AreaFix replies, see H2).
+
+| Offset | Field             | Type        | Size |
+|--------|-------------------|-------------|------|
+| 0      | id                | int         | 4    |
+| 4      | messagebaseid     | int         | 4    |
+| 8      | messagebaseareaid | int         | 4    |
+| 12     | type              | int         | 4    |
+| 16     | deleted           | int         | 4    |
+| 20     | accesslevel       | int         | 4    |
+| 24     | keys              | char[128]   | 128  |
+| 152    | sentby            | int         | 4    |
+| 156    | receivedby        | int         | 4    |
+| 160    | orgaddr           | FTN_ADDRESS | 116  |
+| 276    | dstaddr           | FTN_ADDRESS | 116  |
+| 392    | imported          | time_t      | 4    |
+| 396    | sent              | time_t      | 4    |
+| 400    | read              | time_t      | 4    |
+| 404    | timesread         | int         | 4    |
+| 408    | bodysize          | long        | 4    |
+| 412    | subject           | char[256]   | 256  |
+| 668    | fromname          | char[36]    | 36   |
+| 704    | toname            | char[36]    | 36   |
+| 740    | exported          | int         | 4    |
+| 744    | flags             | ushort      | 2    |
+(2 bytes trailing padding -> 748 total)
+
+FTN_ADDRESS (116 bytes):
+| Offset | Field  | Type      | Size |
+|--------|--------|-----------|------|
+| 0      | domain | char[100] | 100  |
+| 100    | zone   | int       | 4    |
+| 104    | net    | int       | 4    |
+| 108    | node   | int       | 4    |
+| 112    | point  | int       | 4    |
 
 --------------------------------------------------------------------------------

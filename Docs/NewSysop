@@ -99,17 +99,18 @@ Software:
     |
     +-- !Converse           Application (Server)
     |
+    +-- Config              Configuration files (text)
+    |       +-- System      Main configuration
+    |       +-- Lines       Per-line settings
+    |       +-- Access      IP ban lists
+    |       +-- MsgBases    Messagebase index
+    |       +-- FileBases   Filebase index
+    |       +-- FTN         FidoNet configuration
+    |       +-- MsgBase_N   Individual messagebase configs
+    |       +-- FileBase_N  Individual filebase configs
+    |
     +-- Resources
-    |       +-- Config
-    |       |       +-- System      Main configuration
-    |       |       +-- Lines       Per-line settings
-    |       |       +-- Access      IP ban lists
-    |       |       +-- MsgBases    Messagebase index
-    |       |       +-- FileBases   Filebase index
-    |       |       +-- FTN         FidoNet configuration
-    |       |       +-- MsgBase_N   Individual messagebase configs
-    |       |       +-- FileBase_N  Individual filebase configs
-    |       |
+    |       +-- (runtime module/app binaries: Line, Server, Filer, ...)
     |       +-- Data
     |               +-- UserDB      User database
     |               +-- UserIDX     User index
@@ -157,17 +158,19 @@ Software:
 5. SYSTEM CONFIGURATION
 ============================================================================
 
-The main configuration file is <Converse$Dir>.Resources.Config.System
+The main configuration file is <Converse$Dir>.Config.System
+(config lives under <Converse$Dir>.Config, NOT Resources.Config; the Resources
+directory holds the runtime binaries. Generated data is under Resources.Data.)
 
-Key settings:
+Key settings (these are the exact key names the Support module parses):
 
-  name <string>
+  bbs_name <string>
       Your BBS name, displayed to users.
-      Example: name My Awesome BBS
+      Example: bbs_name My Awesome BBS
 
-  sysop <string>
+  sysop_name <string>
       Your name as sysop.
-      Example: sysop John Smith
+      Example: sysop_name John Smith
 
   contact <string>
       Contact information (email, etc.)
@@ -177,9 +180,9 @@ Key settings:
       The hostname/IP users connect to.
       Example: hostname bbs.example.com
 
-  listen <port>
+  listen_port <port>
       TCP port to listen on.
-      Example: listen 23
+      Example: listen_port 23
 
   max_lines <number>
       Maximum simultaneous connections (1-32).
@@ -189,9 +192,10 @@ Key settings:
       Disconnect idle users after this many seconds.
       Example: idle_timeout 300
 
-  botstopper <string>
-      Challenge prompt to deter automated scanners.
-      Example: botstopper Press * twice to enter...
+  botstopper <yes|no>
+      Enable the anti-bot challenge on telnet lines (yes/no; default yes). The
+      challenge prompt text itself comes from the login flow, not this key.
+      Example: botstopper yes
 
   needlogin <yes|no>
       Require login (yes) or allow guest access (no).
@@ -258,14 +262,14 @@ Example System Configuration:
 -----------------------------
 
 ; System Configuration
-name            Demo BBS
-sysop           Demo Sysop
+bbs_name        Demo BBS
+sysop_name      Demo Sysop
 contact         sysop@example.com
 hostname        bbs.example.com
-listen          23
+listen_port     23
 max_lines       10
 idle_timeout    300
-botstopper      Press * (SHIFT+8) twice to enter...
+botstopper      yes
 needlogin       yes
 closed          no
 pager           yes
@@ -290,7 +294,7 @@ webserver       yes
 ============================================================================
 
 The Lines configuration file defines per-line settings:
-<Converse$Dir>.Resources.Config.Lines
+<Converse$Dir>.Config.Lines
 
 Each line block defines settings that override global defaults:
 
@@ -453,7 +457,7 @@ Configuration Structure
 -----------------------
 
 The MsgBases configuration file sets global defaults:
-<Converse$Dir>.Resources.Config.MsgBases
+<Converse$Dir>.Config.MsgBases
 
   default_retention <days>
       How long to keep messages (0 = forever).
@@ -559,7 +563,7 @@ Configuration Structure
 -----------------------
 
 The FileBases configuration file sets global defaults:
-<Converse$Dir>.Resources.Config.FileBases
+<Converse$Dir>.Config.FileBases
 
   default_accesslevel <level>
       Minimum access level for new bases.
@@ -636,7 +640,7 @@ Files are grouped (60 per directory) to respect RISC OS limits.
 ============================================================================
 
 The Access configuration file controls IP-based restrictions:
-<Converse$Dir>.Resources.Config.Access
+<Converse$Dir>.Config.Access
 
 Supported directives:
 
@@ -692,7 +696,7 @@ Example: 2:250/1.0 (Zone 2, Net 250, Node 1, Point 0)
 FTN Configuration
 -----------------
 
-The FTN config file: <Converse$Dir>.Resources.Config.FTN
+The FTN config file: <Converse$Dir>.Config.FTN
 
 Global settings:
 
