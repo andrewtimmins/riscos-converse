@@ -155,7 +155,48 @@ static int groups_overlap(const char *groups1, const char *groups2)
             return 1;
         }
     }
-    
+
+    return 0;
+}
+
+/* FileFix access (H3): does the downlink's allowed_files tag-list permit this
+   file echo? Empty list = allow all (mirrors the empty-groups convention used
+   by AreaFix). The list is whitespace/comma-separated file-echo tags, matched
+   case-insensitively. */
+static int fileecho_tag_allowed(const char *list, const char *tag)
+{
+    const char *p;
+    char token[ECHOFIX_AREA_TAG_LEN];
+
+    if (list == NULL || list[0] == '\0')
+    {
+        return 1;  /* empty allow-list = allow all file echoes */
+    }
+    if (tag == NULL || tag[0] == '\0')
+    {
+        return 0;
+    }
+
+    p = list;
+    while (*p)
+    {
+        size_t len = 0;
+
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        while (*p && *p != ' ' && *p != '\t' && *p != ',' && len < sizeof(token) - 1)
+        {
+            token[len++] = *p++;
+        }
+        token[len] = '\0';
+        /* skip any remainder of an over-long token */
+        while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
+
+        if (len > 0 && str_casecmp(token, tag) == 0)
+        {
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -709,70 +750,120 @@ typedef struct
     ECHOFIX_BASE_INFO bases[32];
 } ECHOFIX_GLOBAL_CONFIG;
 
+/* Filebase config mirror for FileFix (H3). MUST match Support/h/filebaseconfig
+   FILEBASE_* exactly - the layout differs from the messagebase config above
+   (filebase areas have no areatype/groups but carry a path; filebase bases add
+   readonly+path before area_count; the global has max_upload_size, no
+   default_retention). Reading filebase data through the msgbase-shaped struct
+   put base_count/area_count/area fields at the wrong offsets, so FileFix matched
+   nothing. Sizes are guarded below to catch drift. */
+typedef struct
+{
+    int id;
+    char name[64];
+    char tag[64];               /* FTN file echo tag (e.g. RISCOS_SOFT) */
+    int accesslevel;
+    char keys[128];
+    char path[256];
+} ECHOFIX_FB_AREA;
+
+typedef struct
+{
+    int id;
+    char name[64];
+    int type;
+    int accesslevel;
+    char keys[128];
+    int readonly;
+    char path[256];
+    int area_count;
+    ECHOFIX_FB_AREA areas[64];
+} ECHOFIX_FB_BASE;
+
+typedef struct
+{
+    int default_accesslevel;
+    char storage_root[256];
+    long max_upload_size;
+    int base_count;
+    ECHOFIX_FB_BASE bases[32];
+} ECHOFIX_FB_GLOBAL;
+
+/* Guard the area element (the drift-prone part): 4+64+64+4+128+256 = 520. */
+typedef char echofix_fb_area_size_check[(sizeof(ECHOFIX_FB_AREA) == 520) ? 1 : -1];
+
 int echofix_is_area_allowed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char *area_tag)
 {
     ECHOFIX_DOWNLINK_CONFIG *dl;
     _kernel_swi_regs regs;
-    ECHOFIX_GLOBAL_CONFIG *cfg;
-    int swi_num;
     int b, a;
-    
+
     if (addr == NULL || area_tag == NULL) return 0;
-    
+
     dl = echofix_find_downlink(addr);
     if (dl == NULL)
     {
         return 0;  /* Unknown downlink */
     }
-    
+
     if (!dl->active)
     {
         return 0;  /* Inactive account */
     }
-    
-    /* Get global config for area lookup.
-       KNOWN LIMITATION (FileFix): ECHOFIX_GLOBAL_CONFIG mirrors the MSGBASE
-       layout, but FILEBASE_GLOBAL_CONFIG/FILEBASE_CONFIG differ (filebase bases
-       carry readonly+path, and filebase AREAS have neither areatype nor per-area
-       groups). Reading filebase data through this msgbase-shaped struct makes the
-       FileFix branch read area_count from the wrong offset (the readonly flag),
-       so it currently grants nothing - fail-closed, but non-functional. A proper
-       fix needs filebase-shaped structs AND a FileFix access policy (filebase has
-       no per-area groups to overlap). Tracked as a follow-up. AreaFix is correct. */
-    swi_num = (type == ECHOFIX_TYPE_AREAFIX) ? SWI_SUPPORT_MSGBASE : SWI_SUPPORT_FILEBASE;
 
-    regs.r[0] = 0;  /* GET_GLOBAL */
-    if (_kernel_swi(swi_num, &regs, &regs) != NULL || regs.r[0] == 0)
+    if (type == ECHOFIX_TYPE_AREAFIX)
     {
-        return 0;
-    }
+        /* Message echoes: match the echomail area (areatype ECHO=1) by tag and
+           gate on FTN group overlap. */
+        ECHOFIX_GLOBAL_CONFIG *cfg;
 
-    cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
-
-    /* Find the area and check if downlink's groups allow access */
-    for (b = 0; b < cfg->base_count; b++)
-    {
-        for (a = 0; a < cfg->bases[b].area_count; a++)
+        regs.r[0] = 0;  /* GET_GLOBAL */
+        if (_kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs) != NULL || regs.r[0] == 0)
         {
-            ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
-            
-            /* Check area type matches (ECHO=1 for echomail, FILE=5 for fileecho) */
-            int expected_type = (type == ECHOFIX_TYPE_AREAFIX) ? 1 : 5;
-            
-            if (area->areatype == expected_type &&
-                str_casecmp(area->tag, area_tag) == 0)
+            return 0;
+        }
+        cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
+
+        for (b = 0; b < cfg->base_count; b++)
+        {
+            for (a = 0; a < cfg->bases[b].area_count; a++)
             {
-                /* Found the area - check groups */
-                if (groups_overlap(dl->allowed_groups, area->groups))
+                ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
+                if (area->areatype == 1 && str_casecmp(area->tag, area_tag) == 0)
                 {
-                    return 1;
+                    return groups_overlap(dl->allowed_groups, area->groups) ? 1 : 0;
                 }
-                return 0;  /* Area exists but not allowed for this downlink */
             }
         }
+        return 0;  /* Area not found */
     }
-    
-    return 0;  /* Area not found */
+    else
+    {
+        /* File echoes (H3): read the filebase config through its own layout and
+           match by tag. Filebase areas have no areatype/groups, so gate on the
+           downlink's allowed_files tag-list (empty = allow all, per policy). */
+        ECHOFIX_FB_GLOBAL *cfg;
+
+        regs.r[0] = 0;  /* GET_GLOBAL */
+        if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            return 0;
+        }
+        cfg = (ECHOFIX_FB_GLOBAL *)regs.r[0];
+
+        for (b = 0; b < cfg->base_count; b++)
+        {
+            for (a = 0; a < cfg->bases[b].area_count; a++)
+            {
+                ECHOFIX_FB_AREA *area = &cfg->bases[b].areas[a];
+                if (area->tag[0] != '\0' && str_casecmp(area->tag, area_tag) == 0)
+                {
+                    return fileecho_tag_allowed(dl->allowed_files, area->tag) ? 1 : 0;
+                }
+            }
+        }
+        return 0;  /* Area not found */
+    }
 }
 
 int echofix_get_available_areas(const FTN_ADDR *addr, ECHOFIX_TYPE type,
@@ -780,46 +871,68 @@ int echofix_get_available_areas(const FTN_ADDR *addr, ECHOFIX_TYPE type,
 {
     ECHOFIX_DOWNLINK_CONFIG *dl;
     _kernel_swi_regs regs;
-    ECHOFIX_GLOBAL_CONFIG *cfg;
-    int swi_num;
     int count = 0;
     int b, a;
-    
+
     if (addr == NULL || areas == NULL || max_areas <= 0) return 0;
-    
+
     dl = echofix_find_downlink(addr);
     if (dl == NULL) return 0;
-    
-    /* Get global config */
-    swi_num = (type == ECHOFIX_TYPE_AREAFIX) ? SWI_SUPPORT_MSGBASE : SWI_SUPPORT_FILEBASE;
-    
-    regs.r[0] = 0;  /* GET_GLOBAL */
-    if (_kernel_swi(swi_num, &regs, &regs) != NULL || regs.r[0] == 0)
+
+    if (type == ECHOFIX_TYPE_AREAFIX)
     {
-        return 0;
-    }
-    
-    cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
-    
-    /* Iterate areas and check access */
-    for (b = 0; b < cfg->base_count && count < max_areas; b++)
-    {
-        for (a = 0; a < cfg->bases[b].area_count && count < max_areas; a++)
+        ECHOFIX_GLOBAL_CONFIG *cfg;
+
+        regs.r[0] = 0;  /* GET_GLOBAL */
+        if (_kernel_swi(SWI_SUPPORT_MSGBASE, &regs, &regs) != NULL || regs.r[0] == 0)
         {
-            ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
-            int expected_type = (type == ECHOFIX_TYPE_AREAFIX) ? 1 : 5;
-            
-            if (area->areatype == expected_type &&
-                area->tag[0] != '\0' &&
-                groups_overlap(dl->allowed_groups, area->groups))
+            return 0;
+        }
+        cfg = (ECHOFIX_GLOBAL_CONFIG *)regs.r[0];
+
+        for (b = 0; b < cfg->base_count && count < max_areas; b++)
+        {
+            for (a = 0; a < cfg->bases[b].area_count && count < max_areas; a++)
             {
-                strncpy(areas[count], area->tag, ECHOFIX_AREA_TAG_LEN - 1);
-                areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
-                count++;
+                ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
+                if (area->areatype == 1 && area->tag[0] != '\0' &&
+                    groups_overlap(dl->allowed_groups, area->groups))
+                {
+                    strncpy(areas[count], area->tag, ECHOFIX_AREA_TAG_LEN - 1);
+                    areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
+                    count++;
+                }
             }
         }
     }
-    
+    else
+    {
+        /* File echoes (H3): filebase layout + allowed_files gate. */
+        ECHOFIX_FB_GLOBAL *cfg;
+
+        regs.r[0] = 0;  /* GET_GLOBAL */
+        if (_kernel_swi(SWI_SUPPORT_FILEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+        {
+            return 0;
+        }
+        cfg = (ECHOFIX_FB_GLOBAL *)regs.r[0];
+
+        for (b = 0; b < cfg->base_count && count < max_areas; b++)
+        {
+            for (a = 0; a < cfg->bases[b].area_count && count < max_areas; a++)
+            {
+                ECHOFIX_FB_AREA *area = &cfg->bases[b].areas[a];
+                if (area->tag[0] != '\0' &&
+                    fileecho_tag_allowed(dl->allowed_files, area->tag))
+                {
+                    strncpy(areas[count], area->tag, ECHOFIX_AREA_TAG_LEN - 1);
+                    areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
+                    count++;
+                }
+            }
+        }
+    }
+
     return count;
 }
 
