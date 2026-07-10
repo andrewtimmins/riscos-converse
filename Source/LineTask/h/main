@@ -157,6 +157,22 @@ typedef struct io_buffers
     int door_in_length;
 } io_buffers;
 
+/* LT4: state for copying a received upload's temp file into the filebase in
+   bounded chunks across Wimp polls, so a large upload does not freeze the
+   guest during the copy. Driven by upload_copy_step() from the null poll. */
+typedef struct upload_copy_state
+{
+    int   active;                 /* a copy is in progress */
+    void *temp_file;              /* FILE* of the temp file being read */
+    char  temp_path[256];         /* temp path (removed when done) */
+    int   base_id;                /* target filebase */
+    int   file_id;                /* reserved file id (from begin_upload) */
+    long  file_size;              /* total bytes to copy */
+    long  bytes_done;             /* bytes copied so far */
+    char  filename[64];           /* for the completion message/log */
+    char  size_str[32];           /* pretty size string for the message */
+} upload_copy_state;
+
 typedef struct line_task_state
 {
     /* Core line/session identity */
@@ -188,6 +204,9 @@ typedef struct line_task_state
     
     /* File transfer session */
     transfer_session xfer_session;
+
+    /* LT4: pending post-upload temp->filebase copy (chunked across polls) */
+    upload_copy_state upload_copy;
     
     /* User session */
     user_session user;

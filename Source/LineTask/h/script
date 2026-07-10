@@ -228,7 +228,10 @@ typedef enum
     SCRIPT_CMD_WHILE,
     SCRIPT_CMD_ENDWHILE,
     SCRIPT_CMD_BREAK,
-    SCRIPT_CMD_CONTINUE
+    SCRIPT_CMD_CONTINUE,
+    /* F1: direct scripted mail */
+    SCRIPT_CMD_SENDMAIL,
+    SCRIPT_CMD_SENDNETMAIL
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */

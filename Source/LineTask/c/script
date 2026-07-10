@@ -105,6 +105,7 @@ static void script_write_output(script_state *state, const char *text);
 void script_set_variable_value(script_state *state, const char *name, const char *value);
 static const char *script_get_variable_value(const script_state *state, const char *name);
 static int script_parse_backtick_string(const char *input, size_t *consumed, char **output);
+static int script_arg_next(char **pp, char **out);
 static char *script_trim(char *text);
 static int script_is_empty_or_comment(const char *line);
 static void script_free_instruction(script_instruction *instruction);
@@ -3840,6 +3841,46 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "sendmail") == 0)
+    {
+        /* SENDMAIL <username> <subject> <body>  (subject/body backtick-quoted).
+           Args parsed here (backtick-aware) and macro-expanded at execute. */
+        char *rest = strtok(NULL, "");
+        char *a1 = NULL, *a2 = NULL, *a3 = NULL;
+        char *p = rest;
+
+        script_arg_next(&p, &a1);
+        script_arg_next(&p, &a2);
+        script_arg_next(&p, &a3);
+
+        instruction->type = SCRIPT_CMD_SENDMAIL;
+        instruction->arg1 = (a1 != NULL) ? a1 : script_duplicate_string("");
+        instruction->arg2 = (a2 != NULL) ? a2 : script_duplicate_string("");
+        instruction->arg3 = (a3 != NULL) ? a3 : script_duplicate_string("");
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "sendnetmail") == 0)
+    {
+        /* SENDNETMAIL <address> <name> <subject> <body> (name/subject/body
+           backtick-quoted). Parsed backtick-aware; macro-expanded at execute. */
+        char *rest = strtok(NULL, "");
+        char *a1 = NULL, *a2 = NULL, *a3 = NULL, *a4 = NULL;
+        char *p = rest;
+
+        script_arg_next(&p, &a1);
+        script_arg_next(&p, &a2);
+        script_arg_next(&p, &a3);
+        script_arg_next(&p, &a4);
+
+        instruction->type = SCRIPT_CMD_SENDNETMAIL;
+        instruction->arg1 = (a1 != NULL) ? a1 : script_duplicate_string("");
+        instruction->arg2 = (a2 != NULL) ? a2 : script_duplicate_string("");
+        instruction->arg3 = (a3 != NULL) ? a3 : script_duplicate_string("");
+        instruction->arg4 = (a4 != NULL) ? a4 : script_duplicate_string("");
+        return 1;
+    }
+
     /* Math commands: add, sub, mul, div, mod
      * Syntax: add <result_var> <operand1> <operand2>
      */
@@ -6193,6 +6234,69 @@ static void script_execute_instruction(script_state *state, script_instruction *
             return;
         }
 
+        case SCRIPT_CMD_SENDMAIL:
+        {
+            /* F1: SENDMAIL <username> <subject> <body> - send a private message
+               to a local user without the interactive composer. Args are macro-
+               expanded; the body's \r\n escapes become real line breaks. Static
+               scratch (handler is non-reentrant) avoids large stack frames. */
+            static char sm_user[64];
+            static char sm_subj[MB_MAX_DESC];
+            static char sm_body[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
+            messagebase_session *mb = NULL;
+
+            sm_user[0] = sm_subj[0] = sm_body[0] = '\0';
+            if (instruction->arg1 != NULL)
+                script_expand_macros(state, instruction->arg1, sm_user, sizeof(sm_user));
+            if (instruction->arg2 != NULL)
+                script_expand_macros(state, instruction->arg2, sm_subj, sizeof(sm_subj));
+            if (instruction->arg3 != NULL)
+                script_expand_macros(state, instruction->arg3, sm_body, sizeof(sm_body));
+            script_translate_escapes(sm_body);
+
+            if (state->host.get_messagebase_session != NULL)
+                mb = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+
+            if (mb == NULL)
+                script_write_output(state, "\r\n\033[1;31m[Messagebase unavailable]\033[0m\r\n");
+            else
+                messagebase_send_private_direct(mb, sm_user, sm_subj, sm_body,
+                    (void (*)(void *, const char *))script_write_output, state);
+            break;
+        }
+
+        case SCRIPT_CMD_SENDNETMAIL:
+        {
+            /* F1: SENDNETMAIL <address> <name> <subject> <body> - queue an FTN
+               netmail without the interactive composer. */
+            static char nm_addr[64];
+            static char nm_name[64];
+            static char nm_subj[MB_MAX_DESC];
+            static char nm_body[MAX_COMPOSER_LINES * (MAX_LINE_WIDTH + 2) + 1];
+            messagebase_session *mb = NULL;
+
+            nm_addr[0] = nm_name[0] = nm_subj[0] = nm_body[0] = '\0';
+            if (instruction->arg1 != NULL)
+                script_expand_macros(state, instruction->arg1, nm_addr, sizeof(nm_addr));
+            if (instruction->arg2 != NULL)
+                script_expand_macros(state, instruction->arg2, nm_name, sizeof(nm_name));
+            if (instruction->arg3 != NULL)
+                script_expand_macros(state, instruction->arg3, nm_subj, sizeof(nm_subj));
+            if (instruction->arg4 != NULL)
+                script_expand_macros(state, instruction->arg4, nm_body, sizeof(nm_body));
+            script_translate_escapes(nm_body);
+
+            if (state->host.get_messagebase_session != NULL)
+                mb = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+
+            if (mb == NULL)
+                script_write_output(state, "\r\n\033[1;31m[Messagebase unavailable]\033[0m\r\n");
+            else
+                messagebase_send_netmail_direct(mb, nm_addr, nm_name, nm_subj, nm_body,
+                    (void (*)(void *, const char *))script_write_output, state);
+            break;
+        }
+
         case SCRIPT_CMD_SENDFILE:
         {
             /* SENDFILE <file_id> [protocol]
@@ -7502,6 +7606,61 @@ static int script_parse_backtick_string(const char *input, size_t *consumed, cha
     }
     memcpy(*output, start, (size_t)(end - start));
     (*output)[end - start] = '\0';
+    return 1;
+}
+
+/* F1 helper: extract the next SENDMAIL/SENDNETMAIL argument from *pp, advancing
+   *pp past it. A backtick-quoted argument (`...`) may contain spaces; an
+   unquoted argument runs to the next whitespace. Returns 1 with a malloc'd
+   string in *out (owned by the caller), or 0 (and *out = NULL) when none left. */
+static int script_arg_next(char **pp, char **out)
+{
+    char *p;
+    const char *start;
+    size_t len;
+
+    *out = NULL;
+    if (pp == NULL || *pp == NULL)
+    {
+        return 0;
+    }
+    p = *pp;
+    while (*p == ' ' || *p == '\t')
+    {
+        p++;
+    }
+    if (*p == '\0')
+    {
+        *pp = p;
+        return 0;
+    }
+
+    if (*p == '`')
+    {
+        size_t consumed = 0;
+        if (script_parse_backtick_string(p, &consumed, out))
+        {
+            *pp = p + consumed;
+            return 1;
+        }
+        /* Unterminated backtick: fall through and treat as a bare token. */
+    }
+
+    start = p;
+    while (*p != '\0' && *p != ' ' && *p != '\t')
+    {
+        p++;
+    }
+    len = (size_t)(p - start);
+    *out = (char *)malloc(len + 1);
+    if (*out == NULL)
+    {
+        *pp = p;
+        return 0;
+    }
+    memcpy(*out, start, len);
+    (*out)[len] = '\0';
+    *pp = p;
     return 1;
 }
 

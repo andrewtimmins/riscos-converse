@@ -231,6 +231,11 @@ static void perform_session_disconnect(line_task_state *state);
 static void send_user_message(int line_id, const char *real_name);
 static void save_user_stats(line_task_state *state);
 static void poll_idle(void);
+static int upload_copy_start(line_task_state *state, int base_id, int area_id,
+                             const char *temp_path, const char *filename,
+                             const char *description, int uploaded_by,
+                             const char *size_str);
+static void upload_copy_step(line_task_state *state);
 static Desk_bool handle_chatpager_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_click(Desk_event_pollblock *event, void *ref);
 static Desk_bool handle_chat_key(Desk_event_pollblock *event, void *ref);
@@ -697,6 +702,16 @@ static void reset_line_session_state(line_task_state *state) {
      into the next caller (LC1). transfer_cleanup is a no-op if inactive. */
   transfer_cleanup(&state->xfer_session);
 
+  /* LT4: abandon any in-progress post-upload copy so its temp FILE* is not
+     leaked and the next caller can't inherit a half-finished copy. */
+  if (state->upload_copy.active) {
+    if (state->upload_copy.temp_file != NULL) {
+      fclose((FILE *)state->upload_copy.temp_file);
+      state->upload_copy.temp_file = NULL;
+    }
+    state->upload_copy.active = 0;
+  }
+
   /* Tear down any active sysop chat / pager so its state cannot leak into the
      next caller on this line and misroute their input (LC3). */
   if (state->chat.paging != Desk_bool_FALSE) {
@@ -755,6 +770,119 @@ static void perform_session_disconnect(line_task_state *state) {
 
   log_line_event(state->line_id, "Session disconnected");
   script_stop_session(state);
+}
+
+/* LT4: copy at most this many bytes of a received upload into the filebase per
+   Wimp poll, so a large upload doesn't freeze the guest during the copy. */
+#define UPLOAD_COPY_CHUNK 32768
+
+/* Begin an incremental temp->filebase copy: open the temp file, reserve a file
+   id, and record the state. The bytes are copied by upload_copy_step() across
+   subsequent polls. Returns the new file id (>0), or -1 if nothing started. */
+static int upload_copy_start(line_task_state *state, int base_id, int area_id,
+                             const char *temp_path, const char *filename,
+                             const char *description, int uploaded_by,
+                             const char *size_str) {
+  FILE *fp;
+  long size;
+  int file_id;
+
+  fp = fopen(temp_path, "rb");
+  if (fp == NULL) {
+    return -1;
+  }
+  fseek(fp, 0, SEEK_END);
+  size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  if (size <= 0) {
+    fclose(fp);
+    return -1;
+  }
+
+  file_id = filebase_begin_upload(base_id, area_id, filename, description,
+                                  uploaded_by, 0, NULL);
+  if (file_id <= 0) {
+    fclose(fp);
+    return -1;
+  }
+
+  memset(&state->upload_copy, 0, sizeof(state->upload_copy));
+  state->upload_copy.temp_file = (void *)fp;
+  strncpy(state->upload_copy.temp_path, temp_path,
+          sizeof(state->upload_copy.temp_path) - 1);
+  state->upload_copy.base_id = base_id;
+  state->upload_copy.file_id = file_id;
+  state->upload_copy.file_size = size;
+  state->upload_copy.bytes_done = 0;
+  strncpy(state->upload_copy.filename, filename,
+          sizeof(state->upload_copy.filename) - 1);
+  if (size_str != NULL) {
+    strncpy(state->upload_copy.size_str, size_str,
+            sizeof(state->upload_copy.size_str) - 1);
+  }
+  state->upload_copy.active = 1;
+  return file_id;
+}
+
+/* Copy up to UPLOAD_COPY_CHUNK bytes of the pending upload into the filebase,
+   one call per Wimp poll. On completion (or a write/read error) it finalises
+   the filebase file, removes the temp, reports to the caller, and resumes the
+   script (which has been parked in WAIT_TRANSFER since the transfer started). */
+static void upload_copy_step(line_task_state *state) {
+  upload_copy_state *uc = &state->upload_copy;
+  char buffer[4096];
+  long copied = 0;
+  int failed = 0;
+
+  if (!uc->active) {
+    return;
+  }
+
+  while (copied < UPLOAD_COPY_CHUNK) {
+    size_t n = fread(buffer, 1, sizeof(buffer), (FILE *)uc->temp_file);
+    if (n == 0) {
+      break; /* EOF, or a read error caught by ferror() below */
+    }
+    if (filebase_upload_block(uc->base_id, uc->file_id, buffer, (int)n) < 0) {
+      failed = 1;
+      break;
+    }
+    uc->bytes_done += (long)n;
+    copied += (long)n;
+  }
+
+  if (!failed && ferror((FILE *)uc->temp_file)) {
+    failed = 1;
+  }
+
+  if (!failed && uc->bytes_done < uc->file_size) {
+    return; /* more to copy on the next poll */
+  }
+
+  /* Finished or failed: close, flush the filebase handle, drop the temp. */
+  fclose((FILE *)uc->temp_file);
+  uc->temp_file = NULL;
+  filebase_end_upload(uc->base_id, uc->file_id);
+  remove(uc->temp_path);
+
+  if (!failed) {
+    char msg[256];
+    snprintf(
+        msg, sizeof(msg),
+        "\r\n\033[1;32mUpload complete! %s received (File ID: %d)\033[0m\r\n",
+        uc->size_str, uc->file_id);
+    pipes_write_string(state->line_id, msg);
+    snprintf(msg, sizeof(msg), "Upload registered: %s (file_id=%d, %s)",
+             uc->filename, uc->file_id, uc->size_str);
+    log_line_event(state->line_id, msg);
+  } else {
+    pipes_write_string(
+        state->line_id,
+        "\r\n\033[1;33mFile received but registration failed.\033[0m\r\n");
+  }
+
+  uc->active = 0;
+  script_notify_transfer_complete(&state->script);
 }
 
 static Desk_bool handle_window_close(Desk_event_pollblock *event, void *ref) {
@@ -899,7 +1027,9 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
   /* Poll file transfer if active - do this FIRST to consume raw bytes */
   if (transfer_is_active(&state->xfer_session)) {
     if (!transfer_poll(&state->xfer_session)) {
-      /* Transfer completed - notify script engine */
+      /* Transfer completed - notify script engine (unless we kick off a
+         deferred, chunked upload copy that will notify when it finishes). */
+      int defer_notify = 0;
       if (state->xfer_session.result == XFER_RESULT_OK) {
         /* Calculate KB transferred (round up) */
         int kb_transferred =
@@ -942,25 +1072,15 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
           int area_id = area_str ? atoi(area_str) : 0;
 
           if (base_id > 0 && filename && filename[0] != '\0') {
-            int file_id = filebase_register_upload(
-                base_id, area_id, state->xfer_session.temp_path, filename,
-                description,       /* Now using the user's description */
-                state->user.id, 0, /* Default access level */
-                NULL               /* No keys required */
-            );
-
-            if (file_id > 0) {
-              char msg[256];
-              snprintf(msg, sizeof(msg),
-                       "\r\n\033[1;32mUpload complete! %s received (File ID: "
-                       "%d)\033[0m\r\n",
-                       size_str, file_id);
-              pipes_write_string(state->line_id, msg);
-
-              snprintf(msg, sizeof(msg),
-                       "Upload registered: %s (file_id=%d, %s)", filename,
-                       file_id, size_str);
-              log_line_event(state->line_id, msg);
+            /* LT4: copy the temp file into the filebase incrementally across
+               Wimp polls (upload_copy_step) rather than in one blocking loop,
+               so a large upload no longer freezes the guest. The script stays
+               parked in WAIT_TRANSFER until the copy finishes and
+               upload_copy_step calls script_notify_transfer_complete. */
+            if (upload_copy_start(state, base_id, area_id,
+                                  state->xfer_session.temp_path, filename,
+                                  description, state->user.id, size_str) > 0) {
+              defer_notify = 1;
             } else {
               char msg[256];
               snprintf(msg, sizeof(msg),
@@ -994,7 +1114,10 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
                                              : "Unknown error");
         pipes_write_string(state->line_id, msg);
       }
-      if (state->xfer_session.stalled) {
+      if (defer_notify) {
+        /* A chunked upload copy is now running; upload_copy_step will notify
+           the script (and print the completion message) when it finishes. */
+      } else if (state->xfer_session.stalled) {
         /* The transfer stalled because the peer vanished mid-transfer (client
            disconnected or went silent). The DISCONNECT control byte, if any,
            was consumed by the transfer's raw pipe read, so returning to the
@@ -1008,6 +1131,10 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
       }
     }
     /* Don't process normal input during active transfer */
+  } else if (state->upload_copy.active) {
+    /* LT4: finishing a chunked upload copy - advance it a bounded amount this
+       poll and skip normal input (the script is parked in WAIT_TRANSFER). */
+    upload_copy_step(state);
   } else {
     /* Normal input processing when no transfer is active */
     process_server_stream(state);
