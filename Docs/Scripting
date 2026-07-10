@@ -1189,7 +1189,11 @@ Debug output uses the Reporter module when available.
 
 Internal Command Codes
 ~~~~~~~~~~~~~~~~~~~~~~
-For reference, the internal command enum (from LineTask/h/script):
+These are an internal implementation detail - script authors use the command
+NAMES, never these numbers, which are not stable across releases. The canonical
+list is the `script_command_type` enum in `Source/LineTask/h/script` (currently
+53 entries, including SENDMAIL and SENDNETMAIL, both now implemented). The
+excerpt below is indicative only and may lag the source:
 
     SCRIPT_CMD_UNKNOWN = 0
     SCRIPT_CMD_LABEL = 1
