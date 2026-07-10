@@ -13,6 +13,8 @@
 
 #include "transfer.h"
 #include "xmodem.h"
+#include "ymodem.h"
+#include "zmodem.h"
 #include "pipes.h"
 #include "crc.h"
 #include "debug.h"
@@ -149,7 +151,7 @@ int transfer_start_send(transfer_session *session, int line,
     strncpy(session->filename, record_ptr + FILE_RECORD_OFFSET_NAME, TRANSFER_MAX_FILENAME - 1);
     session->filename[TRANSFER_MAX_FILENAME - 1] = '\0';
     memcpy(&session->file_size, record_ptr + FILE_RECORD_OFFSET_FILESIZE, sizeof(long));
-    
+
     debug_printf("transfer: starting send of '%s' (%ld bytes) via protocol %d\n",
                  session->filename, session->file_size, protocol);
     
@@ -167,23 +169,33 @@ int transfer_start_send(transfer_session *session, int line,
             
         case TRANSFER_PROTO_YMODEM:
         case TRANSFER_PROTO_YMODEM_G:
+            if (ymodem_init_send(session) != 0)
+            {
+                return -1;
+            }
+            break;
+
         case TRANSFER_PROTO_ZMODEM:
-            snprintf(session->error_msg, sizeof(session->error_msg), "Protocol not implemented");
-            session->state = XFER_ERROR;
-            session->result = XFER_RESULT_PROTOCOL_ERROR;
-            return -1;
-            
+            if (zmodem_init_send(session) != 0)
+            {
+                return -1;
+            }
+            break;
+
         default:
             snprintf(session->error_msg, sizeof(session->error_msg), "Unknown protocol");
             session->state = XFER_ERROR;
             session->result = XFER_RESULT_PROTOCOL_ERROR;
             return -1;
     }
-    
+
     session->active = 1;
     session->state = XFER_ACTIVE;
     session->start_time = transfer_get_time();
-    
+    session->stall_deadline = session->start_time + TRANSFER_STALL_TIMEOUT;
+    session->stall_last_bytes = 0;
+    session->stalled = 0;
+
     /* Clear any pending output data before enabling binary mode.
      * This prevents leftover text data from contaminating the XMODEM stream.
      * The text has already been written by the script but may not have been
@@ -287,15 +299,25 @@ int transfer_start_receive(transfer_session *session, int line,
             
         case TRANSFER_PROTO_YMODEM:
         case TRANSFER_PROTO_YMODEM_G:
+            if (ymodem_init_receive(session) != 0)
+            {
+                fclose(fp);
+                session->file_handle = NULL;
+                remove(session->temp_path);
+                return -1;
+            }
+            break;
+
         case TRANSFER_PROTO_ZMODEM:
-            fclose(fp);
-            session->file_handle = NULL;
-            remove(session->temp_path);
-            snprintf(session->error_msg, sizeof(session->error_msg), "Protocol not implemented");
-            session->state = XFER_ERROR;
-            session->result = XFER_RESULT_PROTOCOL_ERROR;
-            return -1;
-            
+            if (zmodem_init_receive(session) != 0)
+            {
+                fclose(fp);
+                session->file_handle = NULL;
+                remove(session->temp_path);
+                return -1;
+            }
+            break;
+
         default:
             fclose(fp);
             session->file_handle = NULL;
@@ -309,6 +331,9 @@ int transfer_start_receive(transfer_session *session, int line,
     session->active = 1;
     session->state = XFER_ACTIVE;
     session->start_time = transfer_get_time();
+    session->stall_deadline = session->start_time + TRANSFER_STALL_TIMEOUT;
+    session->stall_last_bytes = 0;
+    session->stalled = 0;
     
     /* Notify Support module - disables telnet filtering for binary data */
     transfer_set_active_flag(line, 1);
@@ -348,14 +373,46 @@ int transfer_poll(transfer_session *session)
         case TRANSFER_PROTO_XMODEM_1K:
             result = xmodem_poll(session);
             break;
-            
+
+        case TRANSFER_PROTO_YMODEM:
+        case TRANSFER_PROTO_YMODEM_G:
+            result = ymodem_poll(session);
+            break;
+
+        case TRANSFER_PROTO_ZMODEM:
+            result = zmodem_poll(session);
+            break;
+
         default:
             result = 0;
             session->state = XFER_ERROR;
             session->result = XFER_RESULT_PROTOCOL_ERROR;
             break;
     }
-    
+
+    /* Stall watchdog: if the transfer is still active but has moved zero bytes
+       for TRANSFER_STALL_TIMEOUT, the peer has vanished (client disconnected
+       mid-transfer, or went silent). Some protocol waits - notably ZMODEM flow
+       control when the output pipe never drains - have no timeout of their own
+       and would otherwise spin forever, leaving the line permanently wedged.
+       Abort and flag it so the caller can drop the (dead) session. */
+    if (session->state == XFER_ACTIVE)
+    {
+        if (session->bytes_transferred != session->stall_last_bytes)
+        {
+            session->stall_last_bytes = session->bytes_transferred;
+            session->stall_deadline = transfer_get_time() + TRANSFER_STALL_TIMEOUT;
+        }
+        else if ((int32_t)(transfer_get_time() - session->stall_deadline) >= 0)
+        {
+            snprintf(session->error_msg, sizeof(session->error_msg),
+                     "Transfer stalled - peer not responding");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_TIMEOUT;
+            session->stalled = 1;
+        }
+    }
+
     /* Check if transfer completed */
     if (session->state == XFER_COMPLETE || session->state == XFER_ERROR)
     {
@@ -427,7 +484,16 @@ void transfer_cleanup(transfer_session *session)
             case TRANSFER_PROTO_XMODEM_1K:
                 xmodem_cleanup(session);
                 break;
-                
+
+            case TRANSFER_PROTO_YMODEM:
+            case TRANSFER_PROTO_YMODEM_G:
+                ymodem_cleanup(session);
+                break;
+
+            case TRANSFER_PROTO_ZMODEM:
+                zmodem_cleanup(session);
+                break;
+
             default:
                 free(session->protocol_state);
                 break;
@@ -454,7 +520,23 @@ int transfer_get_progress(transfer_session *session)
         return -1;
     }
     
-    return (int)((session->bytes_transferred * 100) / session->file_size);
+    {
+        /* Scale both operands down together to avoid overflowing the
+           (bytes_transferred * 100) multiply for files larger than ~21 MB
+           (long is 32-bit on RISC OS), while preserving the ratio (LT12). */
+        long transferred = session->bytes_transferred;
+        long total = session->file_size;
+        while (transferred > (0x7FFFFFFFL / 100))
+        {
+            transferred >>= 1;
+            total >>= 1;
+        }
+        if (total <= 0)
+        {
+            return 100;
+        }
+        return (int)((transferred * 100) / total);
+    }
 }
 
 void transfer_get_status(transfer_session *session, char *buffer, int buffer_size)

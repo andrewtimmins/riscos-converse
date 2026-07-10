@@ -1,0 +1,6 @@
+{
+   /* Hall of Fame / system stats - display screen */
+   type `<Converse$Dir>.BBS.Screens.Stats`
+   anykey
+   return
+}

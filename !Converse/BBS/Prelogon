@@ -1,7 +1,8 @@
 {
+    /* Pre-logon: detect ANSI, show the connect screen, then the logon prompt */
     detectansi ansi 3000
     cls
     doing `Logging on...`
-    type `<Converse$Dir>.BBS.Login`
+    type `<Converse$Dir>.BBS.Screens.Login`
     logon
 }

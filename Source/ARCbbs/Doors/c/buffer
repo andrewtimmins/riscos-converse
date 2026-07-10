@@ -31,6 +31,21 @@ static unsigned char request_buffers[ARCBBS_MAX_LINES][256];
 static unsigned char reply_buffers[ARCBBS_MAX_LINES][256];
 static int reply_ready[ARCBBS_MAX_LINES];
 
+/* DR3: real logged-in user info pushed by LineTask via the SetUserInfo SWI so
+   ARCbbs doors see the actual caller instead of a hard-coded Guest / sysop.
+   Layout must match the struct LineTask fills in door_arcbbs.c. */
+typedef struct
+{
+    int  user_id;
+    int  userlevel;
+    int  time_online;     /* seconds online so far */
+    int  time_remaining;  /* seconds left, -1 = unlimited */
+    char username[32];
+    char realname[32];
+} ARCBBS_DOOR_USER;
+
+static ARCBBS_DOOR_USER line_users[ARCBBS_MAX_LINES];
+
 /* Static helpers */
 static int buffer_valid_line(int line);
 static int buffer_input_bytes_available(const LINE_BUFFER *buf);
@@ -51,6 +66,7 @@ void buffer_initialise(void)
         line_buffers[i].active = 0;
         memset(request_buffers[i], 0, 256);
         memset(reply_buffers[i], 0, 256);
+        memset(&line_users[i], 0, sizeof(ARCBBS_DOOR_USER));
         reply_ready[i] = 0;
     }
 }
@@ -144,6 +160,21 @@ static void process_request(int line);
  *   0-3:   Request number (word)
  *   4-255: Request-specific data
  */
+void buffer_swi_setuserinfo(_kernel_swi_regs *r)
+{
+    int line = r->r[0];
+    const ARCBBS_DOOR_USER *info = (const ARCBBS_DOOR_USER *)r->r[1];
+
+    if (!buffer_valid_line(line) || info == NULL)
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    line_users[line] = *info;
+    r->r[0] = 0;
+}
+
 void buffer_swi_sendrequest(_kernel_swi_regs *r)
 {
     int line;
@@ -797,8 +828,8 @@ static void process_request(int line)
             /* Provide sensible defaults for a guest/test user */
             debug_printf("ARCbbs Request 0: Read general user info\n");
             
-            /* w0: usernumber */
-            *((int *)(reply + 0)) = 1;
+            /* w0: usernumber (DR3: real user id, else 1) */
+            *((int *)(reply + 0)) = line_users[line].user_id > 0 ? line_users[line].user_id : 1;
             /* w4: time of first logon */
             *((int *)(reply + 4)) = (int)now;
             /* w8: time of last logon */
@@ -823,8 +854,9 @@ static void process_request(int line)
             *((int *)(reply + 44)) = 0;
             /* w48: up/download ratio */
             *((int *)(reply + 48)) = 0;
-            /* w52: userlevel */
-            *((int *)(reply + 52)) = 100;
+            /* w52: userlevel (DR3: real access level, else guest 100) */
+            *((int *)(reply + 52)) =
+                (line_users[line].username[0] != '\0') ? line_users[line].userlevel : 100;
             /* w56: number of logons */
             *((int *)(reply + 56)) = 1;
             /* w60: number of uploads */
@@ -859,8 +891,9 @@ static void process_request(int line)
             reply[185] = 'a';
             /* b186: Page length */
             reply[186] = 24;
-            /* s187: username (31 bytes max) */
-            strncpy((char *)(reply + 187), "Guest", 30);
+            /* s187: username (31 bytes max) (DR3: real user, else Guest) */
+            strncpy((char *)(reply + 187),
+                    line_users[line].username[0] ? line_users[line].username : "Guest", 30);
             reply[217] = '\0';
             break;
             
@@ -868,10 +901,12 @@ static void process_request(int line)
             /* Request 1: Read user address etc */
             debug_printf("ARCbbs Request 1: Read user address\n");
             
-            /* s0: username */
-            strncpy((char *)(reply + 0), "Guest", 30);
-            /* s31: real name */
-            strncpy((char *)(reply + 31), "Guest User", 30);
+            /* s0: username (DR3: real user, else Guest) */
+            strncpy((char *)(reply + 0),
+                    line_users[line].username[0] ? line_users[line].username : "Guest", 30);
+            /* s31: real name (DR3: real user, else Guest User) */
+            strncpy((char *)(reply + 31),
+                    line_users[line].realname[0] ? line_users[line].realname : "Guest User", 30);
             /* s62: address (1) */
             strncpy((char *)(reply + 62), "", 30);
             /* s93: address (2) */

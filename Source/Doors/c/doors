@@ -339,8 +339,15 @@ void doors_swi_register(_kernel_swi_regs *r)
         return;
     }
     
-    /* Initialise session */
-    memset(s, 0, sizeof(DOOR_SESSION));
+    /* Initialise session, but preserve any user info the host set with
+       HostSetUserInfo before the door registered (DR2). A plain memset here
+       wiped it, so native doors always saw user_id=0 / access=0 / is_sysop=0
+       and enforced no access control. */
+    {
+        DOOR_USER_INFO saved_user_info = s->user_info;
+        memset(s, 0, sizeof(DOOR_SESSION));
+        s->user_info = saved_user_info;
+    }
     s->state = DOOR_STATE_REGISTERED;
     s->flags = flags;
     

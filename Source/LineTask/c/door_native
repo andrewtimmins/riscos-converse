@@ -117,10 +117,16 @@ void door_native_set_user_info(line_task_state *state)
     user_info.user_id = state->user.id;
     user_info.access_level = state->user.accesslevel;
     user_info.is_sysop = state->user.sysop;
-    user_info.time_online = 0;  /* TODO: calculate from connect time */
-    user_info.time_remaining = -1;  /* Unlimited for now */
+    /* DR5: report real seconds online (from the session connect time) instead
+       of a hard-coded 0. time_remaining stays -1 (unlimited) — there is no
+       per-user time budget plumbed through yet. */
+    user_info.time_online = (state->user.connect_time > 0)
+        ? (int)(time(NULL) - state->user.connect_time) : 0;
+    user_info.time_remaining = -1;
     
-    strncpy(user_info.username, state->user.realname, sizeof(user_info.username) - 1);
+    /* DR4: the door's username field must be the login handle, not the real
+       name (which has its own field below). */
+    strncpy(user_info.username, state->user.username, sizeof(user_info.username) - 1);
     strncpy(user_info.realname, state->user.realname, sizeof(user_info.realname) - 1);
     strncpy(user_info.keys, state->user.keys, sizeof(user_info.keys) - 1);
     
@@ -325,11 +331,15 @@ void door_native_launch(line_task_state *state, const char *command_line, int us
             script_notify_door_closed(&state->script);
             return;
         }
-        snprintf(final_command, sizeof(final_command), "AemuExecute %s", command_line);
+        /* DR4: append the line number — the door reads it as a parameter to
+           know which line to Register on (see Doors protocol step 1). */
+        snprintf(final_command, sizeof(final_command), "AemuExecute %s %d", command_line, state->line_id);
     }
     else
     {
-        snprintf(final_command, sizeof(final_command), "%s", command_line);
+        /* DR4: append the line number so the door knows which line to Register
+           on (see Doors protocol step 1). */
+        snprintf(final_command, sizeof(final_command), "%s %d", command_line, state->line_id);
     }
 
     /* Set user info in ConverseDoors module before launching */

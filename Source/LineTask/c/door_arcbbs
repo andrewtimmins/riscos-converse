@@ -360,6 +360,38 @@ void door_arcbbs_close_session(line_task_state *state, const char *message)
     script_notify_door_closed(&state->script);
 }
 
+void door_arcbbs_set_user_info(line_task_state *state)
+{
+    _kernel_swi_regs regs;
+    /* Layout must match ARCBBS_DOOR_USER in the ARCbbsDoors module (buffer.c). */
+    struct {
+        int  user_id;
+        int  userlevel;
+        int  time_online;
+        int  time_remaining;
+        char username[32];
+        char realname[32];
+    } info;
+
+    if (state == NULL)
+    {
+        return;
+    }
+
+    memset(&info, 0, sizeof(info));
+    info.user_id = state->user.id;
+    info.userlevel = state->user.accesslevel;
+    info.time_online = (state->user.connect_time > 0)
+        ? (int)(time(NULL) - state->user.connect_time) : 0;
+    info.time_remaining = -1;
+    strncpy(info.username, state->user.username, sizeof(info.username) - 1);
+    strncpy(info.realname, state->user.realname, sizeof(info.realname) - 1);
+
+    regs.r[0] = state->line_id;
+    regs.r[1] = (int)&info;
+    _kernel_swi(SWI_ARCBBSDOORS_SETUSERINFO, &regs, &regs);
+}
+
 void door_arcbbs_launch(line_task_state *state, int door_number, const char *command_line, int use_26bit)
 {
     char final_command[512];
@@ -431,6 +463,10 @@ void door_arcbbs_launch(line_task_state *state, int door_number, const char *com
     }
 
     debug_printf("LineTask ARCbbs: activated line %d\n", state->line_id);
+
+    /* DR3: push the real logged-in user so the door sees the actual caller
+       instead of a hard-coded Guest / userlevel 100. */
+    door_arcbbs_set_user_info(state);
 
     /* Store the door number we're requesting */
     state->arcbbs.requested_door_number = door_number;

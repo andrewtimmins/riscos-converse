@@ -1,0 +1,21 @@
+{
+   /* Voting booth - display + acknowledge a vote (results are showcase-only) */
+label vote_menu
+   type `<Converse$Dir>.BBS.Screens.Voting`
+   pos 6 22
+   prompt choice char echo
+   if choice == `q` goto vote_quit
+   if choice == `Q` goto vote_quit
+   if choice == `1` goto vote_cast
+   if choice == `2` goto vote_cast
+   if choice == `3` goto vote_cast
+   if choice == `4` goto vote_cast
+   if choice == `5` goto vote_cast
+   goto vote_menu
+label vote_cast
+   print `\r\n\r\n  Thanks - your vote has been counted!`
+   pause 1500
+   goto vote_menu
+label vote_quit
+   return
+}

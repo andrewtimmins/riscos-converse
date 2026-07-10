@@ -36,6 +36,8 @@ o.http:	TCPIPLibs:sys.h.cdefs
 o.http:	C:h.kernel
 o.http:	h.http
 o.http:	h.debug
+o.version:	c.version
+o.version:	h.version
 o.template:	c.template
 o.template:	C:h.kernel
 o.template:	C:h.swis
@@ -48,7 +50,6 @@ o.session:	C:h.kernel
 o.session:	C:h.swis
 o.session:	h.session
 o.session:	h.debug
-o.version:	c.version
 o.main:	c.main
 o.main:	C:h.kernel
 o.main:	C:h.swis

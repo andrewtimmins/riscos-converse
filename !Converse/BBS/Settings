@@ -1,0 +1,6 @@
+{
+   /* User settings - display screen (toggles are showcase-only for now) */
+   type `<Converse$Dir>.BBS.Screens.Settings`
+   anykey
+   return
+}

@@ -1,0 +1,6 @@
+{
+   /* Bulletins / News - display screen */
+   type `<Converse$Dir>.BBS.Screens.Bulletins`
+   anykey
+   return
+}

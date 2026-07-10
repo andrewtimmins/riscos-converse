@@ -29,6 +29,7 @@ void buffer_finalise(void);
 void buffer_swi_readstatus(_kernel_swi_regs *r);
 void buffer_swi_writestatus(_kernel_swi_regs *r);
 void buffer_swi_sendrequest(_kernel_swi_regs *r);
+void buffer_swi_setuserinfo(_kernel_swi_regs *r);
 void buffer_swi_getreply(_kernel_swi_regs *r);
 void buffer_swi_inputstatus(_kernel_swi_regs *r);
 void buffer_swi_inputread(_kernel_swi_regs *r);

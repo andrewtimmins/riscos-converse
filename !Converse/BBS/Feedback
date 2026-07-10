@@ -1,0 +1,6 @@
+{
+   /* Feedback to sysop - display screen (compose wiring is a follow-up) */
+   type `<Converse$Dir>.BBS.Screens.Feedback`
+   anykey
+   return
+}

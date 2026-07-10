@@ -1,139 +1,60 @@
 {
-   /* Filebase Test Menu */
-   /* Called from main Postlogon menu */
+   /* Doors & Games - ANSI. Draws Screens.DoorsGm then launches the game. */
+   /* Door launch: `call riscbbsdoor <cmd>` starts the door on this line;     */
+   /* the door's !Run receives the line number via %*0.                       */
 
-label filebase_menu
-    script `<Converse$Dir>.BBS.Header`
-    bold
-    fgbg 7 4
-    print `                                .:: Filebase Menu ::.`,cll
-    std
-    print `\r\n\r\n`
-    print `  Current Selection:\r\n`
-    print `    Filebase: %{filebasename} (ID: %{filebaseid})\r\n`
-    print `    Area:     %{filebaseareaname} (ID: %{filebaseareaid})\r\n`
-    print `\r\n`
-    bold
-    print `  Navigation                        File Operations\r\n`
-    std
-    print `    [1] List/Select Filebases        [D] Download File\r\n`
-    print `    [2] List/Select Areas            [U] Upload File\r\n`
-    print `    [3] Reset Selection              [I] File Info\r\n`
-    print `    [4] List Files                   [S] Scan for New\r\n`
-    print `                                     [Q] Return to Main\r\n`
-    print `\r\n`
-    print `  Choice: `
-    prompt choice char echo
+label doors_menu
+   type `<Converse$Dir>.BBS.Screens.DoorsGm`
+   pos 13 22
+   prompt choice char echo
 
-    if choice == `1` goto select_base
-    if choice == `2` goto select_area
-    if choice == `3` goto reset_selection
-    if choice == `4` goto list_files
-    if choice == `d` goto download_file
-    if choice == `D` goto download_file
-    if choice == `u` goto upload_file
-    if choice == `U` goto upload_file
-    if choice == `i` goto file_info
-    if choice == `I` goto file_info
-    if choice == `s` goto login_scan
-    if choice == `S` goto login_scan
-    if choice == `q` goto quit_menu
-    if choice == `Q` goto quit_menu
+   if choice == `1` goto run_tetris
+   if choice == `2` goto run_snake
+   if choice == `3` goto run_breakout
+   if choice == `4` goto run_boxed
+   if choice == `5` goto run_trivia
+   if choice == `6` goto run_purity
+   if choice == `7` goto run_wall
+   if choice == `q` goto doors_quit
+   if choice == `Q` goto doors_quit
+   goto doors_menu
 
-    print `\r\n\r\n[Invalid choice]\r\n`
-    anykey
-    goto filebase_menu
+label run_tetris
+   doing `Playing Tetris...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!Tetris.!Run %{line}`
+   doing
+   goto doors_menu
+label run_snake
+   doing `Playing Snake...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!SnakeDoor.!Run %{line}`
+   doing
+   goto doors_menu
+label run_breakout
+   doing `Playing Breakout...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!Breakout.!Run %{line}`
+   doing
+   goto doors_menu
+label run_boxed
+   doing `Playing Boxed In...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!BoxedDoor.!Run %{line}`
+   doing
+   goto doors_menu
+label run_trivia
+   doing `Playing Trivia...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!TrivDoor.!Run %{line}`
+   doing
+   goto doors_menu
+label run_purity
+   doing `Running the Purity Test...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!Purity.!Run %{line}`
+   doing
+   goto doors_menu
+label run_wall
+   doing `Visiting The Wall...`
+   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!Wall.!Run %{line}`
+   doing
+   goto doors_menu
 
-/* List/select a filebase */
-label select_base
-    filebase list
-    goto filebase_menu
-
-/* List/select an area */
-label select_area
-    filebase areas
-    goto filebase_menu
-
-/* Reset selection */
-label reset_selection
-    filebase reset
-    anykey
-    goto filebase_menu
-
-/* List files in current filebase/area */
-label list_files
-    print `\r\n`
-    if %{filebaseid} == 0 then
-        print `[Select a filebase first]\r\n`
-        anykey
-        goto filebase_menu
-    end if
-    doing `Browsing files...`
-    filebase browse
-    anykey
-    doing
-    goto filebase_menu
-
-/* Show file info */
-label file_info
-    print `\r\n\r\n`
-    if %{filebaseid} == 0 then
-        print `[Select a filebase first]\r\n`
-        anykey
-        goto filebase_menu
-    end if
-    print `Enter file ID: `
-    readline file_id
-    if file_id == `` goto filebase_menu
-    filebase info %{file_id}
-    print `\r\n`
-    anykey
-    goto filebase_menu
-
-/* Download a file */
-label download_file
-    print `\r\n\r\n`
-    if %{filebaseid} == 0 then
-        print `[Select a filebase first]\r\n`
-        anykey
-        goto filebase_menu
-    end if
-    print `Enter file ID to download: `
-    readline file_id
-    if file_id == `` goto filebase_menu
-    doing `Downloading file...`
-    sendfile %{file_id} zmodem
-    doing
-    anykey
-    goto filebase_menu
-
-/* Upload a file */
-label upload_file
-    print `\r\n\r\n`
-    if %{filebaseid} == 0 then
-        print `[Select a filebase first]\r\n`
-        anykey
-        goto filebase_menu
-    end if
-    if %{filebaseareaid} == 0 then
-        print `[Select an area first]\r\n`
-        anykey
-        goto filebase_menu
-    end if
-    doing `Uploading file...`
-    receivefile
-    doing
-    anykey
-    goto filebase_menu
-
-/* Scan for new files */
-label login_scan
-    print `\r\n`
-    loginscan
-    anykey
-    goto filebase_menu
-
-/* Return to main menu */
-label quit_menu
-    return
+label doors_quit
+   return
 }

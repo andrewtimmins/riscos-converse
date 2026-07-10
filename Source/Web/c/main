@@ -246,7 +246,7 @@ void create_listener(int port)
     memset(&saddr, 0, sizeof(saddr));
     saddr.sin_family = AF_INET;
     saddr.sin_port = htons(port);
-    saddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    saddr.sin_addr.s_addr = (unsigned int)htonl(INADDR_ANY);
 
     bind_result = bind(listen_socket, (struct sockaddr *)&saddr, sizeof(saddr));
     debug_printf("web: bind to port %d result=%d, INADDR_ANY=0x%08X\n", 
@@ -829,8 +829,7 @@ static void handle_login_post(int slot, HTTP_REQUEST *req)
     close_client(slot);
 }
 
-/* Filer filebase SWIs */
-#define SWI_FILER_FILEBASE              0x5AA43
+/* Filer filebase SWIs (SWI_FILER_FILEBASE defined above) */
 #define FILER_FILEBASE_CMD_BEGIN_UPLOAD 3
 #define FILER_FILEBASE_CMD_UPLOAD_BLOCK 4
 #define FILER_FILEBASE_CMD_END_UPLOAD   12

@@ -1,0 +1,734 @@
+/* ******************************************************************************************************************************************************** */
+/* YMODEM / YMODEM-G Protocol Implementation                                                                                                                  */
+/*                                                                                                                                                            */
+/* Non-blocking state machine. Unlike plain XMODEM this carries the exact file                                                                               */
+/* size in "block 0", so received files are truncated to their true length with no                                                                          */
+/* ^Z padding. YMODEM-G streams data blocks with no per-block ACK (errors abort).                                                                            */
+/* ******************************************************************************************************************************************************** */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "ymodem.h"
+#include "transfer.h"
+#include "pipes.h"
+#include "crc.h"
+#include "debug.h"
+
+/* ******************************************************************************************************************************************************** */
+/* Helpers                                                                                                                                                    */
+/* ******************************************************************************************************************************************************** */
+
+void ymodem_send_cancel(transfer_session *session)
+{
+    int i;
+    for (i = 0; i < 8; i++) pipes_write_byte(session->line, YMODEM_CAN);
+    for (i = 0; i < 8; i++) pipes_write_byte(session->line, 0x08);
+}
+
+static int ymodem_check_cancel(ymodem_protocol_state *y, int byte)
+{
+    if (byte == YMODEM_CAN)
+    {
+        y->can_count++;
+        if (y->can_count >= 2) return 1;
+    }
+    else
+    {
+        y->can_count = 0;
+    }
+    return 0;
+}
+
+/* Send one already-built block: header + blocknum + ~blocknum + data + CRC-16. */
+static void ymodem_emit_block(transfer_session *session, int block_num,
+                              const uint8_t *data, int block_size)
+{
+    uint8_t packet[3 + YMODEM_BLOCK_1K + 2];
+    int len = 0;
+    uint16_t crc;
+
+    packet[len++] = (block_size == YMODEM_BLOCK_1K) ? YMODEM_STX : YMODEM_SOH;
+    packet[len++] = (uint8_t)(block_num & 0xFF);
+    packet[len++] = (uint8_t)(~(block_num & 0xFF));
+    memcpy(&packet[len], data, block_size);
+    len += block_size;
+    crc = crc16(data, block_size);
+    packet[len++] = (uint8_t)(crc >> 8);
+    packet[len++] = (uint8_t)(crc & 0xFF);
+
+    pipes_write_block(session->line, packet, len);
+}
+
+/* Build and send block 0 (filename + exact size). Always a 128-byte block. */
+static void ymodem_send_block0(transfer_session *session)
+{
+    uint8_t data[YMODEM_BLOCK_128];
+    const char *name = session->filename;
+    int pos = 0;
+    size_t nlen;
+
+    memset(data, 0, sizeof(data));
+    if (name == NULL) name = "file.dat";
+    nlen = strlen(name);
+    if (nlen > YMODEM_BLOCK_128 - 20) nlen = YMODEM_BLOCK_128 - 20;
+    memcpy(data, name, nlen);
+    pos = (int)nlen + 1;  /* leave the NUL terminator in place */
+    /* "<size> <modtime-octal>" - receivers read the size as the first token */
+    snprintf((char *)&data[pos], sizeof(data) - pos, "%ld 0", session->file_size);
+
+    ymodem_emit_block(session, 0, data, YMODEM_BLOCK_128);
+    pipes_clear_input(session->line);
+}
+
+/* Build the next data block into y->block_buffer. Sets block_size/bytes_in_block.
+   Returns bytes of real data (0 => nothing left / EOF), or -1 on read error. */
+static int ymodem_build_data_block(transfer_session *session, ymodem_protocol_state *y)
+{
+    long offset;
+    int bsize;
+    int want;
+    int n;
+
+    if (y->remaining <= 0)
+    {
+        y->eof_reached = 1;
+        return 0;
+    }
+
+    bsize = (y->remaining >= YMODEM_BLOCK_1K) ? YMODEM_BLOCK_1K : YMODEM_BLOCK_128;
+    offset = session->file_size - y->remaining;
+    want = (y->remaining < bsize) ? (int)y->remaining : bsize;
+
+    memset(y->block_buffer, YMODEM_CTRLZ, bsize);
+    n = transfer_read_file_block(session, y->block_buffer, offset, want);
+    if (n < 0) return -1;
+    if (n == 0) { y->eof_reached = 1; return 0; }
+
+    y->block_size = bsize;
+    y->bytes_in_block = n;
+    return n;
+}
+
+static int ymodem_verify_block(ymodem_protocol_state *y)
+{
+    uint16_t calc;
+    if ((y->received_block_num ^ y->received_complement) != 0xFF) return 0;
+    calc = crc16(y->block_buffer, y->block_size);
+    return (calc == y->received_crc);
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Send state machine                                                                                                                                         */
+/* ******************************************************************************************************************************************************** */
+
+static int ymodem_poll_send(transfer_session *session)
+{
+    ymodem_protocol_state *y = (ymodem_protocol_state *)session->protocol_state;
+    int c, n;
+
+    switch (y->state)
+    {
+        case YM_SEND_WAIT_START:
+            if (transfer_timeout_expired(session))
+            {
+                if (++y->start_attempts >= YMODEM_MAX_START)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from receiver");
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT;
+                    return 0;
+                }
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                return 1;
+            }
+            if (pipes_bytes_available(session->line) <= 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_C || c == YMODEM_G)
+            {
+                y->streaming = (c == YMODEM_G);
+                y->start_char = c;
+                ymodem_send_block0(session);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                y->state = YM_SEND_BLOCK0_ACK;
+            }
+            break;
+
+        case YM_SEND_BLOCK0_ACK:
+            if (transfer_timeout_expired(session))
+            {
+                if (++y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Block 0 not acknowledged");
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                ymodem_send_block0(session);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                return 1;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_ACK)
+            {
+                y->consecutive_errors = 0;
+                y->state = YM_SEND_WAIT_DATA_C;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START);
+            }
+            /* a stray NAK just means resend block 0 on next timeout */
+            break;
+
+        case YM_SEND_WAIT_DATA_C:
+            if (transfer_timeout_expired(session))
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg), "No data start from receiver");
+                y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT;
+                return 0;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_C || c == YMODEM_G)
+            {
+                y->streaming = (c == YMODEM_G);
+                y->block_number = 1;
+                y->remaining = session->file_size;
+                y->state = YM_SEND_DATA;
+            }
+            break;
+
+        case YM_SEND_DATA:
+            /* YMODEM-G flow control: only emit when the pipe has room. */
+            if (y->streaming && pipes_space_available(session->line) < (YMODEM_BLOCK_1K + 8))
+            {
+                return 1;
+            }
+            n = ymodem_build_data_block(session, y);
+            if (n < 0)
+            {
+                snprintf(session->error_msg, sizeof(session->error_msg), "File read error");
+                ymodem_send_cancel(session);
+                y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_FILE_ERROR;
+                return 0;
+            }
+            if (n == 0)
+            {
+                y->state = YM_SEND_EOT;
+                break;
+            }
+            ymodem_emit_block(session, y->block_number, y->block_buffer, y->block_size);
+            if (y->streaming)
+            {
+                /* No ACK wait: account immediately and continue streaming. */
+                session->bytes_transferred += y->bytes_in_block;
+                y->remaining -= y->bytes_in_block;
+                y->block_number++;
+                /* Drain any CAN the receiver may have sent to abort. */
+                while (pipes_bytes_available(session->line) > 0)
+                {
+                    c = pipes_read_byte(session->line);
+                    if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+                }
+            }
+            else
+            {
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                y->state = YM_SEND_DATA_ACK;
+            }
+            break;
+
+        case YM_SEND_DATA_ACK:
+            if (transfer_timeout_expired(session))
+            {
+                if (++y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                ymodem_emit_block(session, y->block_number, y->block_buffer, y->block_size);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                return 1;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_ACK)
+            {
+                session->bytes_transferred += y->bytes_in_block;
+                y->remaining -= y->bytes_in_block;
+                y->block_number++;
+                y->consecutive_errors = 0;
+                y->state = YM_SEND_DATA;
+            }
+            else if (c == YMODEM_NAK)
+            {
+                if (++y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                ymodem_emit_block(session, y->block_number, y->block_buffer, y->block_size);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+            }
+            break;
+
+        case YM_SEND_EOT:
+            pipes_write_byte(session->line, YMODEM_EOT);
+            transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+            y->eot_attempts = 1;
+            y->state = YM_SEND_EOT_ACK;
+            break;
+
+        case YM_SEND_EOT_ACK:
+            if (transfer_timeout_expired(session))
+            {
+                if (++y->eot_attempts >= 5)
+                {
+                    /* Assume delivered; move to the batch terminator. */
+                    y->state = YM_SEND_FINAL_C;
+                    transfer_set_timeout(session, YMODEM_TIMEOUT_START);
+                    return 1;
+                }
+                pipes_write_byte(session->line, YMODEM_EOT);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                return 1;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (c == YMODEM_ACK)
+            {
+                y->state = YM_SEND_FINAL_C;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START);
+            }
+            else if (c == YMODEM_NAK)
+            {
+                /* Standard YMODEM: receiver NAKs the first EOT, ACKs the second. */
+                pipes_write_byte(session->line, YMODEM_EOT);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+            }
+            break;
+
+        case YM_SEND_FINAL_C:
+            /* Receiver requests the next file with C/G; we send an empty block 0
+               (zero filename) to signal end of batch. */
+            if (transfer_timeout_expired(session))
+            {
+                /* Receiver didn't ask for more - treat as done. */
+                y->state = YM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (c == YMODEM_C || c == YMODEM_G)
+            {
+                uint8_t zero[YMODEM_BLOCK_128];
+                memset(zero, 0, sizeof(zero));
+                ymodem_emit_block(session, 0, zero, YMODEM_BLOCK_128);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                y->state = YM_SEND_FINAL_ACK;
+            }
+            break;
+
+        case YM_SEND_FINAL_ACK:
+            if (transfer_timeout_expired(session))
+            {
+                /* Terminator not acked, but the file itself is delivered. */
+                y->state = YM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (c == YMODEM_ACK)
+            {
+                y->state = YM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK;
+                return 0;
+            }
+            break;
+
+        case YM_COMPLETE:
+        case YM_ERROR:
+            return 0;
+
+        default:
+            y->state = YM_ERROR; session->state = XFER_ERROR;
+            return 0;
+    }
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Receive state machine                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Parse block 0: filename\0size... Sets session->filename/file_size, y->remaining. */
+static void ymodem_parse_block0(transfer_session *session, ymodem_protocol_state *y)
+{
+    const char *name = (const char *)y->block_buffer;
+    const char *p;
+    size_t nlen;
+
+    nlen = strlen(name);  /* block_buffer is 128 bytes; a valid block 0 is NUL-terminated */
+    if (nlen == 0)
+    {
+        /* Empty filename => end of batch. */
+        y->got_block0 = 2;
+        return;
+    }
+    if (nlen >= TRANSFER_MAX_FILENAME) nlen = TRANSFER_MAX_FILENAME - 1;
+
+    /* Only override the filename if the caller didn't force one. */
+    if (session->filename[0] == '\0')
+    {
+        memcpy(session->filename, name, nlen);
+        session->filename[nlen] = '\0';
+        session->filename_from_protocol = 1;
+    }
+
+    p = name + strlen(name) + 1;  /* first field after the NUL is the size */
+    if ((size_t)(p - (const char *)y->block_buffer) < YMODEM_BLOCK_128)
+    {
+        long sz = atol(p);
+        if (sz > 0)
+        {
+            session->file_size = sz;
+            y->remaining = sz;
+            y->have_size = 1;
+        }
+    }
+    y->got_block0 = 1;
+}
+
+static int ymodem_poll_receive(transfer_session *session)
+{
+    ymodem_protocol_state *y = (ymodem_protocol_state *)session->protocol_state;
+    int c;
+
+    switch (y->state)
+    {
+        case YM_RECV_START:
+            /* (Re)send C/G until a block header arrives. */
+            if (transfer_timeout_expired(session))
+            {
+                if (++y->start_attempts >= YMODEM_MAX_START)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "No response from sender");
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TIMEOUT;
+                    return 0;
+                }
+                pipes_write_byte(session->line, y->start_char);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_SOH || c == YMODEM_STX)
+            {
+                y->block_size = (c == YMODEM_STX) ? YMODEM_BLOCK_1K : YMODEM_BLOCK_128;
+                y->buffer_expected = y->block_size;
+                y->header_bytes_read = 0;
+                y->buffer_pos = 0;
+                y->crc_bytes_read = 0;
+                y->state = YM_RECV_READ;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_CHAR);
+            }
+            break;
+
+        case YM_RECV_WAIT_HEADER:
+            if (transfer_timeout_expired(session))
+            {
+                if (!y->got_block0)
+                {
+                    /* We ACKed EOT and are awaiting the end-of-batch terminator,
+                       but the sender didn't send one. The file is already fully
+                       received, so finish successfully instead of NAK/hang. */
+                    y->state = YM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK;
+                    return 0;
+                }
+                if (++y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                if (!y->streaming) pipes_write_byte(session->line, YMODEM_NAK);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                return 1;
+            }
+            if (pipes_bytes_available(session->line) == 0) return 1;
+            c = pipes_read_byte(session->line);
+            if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+            if (c == YMODEM_SOH || c == YMODEM_STX)
+            {
+                y->block_size = (c == YMODEM_STX) ? YMODEM_BLOCK_1K : YMODEM_BLOCK_128;
+                y->buffer_expected = y->block_size;
+                y->header_bytes_read = 0;
+                y->buffer_pos = 0;
+                y->crc_bytes_read = 0;
+                y->state = YM_RECV_READ;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_CHAR);
+            }
+            else if (c == YMODEM_EOT)
+            {
+                /* End of file: ACK it, then request the end-of-batch terminator
+                   with C/G and WAIT for it. The sender (e.g. sz) follows the
+                   EOT with a terminating block 0 (empty filename) and blocks
+                   until we ACK that final block - completing here instead would
+                   leave the sender hanging (bug #4). The terminator is handled
+                   in YM_RECV_VERIFY (empty block 0 -> ACK + complete). If the
+                   sender never sends one, the WAIT_HEADER timeout below still
+                   completes us since the file is already fully received.
+                   got_block0==0 in WAIT_HEADER marks "awaiting terminator". */
+                pipes_write_byte(session->line, YMODEM_ACK);
+                pipes_write_byte(session->line, y->start_char);
+                y->block_number = 0;          /* next block is the terminating block 0 */
+                y->got_block0 = 0;
+                y->consecutive_errors = 0;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_ACK);
+                y->state = YM_RECV_WAIT_HEADER;
+                return 1;
+            }
+            break;
+
+        case YM_RECV_READ:
+            if (transfer_timeout_expired(session))
+            {
+                y->consecutive_errors++;
+                if (!y->streaming)
+                {
+                    /* Flush and NAK for retransmit. */
+                    while (pipes_bytes_available(session->line) > 0) pipes_read_byte(session->line);
+                    if (y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                        ymodem_send_cancel(session);
+                        y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                        return 0;
+                    }
+                    pipes_write_byte(session->line, YMODEM_NAK);
+                    transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                    y->state = YM_RECV_WAIT_HEADER;
+                }
+                else
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Stream error (YMODEM-G)");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                break;
+            }
+            while (pipes_bytes_available(session->line) > 0)
+            {
+                c = pipes_read_byte(session->line);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_CHAR);
+                if (ymodem_check_cancel(y, c)) { session->result = XFER_RESULT_REMOTE_CANCEL; y->state = YM_ERROR; session->state = XFER_ERROR; return 0; }
+
+                if (y->header_bytes_read < 2)
+                {
+                    if (y->header_bytes_read == 0) y->received_block_num = (uint8_t)c;
+                    else y->received_complement = (uint8_t)c;
+                    y->header_bytes_read++;
+                    continue;
+                }
+                if (y->buffer_pos < y->buffer_expected)
+                {
+                    y->block_buffer[y->buffer_pos++] = (uint8_t)c;
+                    continue;
+                }
+                if (y->crc_bytes_read == 0)
+                {
+                    y->received_crc = (uint16_t)c << 8;
+                    y->crc_bytes_read = 1;
+                }
+                else
+                {
+                    y->received_crc |= (uint16_t)c;
+                    y->state = YM_RECV_VERIFY;
+                    break;
+                }
+            }
+            break;
+
+        case YM_RECV_VERIFY:
+            if (!ymodem_verify_block(y))
+            {
+                y->consecutive_errors++;
+                if (y->streaming)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "CRC error (YMODEM-G)");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                if (y->consecutive_errors >= YMODEM_MAX_ERRORS)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Too many errors");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_TOO_MANY_ERRORS;
+                    return 0;
+                }
+                while (pipes_bytes_available(session->line) > 0) pipes_read_byte(session->line);
+                pipes_write_byte(session->line, YMODEM_NAK);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                y->state = YM_RECV_WAIT_HEADER;
+                break;
+            }
+
+            if (!y->got_block0)
+            {
+                /* This should be block 0 (block number 0). */
+                if (y->received_block_num != 0)
+                {
+                    /* Not a valid YMODEM start - abort. */
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Expected YMODEM block 0");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_PROTOCOL_ERROR;
+                    return 0;
+                }
+                ymodem_parse_block0(session, y);
+                if (y->got_block0 == 2)
+                {
+                    /* Empty block 0 = end of batch (terminator). */
+                    pipes_write_byte(session->line, YMODEM_ACK);
+                    y->state = YM_COMPLETE; session->state = XFER_COMPLETE; session->result = XFER_RESULT_OK;
+                    return 0;
+                }
+                y->consecutive_errors = 0;
+                y->block_number = 1;
+                pipes_write_byte(session->line, YMODEM_ACK);
+                pipes_write_byte(session->line, y->start_char);  /* request data */
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                y->state = YM_RECV_WAIT_HEADER;
+                break;
+            }
+
+            /* Data block. Check sequence. */
+            if (y->received_block_num == (uint8_t)((y->block_number - 1) & 0xFF))
+            {
+                /* Duplicate - re-ACK, don't write. */
+                if (!y->streaming) pipes_write_byte(session->line, YMODEM_ACK);
+                y->state = YM_RECV_WAIT_HEADER;
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                break;
+            }
+            if (y->received_block_num != (uint8_t)(y->block_number & 0xFF))
+            {
+                y->consecutive_errors++;
+                if (y->streaming)
+                {
+                    snprintf(session->error_msg, sizeof(session->error_msg), "Sequence error (YMODEM-G)");
+                    ymodem_send_cancel(session);
+                    y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_OUT_OF_SYNC;
+                    return 0;
+                }
+                while (pipes_bytes_available(session->line) > 0) pipes_read_byte(session->line);
+                pipes_write_byte(session->line, YMODEM_NAK);
+                transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+                y->state = YM_RECV_WAIT_HEADER;
+                break;
+            }
+
+            /* Write only the real bytes (truncate the final block to the exact
+               size from block 0 - this is what fixes XMODEM's ^Z padding). */
+            {
+                int to_write = y->block_size;
+                if (y->have_size)
+                {
+                    if (y->remaining <= 0) to_write = 0;
+                    else if (y->remaining < y->block_size) to_write = (int)y->remaining;
+                }
+                if (to_write > 0)
+                {
+                    if (transfer_write_file_block(session, y->block_buffer, to_write) < 0)
+                    {
+                        snprintf(session->error_msg, sizeof(session->error_msg), "File write error");
+                        ymodem_send_cancel(session);
+                        y->state = YM_ERROR; session->state = XFER_ERROR; session->result = XFER_RESULT_FILE_ERROR;
+                        return 0;
+                    }
+                    session->bytes_transferred += to_write;
+                    if (y->have_size) y->remaining -= to_write;
+                }
+            }
+            y->block_number++;
+            y->consecutive_errors = 0;
+            if (!y->streaming) pipes_write_byte(session->line, YMODEM_ACK);
+            transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+            y->state = YM_RECV_WAIT_HEADER;
+            break;
+
+        case YM_COMPLETE:
+        case YM_ERROR:
+            return 0;
+
+        default:
+            y->state = YM_ERROR; session->state = XFER_ERROR;
+            return 0;
+    }
+    return 1;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Public API                                                                                                                                                 */
+/* ******************************************************************************************************************************************************** */
+
+static ymodem_protocol_state *ymodem_alloc(transfer_session *session)
+{
+    ymodem_protocol_state *y = (ymodem_protocol_state *)malloc(sizeof(ymodem_protocol_state));
+    if (y == NULL)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "Out of memory");
+        return NULL;
+    }
+    memset(y, 0, sizeof(ymodem_protocol_state));
+    y->streaming = (session->protocol == TRANSFER_PROTO_YMODEM_G);
+    y->start_char = y->streaming ? YMODEM_G : YMODEM_C;
+    return y;
+}
+
+int ymodem_init_send(transfer_session *session)
+{
+    ymodem_protocol_state *y = ymodem_alloc(session);
+    if (y == NULL) return -1;
+    y->state = YM_SEND_WAIT_START;
+    y->remaining = session->file_size;
+    session->protocol_state = y;
+    transfer_set_timeout(session, YMODEM_TIMEOUT_START);
+    return 0;
+}
+
+int ymodem_init_receive(transfer_session *session)
+{
+    ymodem_protocol_state *y = ymodem_alloc(session);
+    if (y == NULL) return -1;
+    y->state = YM_RECV_START;
+    session->protocol_state = y;
+
+    while (pipes_bytes_available(session->line) > 0) pipes_read_byte(session->line);
+    pipes_write_byte(session->line, y->start_char);
+    transfer_set_timeout(session, YMODEM_TIMEOUT_START / YMODEM_MAX_START);
+    return 0;
+}
+
+int ymodem_poll(transfer_session *session)
+{
+    if (session == NULL || session->protocol_state == NULL) return 0;
+    if (session->direction == TRANSFER_DIR_SEND) return ymodem_poll_send(session);
+    return ymodem_poll_receive(session);
+}
+
+void ymodem_cleanup(transfer_session *session)
+{
+    if (session != NULL && session->protocol_state != NULL)
+    {
+        free(session->protocol_state);
+        session->protocol_state = NULL;
+    }
+}

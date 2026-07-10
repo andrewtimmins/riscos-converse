@@ -13,11 +13,11 @@ include CModule
 # Dynamic dependencies:
 o.debug:	c.debug
 o.debug:	C:oslib.h.report
-o.debug:	C:oslib.h.types
-o.debug:	C:oslib.h.os
+o.debug:	C:oslib.oslib.h.types
+o.debug:	C:oslib.oslib.h.os
 o.debug:	C:oslib.h.oscore32
 o.debug:	C:oslib.h.osf32
-o.debug:	C:oslib.h.wimp
+o.debug:	C:oslib.oslib.h.wimp
 o.debug:	C:oslib.h.osspriteop
 o.debug:	C:oslib.h.font
 o.debug:	C:oslib.h.wimp32

@@ -1,10 +1,14 @@
 {
-   /* Post-logon script */
-   /* Runs after successful login - shows scan then enters main menu */
+   /* Post-logon: the classic login sequence - news, last callers, new-scan */
    cls
-   fgbg 7 0
-   loginscan
+   type `<Converse$Dir>.BBS.Screens.Bulletins`
    anykey
-
+   type `<Converse$Dir>.BBS.Screens.LastCall`
+   anykey
+   cls
+   doing `Scanning for new content...`
+   loginscan
+   doing
+   anykey
    script `<Converse$Dir>.BBS.MainMenu`
 }

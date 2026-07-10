@@ -82,6 +82,14 @@ typedef enum
 #define TRANSFER_TIMEOUT_BLOCK      1000    /* 10 seconds per block */
 #define TRANSFER_TIMEOUT_ACK        300     /* 3 seconds for ACK */
 
+/* Overall no-progress (stall) timeout. If a transfer moves zero bytes for this
+   long, the peer has almost certainly vanished (client disconnected mid-
+   transfer, or went silent). A live peer always drains/feeds within ms, so this
+   only fires on a genuinely dead line. Catches the case where a protocol wait
+   (e.g. ZMODEM flow control) has no timeout of its own and would spin forever,
+   wedging the line (bug: mid-transfer disconnect). */
+#define TRANSFER_STALL_TIMEOUT      3000    /* 30 seconds with no progress */
+
 #define TRANSFER_MAX_ERRORS         10      /* Max consecutive errors before abort */
 #define TRANSFER_MAX_START_RETRIES  6       /* Max retries waiting for receiver */
 
@@ -120,7 +128,12 @@ typedef struct
     /* Timing */
     uint32_t timeout_target;                /* Centisecond timeout target */
     uint32_t start_time;                    /* Transfer start time */
-    
+
+    /* Stall detection (bug: peer vanished mid-transfer) */
+    uint32_t stall_deadline;                /* cs time by which progress must occur */
+    long stall_last_bytes;                  /* bytes_transferred at last progress */
+    int stalled;                            /* aborted due to no progress (peer gone) */
+
     /* Control */
     int cancel_requested;                   /* Cancel signal from host */
     

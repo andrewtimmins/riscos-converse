@@ -1,6 +1,6 @@
 | Pipe-backed BlockDriver build
 Dir <Obey$Dir>
-IfThere o THEN | ELSE MakeDir o
+IfThere o THEN | ELSE CDir o
 
 | Host driver (ObjAsm)
 objasm -apcs 3/32bit -o o.host s.host
@@ -12,4 +12,8 @@ objasm -apcs 3/32bit -o o.client s.client
 link -aof -o o.clientlink o.client
 link -bin -base 0 -o PipeClient o.clientlink
 
-echo Build complete: PipeHost / PipeClient
+| Deploy into the BlockDriver slots (PipeHost=PipesA end A, PipeClient=PipesB end B)
+Copy <Obey$Dir>.PipeHost   <Obey$Dir>.drivers.PipesA.Driver ~C ~V F
+Copy <Obey$Dir>.PipeClient <Obey$Dir>.drivers.PipesB.Driver ~C ~V F
+
+echo Build complete: PipeHost / PipeClient (deployed to drivers.PipesA / drivers.PipesB)
