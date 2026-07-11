@@ -218,7 +218,7 @@ static const char *script_host_get_user_by_index(void *context, int index,
 static int script_host_notify_line(void *context, int line, const char *text);
 static int script_host_notify_user(void *context, const char *key, const char *text);
 static int script_host_qwk_pack(void *context, const char *out_path);
-static int script_host_qwk_download(void *context, int protocol);
+static int script_host_qwk_download(void *context, int protocol, int new_only);
 static int script_host_qwk_upload(void *context, int protocol);
 static void qwk_out_noop(void *ctx, const char *text);
 static int script_host_filebase_download(void *context, int base_id,
@@ -2721,6 +2721,7 @@ static int script_host_qwk_pack(void *context, const char *out_path) {
                                                        : state->user.username;
   info.base_id = base_id;
   info.max_messages = 0; /* engine default cap */
+  info.since = state->qwk_since; /* set by qwk_download for new-only scans */
 
   return qwk_generate(&info, out_path, &state->mb_session);
 }
@@ -2738,7 +2739,7 @@ static transfer_protocol qwk_map_protocol(int protocol) {
 }
 
 /* Build a QWK packet and start sending it to the caller. */
-static int script_host_qwk_download(void *context, int protocol) {
+static int script_host_qwk_download(void *context, int protocol, int new_only) {
   line_task_state *state = (line_task_state *)context;
   const char *path = "<Converse$Dir>.Temp.packet";
   int count;
@@ -2746,7 +2747,9 @@ static int script_host_qwk_download(void *context, int protocol) {
   if (state == NULL) {
     return 0;
   }
+  state->qwk_since = new_only ? state->user.stats.lastscan : 0;
   count = script_host_qwk_pack(context, path);
+  state->qwk_since = 0;
   if (count < 0) {
     return 0;
   }

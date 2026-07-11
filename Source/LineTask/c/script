@@ -4370,10 +4370,13 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     if (script_stringcasecmp(token, "qwkdownload") == 0)
     {
-        /* QWKDOWNLOAD [protocol] - build + send a QWK packet (default zmodem) */
+        /* QWKDOWNLOAD [protocol] [new] - build + send a QWK packet. "new" packs
+         * only messages since the caller's last scan (default: all). */
         char *proto_str = strtok(NULL, " \t");
+        char *mode_str = strtok(NULL, " \t");
         instruction->type = SCRIPT_CMD_QWKDOWNLOAD;
         instruction->arg1 = script_duplicate_string(proto_str != NULL ? proto_str : "zmodem");
+        instruction->arg2 = script_duplicate_string(mode_str != NULL ? mode_str : "");
         return 1;
     }
 
@@ -8535,11 +8538,20 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 else if (script_stringcasecmp(e, "ymodem-g") == 0) protocol = 4;
                 else if (script_stringcasecmp(e, "zmodem") == 0) protocol = 5;
             }
-            if (state->host.qwk_download != NULL &&
-                state->host.qwk_download(state->host.context, protocol))
             {
-                state->status = SCRIPT_STATUS_WAIT_TRANSFER;
-                return;
+                int new_only = 0;
+                if (instruction->arg2 != NULL && instruction->arg2[0] != '\0')
+                {
+                    char m[16];
+                    script_expand_macros(state, instruction->arg2, m, sizeof(m));
+                    if (script_stringcasecmp(m, "new") == 0) new_only = 1;
+                }
+                if (state->host.qwk_download != NULL &&
+                    state->host.qwk_download(state->host.context, protocol, new_only))
+                {
+                    state->status = SCRIPT_STATUS_WAIT_TRANSFER;
+                    return;
+                }
             }
             script_write_output(state,
                 "\r\n\033[1;31m[Could not build the QWK packet]\033[0m\r\n");

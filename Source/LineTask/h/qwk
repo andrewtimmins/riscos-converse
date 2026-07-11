@@ -8,6 +8,8 @@
 #ifndef LINE_TASK_QWK_H
 #define LINE_TASK_QWK_H
 
+#include <time.h>
+
 typedef struct
 {
     const char *bbs_name;    /* board name           -> CONTROL.DAT line 1  */
@@ -17,6 +19,7 @@ typedef struct
     const char *user_name;   /* caller's name (uppercased in packet)       */
     int base_id;             /* message base to package                     */
     int max_messages;        /* hard cap on messages packed (0 = default)   */
+    time_t since;            /* only pack messages sent after this (0 = all) */
 } qwk_info;
 
 /* Build a QWK packet at out_path (a .QWK zip). mb_session is the caller's

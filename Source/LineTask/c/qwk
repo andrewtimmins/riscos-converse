@@ -191,6 +191,7 @@ int qwk_generate(const qwk_info *info, const char *out_path, void *mb_session)
             if (regs.r[0] == 0 || regs.r[0] == -1) break;
             mp = (LINETASK_MESSAGE_RECORD *)regs.r[0];
             if (mp->deleted) continue;
+            if (info->since > 0 && mp->sent <= info->since) continue;  /* new-only scan */
             if (mb != NULL && !messagebase_can_read_message(mb, mp)) continue;
 
             rec = *mp;   /* copy: download_block may repoint the module buffer */

@@ -111,8 +111,9 @@ typedef struct script_host
      * out_path (a .QWK zip). Returns messages packed (>=0), or -1 on error. */
     int (*qwk_pack)(void *context, const char *out_path);
     /* Generate a QWK packet and start sending it to the caller (ZMODEM etc).
-     * Returns 1 if a transfer was started (script should park), else 0. */
-    int (*qwk_download)(void *context, int protocol);
+     * new_only: 1 = only messages since the caller's last scan. Returns 1 if a
+     * transfer was started (script should park), else 0. */
+    int (*qwk_download)(void *context, int protocol, int new_only);
     /* Start receiving a .REP reply packet; on completion it is imported to the
      * message base. Returns 1 if a receive was started (park), else 0. */
     int (*qwk_upload)(void *context, int protocol);

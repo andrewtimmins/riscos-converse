@@ -229,6 +229,7 @@ typedef struct line_task_state
        as a .REP into qwk_rep_base rather than registered in the filebase. */
     int qwk_rep_pending;
     int qwk_rep_base;
+    time_t qwk_since;       /* new-only cutoff for the next QWK generate (0 = all) */
 } line_task_state;
 
 #endif
