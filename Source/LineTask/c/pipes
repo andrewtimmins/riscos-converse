@@ -228,7 +228,7 @@ int pipes_write_byte(int line, uint8_t byte)
         if (local_state->terminal != NULL)
         {
             ansiterm_process_byte((ansiterm_state *)local_state->terminal, byte);
-            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+            ansiterm_update_dirty((ansiterm_state *)local_state->terminal);
         }
         return 0;
     }
@@ -267,7 +267,7 @@ int pipes_write_block(int line, const uint8_t *data, int length)
         if (local_state->terminal != NULL)
         {
             ansiterm_process_block((ansiterm_state *)local_state->terminal, data, length);
-            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+            ansiterm_update_dirty((ansiterm_state *)local_state->terminal);
         }
         return length;
     }

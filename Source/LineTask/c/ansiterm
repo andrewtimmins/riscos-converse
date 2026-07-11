@@ -695,12 +695,22 @@ static void draw_cell_font(ansiterm_state *term, int x, int y,
         if (mask == 0)
             continue;
 
-        for (col = 0; col < ANSITERM_FONT_WIDTH; col++)
+        /* Plot each horizontal run of set pixels as ONE rectangle rather than
+         * one per pixel - cuts OS_Plot calls per glyph from ~64 to a handful. */
+        col = 0;
+        while (col < ANSITERM_FONT_WIDTH)
         {
             if (mask & (0x80 >> col))
             {
-                int pixel_x = x + (col * 2);
-                draw_pixel_block(pixel_x, pixel_y - 3, 2, 4);
+                int run_start = col;
+                while (col < ANSITERM_FONT_WIDTH && (mask & (0x80 >> col)))
+                    col++;
+                draw_pixel_block(x + (run_start * 2), pixel_y - 3,
+                                 (col - run_start) * 2, 4);
+            }
+            else
+            {
+                col++;
             }
         }
     }
