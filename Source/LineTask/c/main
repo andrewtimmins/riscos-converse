@@ -765,14 +765,16 @@ static void perform_session_disconnect(line_task_state *state) {
     }
   }
 
-  /* Update todaytime (minutes used this session) before clearing user state */
+  /* Update todaytime (minutes used this session) before clearing user state.
+     todaytime is kept live during the session by handle_null_poll, so recompute
+     it from the session baseline rather than adding (which would double-count). */
   if (state->user.id > 0 && state->user.connect_time > 0) {
     time_t now = time(NULL);
     int session_minutes = (int)((now - state->user.connect_time) / 60);
     if (session_minutes > 0) {
-      state->user.stats.todaytime += session_minutes;
+      state->user.stats.todaytime = state->user.today_base + session_minutes;
       save_user_stats(state);
-      debug_printf("Session ended: added %d minutes to todaytime (total=%d)",
+      debug_printf("Session ended: %d minutes this session (today total=%d)",
                    session_minutes, state->user.stats.todaytime);
     }
   }
@@ -1075,6 +1077,65 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
       maininfo_update(state);
     }
     last_maininfo_time = now;
+  }
+
+  /* Daily time-limit enforcement (~once a second). Keeps todaytime live so the
+     timeleft macro and maininfo track the running total, warns as the limit
+     nears, and hangs the caller up when it is reached. Sysops, nolimit users,
+     and callers with no maxtime are exempt; skipped during a file transfer so
+     we never yank a download mid-flight. */
+  {
+    static unsigned int last_timecheck = 0;
+    if (now - last_timecheck >= 100) {
+      last_timecheck = now;
+      if (state->session_active && state->user.id > 0 &&
+          state->user.connect_time > 0 &&
+          !transfer_is_active(&state->xfer_session) &&
+          !state->upload_copy.active) {
+        time_t wall = time(NULL);
+        int elapsed = (int)((wall - state->user.connect_time) / 60);
+        if (elapsed < 0) {
+          elapsed = 0;
+        }
+        state->user.stats.todaytime = state->user.today_base + elapsed;
+
+        if (!state->user.sysop && !state->user.flags.nolimit &&
+            state->user.flags.maxtime > 0) {
+          int remaining =
+              state->user.flags.maxtime - state->user.stats.todaytime;
+
+          if (remaining <= 1 && state->user.time_warn_stage < 3) {
+            pipes_write_string(
+                state->line_id,
+                "\r\n\033[1;31m*** 1 minute of your daily time remaining "
+                "***\033[0m\r\n");
+            state->user.time_warn_stage = 3;
+          } else if (remaining <= 2 && state->user.time_warn_stage < 2) {
+            pipes_write_string(
+                state->line_id,
+                "\r\n\033[1;33m*** 2 minutes of your daily time remaining "
+                "***\033[0m\r\n");
+            state->user.time_warn_stage = 2;
+          } else if (remaining <= 5 && state->user.time_warn_stage < 1) {
+            pipes_write_string(
+                state->line_id,
+                "\r\n\033[1;33m*** 5 minutes of your daily time remaining "
+                "***\033[0m\r\n");
+            state->user.time_warn_stage = 1;
+          }
+
+          if (remaining <= 0) {
+            pipes_write_string(
+                state->line_id,
+                "\r\n\033[1;31mYour time allocation for today has expired. "
+                "Please call back tomorrow.\033[0m\r\n");
+            log_line_event(state->line_id,
+                           "Daily time limit reached - disconnecting");
+            script_host_force_disconnect(state);
+          }
+        }
+      }
+    }
   }
 
   /* Poll file transfer if active - do this FIRST to consume raw bytes */
@@ -2788,6 +2849,30 @@ static int script_host_authenticate_user(void *context, const char *username,
       state->user.stats.downloads =
           *((int *)(record_bytes + USER_RECORD_OFFSET_STATS_DOWNLOADS));
 
+      /* Daily time reset: todaytime counts minutes used *today*. If the last
+         logon was on an earlier calendar day (or there is no prior logon), the
+         counter starts fresh for today. Do this before lastlogon is overwritten
+         with the current time further below. */
+      {
+        time_t prev = state->user.stats.lastlogon;
+        time_t now_t = time(NULL);
+        struct tm tm_prev;
+        struct tm tm_now;
+        if (prev != 0) {
+          tm_prev = *localtime(&prev);
+          tm_now = *localtime(&now_t);
+          if (tm_prev.tm_year != tm_now.tm_year ||
+              tm_prev.tm_yday != tm_now.tm_yday) {
+            state->user.stats.todaytime = 0;
+          }
+        } else {
+          state->user.stats.todaytime = 0;
+        }
+      }
+      /* Baseline for live time accounting this session (see handle_null_poll). */
+      state->user.today_base = state->user.stats.todaytime;
+      state->user.time_warn_stage = 0;
+
 /* Load user flags from USER_FLAGS */
 #define USER_RECORD_OFFSET_FLAGS_ANSI 584
 #define USER_RECORD_OFFSET_FLAGS_MORE 588
@@ -2817,9 +2902,10 @@ static int script_host_authenticate_user(void *context, const char *username,
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_INVISIBLE));
       state->user.flags.chataccess =
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_CHATACCESS));
-      /* AC3: up/download ratio enforcement is NOT implemented — this flag was
-         loaded but never read by any download path. Left unloaded rather than
-         implying a policy that does not exist (see docs reconciliation). */
+      /* Up/download ratio: KB downloadable per KB uploaded (0 = no ratio).
+         Enforced in the script SENDFILE path (see c/script). */
+      state->user.flags.ratios =
+          *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_RATIOS));
       state->user.flags.maxtime =
           *((int *)(record_bytes + USER_RECORD_OFFSET_FLAGS_MAXTIME));
       state->user.flags.defaultprotocol =

@@ -5,11 +5,13 @@
       `script` actions run and return to the menu; `goto` leaves it.
       Reached from the main menu with the 'Y' hot-key. */
 
+   /* Each `on` may carry a help "..." string; pressing '?' at the menu lists
+      them (context-sensitive help). */
    menu `<Converse$Dir>.BBS.Screens.MenuDemo`
-      on `t`  script `<Converse$Dir>.BBS.ScriptTest`
-      on `s`  level 500  fail `Sorry, that's sysops only.`  script `<Converse$Dir>.BBS.ScriptTest`
-      on `p`  password `secret`  script `<Converse$Dir>.BBS.ScriptTest`
-      on `q`  goto md_done
+      on `t`  help `Run the scripting engine test suite`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `s`  level 500  fail `Sorry, that's sysops only.`  help `Sysop-only demo item (needs level 500)`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `p`  password `secret`  help `Password-gated item (password: secret)`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `q`  help `Return to the main board`  goto md_done
    endmenu
 
 label md_done

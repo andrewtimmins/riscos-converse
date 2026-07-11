@@ -260,7 +260,12 @@ typedef enum
     /* Native declarative menu: menu <screen> / on <key> [gates] goto|script X / endmenu */
     SCRIPT_CMD_MENU,
     SCRIPT_CMD_ON,
-    SCRIPT_CMD_ENDMENU
+    SCRIPT_CMD_ENDMENU,
+    /* Download queue: flag files while browsing, then batch-download them */
+    SCRIPT_CMD_QUEUEADD,
+    SCRIPT_CMD_QUEUELIST,
+    SCRIPT_CMD_QUEUECLEAR,
+    SCRIPT_CMD_QUEUESEND
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */
@@ -312,6 +317,9 @@ typedef struct script_variable
 
 /* Call stack frame for subscript calls */
 #define SCRIPT_MAX_CALL_DEPTH 8
+
+/* Maximum files a caller can flag into the download queue in one session */
+#define SCRIPT_MAX_DL_QUEUE 50
 
 typedef struct script_call_frame
 {
@@ -436,6 +444,12 @@ typedef struct script_state
     int pending_download_file_id;
     int pending_download_filebase;
     int is_browser_download;
+    /* Download queue (session-only): files flagged for batch download. */
+    struct { int base_id; int file_id; } dl_queue[SCRIPT_MAX_DL_QUEUE];
+    int dl_queue_count;
+    int dl_queue_sending;       /* 1 while queuesend is walking the queue */
+    int dl_queue_cursor;        /* index of the file currently transferring */
+    int dl_queue_protocol;      /* transfer protocol for the batch */
 } script_state;
 
 void script_initialise(script_state *state, const script_host *host);

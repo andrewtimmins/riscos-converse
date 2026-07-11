@@ -113,6 +113,17 @@
    print `   files in fbase1 a0  = %{ =filecount(1, fa0) }`
    print ``
 
+   /* ---- 8. Time limits + download ratio ---- */
+   fg 11
+   print `8. Time + ratio`
+   std
+   print `   max time (min/day) = %{usermaxtime}`
+   print `   time used today     = %{todaytime}`
+   print `   time left (min)     = %{timeleft}   (-- = unlimited)`
+   print `   download ratio      = %{dl_ratio}`
+   print `   dl available (KB)   = %{dl_avail}`
+   print ``
+
    fg 10
    print `All tests complete.`
    std

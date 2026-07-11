@@ -125,6 +125,8 @@ typedef struct user_session
     script_user_flags flags;
     time_t connect_time;
     char current_activity[128];
+    int today_base;         /* minutes used today BEFORE this session (post daily-reset) */
+    int time_warn_stage;    /* 0=none, 1=5min sent, 2=2min sent, 3=1min sent */
 } user_session;
 
 /* Chat session state - sysop chat functionality */
