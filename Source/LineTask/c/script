@@ -5949,6 +5949,14 @@ static char *script_expr_call_function_ext(script_state *state, const char *name
         script_set_ok(state, r);
         return expr_from_long(r);
     }
+    /* qwkpack(path) -> build a QWK offline-mail packet at path; returns the
+       number of messages packed, or -1 on error. */
+    if (script_stringcasecmp(name, "qwkpack") == 0)
+    {
+        int r = h->qwk_pack ? h->qwk_pack(h->context, EXPR_ARG(0)) : -1;
+        script_set_ok(state, r >= 0 ? 1 : 0);
+        return expr_from_long(r);
+    }
 
     *handled = 0;
     return NULL;

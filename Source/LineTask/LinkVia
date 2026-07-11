@@ -15,6 +15,9 @@ o.transfer
 o.xmodem
 o.ymodem
 o.zmodem
+o.qwk
+o.zip
+o.unzip
 C:Desk.o.Desk
 TCPIPLibs:o.Socklib
 TCPIPLibs:o.Inetlib

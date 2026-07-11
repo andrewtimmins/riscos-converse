@@ -1,0 +1,291 @@
+/* qwk.c - QWK offline mail packet generation. See qwk.h.
+ *
+ * Builds a standard QWK packet: MESSAGES.DAT (128-byte block format) plus
+ * CONTROL.DAT, ZIP-compressed. Message bodies have their line breaks converted
+ * to the QWK end-of-line marker (0xE3) and are padded to 128-byte blocks.
+ */
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <time.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "debug.h"
+#include "qwk.h"
+#include "messagebase.h"
+#include "zip.h"
+
+#define QWK_BLOCK        128
+#define QWK_DEFAULT_MAX  500
+#define QWK_EOL          0xE3   /* QWK in-message line terminator */
+#define QWK_MAX_CONFS    64
+
+/* ---- growable byte buffer ------------------------------------------------ */
+typedef struct { unsigned char *p; size_t len, cap; } gbuf;
+
+static int gb_init(gbuf *b, size_t cap)
+{
+    if (cap < 1024) cap = 1024;
+    b->p = (unsigned char *)malloc(cap);
+    if (b->p == NULL) return 0;
+    b->len = 0; b->cap = cap;
+    return 1;
+}
+
+static int gb_append(gbuf *b, const void *data, size_t n)
+{
+    if (b->len + n > b->cap)
+    {
+        size_t nc = b->cap * 2;
+        unsigned char *np;
+        while (nc < b->len + n) nc *= 2;
+        np = (unsigned char *)realloc(b->p, nc);
+        if (np == NULL) return 0;
+        b->p = np; b->cap = nc;
+    }
+    memcpy(b->p + b->len, data, n);
+    b->len += n;
+    return 1;
+}
+
+static int gb_fill(gbuf *b, unsigned char c, size_t n)
+{
+    while (n-- > 0) { if (!gb_append(b, &c, 1)) return 0; }
+    return 1;
+}
+
+static void gb_free(gbuf *b) { free(b->p); b->p = NULL; b->len = b->cap = 0; }
+
+/* Write a fixed-width, space-padded field (no terminator). */
+static void field(unsigned char *dst, const char *src, int width)
+{
+    int i = 0;
+    if (src != NULL)
+        for (; src[i] != '\0' && i < width; i++) dst[i] = (unsigned char)src[i];
+    for (; i < width; i++) dst[i] = ' ';
+}
+
+/* Append one QWK message (header block + padded body blocks) to msgs. */
+static void append_message(gbuf *msgs, int seq, int confnum,
+                           const LINETASK_MESSAGE_RECORD *rec,
+                           const char *from, const char *to,
+                           const unsigned char *body, long body_len)
+{
+    unsigned char hdr[QWK_BLOCK];
+    char num[16], datebuf[12], timebuf[8], blk[8];
+    struct tm *lt;
+    time_t t;
+    gbuf bb;
+    long i;
+    int nblocks;
+
+    /* Body: CR dropped, LF -> 0xE3, padded to a 128-byte multiple. */
+    if (!gb_init(&bb, (size_t)body_len + QWK_BLOCK)) return;
+    for (i = 0; i < body_len; i++)
+    {
+        unsigned char c = body[i];
+        if (c == '\r') continue;
+        if (c == '\n') c = QWK_EOL;
+        gb_append(&bb, &c, 1);
+    }
+    if (bb.len == 0) gb_fill(&bb, ' ', 1);
+    if (bb.len % QWK_BLOCK) gb_fill(&bb, ' ', QWK_BLOCK - (bb.len % QWK_BLOCK));
+    nblocks = 1 + (int)(bb.len / QWK_BLOCK);
+
+    memset(hdr, ' ', QWK_BLOCK);
+    hdr[0] = ' ';                                  /* status: public, unread */
+    snprintf(num, sizeof(num), "%d", rec->id);
+    field(hdr + 1, num, 7);
+    t = rec->sent; lt = localtime(&t);
+    if (lt != NULL)
+    {
+        snprintf(datebuf, sizeof(datebuf), "%02d-%02d-%02d",
+                 lt->tm_mon + 1, lt->tm_mday, lt->tm_year % 100);
+        snprintf(timebuf, sizeof(timebuf), "%02d:%02d", lt->tm_hour, lt->tm_min);
+    }
+    else { strcpy(datebuf, "01-01-80"); strcpy(timebuf, "00:00"); }
+    field(hdr + 8, datebuf, 8);
+    field(hdr + 16, timebuf, 5);
+    field(hdr + 21, to, 25);
+    field(hdr + 46, from, 25);
+    field(hdr + 71, rec->subject, 25);
+    field(hdr + 96, "", 12);                        /* password */
+    field(hdr + 108, "0", 8);                       /* reference number */
+    snprintf(blk, sizeof(blk), "%d", nblocks);
+    field(hdr + 116, blk, 6);
+    hdr[122] = 225;                                 /* active flag */
+    hdr[123] = (unsigned char)(confnum & 0xFF);
+    hdr[124] = (unsigned char)((confnum >> 8) & 0xFF);
+    hdr[125] = (unsigned char)(seq & 0xFF);
+    hdr[126] = (unsigned char)((seq >> 8) & 0xFF);
+    hdr[127] = ' ';
+
+    gb_append(msgs, hdr, QWK_BLOCK);
+    gb_append(msgs, bb.p, bb.len);
+    gb_free(&bb);
+}
+
+int qwk_generate(const qwk_info *info, const char *out_path, void *mb_session)
+{
+    messagebase_session *mb = (messagebase_session *)mb_session;
+    _kernel_swi_regs regs;
+    gbuf msgs, ctl;
+    unsigned char block0[QWK_BLOCK];
+    int total = 0, seq = 0, area_index, conf_count = 0, i;
+    int max;
+    ZIP_ARCHIVE zip;
+    char line[160];
+    time_t now;
+    struct tm *lt;
+    struct { int num; char name[64]; } confs[QWK_MAX_CONFS];
+
+    if (info == NULL || out_path == NULL) return -1;
+    max = (info->max_messages > 0) ? info->max_messages : QWK_DEFAULT_MAX;
+
+    if (!gb_init(&msgs, 65536)) return -1;
+    if (!gb_init(&ctl, 4096)) { gb_free(&msgs); return -1; }
+
+    /* MESSAGES.DAT block 0: 128-byte producer header. */
+    memset(block0, ' ', QWK_BLOCK);
+    field(block0, "Produced by Converse BBS", QWK_BLOCK);
+    gb_append(&msgs, block0, QWK_BLOCK);
+
+    /* Walk the base's areas, packing readable messages up to the cap. */
+    for (area_index = 0; total < max; area_index++)
+    {
+        LINETASK_MESSAGEBASE_AREA_RECORD *area;
+        int area_id, msg_index, packed_here = 0;
+
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+        regs.r[1] = info->base_id;
+        regs.r[2] = area_index;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL) break;
+        if (regs.r[0] == 0 || regs.r[0] == -1) break;
+        area = (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+        area_id = area->id;
+
+        if (conf_count < QWK_MAX_CONFS)
+        {
+            confs[conf_count].num = area_id;
+            strncpy(confs[conf_count].name, area->name, sizeof(confs[0].name) - 1);
+            confs[conf_count].name[sizeof(confs[0].name) - 1] = '\0';
+        }
+
+        for (msg_index = 0; total < max; msg_index++)
+        {
+            LINETASK_MESSAGE_RECORD *mp, rec;
+            unsigned char *body = NULL;
+            long blen;
+            char from[36], to[36];
+
+            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+            regs.r[1] = info->base_id;
+            regs.r[2] = area_id;
+            regs.r[3] = msg_index;
+            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL) break;
+            if (regs.r[0] == 0 || regs.r[0] == -1) break;
+            mp = (LINETASK_MESSAGE_RECORD *)regs.r[0];
+            if (mp->deleted) continue;
+            if (mb != NULL && !messagebase_can_read_message(mb, mp)) continue;
+
+            rec = *mp;   /* copy: download_block may repoint the module buffer */
+
+            blen = (rec.bodysize > 0) ? rec.bodysize : 0;
+            if (blen > 0)
+            {
+                body = (unsigned char *)malloc(blen);
+                if (body != NULL &&
+                    messagebase_download_block(info->base_id, rec.id, body, 0, (int)blen) < 0)
+                {
+                    free(body); body = NULL; blen = 0;
+                }
+            }
+
+            from[0] = to[0] = '\0';
+            if (rec.fromname[0] != '\0')
+            {
+                strncpy(from, rec.fromname, sizeof(from) - 1); from[sizeof(from) - 1] = '\0';
+            }
+            else if (rec.sentby > 0)
+            {
+                messagebase_lookup_user_by_id(rec.sentby, from, sizeof(from));
+            }
+            if (rec.toname[0] != '\0')
+            {
+                strncpy(to, rec.toname, sizeof(to) - 1); to[sizeof(to) - 1] = '\0';
+            }
+            else
+            {
+                strcpy(to, "ALL");
+            }
+
+            seq++;
+            append_message(&msgs, seq, area_id, &rec, from, to,
+                           body != NULL ? body : (const unsigned char *)"", blen);
+            free(body);
+            total++; packed_here++;
+        }
+
+        if (packed_here > 0 && conf_count < QWK_MAX_CONFS) conf_count++;
+    }
+
+    /* --- CONTROL.DAT --- */
+#define CTL(s) gb_append(&ctl, (s), strlen(s))
+    CTL(info->bbs_name ? info->bbs_name : "Converse BBS"); CTL("\r\n");
+    CTL(info->location ? info->location : "");            CTL("\r\n");
+    CTL("");                                              CTL("\r\n"); /* phone */
+    CTL(info->sysop ? info->sysop : "");                  CTL("\r\n");
+    snprintf(line, sizeof(line), "00000,%s", info->bbsid ? info->bbsid : "CONVERSE");
+    CTL(line); CTL("\r\n");
+    now = time(NULL); lt = localtime(&now);
+    if (lt != NULL)
+        snprintf(line, sizeof(line), "%02d-%02d-%04d,%02d:%02d:%02d",
+                 lt->tm_mon + 1, lt->tm_mday, lt->tm_year + 1900,
+                 lt->tm_hour, lt->tm_min, lt->tm_sec);
+    else
+        strcpy(line, "01-01-1980,00:00:00");
+    CTL(line); CTL("\r\n");
+    {
+        char un[64]; int j = 0;
+        if (info->user_name != NULL)
+            for (; info->user_name[j] != '\0' && j < 63; j++)
+                un[j] = (char)toupper((unsigned char)info->user_name[j]);
+        un[j] = '\0';
+        CTL(un); CTL("\r\n");
+    }
+    CTL("");  CTL("\r\n");                                 /* Qmail menu name */
+    CTL("0"); CTL("\r\n");                                 /* Qmail junk */
+    snprintf(line, sizeof(line), "%d", total > 0 ? total - 1 : 0);
+    CTL(line); CTL("\r\n");                                 /* total messages */
+    snprintf(line, sizeof(line), "%d", conf_count > 0 ? conf_count - 1 : 0);
+    CTL(line); CTL("\r\n");                                 /* highest conf index */
+    for (i = 0; i < conf_count; i++)
+    {
+        snprintf(line, sizeof(line), "%d", confs[i].num);
+        CTL(line); CTL("\r\n");
+        CTL(confs[i].name[0] ? confs[i].name : "General"); CTL("\r\n");
+    }
+    CTL("HELLO");   CTL("\r\n");
+    CTL("NEWS");    CTL("\r\n");
+    CTL("GOODBYE"); CTL("\r\n");
+#undef CTL
+
+    /* --- ZIP the two members --- */
+    if (zip_create(&zip, out_path) != ZIP_OK)
+    {
+        gb_free(&msgs); gb_free(&ctl);
+        return -1;
+    }
+    zip_add_memory(&zip, ctl.p, ctl.len, "CONTROL.DAT", 1);
+    zip_add_memory(&zip, msgs.p, msgs.len, "MESSAGES.DAT", 1);
+    zip_close(&zip);
+
+    debug_printf("qwk_generate: packed %d messages across %d confs -> %s",
+                 total, conf_count, out_path);
+    gb_free(&msgs); gb_free(&ctl);
+    return total;
+}

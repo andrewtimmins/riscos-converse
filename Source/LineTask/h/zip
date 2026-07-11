@@ -1,0 +1,169 @@
+/* ******************************************************************************************************************************************************** */
+/* FTN Mailer - ZIP Archive Creation Header                                                                                                                 */
+/*                                                                                                                                                          */
+/* Implements PKZIP creation with DEFLATE compression (RFC 1951).                                                                                           */
+/* ******************************************************************************************************************************************************** */
+
+#ifndef ZIP_H
+#define ZIP_H
+
+/* ******************************************************************************************************************************************************** */
+/* Error Codes                                                                                                                                              */
+/* ******************************************************************************************************************************************************** */
+
+#define ZIP_OK                  0
+#define ZIP_ERR_OPEN            1       /* Cannot open/create file */
+#define ZIP_ERR_WRITE           2       /* Write error */
+#define ZIP_ERR_READ            3       /* Read error */
+#define ZIP_ERR_MEMORY          4       /* Memory allocation failed */
+#define ZIP_ERR_COMPRESS        5       /* Compression error */
+#define ZIP_ERR_FULL            6       /* Too many entries */
+
+/* ******************************************************************************************************************************************************** */
+/* Constants                                                                                                                                                */
+/* ******************************************************************************************************************************************************** */
+
+#define ZIP_MAX_ENTRIES         256     /* Maximum files per archive */
+#define ZIP_MAX_PATH            256     /* Maximum path length */
+#define ZIP_COMPRESS_THRESHOLD  64      /* Files smaller than this use Store */
+
+/* Compression methods */
+#define ZIP_METHOD_STORE        0       /* No compression */
+#define ZIP_METHOD_DEFLATE      8       /* DEFLATE compression */
+
+/* ******************************************************************************************************************************************************** */
+/* Data Structures                                                                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+/* Central directory entry (internal tracking) */
+typedef struct
+{
+    char filename[ZIP_MAX_PATH];
+    unsigned short method;
+    unsigned long crc32;
+    unsigned long compressed_size;
+    unsigned long uncompressed_size;
+    unsigned long local_header_offset;
+    unsigned short dos_date;
+    unsigned short dos_time;
+} ZIP_CD_ENTRY;
+
+/* ZIP archive being created */
+typedef struct
+{
+    char path[ZIP_MAX_PATH];
+    void *fp;                           /* FILE pointer */
+    int entry_count;
+    ZIP_CD_ENTRY entries[ZIP_MAX_ENTRIES];
+    unsigned long current_offset;
+} ZIP_ARCHIVE;
+
+/* ******************************************************************************************************************************************************** */
+/* Function Prototypes                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/*
+ * zip_create
+ *
+ * Create a new ZIP archive for writing.
+ *
+ * Entry:
+ *   archive - Pointer to ZIP_ARCHIVE structure to initialise
+ *   path    - Path to the ZIP file to create
+ *
+ * Exit:
+ *   ZIP_OK on success, error code on failure
+ */
+int zip_create(ZIP_ARCHIVE *archive, const char *path);
+
+/*
+ * zip_add_file
+ *
+ * Add a file from disk to the ZIP archive.
+ *
+ * Entry:
+ *   archive   - ZIP archive handle
+ *   src_path  - Path to the source file on disk
+ *   arc_name  - Name to store in archive (NULL = use basename)
+ *   compress  - 1 to compress with DEFLATE, 0 to store
+ *
+ * Exit:
+ *   ZIP_OK on success, error code on failure
+ */
+int zip_add_file(ZIP_ARCHIVE *archive, const char *src_path,
+                 const char *arc_name, int compress);
+
+/*
+ * zip_add_memory
+ *
+ * Add data from memory to the ZIP archive.
+ *
+ * Entry:
+ *   archive   - ZIP archive handle
+ *   data      - Pointer to data to add
+ *   data_len  - Length of data in bytes
+ *   arc_name  - Name to store in archive
+ *   compress  - 1 to compress with DEFLATE, 0 to store
+ *
+ * Exit:
+ *   ZIP_OK on success, error code on failure
+ */
+int zip_add_memory(ZIP_ARCHIVE *archive, const unsigned char *data,
+                   unsigned long data_len, const char *arc_name, int compress);
+
+/*
+ * zip_close
+ *
+ * Finalise and close the ZIP archive. Writes central directory.
+ *
+ * Entry:
+ *   archive - ZIP archive handle
+ *
+ * Exit:
+ *   ZIP_OK on success, error code on failure
+ */
+int zip_close(ZIP_ARCHIVE *archive);
+
+/*
+ * zip_abort
+ *
+ * Abort archive creation and delete partial file.
+ *
+ * Entry:
+ *   archive - ZIP archive handle
+ */
+void zip_abort(ZIP_ARCHIVE *archive);
+
+/*
+ * zip_compress_buffer
+ *
+ * Compress a buffer using DEFLATE (for external use).
+ *
+ * Entry:
+ *   in       - Input data
+ *   in_len   - Input length
+ *   out      - Output buffer (must be at least in_len + 256 bytes)
+ *   out_size - Size of output buffer
+ *   out_len  - Receives actual compressed length
+ *
+ * Exit:
+ *   ZIP_OK on success, error code on failure
+ */
+int zip_compress_buffer(const unsigned char *in, unsigned long in_len,
+                        unsigned char *out, unsigned long out_size,
+                        unsigned long *out_len);
+
+/*
+ * zip_error_string
+ *
+ * Get human-readable error message.
+ *
+ * Entry:
+ *   error - Error code from zip functions
+ *
+ * Exit:
+ *   Pointer to static error string
+ */
+const char *zip_error_string(int error);
+
+#endif /* ZIP_H */

@@ -107,6 +107,9 @@ typedef struct script_host
      * user (by id or username) is online. Return 1 on success. */
     int (*notify_line)(void *context, int line, const char *text);
     int (*notify_user)(void *context, const char *key, const char *text);
+    /* Build a QWK offline-mail packet of the caller's current message base into
+     * out_path (a .QWK zip). Returns messages packed (>=0), or -1 on error. */
+    int (*qwk_pack)(void *context, const char *out_path);
 } script_host;
 
 typedef enum

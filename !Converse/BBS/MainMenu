@@ -45,6 +45,8 @@ label main_menu
    if choice == `K` goto go_queue
    if choice == `t` goto go_tell
    if choice == `T` goto go_tell
+   if choice == `a` goto go_qwk
+   if choice == `A` goto go_qwk
    if choice == `?` goto go_help
    if choice == `q` goto go_quit
    if choice == `Q` goto go_quit
@@ -97,6 +99,9 @@ label go_queue
    goto main_menu
 label go_tell
    script `<Converse$Dir>.BBS.Tell`
+   goto main_menu
+label go_qwk
+   script `<Converse$Dir>.BBS.QWK`
    goto main_menu
 
 label go_scan

@@ -1,0 +1,27 @@
+/* qwk.h - QWK/QWKE offline mail packet generation for Converse.
+ *
+ * Builds a standard QWK packet (CONTROL.DAT + MESSAGES.DAT, ZIP-compressed)
+ * from a caller's message base so they can read mail offline. Reply (.REP)
+ * import is handled separately.
+ */
+
+#ifndef LINE_TASK_QWK_H
+#define LINE_TASK_QWK_H
+
+typedef struct
+{
+    const char *bbs_name;    /* board name           -> CONTROL.DAT line 1  */
+    const char *location;    /* city / location      -> line 2             */
+    const char *sysop;       /* sysop name           -> line 4             */
+    const char *bbsid;       /* short packet id, e.g. "CONVERSE"           */
+    const char *user_name;   /* caller's name (uppercased in packet)       */
+    int base_id;             /* message base to package                     */
+    int max_messages;        /* hard cap on messages packed (0 = default)   */
+} qwk_info;
+
+/* Build a QWK packet at out_path (a .QWK zip). mb_session is the caller's
+ * live messagebase_session (used for read-access checks). Returns the number
+ * of messages packed (>= 0), or -1 on error. */
+int qwk_generate(const qwk_info *info, const char *out_path, void *mb_session);
+
+#endif /* LINE_TASK_QWK_H */

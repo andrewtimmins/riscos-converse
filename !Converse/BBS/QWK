@@ -1,0 +1,26 @@
+{
+   /* QWK offline mail - build a packet of the current message base for offline
+      reading. Reached from the main menu 'A' key. (Download delivery next.) */
+   cls
+   fg 14
+   print `=== QWK Offline Mail ===`
+   std
+   print ``
+   doing `Building your QWK packet...`
+   set n = qwkpack(`<Converse$Dir>.Temp.packet`)
+   doing
+   if ok == 1 goto qwk_ok
+   fg 12
+   print `\r\nCould not build a packet - select a message base first.`
+   std
+   anykey
+   return
+
+label qwk_ok
+   fg 10
+   print `\r\nPacked %{n} message(s) into your QWK packet.`
+   std
+   print ``
+   anykey
+   return
+}

@@ -32,6 +32,7 @@
 #include "iconnames.h"
 #include "main.h"
 #include "messagebase.h"
+#include "qwk.h"
 #include "pipes.h"
 #include "script.h"
 #include "transfer.h"
@@ -216,6 +217,7 @@ static const char *script_host_get_user_by_index(void *context, int index,
                                                   const char *field);
 static int script_host_notify_line(void *context, int line, const char *text);
 static int script_host_notify_user(void *context, const char *key, const char *text);
+static int script_host_qwk_pack(void *context, const char *out_path);
 static int script_host_filebase_download(void *context, int base_id,
                                          int file_id);
 static int script_host_authenticate_user(void *context, const char *username,
@@ -460,6 +462,7 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.get_user_by_index = script_host_get_user_by_index;
     host.notify_line = script_host_notify_line;
     host.notify_user = script_host_notify_user;
+    host.qwk_pack = script_host_qwk_pack;
     host.filebase_download = script_host_filebase_download;
     host.authenticate_user = script_host_authenticate_user;
     host.start_postlogon = script_host_start_postlogon;
@@ -2649,6 +2652,47 @@ static int script_host_notify_user(void *context, const char *key, const char *t
       return script_host_notify_line(context, i, text);
   }
   return 0; /* user not currently online */
+}
+
+/* Build a QWK offline-mail packet of the caller's current message base. */
+static int script_host_qwk_pack(void *context, const char *out_path) {
+  line_task_state *state = (line_task_state *)context;
+  _kernel_swi_regs regs;
+  qwk_info info;
+  const char *bbs_name = NULL;
+  const char *sysop = NULL;
+  int base_id;
+
+  if (state == NULL || out_path == NULL || out_path[0] == '\0') {
+    return -1;
+  }
+  base_id = state->mb_session.current_messagebase;
+  if (base_id <= 0) {
+    return -1; /* no message base selected */
+  }
+
+  regs.r[0] = 0; /* CONFIG_REASON_GET */
+  regs.r[1] = (int)"bbs_name";
+  if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) == NULL && regs.r[0] != 0) {
+    bbs_name = (const char *)regs.r[0];
+  }
+  regs.r[0] = 0;
+  regs.r[1] = (int)"sysop_name";
+  if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) == NULL && regs.r[0] != 0) {
+    sysop = (const char *)regs.r[0];
+  }
+
+  memset(&info, 0, sizeof(info));
+  info.bbs_name = (bbs_name != NULL) ? bbs_name : "Converse BBS";
+  info.location = "";
+  info.sysop = (sysop != NULL) ? sysop : "";
+  info.bbsid = "CONVERSE";
+  info.user_name = (state->user.realname[0] != '\0') ? state->user.realname
+                                                       : state->user.username;
+  info.base_id = base_id;
+  info.max_messages = 0; /* engine default cap */
+
+  return qwk_generate(&info, out_path, &state->mb_session);
 }
 
 /* Write any user's field by id/name + persist. Scripting usersetby(). */
