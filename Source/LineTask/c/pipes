@@ -306,9 +306,9 @@ void pipes_write_string(int line, const char *str)
     {
         if (local_state->terminal != NULL)
         {
-            ansiterm_process_block((ansiterm_state *)local_state->terminal, 
+            ansiterm_process_block((ansiterm_state *)local_state->terminal,
                                    (const unsigned char *)str, strlen(str));
-            ansiterm_invalidate((ansiterm_state *)local_state->terminal);
+            ansiterm_update_dirty((ansiterm_state *)local_state->terminal);
         }
         return;
     }

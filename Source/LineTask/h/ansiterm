@@ -80,9 +80,10 @@ typedef struct {
     int dirty_top;          /* Top row needing redraw (-1 if clean) */
     int dirty_bottom;       /* Bottom row needing redraw */
     
-    /* Font data pointer (loaded from file) */
+    /* Font data pointer (loaded from file), 1bpp, font_rows bytes per char */
     unsigned char *font_data;
     int font_loaded;
+    int font_rows;          /* Glyph height in pixels: 8 (legacy) or 16 (VGA) */
 
     /* Output callback for terminal responses (e.g. DSR) */
     void (*send_input)(int line_id, const char *data, int len);

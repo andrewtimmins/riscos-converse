@@ -129,7 +129,50 @@ int ansiterm_load_font(ansiterm_state *term, const char *path)
     }
 
     file_size = regs.r[4];
-    /* Expecting 32 bytes per char (8x8 pixels, 4bpp) * 256 chars = 8192 bytes */
+
+    /* 1bpp 8x16 VGA font: 256 chars x 16 rows x 1 byte = 4096 bytes.
+     * This is the native format (MSB = leftmost pixel) so it loads directly. */
+    if (file_size == 4096)
+    {
+        if (term->font_data)
+        {
+            free(term->font_data);
+            term->font_data = NULL;
+        }
+
+        term->font_data = (unsigned char *)malloc(4096);
+        if (!term->font_data)
+        {
+            debug_printf("ansiterm: cannot allocate 8x16 font buffer");
+            return 0;
+        }
+
+        fp = fopen(path, "rb");
+        if (!fp)
+        {
+            debug_printf("ansiterm: failed to open 8x16 font file");
+            free(term->font_data);
+            term->font_data = NULL;
+            return 0;
+        }
+
+        read_bytes = fread(term->font_data, 1, 4096, fp);
+        fclose(fp);
+        if (read_bytes < 4096)
+        {
+            debug_printf("ansiterm: incomplete 8x16 font read (%d bytes)", read_bytes);
+            free(term->font_data);
+            term->font_data = NULL;
+            return 0;
+        }
+
+        term->font_rows = 16;
+        term->font_loaded = 1;
+        debug_printf("ansiterm: 8x16 VGA font loaded (%d bytes)", read_bytes);
+        return 1;
+    }
+
+    /* Otherwise expect 32 bytes per char (8x8 pixels, 4bpp) * 256 = 8192 bytes */
     if (file_size < 8192)
     {
         debug_printf("ansiterm: font file too small (%d bytes, expected 8192)", file_size);
@@ -208,8 +251,9 @@ int ansiterm_load_font(ansiterm_state *term, const char *path)
     }
 
     free(temp_buffer);
+    term->font_rows = 8;
     term->font_loaded = 1;
-    debug_printf("ansiterm: font loaded and converted successfully");
+    debug_printf("ansiterm: 8x8 font loaded and converted successfully");
     return 1;
 }
 
@@ -659,6 +703,8 @@ static void draw_cell_font(ansiterm_state *term, int x, int y,
     int bg = ansiterm_ansi_to_wimp((attr >> 4) & 0x0F);
     unsigned char *glyph;
     int row, col;
+    int rows = term->font_rows ? term->font_rows : ANSITERM_FONT_HEIGHT;
+    int row_h = ANSITERM_CHAR_HEIGHT / rows;   /* OS units per glyph row: 4 (8px) or 2 (16px) */
 
     fill_cell(x, y, bg);
 
@@ -668,23 +714,33 @@ static void draw_cell_font(ansiterm_state *term, int x, int y,
     if (!term->font_loaded || !term->font_data || ch == 0 || ch == ' ')
         return;
 
-    glyph = term->font_data + (ch * ANSITERM_FONT_HEIGHT);
+    glyph = term->font_data + (ch * rows);
     Desk_Wimp_SetColour(fg);
 
-    for (row = 0; row < ANSITERM_FONT_HEIGHT; row++)
+    for (row = 0; row < rows; row++)
     {
         unsigned char mask = glyph[row];
-        int pixel_y = y - (row * 4);
+        int pixel_y = y - (row * row_h);
 
         if (mask == 0)
             continue;
 
-        for (col = 0; col < ANSITERM_FONT_WIDTH; col++)
+        /* Plot each horizontal run of set pixels as ONE rectangle rather than
+         * one per pixel - cuts OS_Plot calls per glyph from ~64 to a handful. */
+        col = 0;
+        while (col < ANSITERM_FONT_WIDTH)
         {
             if (mask & (0x80 >> col))
             {
-                int pixel_x = x + (col * 2);
-                draw_pixel_block(pixel_x, pixel_y - 3, 2, 4);
+                int run_start = col;
+                while (col < ANSITERM_FONT_WIDTH && (mask & (0x80 >> col)))
+                    col++;
+                draw_pixel_block(x + (run_start * 2), pixel_y - (row_h - 1),
+                                 (col - run_start) * 2, row_h);
+            }
+            else
+            {
+                col++;
             }
         }
     }
@@ -836,6 +892,40 @@ int ansiterm_keypress(ansiterm_state *term, int key_code)
     return 0;
 }
 
+/* Paint a range of rows to the screen immediately (outside the Wimp redraw
+ * loop) via Wimp_UpdateWindow. Keeps the on-screen image in step with the cell
+ * buffer synchronously, which is what lets ansiterm_scroll_* use a hardware
+ * block-copy safely. */
+static void ansiterm_paint_rows(ansiterm_state *term, int top_row, int bottom_row)
+{
+    Desk_window_redrawblock block;
+    Desk_bool more;
+
+    if (!term || !term->window)
+        return;
+
+    if (top_row < 0)
+        top_row = 0;
+    if (bottom_row >= ANSITERM_ROWS)
+        bottom_row = ANSITERM_ROWS - 1;
+    if (top_row > bottom_row)
+        return;
+
+    block.window = term->window;
+    block.rect.min.x = 0;
+    block.rect.max.x = ANSITERM_WIDTH;
+    block.rect.max.y = -(top_row * ANSITERM_CHAR_HEIGHT);
+    block.rect.min.y = -((bottom_row + 1) * ANSITERM_CHAR_HEIGHT);
+
+    Desk_Wimp_UpdateWindow(&block, &more);
+    while (more)
+    {
+        _kernel_oswrch(5); /* Enable VDU 5 for text plotting */
+        ansiterm_refresh_rectangle(term, &block);
+        Desk_Wimp_GetRectangle(&block, &more);
+    }
+}
+
 void ansiterm_invalidate(ansiterm_state *term)
 {
     _kernel_swi_regs regs;
@@ -853,9 +943,8 @@ void ansiterm_invalidate(ansiterm_state *term)
 
 void ansiterm_update_dirty(ansiterm_state *term)
 {
-    _kernel_swi_regs regs;
-    int y_top;
-    int y_bottom;
+    int top;
+    int bottom;
 
     if (!term || !term->window)
         return;
@@ -863,18 +952,18 @@ void ansiterm_update_dirty(ansiterm_state *term)
     if (term->dirty_top < 0)
         return;
 
-    y_top = -(term->dirty_top * ANSITERM_CHAR_HEIGHT);
-    y_bottom = -((term->dirty_bottom + 1) * ANSITERM_CHAR_HEIGHT);
+    top = term->dirty_top;
+    bottom = term->dirty_bottom;
 
-    regs.r[0] = term->window;
-    regs.r[1] = 0;
-    regs.r[2] = y_bottom;
-    regs.r[3] = ANSITERM_WIDTH;
-    regs.r[4] = y_top;
-    _kernel_swi(SWI_Wimp_ForceRedraw, &regs, &regs);
-
+    /* Clear the dirty markers before painting so any re-entrant marking during
+     * the paint is preserved for the next flush. */
     term->dirty_top = -1;
     term->dirty_bottom = -1;
+
+    /* Paint the changed rows straight away rather than queuing a deferred
+     * ForceRedraw - the immediate paint keeps the screen in step with the
+     * buffer, which ansiterm_scroll_* relies on for its block-copy scroll. */
+    ansiterm_paint_rows(term, top, bottom);
 }
 
 void ansiterm_clear(ansiterm_state *term)
@@ -924,6 +1013,23 @@ void ansiterm_scroll_up(ansiterm_state *term, int lines)
         return;
     }
 
+    /* Bring the screen up to date before we blit - BlockCopy moves the pixels
+     * that are currently displayed, so any pending rows must be painted first. */
+    if (term->window && term->dirty_top >= 0)
+        ansiterm_update_dirty(term);
+
+    /* Shift the visible pixels up in a single hardware block-copy. */
+    if (term->window)
+    {
+        Desk_wimp_box src;
+        src.min.x = 0;
+        src.min.y = -ANSITERM_HEIGHT;
+        src.max.x = ANSITERM_WIDTH;
+        src.max.y = -(lines * ANSITERM_CHAR_HEIGHT);
+        Desk_Wimp_BlockCopy(term->window, &src,
+                            0, -((ANSITERM_ROWS - lines) * ANSITERM_CHAR_HEIGHT));
+    }
+
     for (row = 0; row < ANSITERM_ROWS - lines; row++)
     {
         src_row = row + lines;
@@ -940,8 +1046,17 @@ void ansiterm_scroll_up(ansiterm_state *term, int lines)
         }
     }
 
-    term->dirty_top = 0;
-    term->dirty_bottom = ANSITERM_ROWS - 1;
+    if (term->window)
+    {
+        /* Only the freshly-blanked bottom rows need repainting. */
+        term->dirty_top = ANSITERM_ROWS - lines;
+        term->dirty_bottom = ANSITERM_ROWS - 1;
+    }
+    else
+    {
+        term->dirty_top = 0;
+        term->dirty_bottom = ANSITERM_ROWS - 1;
+    }
 }
 
 void ansiterm_scroll_down(ansiterm_state *term, int lines)
@@ -960,6 +1075,21 @@ void ansiterm_scroll_down(ansiterm_state *term, int lines)
         return;
     }
 
+    /* Flush pending rows so the block-copy moves an up-to-date screen. */
+    if (term->window && term->dirty_top >= 0)
+        ansiterm_update_dirty(term);
+
+    /* Shift the visible pixels down in a single hardware block-copy. */
+    if (term->window)
+    {
+        Desk_wimp_box src;
+        src.min.x = 0;
+        src.min.y = -((ANSITERM_ROWS - lines) * ANSITERM_CHAR_HEIGHT);
+        src.max.x = ANSITERM_WIDTH;
+        src.max.y = 0;
+        Desk_Wimp_BlockCopy(term->window, &src, 0, -ANSITERM_HEIGHT);
+    }
+
     for (row = ANSITERM_ROWS - 1; row >= lines; row--)
     {
         src_row = row - lines;
@@ -976,8 +1106,17 @@ void ansiterm_scroll_down(ansiterm_state *term, int lines)
         }
     }
 
-    term->dirty_top = 0;
-    term->dirty_bottom = ANSITERM_ROWS - 1;
+    if (term->window)
+    {
+        /* Only the freshly-blanked top rows need repainting. */
+        term->dirty_top = 0;
+        term->dirty_bottom = lines - 1;
+    }
+    else
+    {
+        term->dirty_top = 0;
+        term->dirty_bottom = ANSITERM_ROWS - 1;
+    }
 }
 
 void ansiterm_blink(ansiterm_state *term)
