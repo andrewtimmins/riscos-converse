@@ -110,6 +110,12 @@ typedef struct script_host
     /* Build a QWK offline-mail packet of the caller's current message base into
      * out_path (a .QWK zip). Returns messages packed (>=0), or -1 on error. */
     int (*qwk_pack)(void *context, const char *out_path);
+    /* Generate a QWK packet and start sending it to the caller (ZMODEM etc).
+     * Returns 1 if a transfer was started (script should park), else 0. */
+    int (*qwk_download)(void *context, int protocol);
+    /* Start receiving a .REP reply packet; on completion it is imported to the
+     * message base. Returns 1 if a receive was started (park), else 0. */
+    int (*qwk_upload)(void *context, int protocol);
 } script_host;
 
 typedef enum
@@ -268,7 +274,10 @@ typedef enum
     SCRIPT_CMD_QUEUEADD,
     SCRIPT_CMD_QUEUELIST,
     SCRIPT_CMD_QUEUECLEAR,
-    SCRIPT_CMD_QUEUESEND
+    SCRIPT_CMD_QUEUESEND,
+    /* QWK offline mail: download a packet / upload a reply packet */
+    SCRIPT_CMD_QWKDOWNLOAD,
+    SCRIPT_CMD_QWKUPLOAD
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */

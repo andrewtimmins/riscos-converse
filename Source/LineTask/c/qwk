@@ -18,6 +18,7 @@
 #include "qwk.h"
 #include "messagebase.h"
 #include "zip.h"
+#include "unzip.h"
 
 #define QWK_BLOCK        128
 #define QWK_DEFAULT_MAX  500
@@ -288,4 +289,104 @@ int qwk_generate(const qwk_info *info, const char *out_path, void *mb_session)
                  total, conf_count, out_path);
     gb_free(&msgs); gb_free(&ctl);
     return total;
+}
+
+/* Trim trailing spaces from a NUL-terminated string in place. */
+static void rtrim(char *s)
+{
+    size_t n = strlen(s);
+    while (n > 0 && s[n - 1] == ' ') s[--n] = '\0';
+}
+
+int qwk_import(const char *rep_path, int base_id, void *mb_session,
+               void (*output)(void *ctx, const char *text), void *ctx)
+{
+    messagebase_session *mb = (messagebase_session *)mb_session;
+    UNZIP_ARCHIVE arc;
+    UNZIP_ENTRY entry;
+    unsigned char *dat = NULL;
+    unsigned long datlen;
+    int i, count, found = 0, posted = 0;
+    long off;
+
+    if (rep_path == NULL || base_id <= 0) return -1;
+    if (unzip_open(&arc, rep_path) != UNZIP_OK) return -1;
+
+    /* Find the <BBSID>.MSG member (any entry whose name ends in "MSG"). */
+    count = unzip_get_entry_count(&arc);
+    for (i = 0; i < count; i++)
+    {
+        size_t L;
+        if (unzip_get_entry(&arc, i, &entry) != UNZIP_OK) continue;
+        L = strlen(entry.filename);
+        if (L >= 3 &&
+            toupper((unsigned char)entry.filename[L - 3]) == 'M' &&
+            toupper((unsigned char)entry.filename[L - 2]) == 'S' &&
+            toupper((unsigned char)entry.filename[L - 1]) == 'G')
+        {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) { unzip_close(&arc); return -1; }
+    if (entry.uncompressed_size == 0 || entry.uncompressed_size > UNZIP_MAX_ENTRY_SIZE)
+    {
+        unzip_close(&arc);
+        return -1;
+    }
+    dat = (unsigned char *)malloc(entry.uncompressed_size);
+    if (dat == NULL) { unzip_close(&arc); return -1; }
+    if (unzip_extract_to_memory(&arc, &entry, dat, entry.uncompressed_size) != UNZIP_OK)
+    {
+        free(dat); unzip_close(&arc);
+        return -1;
+    }
+    datlen = entry.uncompressed_size;
+    unzip_close(&arc);
+
+    /* Parse: skip producer block 0, then each message header + body blocks. */
+    off = QWK_BLOCK;
+    while (off + QWK_BLOCK <= (long)datlen)
+    {
+        unsigned char *h = dat + off;
+        char to[26], subj[26], nbuf[8];
+        int nblk, conf;
+        long bodylen, k, w;
+        char *body;
+
+        memcpy(nbuf, h + 116, 6); nbuf[6] = '\0';
+        nblk = atoi(nbuf);
+        if (nblk < 1) nblk = 1;
+        conf = h[123] | (h[124] << 8);
+        memcpy(to, h + 21, 25); to[25] = '\0'; rtrim(to);
+        memcpy(subj, h + 71, 25); subj[25] = '\0'; rtrim(subj);
+
+        bodylen = (long)(nblk - 1) * QWK_BLOCK;
+        if (bodylen < 0) bodylen = 0;
+        if (off + QWK_BLOCK + bodylen > (long)datlen)
+            bodylen = (long)datlen - off - QWK_BLOCK;
+        if (bodylen < 0) bodylen = 0;
+
+        body = (char *)malloc((size_t)bodylen + 1);
+        if (body != NULL)
+        {
+            unsigned char *bp = h + QWK_BLOCK;
+            w = 0;
+            for (k = 0; k < bodylen; k++)
+            {
+                unsigned char c = bp[k];
+                body[w++] = (c == QWK_EOL) ? '\n' : (char)c;
+            }
+            while (w > 0 && (body[w - 1] == ' ' || body[w - 1] == '\n')) w--;
+            body[w] = '\0';
+            if (messagebase_post_direct(mb, base_id, conf, to, subj, body, output, ctx) > 0)
+                posted++;
+            free(body);
+        }
+        off += (long)nblk * QWK_BLOCK;
+    }
+
+    free(dat);
+    debug_printf("qwk_import: posted %d reply message(s)", posted);
+    return posted;
 }

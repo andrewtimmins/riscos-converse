@@ -1,26 +1,43 @@
 {
-   /* QWK offline mail - build a packet of the current message base for offline
-      reading. Reached from the main menu 'A' key. (Download delivery next.) */
+   /* QWK offline mail - download a packet to read/reply offline, then upload
+      the .REP reply packet. Reached from the main menu 'A' key.
+      Packages the caller's current message base, so select one first (M). */
+
+label qwk_menu
    cls
    fg 14
    print `=== QWK Offline Mail ===`
    std
    print ``
-   doing `Building your QWK packet...`
-   set n = qwkpack(`<Converse$Dir>.Temp.packet`)
-   doing
-   if ok == 1 goto qwk_ok
-   fg 12
-   print `\r\nCould not build a packet - select a message base first.`
-   std
-   anykey
-   return
-
-label qwk_ok
-   fg 10
-   print `\r\nPacked %{n} message(s) into your QWK packet.`
-   std
+   print `  [D] Download a mail packet (read + reply offline)`
+   print `  [U] Upload your reply packet (.REP)`
+   print `  [Q] Back to the main menu`
    print ``
+   print `Choice: `
+   readline c
+   if c == `d` goto qwk_dl
+   if c == `D` goto qwk_dl
+   if c == `u` goto qwk_ul
+   if c == `U` goto qwk_ul
+   if c == `q` goto qwk_done
+   if c == `Q` goto qwk_done
+   goto qwk_menu
+
+label qwk_dl
+   doing `Building + sending your QWK packet`
+   qwkdownload zmodem
+   doing
+   print `\r\nDownload finished.`
    anykey
+   goto qwk_menu
+
+label qwk_ul
+   print `\r\nStart your ZMODEM upload of the .REP reply packet now...`
+   qwkupload zmodem
+   doing
+   anykey
+   goto qwk_menu
+
+label qwk_done
    return
 }

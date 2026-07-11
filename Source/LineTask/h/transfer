@@ -170,6 +170,15 @@ int transfer_start_send(transfer_session *session, int line,
                         transfer_protocol protocol, int filebase_id, int file_id);
 
 /*
+ * Start sending an arbitrary file by path (not a filebase entry). Used for QWK
+ * packet delivery. The file is read via a normal FILE* held in the session.
+ *
+ * Returns: 0 on success, -1 on error (check session->error_msg)
+ */
+int transfer_start_send_path(transfer_session *session, int line,
+                             transfer_protocol protocol, const char *path);
+
+/*
  * Start receiving a file (BBS upload from user).
  *
  * session:     Pointer to session structure (caller allocates)

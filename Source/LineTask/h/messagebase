@@ -418,6 +418,9 @@ int messagebase_send_netmail_direct(messagebase_session *session,
                                     const char *subject, const char *body,
                                     void (*output)(void *ctx, const char *text),
                                     void *ctx);
+int messagebase_post_direct(messagebase_session *session, int base_id, int area_id,
+                            const char *to_name, const char *subject, const char *body,
+                            void (*output)(void *ctx, const char *text), void *ctx);
 
 /* Composer header display */
 void messagebase_composer_show_header(messagebase_session *session,

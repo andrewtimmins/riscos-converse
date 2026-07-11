@@ -224,6 +224,11 @@ typedef struct line_task_state
     
     /* I/O buffers for partial write recovery */
     io_buffers pending;
+
+    /* QWK reply-packet upload: when set, the next completed receive is imported
+       as a .REP into qwk_rep_base rather than registered in the filebase. */
+    int qwk_rep_pending;
+    int qwk_rep_base;
 } line_task_state;
 
 #endif

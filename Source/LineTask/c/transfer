@@ -218,6 +218,88 @@ int transfer_start_send(transfer_session *session, int line,
     return 0;
 }
 
+int transfer_start_send_path(transfer_session *session, int line,
+                             transfer_protocol protocol, const char *path)
+{
+    FILE *fp;
+    const char *leaf;
+
+    if (session == NULL || path == NULL || path[0] == '\0')
+    {
+        return -1;
+    }
+
+    transfer_init_session(session);
+
+    fp = fopen(path, "rb");
+    if (fp == NULL)
+    {
+        snprintf(session->error_msg, sizeof(session->error_msg), "Cannot open packet");
+        session->state = XFER_ERROR;
+        session->result = XFER_RESULT_FILE_ERROR;
+        return -1;
+    }
+    fseek(fp, 0, SEEK_END);
+    session->file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+
+    session->line = line;
+    session->protocol = protocol;
+    session->direction = TRANSFER_DIR_SEND;
+    session->filebase_id = 0;
+    session->file_id = 0;
+    session->file_handle = (void *)fp;   /* read source (see transfer_read_file_block) */
+
+    /* Derive a leafname for the transferred file (last '.' or '/' segment). */
+    leaf = path;
+    {
+        const char *p;
+        for (p = path; *p; p++)
+            if (*p == '.' || *p == '/' || *p == ':') leaf = p + 1;
+    }
+    strncpy(session->filename, leaf, TRANSFER_MAX_FILENAME - 1);
+    session->filename[TRANSFER_MAX_FILENAME - 1] = '\0';
+
+    switch (protocol)
+    {
+        case TRANSFER_PROTO_XMODEM:
+        case TRANSFER_PROTO_XMODEM_CRC:
+        case TRANSFER_PROTO_XMODEM_1K:
+            if (xmodem_init_send(session) != 0) { fclose(fp); session->file_handle = NULL; return -1; }
+            break;
+        case TRANSFER_PROTO_YMODEM:
+        case TRANSFER_PROTO_YMODEM_G:
+            if (ymodem_init_send(session) != 0) { fclose(fp); session->file_handle = NULL; return -1; }
+            break;
+        case TRANSFER_PROTO_ZMODEM:
+            if (zmodem_init_send(session) != 0) { fclose(fp); session->file_handle = NULL; return -1; }
+            break;
+        default:
+            snprintf(session->error_msg, sizeof(session->error_msg), "Unknown protocol");
+            session->state = XFER_ERROR;
+            session->result = XFER_RESULT_PROTOCOL_ERROR;
+            fclose(fp); session->file_handle = NULL;
+            return -1;
+    }
+
+    session->active = 1;
+    session->state = XFER_ACTIVE;
+    session->start_time = transfer_get_time();
+    session->stall_deadline = session->start_time + TRANSFER_STALL_TIMEOUT;
+    session->stall_last_bytes = 0;
+    session->stalled = 0;
+
+    {
+        int space_free = pipes_space_available(line);
+        int pending = 4096 - space_free;
+        if (pending > 0) pipes_clear_output(line);
+    }
+    transfer_set_active_flag(line, 1);
+    debug_printf("transfer: starting path send of '%s' (%ld bytes)\n",
+                 session->filename, session->file_size);
+    return 0;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Start Receiving (Upload from User)                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
@@ -637,7 +719,15 @@ int transfer_read_file_block(transfer_session *session, uint8_t *buffer,
     {
         return -1;
     }
-    
+
+    /* Arbitrary-file send (e.g. QWK packet): read from the held FILE*. */
+    if (session->direction == TRANSFER_DIR_SEND && session->file_handle != NULL)
+    {
+        FILE *fp = (FILE *)session->file_handle;
+        if (fseek(fp, offset, SEEK_SET) != 0) return -1;
+        return (int)fread(buffer, 1, (size_t)length, fp);
+    }
+
     /* Use Filer SWI to read from filebase */
     regs.r[0] = FILER_FILEBASE_CMD_DOWNLOAD;
     regs.r[1] = session->filebase_id;

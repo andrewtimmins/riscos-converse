@@ -218,6 +218,9 @@ static const char *script_host_get_user_by_index(void *context, int index,
 static int script_host_notify_line(void *context, int line, const char *text);
 static int script_host_notify_user(void *context, const char *key, const char *text);
 static int script_host_qwk_pack(void *context, const char *out_path);
+static int script_host_qwk_download(void *context, int protocol);
+static int script_host_qwk_upload(void *context, int protocol);
+static void qwk_out_noop(void *ctx, const char *text);
 static int script_host_filebase_download(void *context, int base_id,
                                          int file_id);
 static int script_host_authenticate_user(void *context, const char *username,
@@ -463,6 +466,8 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.notify_line = script_host_notify_line;
     host.notify_user = script_host_notify_user;
     host.qwk_pack = script_host_qwk_pack;
+    host.qwk_download = script_host_qwk_download;
+    host.qwk_upload = script_host_qwk_upload;
     host.filebase_download = script_host_filebase_download;
     host.authenticate_user = script_host_authenticate_user;
     host.start_postlogon = script_host_start_postlogon;
@@ -510,6 +515,8 @@ static void initialise_task_state(line_task_state *state, int argc,
   state->user.time_warn_stage = 0;
   state->user.time_up_pending = 0;
   state->user.time_up_deadline = 0;
+  state->qwk_rep_pending = 0;
+  state->qwk_rep_base = 0;
 }
 
 static void initialise_resources(void) {
@@ -767,6 +774,8 @@ static void reset_line_session_state(line_task_state *state) {
   state->user.time_warn_stage = 0;
   state->user.time_up_pending = 0;
   state->user.time_up_deadline = 0;
+  state->qwk_rep_pending = 0;
+  state->qwk_rep_base = 0;
 }
 
 static void perform_session_disconnect(line_task_state *state) {
@@ -1063,6 +1072,9 @@ static void update_main_window_title(line_task_state *state) {
   Desk_Window_SetTitle(main_window_handle, title);
 }
 
+/* Silent output sink for QWK reply import (per-message composer chatter). */
+static void qwk_out_noop(void *ctx, const char *text) { (void)ctx; (void)text; }
+
 static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
   line_task_state *state = (line_task_state *)ref;
   static unsigned int last_blink_time = 0;
@@ -1188,6 +1200,23 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
 
         /* Check if this was a receive (upload) transfer */
         if (state->xfer_session.direction == TRANSFER_DIR_RECEIVE) {
+         if (state->qwk_rep_pending) {
+          /* QWK reply packet: import it into the message base rather than
+             registering a file. */
+          int posted = qwk_import(state->xfer_session.temp_path,
+                                  state->qwk_rep_base, &state->mb_session,
+                                  qwk_out_noop, NULL);
+          char qmsg[96];
+          state->qwk_rep_pending = 0;
+          remove(state->xfer_session.temp_path);
+          if (posted >= 0)
+            snprintf(qmsg, sizeof(qmsg),
+                     "\r\n\033[1;32m[Imported %d reply message(s)]\033[0m\r\n", posted);
+          else
+            snprintf(qmsg, sizeof(qmsg),
+                     "\r\n\033[1;31m[Could not read the reply packet]\033[0m\r\n");
+          pipes_write_string(state->line_id, qmsg);
+         } else {
           /* Format size nicely */
           char size_str[32];
           long bytes = state->xfer_session.bytes_transferred;
@@ -1246,6 +1275,7 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
                      "\r\n\033[1;32mFile received (%s).\033[0m\r\n", size_str);
             pipes_write_string(state->line_id, msg);
           }
+         }
         } else {
           /* Update user stats for download */
           if (state->user.id > 0) {
@@ -2693,6 +2723,66 @@ static int script_host_qwk_pack(void *context, const char *out_path) {
   info.max_messages = 0; /* engine default cap */
 
   return qwk_generate(&info, out_path, &state->mb_session);
+}
+
+/* Map a script protocol number (0..5) to a transfer_protocol. */
+static transfer_protocol qwk_map_protocol(int protocol) {
+  switch (protocol) {
+    case 0:  return TRANSFER_PROTO_XMODEM;
+    case 1:  return TRANSFER_PROTO_XMODEM_CRC;
+    case 2:  return TRANSFER_PROTO_XMODEM_1K;
+    case 3:  return TRANSFER_PROTO_YMODEM;
+    case 4:  return TRANSFER_PROTO_YMODEM_G;
+    default: return TRANSFER_PROTO_ZMODEM;
+  }
+}
+
+/* Build a QWK packet and start sending it to the caller. */
+static int script_host_qwk_download(void *context, int protocol) {
+  line_task_state *state = (line_task_state *)context;
+  const char *path = "<Converse$Dir>.Temp.packet";
+  int count;
+
+  if (state == NULL) {
+    return 0;
+  }
+  count = script_host_qwk_pack(context, path);
+  if (count < 0) {
+    return 0;
+  }
+  transfer_cleanup(&state->xfer_session);
+  if (transfer_start_send_path(&state->xfer_session, state->line_id,
+                               qwk_map_protocol(protocol), path) < 0) {
+    pipes_write_string(state->line_id,
+                       "\r\n\033[1;31m[QWK packet transfer failed to start]\033[0m\r\n");
+    transfer_cleanup(&state->xfer_session);
+    return 0;
+  }
+  return 1;
+}
+
+/* Start receiving a .REP reply packet; handle_null_poll imports it on finish. */
+static int script_host_qwk_upload(void *context, int protocol) {
+  line_task_state *state = (line_task_state *)context;
+
+  if (state == NULL) {
+    return 0;
+  }
+  if (state->mb_session.current_messagebase <= 0) {
+    return 0;
+  }
+  transfer_cleanup(&state->xfer_session);
+  if (transfer_start_receive(&state->xfer_session, state->line_id,
+                             qwk_map_protocol(protocol), "reply.rep",
+                             "QWK reply packet") < 0) {
+    pipes_write_string(state->line_id,
+                       "\r\n\033[1;31m[QWK reply upload failed to start]\033[0m\r\n");
+    transfer_cleanup(&state->xfer_session);
+    return 0;
+  }
+  state->qwk_rep_pending = 1;
+  state->qwk_rep_base = state->mb_session.current_messagebase;
+  return 1;
 }
 
 /* Write any user's field by id/name + persist. Scripting usersetby(). */

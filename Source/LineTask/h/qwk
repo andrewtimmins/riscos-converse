@@ -24,4 +24,11 @@ typedef struct
  * of messages packed (>= 0), or -1 on error. */
 int qwk_generate(const qwk_info *info, const char *out_path, void *mb_session);
 
+/* Import an uploaded QWK reply packet (.REP) at rep_path, posting each reply to
+ * its conference (= area id) in base_id. mb_session is the caller's live
+ * session (post access + attribution). output/ctx receive status text.
+ * Returns messages posted (>= 0), or -1 on error. */
+int qwk_import(const char *rep_path, int base_id, void *mb_session,
+               void (*output)(void *ctx, const char *text), void *ctx);
+
 #endif /* LINE_TASK_QWK_H */
