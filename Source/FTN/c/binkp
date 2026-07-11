@@ -1026,6 +1026,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         /* No password required */
         debug_printf("binkp: No password required, sending M_OK");
         session->authenticated = 1;
+        session->secure = 0;
         binkp_send_ok(session, 0);
         session->state = SESSION_STATE_AUTHENTICATED;
         
@@ -1039,6 +1040,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
         if (binkp_verify_cram_response(session->cram_challenge, expected, data))
         {
             session->authenticated = 1;
+            session->secure = 1;
             secure = 1;
             binkp_send_ok(session, secure);
             session->state = SESSION_STATE_AUTHENTICATED;
@@ -1061,6 +1063,7 @@ void binkp_handle_pwd(MAILER_SESSION *session, const char *data)
             debug_printf("binkp: Password matched, sending M_OK");
             ftnlog_printf(">> OK: Password accepted");
             session->authenticated = 1;
+            session->secure = 1;
             binkp_send_ok(session, 0);
             session->state = SESSION_STATE_AUTHENTICATED;
             
@@ -1251,12 +1254,34 @@ void binkp_handle_file(MAILER_SESSION *session, const char *data)
     char filename[128];
     long size, mtime, offset;
 
-    /* If we receive a file, we're implicitly authenticated */
-    if (session->state != SESSION_STATE_AUTHENTICATED && 
+    /* Authentication gate. The old code treated any M_FILE as implicit
+     * authentication, so a node that HAS a configured session password could
+     * bypass it entirely by jumping straight to sending files. Now: if this
+     * node has a password configured, it MUST have authenticated via M_PWD
+     * first; otherwise reject. A node with no configured password is a genuine
+     * unsecured peer - allowed, but flagged secure=0 and logged. */
+    if (session->state != SESSION_STATE_AUTHENTICATED &&
         session->state != SESSION_STATE_TRANSFER)
     {
+        const char *expected = binkp_get_password_for_node(&session->remote_addr);
+
+        if (expected != NULL && *expected != '\0')
+        {
+            ftnlog_printf("!! %d:%d/%d/%d sent M_FILE without authenticating - rejected",
+                          session->remote_addr.zone, session->remote_addr.net,
+                          session->remote_addr.node, session->remote_addr.point);
+            binkp_send_err(session, "Authentication required");
+            session->state = SESSION_STATE_ERROR;
+            return;
+        }
+
+        /* Unsecured node (no password on file) - accept but mark insecure. */
         session->authenticated = 1;
+        session->secure = 0;
         session->state = SESSION_STATE_AUTHENTICATED;
+        ftnlog_printf("** Unsecured inbound session from %d:%d/%d/%d (no password configured)",
+                      session->remote_addr.zone, session->remote_addr.net,
+                      session->remote_addr.node, session->remote_addr.point);
     }
 
     /* Parse: filename size time offset */
@@ -1858,6 +1883,13 @@ void binkp_finish_receive_file(MAILER_SESSION *session)
     /* Move from temp to final inbound */
     snprintf(final_path, sizeof(final_path), "%s.%s", zone_path, riscos_filename);
 
+    /* FTN bundle/packet names recur, so a same-named file may already be
+       sitting un-tossed in Inbound. Without this, rename() would fail, the
+       file would be stranded in Temp and the remote would resend it forever.
+       Claim a free name, keeping the 3-char type suffix so the tosser still
+       recognises it as a packet ("pkt") or arcmail bundle ("mo0".."su9"). */
+    ftn_uniquify_path(final_path, sizeof(final_path), 3);
+
     /* Rename temp file to final location - CRITICAL: Must succeed before we ACK! */
     if (rename(ft->local_path, final_path) != 0)
     {
@@ -2127,8 +2159,11 @@ void binkp_check_for_files(MAILER_SESSION *session)
                   target_addr->zone, target_addr->net, target_addr->node, target_addr->point,
                   is_uplink ? " (zone mail)" : "");
 
-    /* Get the next file - routing depends on whether target is an uplink */
-    file = queue_get_next_file_for_session(target_addr, is_uplink, &node);
+    /* Get the next file - routing depends on whether target is an uplink.
+     * HOLD mail is only sent when the peer called US (inbound session); on a
+     * call we placed, hold mail stays queued for the peer to collect. */
+    file = queue_get_next_file_for_session(target_addr, is_uplink, &node,
+                                           session->direction == SESSION_DIR_INBOUND);
 
     if (file == NULL)
     {

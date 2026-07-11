@@ -17,6 +17,7 @@
 #include "queue.h"
 #include "echofix.h"
 #include "unzip.h"
+#include "ftnlog.h"
 #include "debug.h"
 
 /* ******************************************************************************************************************************************************** */
@@ -25,7 +26,14 @@
 
 #define TOSSER_READ_BUFFER          4096
 #define TOSSER_MAX_BODY_SIZE        65536
-#define TOSSER_DUPE_HASH_SIZE       1024
+#define TOSSER_DUPE_HASH_SIZE       8192
+#define TOSSER_DUPE_MAGIC           0x50554446UL   /* 'FDUP' little-endian */
+#define TOSSER_DUPE_VERSION         1
+#define TOSSER_DUPE_FILE            "<Converse$Dir>.Resources.Data.FTNDupes"
+
+/* MSGBASE_AREATYPE values (mirror Support/h/msgbaseconfig) */
+#define TOSSER_AREATYPE_NETMAIL     2
+#define TOSSER_AREATYPE_JUNK        3
 
 /* SWI numbers */
 #define SWI_FILER_MESSAGEBASE       0x5AA42
@@ -92,9 +100,22 @@ static int str_casecmp(const char *s1, const char *s2)
 static TOSSER_STATS tosser_stats;
 static char tosser_inbound[TOSSER_MAX_PATH];
 
-/* Simple dupe detection - hash of recent MSGIDs */
-static unsigned long dupe_hashes[TOSSER_DUPE_HASH_SIZE];
+/* Dupe detection - ring of recent MSGID fingerprints.
+ * Each entry keeps TWO independent hashes (djb2 + FNV-1a) plus a 'used' flag.
+ * Dual 32-bit hashes make a false-positive collision ~2^-64 (the old single
+ * 32-bit hash false-dropped legit mail); the 'used' flag removes the old
+ * "MSGID that hashes to 0 matches an empty slot" bug. The ring is persisted
+ * to disk so loops don't re-enter after a restart. */
+typedef struct
+{
+    unsigned long h1;
+    unsigned long h2;
+    int used;
+} TOSSER_DUPE_ENTRY;
+
+static TOSSER_DUPE_ENTRY dupe_entries[TOSSER_DUPE_HASH_SIZE];
 static int dupe_hash_index = 0;
+static int dupe_dirty = 0;      /* entries changed since last save */
 
 /* Status callback for UI updates */
 static tosser_status_callback status_callback = NULL;
@@ -166,13 +187,118 @@ static unsigned long tosser_hash_string(const char *str)
 {
     unsigned long hash = 5381;
     int c;
-    
+
     while ((c = *str++) != 0)
     {
         hash = ((hash << 5) + hash) + c;
     }
-    
+
     return hash;
+}
+
+/* Second, independent hash (FNV-1a) used alongside djb2 so a single 32-bit
+ * collision can't false-drop a legitimate message. */
+static unsigned long tosser_hash_string2(const char *str)
+{
+    unsigned long hash = 2166136261UL;
+    int c;
+
+    while ((c = *str++) != 0)
+    {
+        hash ^= (unsigned long)(unsigned char)c;
+        hash *= 16777619UL;
+    }
+
+    return hash;
+}
+
+/*
+ * Persist the dupe ring to disk so a restart doesn't forget recently-seen
+ * MSGIDs (which would let looped mail re-enter the messagebase). Written after
+ * each toss batch, not per-message, so the I/O cost is small.
+ */
+void tosser_save_dupe_db(void)
+{
+    FILE *f;
+    unsigned long header[4];
+
+    if (!dupe_dirty)
+    {
+        return;
+    }
+
+    f = fopen(TOSSER_DUPE_FILE, "wb");
+    if (f == NULL)
+    {
+        debug_printf("tosser: Could not save dupe DB to %s", TOSSER_DUPE_FILE);
+        return;
+    }
+
+    header[0] = TOSSER_DUPE_MAGIC;
+    header[1] = TOSSER_DUPE_VERSION;
+    header[2] = (unsigned long)dupe_hash_index;
+    header[3] = TOSSER_DUPE_HASH_SIZE;
+
+    if (fwrite(header, sizeof(header), 1, f) == 1)
+    {
+        fwrite(dupe_entries, sizeof(dupe_entries), 1, f);
+    }
+
+    fclose(f);
+
+    /* Give the file the RISC OS "Data" filetype (&ffd). */
+    {
+        _kernel_swi_regs regs;
+        regs.r[0] = 18;   /* OS_File 18: set filetype by name */
+        regs.r[1] = (int)TOSSER_DUPE_FILE;
+        regs.r[2] = 0xFFD;
+        _kernel_swi(0x08 /* OS_File */, &regs, &regs);
+    }
+
+    dupe_dirty = 0;
+    debug_printf("tosser: Saved dupe DB (index=%d)", dupe_hash_index);
+}
+
+/*
+ * Load the dupe ring from disk at startup. Safe on missing/short/foreign files
+ * (leaves the ring empty).
+ */
+static void tosser_load_dupe_db(void)
+{
+    FILE *f;
+    unsigned long header[4];
+
+    memset(dupe_entries, 0, sizeof(dupe_entries));
+    dupe_hash_index = 0;
+    dupe_dirty = 0;
+
+    f = fopen(TOSSER_DUPE_FILE, "rb");
+    if (f == NULL)
+    {
+        return;
+    }
+
+    if (fread(header, sizeof(header), 1, f) == 1 &&
+        header[0] == TOSSER_DUPE_MAGIC &&
+        header[1] == TOSSER_DUPE_VERSION &&
+        header[3] == TOSSER_DUPE_HASH_SIZE)
+    {
+        if (fread(dupe_entries, sizeof(dupe_entries), 1, f) == 1)
+        {
+            dupe_hash_index = (int)header[2];
+            if (dupe_hash_index < 0 || dupe_hash_index >= TOSSER_DUPE_HASH_SIZE)
+            {
+                dupe_hash_index = 0;
+            }
+            debug_printf("tosser: Loaded dupe DB (index=%d)", dupe_hash_index);
+        }
+        else
+        {
+            memset(dupe_entries, 0, sizeof(dupe_entries));
+        }
+    }
+
+    fclose(f);
 }
 
 /*
@@ -317,9 +443,10 @@ void tosser_initialise(void)
     } FTN_CFG;
     
     memset(&tosser_stats, 0, sizeof(tosser_stats));
-    memset(dupe_hashes, 0, sizeof(dupe_hashes));
-    dupe_hash_index = 0;
-    
+
+    /* Load persisted dupe ring so looped mail can't re-enter after a restart. */
+    tosser_load_dupe_db();
+
     /* Get inbound path from FTN config */
     regs.r[0] = 0;  /* FTN_CONFIG_REASON_GET_GLOBAL */
     if (_kernel_swi(0x5AA86, &regs, &regs) == NULL && regs.r[0] != 0)
@@ -339,6 +466,7 @@ void tosser_initialise(void)
 
 void tosser_finalise(void)
 {
+    tosser_save_dupe_db();
     debug_printf("tosser: Finalised (tossed=%d, dupes=%d, bad=%d)",
                  tosser_stats.messages_tossed,
                  tosser_stats.messages_duped,
@@ -351,29 +479,37 @@ void tosser_finalise(void)
 
 int tosser_check_duplicate(const char *msgid)
 {
-    unsigned long hash;
+    unsigned long h1, h2;
     int i;
-    
+
     if (msgid == NULL || *msgid == '\0')
     {
         return 0;  /* No MSGID = can't check dupes */
     }
-    
-    hash = tosser_hash_string(msgid);
-    
-    /* Check if hash exists in recent list */
+
+    h1 = tosser_hash_string(msgid);
+    h2 = tosser_hash_string2(msgid);
+
+    /* Check if this fingerprint exists in the recent list. Both hashes must
+     * match, and the slot must be in use - so an all-zero (empty) slot never
+     * matches, and a single hash collision is not enough to false-drop. */
     for (i = 0; i < TOSSER_DUPE_HASH_SIZE; i++)
     {
-        if (dupe_hashes[i] == hash)
+        if (dupe_entries[i].used &&
+            dupe_entries[i].h1 == h1 &&
+            dupe_entries[i].h2 == h2)
         {
             return 1;  /* Duplicate */
         }
     }
-    
-    /* Add hash to list (circular buffer) */
-    dupe_hashes[dupe_hash_index] = hash;
+
+    /* Add fingerprint to the ring (overwrites the oldest entry). */
+    dupe_entries[dupe_hash_index].h1 = h1;
+    dupe_entries[dupe_hash_index].h2 = h2;
+    dupe_entries[dupe_hash_index].used = 1;
     dupe_hash_index = (dupe_hash_index + 1) % TOSSER_DUPE_HASH_SIZE;
-    
+    dupe_dirty = 1;
+
     return 0;
 }
 
@@ -924,6 +1060,88 @@ int tosser_match_area(const char *echotag, int *base_id, int *area_id)
     return 0;
 }
 
+/*
+ * Find the first configured area of a given areatype (e.g. NETMAIL=2 for
+ * inbound netmail, JUNK=3 as a catch-all for unknown echomail). Returns 1 and
+ * fills base_id/area_id if found, 0 otherwise. Bases are searched in order, so
+ * base 1 wins.
+ */
+int tosser_find_area_by_type(int want_areatype, int *base_id, int *area_id)
+{
+    _kernel_swi_regs regs;
+
+    typedef struct
+    {
+        int id;
+        char name[64];
+        char tag[64];
+        int areatype;
+        int daystokeep;
+        int akause;
+        int accesslevel;
+        char keys[128];
+        char groups[64];
+    } AREA_CFG;
+
+    typedef struct
+    {
+        int id;
+        char name[64];
+        int type;
+        int accesslevel;
+        char keys[128];
+        int area_count;
+        AREA_CFG areas[64];
+    } BASE_CFG;
+
+    typedef struct
+    {
+        int default_retention;
+        int default_accesslevel;
+        char storage_root[256];
+        int base_count;
+        BASE_CFG bases[32];
+    } GLOBAL_CFG;
+
+    GLOBAL_CFG *global;
+    int b;
+
+    if (base_id == NULL || area_id == NULL)
+    {
+        return 0;
+    }
+
+    regs.r[0] = 0;  /* MSGBASE_CONFIG_REASON_GET_GLOBAL */
+    if (_kernel_swi(SWI_SUPPORT_MSGBASECONFIG, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 0;
+    }
+
+    global = (GLOBAL_CFG *)regs.r[0];
+
+    for (b = 0; b < global->base_count; b++)
+    {
+        BASE_CFG *base = &global->bases[b];
+        int a;
+
+        for (a = 0; a < base->area_count; a++)
+        {
+            AREA_CFG *area = &base->areas[a];
+
+            if (area->areatype == want_areatype)
+            {
+                *base_id = base->id;
+                *area_id = area->id;
+                debug_printf("tosser: areatype %d -> base %d area %d (%s)",
+                             want_areatype, base->id, area->id, area->name);
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 /* ******************************************************************************************************************************************************** */
 /* Message Storage                                                                                                                                          */
 /* ******************************************************************************************************************************************************** */
@@ -1099,6 +1317,23 @@ int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id)
 /* Packet Processing                                                                                                                                        */
 /* ******************************************************************************************************************************************************** */
 
+/* Emit an operator notice to BOTH the live FTN status window (ftnlog_printf,
+ * for immediate visibility) and the persistent FTN log file (mailer_log, which
+ * a sysop reviews after the fact). Used for toss warnings that must never be
+ * silent - unknown echo areas, missing netmail area, etc. */
+static void tosser_notify(const char *format, ...)
+{
+    char buffer[256];
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    ftnlog_printf("%s", buffer);
+    mailer_log("%s", buffer);
+}
+
 int tosser_process_packet(const char *path)
 {
     PKT_HEADER pkt_hdr;
@@ -1181,9 +1416,34 @@ int tosser_process_packet(const char *path)
             }
             else
             {
-                /* Unknown area - could store in junk or skip */
+                /* Unknown echotag. Receiving echoes we don't carry is normal in
+                 * FTN, so we must NOT wedge the whole packet - but the old code
+                 * dropped it with only a debug line, invisible to the operator
+                 * (the classic "my mail isn't tossing" mystery). Now: log it
+                 * loudly, and if a JUNK catch-all area is configured, preserve
+                 * the message there instead of discarding it. */
+                int junk_base = 0, junk_area = 0;
+
                 tosser_stats.areas_unmatched++;
-                debug_printf("tosser: Unknown area %s, skipping", msg.area);
+                tosser_notify("!! Unknown echo area '%s' from %d:%d/%d.%d - not carried locally",
+                              msg.area,
+                              msg.orig_addr.zone, msg.orig_addr.net,
+                              msg.orig_addr.node, msg.orig_addr.point);
+
+                if (tosser_find_area_by_type(TOSSER_AREATYPE_JUNK, &junk_base, &junk_area))
+                {
+                    if (tosser_store_message(&msg, junk_base, junk_area))
+                    {
+                        tosser_stats.messages_tossed++;
+                        msg.tossed = 1;
+                        tosser_notify("   -> filed in catch-all area (base %d area %d)",
+                                      junk_base, junk_area);
+                    }
+                }
+                else
+                {
+                    debug_printf("tosser: no JUNK catch-all area; '%s' discarded", msg.area);
+                }
             }
         }
         else
@@ -1230,10 +1490,19 @@ int tosser_process_packet(const char *path)
                 }
             }
             
-            /* Store all netmail in base 1 (FTN messagebase) */
-            base_id = 1;
-            area_id = 0;
-            
+            /* Store netmail in the configured Netmail area (areatype 2), NOT
+             * the hardcoded area 0 - area 0 is not a browsable area, so
+             * personal netmail and AreaFix/FileFix result netmails were tossed
+             * "successfully" but never appeared where the reader looks. */
+            if (!tosser_find_area_by_type(TOSSER_AREATYPE_NETMAIL, &base_id, &area_id))
+            {
+                /* No netmail area configured - fall back to old behaviour but
+                 * make the misconfiguration visible. */
+                base_id = 1;
+                area_id = 0;
+                tosser_notify("!! No NETMAIL area configured - netmail stored in base 1 area 0");
+            }
+
             if (tosser_store_message(&msg, base_id, area_id))
             {
                 tosser_stats.messages_tossed++;
@@ -1382,7 +1651,13 @@ static int tosser_process_arcmail(const char *arc_path, const char *zone_path)
                     regs.r[4] = 0;
                     _kernel_swi(OS_File, &regs, &regs);
                 }
-                
+
+                /* Two arcmails can carry a same-named packet; don't let a
+                   leftover from a prior failed move be overwritten/reused.
+                   temp_path is consumed by exact path below, so no suffix
+                   needs preserving. */
+                ftn_uniquify_path(temp_path, sizeof(temp_path), 0);
+
                 result = unzip_extract_entry(&archive, &entry, temp_path);
                 if (result == UNZIP_OK)
                 {
@@ -1578,6 +1853,10 @@ int tosser_process_inbound(void)
         total_messages += tosser_process_inbound_path(tosser_inbound, NULL);
     }
 
+    /* Persist the dupe ring once per batch so a restart doesn't forget what
+     * we just tossed. */
+    tosser_save_dupe_db();
+
     debug_printf("tosser: Toss complete: %d total messages", total_messages);
 
     return total_messages;
@@ -1622,6 +1901,13 @@ void tosser_move_to_processed(const char *path)
     tosser_ensure_directory(dest_dir);
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
 
+    /* Packet leaf names recur, so a same-named file may already sit in
+       Processed. Without a free name the rename below fails and the packet is
+       left in Inbound - where it is re-tossed every cycle, re-injecting its
+       messages. Claim a free name (this is a terminal archive, so no suffix
+       need be preserved). */
+    ftn_uniquify_path(dest, sizeof(dest), 0);
+
     /* Use OS_FSControl 25 to rename/move */
     regs.r[0] = 25;  /* Rename */
     regs.r[1] = (int)path;
@@ -1633,7 +1919,8 @@ void tosser_move_to_processed(const char *path)
         /* Move failed - DO NOT delete the original file!
          * Log the error and leave file in place for manual intervention.
          * The file will be re-tossed next time, which is better than losing it.
-         * Common causes: destination exists, disk full, permissions.
+         * Common causes: disk full, permissions (name collisions are handled
+         * above by ftn_uniquify_path).
          */
         debug_printf("tosser: Failed to move %s to Processed: %s", leaf, err->errmess);
         mailer_log("WARNING: Could not move %s to Processed folder: %s", leaf, err->errmess);
@@ -1677,6 +1964,10 @@ void tosser_move_to_bad(const char *path)
     ftn_format_zone_subpath(dest_dir, sizeof(dest_dir), base_path, zone, "Bad");
     tosser_ensure_directory(dest_dir);
     snprintf(dest, sizeof(dest), "%s.%s", dest_dir, leaf);
+
+    /* Claim a free name so a name collision can't leave the bad packet in
+       Inbound to be re-tossed forever (see tosser_move_to_processed). */
+    ftn_uniquify_path(dest, sizeof(dest), 0);
 
     /* Use OS_FSControl 25 to rename/move */
     regs.r[0] = 25;  /* Rename */

@@ -600,6 +600,99 @@ void ftn_format_zone_subpath(char *buffer, size_t size, const char *base_path, i
     snprintf(buffer, size, "%s.%s", zone_path, suffix);
 }
 
+/*
+ * Return 1 if a filesystem object exists at path, 0 otherwise.
+ * Uses OS_File 17 (read catalogue info); r0 == 0 on return means "not found".
+ */
+int ftn_path_exists(const char *path)
+{
+    _kernel_swi_regs regs;
+
+    if (path == NULL || *path == '\0')
+    {
+        return 0;
+    }
+
+    regs.r[0] = 17;             /* Read catalogue information (no path search) */
+    regs.r[1] = (int)path;
+    if (_kernel_swi(OS_File, &regs, &regs) != NULL)
+    {
+        return 0;               /* Treat an error as "not present" */
+    }
+
+    return regs.r[0] != 0;      /* 0 = object not found */
+}
+
+/*
+ * Make an on-disk path unique by inserting "_N" before the final
+ * keep_suffix_len characters of the leaf, so a type suffix that our own
+ * detectors match on (e.g. "pkt", "mo0") stays at the end of the name.
+ *
+ * FTN filenames deliberately recur (bundle names recycle by day, packets are
+ * timestamp-named), and RISC OS rename/fopen offer no atomic "fail if exists"
+ * we can lean on safely - a plain create silently overwrites and a rename to
+ * an existing name fails - so every writer must claim a free name first or we
+ * lose mail / strand files.
+ *
+ * Pass keep_suffix_len 0 for terminal files (Processed/Bad, temp scratch) that
+ * nothing re-parses, or 3 for inbound files the tosser must still recognise.
+ *
+ * Returns 1 with path holding a free name (unchanged if it was already free),
+ * or 0 if no free name was found within the bounded search (path restored).
+ */
+int ftn_uniquify_path(char *path, size_t size, int keep_suffix_len)
+{
+    char base[MAILER_PATH_SIZE];
+    char suffix[16];
+    size_t len;
+    int n;
+
+    if (path == NULL || size == 0)
+    {
+        return 0;
+    }
+
+    if (!ftn_path_exists(path))
+    {
+        return 1;               /* Already free - leave untouched */
+    }
+
+    len = strlen(path);
+    if (keep_suffix_len < 0)
+    {
+        keep_suffix_len = 0;
+    }
+    if ((size_t)keep_suffix_len >= len ||
+        (size_t)keep_suffix_len >= sizeof(suffix))
+    {
+        keep_suffix_len = 0;    /* Nothing sensible to preserve */
+    }
+
+    /* Split leaf into <base> + <preserved suffix> */
+    strncpy(suffix, path + len - keep_suffix_len, sizeof(suffix) - 1);
+    suffix[sizeof(suffix) - 1] = '\0';
+
+    if (len - keep_suffix_len >= sizeof(base))
+    {
+        return 0;               /* Can't hold the base safely */
+    }
+    strncpy(base, path, len - keep_suffix_len);
+    base[len - keep_suffix_len] = '\0';
+
+    for (n = 1; n <= 9999; n++)
+    {
+        snprintf(path, size, "%s_%d%s", base, n, suffix);
+        if (!ftn_path_exists(path))
+        {
+            return 1;
+        }
+    }
+
+    /* Exhausted - restore the original name and let the caller report. */
+    snprintf(path, size, "%s%s", base, suffix);
+    return 0;
+}
+
 int ftn_extract_zone_from_path(const char *base_path, const char *full_path,
                                char *zone_path, size_t zone_path_size, int *zone_out)
 {
@@ -938,14 +1031,20 @@ void queue_mark_file_sent(QUEUE_NODE *node, const char *path)
     }
 }
 
-QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node)
+QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node, int allow_hold)
 {
     int i;
     QUEUE_FILE *best = NULL;
 
-    /* Return highest priority file first */
+    /* Return highest priority file first. HOLD mail is only eligible when the
+     * peer called us (allow_hold) - we never push it on a call WE placed. */
     for (i = 0; i < node->file_count; i++)
     {
+        if (!allow_hold && node->files[i].flavour == QUEUE_FLAVOUR_HOLD)
+        {
+            continue;
+        }
+
         if (best == NULL || node->files[i].flavour > best->flavour)
         {
             best = &node->files[i];
@@ -961,7 +1060,7 @@ QUEUE_FILE *queue_get_next_file(QUEUE_NODE *node)
  * the highest priority file from any of them.
  * Also returns the node containing the file via node_out.
  */
-QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out)
+QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out, int allow_hold)
 {
     int i;
     QUEUE_FILE *best_file = NULL;
@@ -985,7 +1084,7 @@ QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out)
         }
 
         /* Get best file from this node */
-        file = queue_get_next_file(node);
+        file = queue_get_next_file(node, allow_hold);
         if (file != NULL)
         {
             /* Compare with current best */
@@ -1018,29 +1117,29 @@ QUEUE_FILE *queue_get_next_file_for_zone(int zone, QUEUE_NODE **node_out)
  * 
  * Returns: Next file to send, or NULL if none available.
  */
-QUEUE_FILE *queue_get_next_file_for_session(const FTN_ADDR *target_addr, int is_uplink, QUEUE_NODE **node_out)
+QUEUE_FILE *queue_get_next_file_for_session(const FTN_ADDR *target_addr, int is_uplink, QUEUE_NODE **node_out, int allow_hold)
 {
     if (is_uplink)
     {
         /* For uplinks, send all mail for their zone - they will route it */
-        return queue_get_next_file_for_zone(target_addr->zone, node_out);
+        return queue_get_next_file_for_zone(target_addr->zone, node_out, allow_hold);
     }
     else
     {
         /* For direct connections, only send mail addressed to this specific node */
         QUEUE_NODE *node = queue_find_node_by_any_address(target_addr);
-        
+
         if (node_out != NULL)
         {
             *node_out = node;
         }
-        
+
         if (node == NULL || node->file_count == 0)
         {
             return NULL;
         }
-        
-        return queue_get_next_file(node);
+
+        return queue_get_next_file(node, allow_hold);
     }
 }
 
@@ -1624,6 +1723,19 @@ void queue_scan_outbound(void)
     int domain_count = 0;
     int i;
 
+    /* Never rebuild the node array while a session is live. Active sessions
+     * hold a raw QUEUE_NODE* (send_file.queue_node); node_count=0 + rebuild
+     * would leave that pointer dangling -> the wrong node's files get marked
+     * sent, the .pkt is resent, and a duplicate session can start. Defer until
+     * all sessions have drained; the caller retries on the next tick (we leave
+     * last_scan untouched so the retry fires immediately once idle). */
+    if (mailer.active_sessions > 0)
+    {
+        debug_printf("queue: Deferring outbound rescan (%d session(s) active)",
+                     mailer.active_sessions);
+        return;
+    }
+
     debug_printf("queue: ========================================");
     debug_printf("queue: SCANNING ALL OUTBOUND DIRECTORIES");
     ftnlog_printf("Scanning all outbound directories");
@@ -1677,15 +1789,35 @@ void queue_scan_outbound(void)
 /* Polling                                                                                                                                                  */
 /* ******************************************************************************************************************************************************** */
 
+/* Count files at a node that we may DELIVER by dialling out. HOLD-flavour
+ * mail is excluded: by FTN convention it is held for the peer to collect when
+ * THEY call us, so it must never be the reason we place an outbound call. */
+static int queue_node_deliverable_files(const QUEUE_NODE *node)
+{
+    int i, n = 0;
+
+    for (i = 0; i < node->file_count; i++)
+    {
+        if (node->files[i].flavour != QUEUE_FLAVOUR_HOLD)
+        {
+            n++;
+        }
+    }
+
+    return n;
+}
+
 QUEUE_NODE *queue_get_next_poll_node(void)
 {
     int i;
     time_t now = time(NULL);
     QUEUE_NODE *best = NULL;
+    int best_deliverable = 0;
 
     for (i = 0; i < outbound_queue.node_count; i++)
     {
         QUEUE_NODE *node = &outbound_queue.nodes[i];
+        int deliverable;
 
         /* Skip if busy */
         if (node->busy)
@@ -1705,21 +1837,45 @@ QUEUE_NODE *queue_get_next_poll_node(void)
             continue;
         }
 
-        /* Prefer nodes with outbound mail, then by priority */
+        /* Skip if we already have a session to this host:port. Several uplinks
+         * can share one hub (e.g. cnet/pinet/retronet on call.rofbbs.com);
+         * dialling them at once makes the hub reject the concurrent
+         * connections. One session per host - the others are picked up on later
+         * poll cycles once this node's next_poll backs off. */
+        if (mailer_host_busy(node->hostname, node->port, NULL))
+        {
+            debug_printf("queue: Skipping poll of %s:%d (session to host already active)",
+                         node->hostname, node->port);
+            continue;
+        }
+
+        deliverable = queue_node_deliverable_files(node);
+
+        /* A non-uplink node is only worth dialling if it has deliverable
+         * (non-HOLD) mail. Uplinks are always polled so we can pick up
+         * incoming, even with nothing to send. Previously a downlink with only
+         * HOLD mail was dialled, and HOLD (enum 1) even out-ranked NORMAL. */
+        if (!node->is_uplink && deliverable == 0)
+        {
+            continue;
+        }
+
+        /* Prefer nodes with deliverable mail, then by priority */
         if (best == NULL)
         {
             best = node;
+            best_deliverable = deliverable;
         }
-        else if (node->file_count > 0 && best->file_count == 0)
+        else if (deliverable > 0 && best_deliverable == 0)
         {
-            /* Prefer nodes with mail to send */
             best = node;
+            best_deliverable = deliverable;
         }
-        else if (node->file_count > 0 && best->file_count > 0 &&
+        else if (deliverable > 0 && best_deliverable > 0 &&
                  node->max_flavour > best->max_flavour)
         {
-            /* Among nodes with mail, prefer higher priority */
             best = node;
+            best_deliverable = deliverable;
         }
     }
 

@@ -231,10 +231,19 @@ static int ftn_domain_strcasecmp(const char *s1, const char *s2)
  */
 int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b)
 {
-    /* Compare domain first (case-insensitive) */
-    if (ftn_domain_strcasecmp(a->domain, b->domain) != 0)
+    /* Compare domains ONLY when both sides carry one. Config-parsed addresses
+     * have no domain (e.g. "2:250/0.0"), but a remote binkd presents 5D
+     * "2:250/0@fidonet" in M_ADR; requiring domain equality then wrongly
+     * rejected the match, so the peer failed uplink recognition and dropped to
+     * an unsecured / mis-routed session. An empty domain on either side means
+     * "any" - zones are unique per network here, so the numeric compare is
+     * unambiguous. Domain still disambiguates if two configs ever populate it. */
+    if (a->domain[0] != '\0' && b->domain[0] != '\0')
     {
-        return 0;
+        if (ftn_domain_strcasecmp(a->domain, b->domain) != 0)
+        {
+            return 0;
+        }
     }
 
     return (a->zone == b->zone &&
@@ -253,6 +262,33 @@ int ftn_addr_match_ignore_domain(const FTN_ADDR *a, const FTN_ADDR *b)
             a->net == b->net &&
             a->node == b->node &&
             a->point == b->point);
+}
+
+/*
+ * Return our AKA (entry in our_addrs[]) whose zone matches the given zone.
+ * This is how outbound mail gets stamped with the correct per-network
+ * identity: a packet/message destined for zone 64 (cnet) must carry our
+ * 64:.. address as origin, not our_addrs[0] (fidonet). Falls back to
+ * our_addrs[0] if no AKA matches the zone, or NULL if we have none.
+ */
+const FTN_ADDR *mailer_aka_for_zone(int zone)
+{
+    int i;
+
+    for (i = 0; i < mailer.our_addr_count; i++)
+    {
+        if (mailer.our_addrs[i].zone == zone)
+        {
+            return &mailer.our_addrs[i];
+        }
+    }
+
+    if (mailer.our_addr_count > 0)
+    {
+        return &mailer.our_addrs[0];
+    }
+
+    return NULL;
 }
 
 /*
@@ -1557,8 +1593,19 @@ void mailer_free_session(MAILER_SESSION *session)
     }
     session->sent_files_count = 0;
 
-    /* Update queue */
-    queue_mark_node_busy(&session->remote_addr, 0);
+    /* Clear busy on the node we actually DIALED (target_addr), not the address
+     * the remote reported (remote_addr). For a hub that fronts several of our
+     * uplinks (e.g. cnet/pinet/retronet all on one host), remote_addr collapses
+     * to whichever AKA matched first, so clearing busy on remote_addr left the
+     * other dialed nodes stuck busy until the next 60s rescan. */
+    if (session->target_addr.zone != 0)
+    {
+        queue_mark_node_busy(&session->target_addr, 0);
+    }
+    else
+    {
+        queue_mark_node_busy(&session->remote_addr, 0);
+    }
 
     session->active = 0;
     mailer.active_sessions--;
@@ -1568,7 +1615,11 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
 {
     char addr_str[64];
     int received_files = session->files_received;
-    FTN_ADDR remote_addr = session->remote_addr;  /* Save before freeing */
+    /* Schedule retry against the node we DIALED (target_addr) for outbound
+     * sessions; remote_addr may have been remapped to a shared-host peer's
+     * first AKA, which would attribute the retry to the wrong node. */
+    FTN_ADDR retry_addr = (session->target_addr.zone != 0)
+                          ? session->target_addr : session->remote_addr;
 
     ftn_addr_to_string(&session->remote_addr, addr_str, sizeof(addr_str));
 
@@ -1588,7 +1639,7 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
     /* Schedule next poll for this node - don't poll again immediately */
     /* Wait 5 minutes (300 seconds) before polling this uplink again */
     {
-        QUEUE_NODE *node = queue_find_node(&remote_addr);
+        QUEUE_NODE *node = queue_find_node(&retry_addr);
         if (node != NULL)
         {
             int delay = (mailer.retry_delay > 0) ? mailer.retry_delay : 300;
@@ -1625,6 +1676,43 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason)
  * (e.g., the session making the check to see if others exist).
  * Returns 1 if busy (another session exists), 0 if not busy.
  */
+/*
+ * Is there already an active session with the given host:port? Used to
+ * de-duplicate outbound polls: several uplinks can share one hub host (e.g.
+ * cnet/pinet/retronet all on call.rofbbs.com), and dialling them
+ * simultaneously makes the hub reject the concurrent connections ("Auth
+ * failed"). One session per host is enough - we present all our AKAs in M_ADR,
+ * and the other same-host networks are polled on subsequent cycles once the
+ * first session's node backs off. Hostname compared case-insensitively.
+ */
+int mailer_host_busy(const char *hostname, int port, MAILER_SESSION *exclude)
+{
+    int i;
+
+    if (hostname == NULL || hostname[0] == '\0')
+    {
+        return 0;
+    }
+
+    for (i = 0; i < MAILER_MAX_SESSIONS; i++)
+    {
+        MAILER_SESSION *session = &mailer.sessions[i];
+
+        if (!session->active || session == exclude)
+        {
+            continue;
+        }
+
+        if (session->remote_port == port &&
+            ftn_domain_strcasecmp(session->remote_hostname, hostname) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 int mailer_is_aka_busy(const FTN_ADDR *addr, MAILER_SESSION *exclude)
 {
     int i;
@@ -2100,6 +2188,8 @@ int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port,
     session->connect_time = time(NULL);
     session->last_activity = session->connect_time;
     strncpy(session->remote_hostname, hostname, sizeof(session->remote_hostname) - 1);
+    session->remote_hostname[sizeof(session->remote_hostname) - 1] = '\0';
+    session->remote_port = port;
 
     /* Mark node as busy */
     queue_mark_node_busy(addr, 1);
@@ -2751,8 +2841,12 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
     /* Update status window timers */
     ftnstatus_update_timers();
 
-    /* Periodically rescan outbound directories so new mail is noticed */
-    if (outbound_queue.scan_interval > 0)
+    /* Periodically rescan outbound directories so new mail is noticed.
+     * Only when idle: queue_scan_outbound() rebuilds the node array (unsafe
+     * mid-session, see M14) and it is also where last_scan is advanced, so
+     * running this while a session is active would both defer the rebuild AND
+     * re-fire scanner_scan_outbound() on every poll tick (a busy scan loop). */
+    if (outbound_queue.scan_interval > 0 && mailer.active_sessions == 0)
     {
         if (now - outbound_queue.last_scan >= outbound_queue.scan_interval)
         {
@@ -2762,7 +2856,7 @@ static Desk_bool wimp_handle_poll(Desk_event_pollblock *event, void *ref)
             {
                 debug_printf("mailer: Auto-scan packed %d messages", packed);
             }
-            
+
             /* Then scan BSO directories for new/changed files */
             queue_scan_outbound();
         }

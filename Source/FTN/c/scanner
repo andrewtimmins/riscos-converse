@@ -733,7 +733,7 @@ int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *pass
 /* Echomail Uplink Discovery                                                                                                                                */
 /* ******************************************************************************************************************************************************** */
 
-int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks)
+int scanner_get_echomail_uplinks(const char *area_groups, int area_zone, FTN_ADDR *uplinks, int max_uplinks)
 {
     _kernel_swi_regs regs;
     SCAN_FTN_GLOBAL_CFG *global;
@@ -753,27 +753,43 @@ int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int
     }
     global = (SCAN_FTN_GLOBAL_CFG *)regs.r[0];
 
-    /* Send echomail to uplinks whose groups overlap with the area's groups */
+    /* Route echomail ONLY to uplinks in the area's own network (zone), AND
+     * whose groups overlap the area's groups. Without the zone gate an echo
+     * in one network was blasted to every uplink that shared a group letter
+     * (and all uplinks here carry A,B,C), so a cnet post was sent to the
+     * fidonet/pinet/... uplinks too - rejected/duplicated cross-network mail.
+     * The area's network zone comes from its akause AKA (see caller). */
     for (i = 0; i < global->uplink_count && found < max_uplinks; i++)
     {
         SCAN_UPLINK_CFG *uplink = &global->uplinks[i];
         FTN_ADDR uplink_addr;
 
-        /* Check if area groups match uplink groups */
+        if (!ftn_string_to_addr(uplink->address, &uplink_addr))
+        {
+            continue;
+        }
+
+        /* Primary gate: the uplink must be in the area's network. */
+        if (area_zone > 0 && uplink_addr.zone != area_zone)
+        {
+            debug_printf("scanner: Skipping uplink %s (zone %d != area zone %d)",
+                         uplink->address, uplink_addr.zone, area_zone);
+            continue;
+        }
+
+        /* Secondary gate: group overlap (lets multiple uplinks in the same
+         * network be disambiguated by group). */
         if (!groups_match(area_groups, uplink->groups))
         {
             debug_printf("scanner: Skipping uplink %s (groups '%s' don't match area '%s')",
-                         uplink->address, uplink->groups, 
+                         uplink->address, uplink->groups,
                          area_groups ? area_groups : "(empty)");
             continue;
         }
 
-        if (ftn_string_to_addr(uplink->address, &uplink_addr))
-        {
-            uplinks[found] = uplink_addr;
-            found++;
-            debug_printf("scanner: Including uplink %s (groups match)", uplink->address);
-        }
+        uplinks[found] = uplink_addr;
+        found++;
+        debug_printf("scanner: Including uplink %s (zone+groups match)", uplink->address);
     }
 
     return found;
@@ -844,17 +860,37 @@ static int scanner_add_message_to_batch(SCANNER_UPLINK_BATCH *batch, const SCANN
 /* Packet Creation for Uplink Batch                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
+/* Read the configured max packet size (bytes). 0/unset -> default 32 KB. */
+static long scanner_get_max_packet_size(void)
+{
+    _kernel_swi_regs regs;
+    SCAN_FTN_GLOBAL_CFG *global;
+
+    regs.r[0] = FTN_CONFIG_GET_GLOBAL;
+    if (_kernel_swi(SWI_SUPPORT_FTN, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return 32768;
+    }
+
+    global = (SCAN_FTN_GLOBAL_CFG *)regs.r[0];
+    return (global->max_packet_size > 0) ? global->max_packet_size : 32768;
+}
+
 int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
 {
     PACKER_CONTEXT *ctx;
     int i;
     int packed = 0;
     PACKER_FLAVOUR packer_flavour;
+    const FTN_ADDR *our_origin;
+    long max_pkt;
 
     if (batch == NULL || batch->message_count == 0)
     {
         return 0;
     }
+
+    max_pkt = scanner_get_max_packet_size();
 
     /* Determine which of our addresses to use (use first, or match zone) */
     if (mailer.our_addr_count == 0)
@@ -873,8 +909,17 @@ int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
         default:                        packer_flavour = PACKER_FLAVOUR_NORMAL; break;
     }
 
-    /* Create packet with appropriate flavour */
-    ctx = packer_create_packet(&mailer.our_addrs[0], &batch->uplink_addr, batch->password, packer_flavour);
+    /* Create packet with appropriate flavour.
+     * The packet envelope origin MUST be our AKA in the destination's network,
+     * not our_addrs[0] (fidonet). A packet addressed to the cnet uplink
+     * (zone 64) has to announce our 64:.. address or the uplink will reject it
+     * as coming from an unknown node. */
+    our_origin = mailer_aka_for_zone(batch->uplink_addr.zone);
+    if (our_origin == NULL)
+    {
+        our_origin = &mailer.our_addrs[0];
+    }
+    ctx = packer_create_packet(our_origin, &batch->uplink_addr, batch->password, packer_flavour);
     if (ctx == NULL)
     {
         debug_printf("scanner: Failed to create packet for uplink");
@@ -882,35 +927,58 @@ int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch)
         return 0;
     }
 
-    /* Pack all messages for this uplink */
+    /* Pack all messages for this uplink, rolling over to a fresh packet when
+     * the current one reaches max_packet_size (a busy area could otherwise
+     * produce one unbounded .pkt). The limit is soft: a message is never split,
+     * so a packet may exceed it by up to one message. */
     for (i = 0; i < batch->message_count; i++)
     {
         SCANNER_MESSAGE *msg = &batch->messages[i];
         int is_echomail = (msg->areatype == SCANNER_AREATYPE_ECHO);
 
+        if (max_pkt > 0 && ctx->message_count > 0 && ctx->packet_size >= max_pkt)
+        {
+            packer_close_packet(ctx);
+            scanner_stats.packets_created++;
+
+            ctx = packer_create_packet(our_origin, &batch->uplink_addr,
+                                       batch->password, packer_flavour);
+            if (ctx == NULL)
+            {
+                debug_printf("scanner: Failed to create rollover packet");
+                scanner_stats.errors++;
+                break;  /* remaining messages stay unmarked -> retried next scan */
+            }
+        }
+
         if (packer_pack_message_from_filer(ctx, msg->base_id, msg->message_id,
                                             msg->echotag, is_echomail, msg->akause))
         {
+            msg->packed_ok = 1;
             packed++;
             scanner_stats.messages_packed++;
         }
         else
         {
+            msg->packed_ok = 0;
             debug_printf("scanner: Failed to pack message %d from base %d",
                          msg->message_id, msg->base_id);
             scanner_stats.errors++;
         }
     }
 
-    /* Close packet */
-    if (packed > 0)
+    /* Close (or abort) the final packet */
+    if (ctx != NULL)
     {
-        packer_close_packet(ctx);
-        scanner_stats.packets_created++;
-    }
-    else
-    {
-        packer_abort_packet(ctx);
+        if (ctx->message_count > 0)
+        {
+            packer_close_packet(ctx);
+            scanner_stats.packets_created++;
+        }
+        else
+        {
+            packer_abort_packet(ctx);
+        }
     }
 
     return packed;
@@ -934,6 +1002,17 @@ int scanner_mark_messages_exported(SCANNER_UPLINK_BATCH *batch)
     for (i = 0; i < batch->message_count; i++)
     {
         SCANNER_MESSAGE *msg = &batch->messages[i];
+
+        /* Only mark messages that were actually packed into the closed packet.
+         * A per-message pack failure (MESSAGE_INFO / DOWNLOAD_BLOCK / malloc)
+         * must NOT be marked exported, or that message is silently lost and
+         * never re-scanned. */
+        if (!msg->packed_ok)
+        {
+            debug_printf("scanner: NOT marking message %d (base %d) exported - pack failed, will retry",
+                         msg->message_id, msg->base_id);
+            continue;
+        }
 
         regs.r[0] = MSGBASE_CMD_MARK_EXPORTED;
         regs.r[1] = msg->base_id;
@@ -1082,12 +1161,23 @@ int scanner_scan_outbound(void)
 
                 if (area->areatype == SCANNER_AREATYPE_ECHO)
                 {
-                    /* Echomail: send to uplinks with matching groups */
+                    /* Echomail: send to uplinks in this area's network (zone) */
                     FTN_ADDR uplinks[SCANNER_MAX_UPLINKS];
                     int uplink_count;
                     int u;
+                    int area_zone = 0;
 
-                    uplink_count = scanner_get_echomail_uplinks(area->groups, uplinks, SCANNER_MAX_UPLINKS);
+                    /* The area's network is identified by its akause AKA. */
+                    if (area->akause >= 0 && area->akause < mailer.our_addr_count)
+                    {
+                        area_zone = mailer.our_addrs[area->akause].zone;
+                    }
+                    else if (mailer.our_addr_count > 0)
+                    {
+                        area_zone = mailer.our_addrs[0].zone;
+                    }
+
+                    uplink_count = scanner_get_echomail_uplinks(area->groups, area_zone, uplinks, SCANNER_MAX_UPLINKS);
 
                     for (u = 0; u < uplink_count; u++)
                     {

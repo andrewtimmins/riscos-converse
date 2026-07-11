@@ -311,25 +311,41 @@ PACKER_CONTEXT *packer_create_packet(const FTN_ADDR *our_addr, const FTN_ADDR *d
         strncpy(ctx->password, password, sizeof(ctx->password) - 1);
     }
 
-    /* Generate unique packet filename based on time with flavour prefix */
-    /* Format: <timestamp><prefix>pkt (e.g., 12345678pkt, 12345678cpkt for crash) */
+    /* Generate a unique packet filename. time(NULL) alone is only 1-second
+       granularity, so two packets for the same node in the same second would
+       collide and the second fopen(wb) would silently overwrite the first,
+       losing outbound mail. A process-monotonic sequence disambiguates within
+       a second; the ftn_path_exists() loop is the backstop across restarts.
+       The "pkt" suffix is kept at the end so the name stays a valid FTN packet
+       name on the wire / inside arcmail. */
+    /* Format: <timestamp><seq><prefix>pkt (e.g. 12345678000apkt, ...cpkt) */
     pkt_time = (unsigned long)time(NULL);
     prefix = packer_get_flavour_prefix(flavour);
-    snprintf(filename, sizeof(filename), "%08lx%spkt", pkt_time & 0xFFFFFFFF, prefix);
 
     /* Ensure outbound directories exist and build full path using BSO helper */
     queue_ensure_outbound_directories(dest_addr);
     queue_format_outbound_name(ctx->path, sizeof(ctx->path), dest_addr, "out");
-    
-    /* Replace 'out' extension with our packet filename */
+
+    /* Strip the 'out' extension, remember the base, then claim a free name. */
     {
-        size_t len = strlen(ctx->path);
-        if (len >= 3)
+        static unsigned int pkt_seq = 0;
+        size_t base_len = strlen(ctx->path);
+
+        if (base_len >= 3)
         {
-            /* Remove 'out' extension and add pkt filename */
-            ctx->path[len - 3] = '\0';
+            base_len -= 3;              /* Drop 'out' */
+            ctx->path[base_len] = '\0';
         }
-        strncat(ctx->path, filename, sizeof(ctx->path) - strlen(ctx->path) - 1);
+
+        do
+        {
+            snprintf(filename, sizeof(filename), "%08lx%04x%spkt",
+                     pkt_time & 0xFFFFFFFF, pkt_seq & 0xFFFF, prefix);
+            pkt_seq++;
+            ctx->path[base_len] = '\0';
+            strncat(ctx->path, filename, sizeof(ctx->path) - base_len - 1);
+        }
+        while (ftn_path_exists(ctx->path));
     }
 
     debug_printf("packer: Creating %s packet %s", 
@@ -489,6 +505,38 @@ void packer_format_intl(char *buffer, size_t size, const FTN_ADDR *dest, const F
 /* SEEN-BY/PATH Handling                                                                                                                                    */
 /* ******************************************************************************************************************************************************** */
 
+/*
+ * Whole-token presence test. A plain strstr("25/9") wrongly matches inside
+ * "250/9" or "25/90", so a node could be judged "already present" (and its
+ * SEEN-BY entry dropped) when it isn't. Require the token to be bounded by a
+ * separator on both sides.
+ */
+static int packer_token_present(const char *haystack, const char *token)
+{
+    const char *p = haystack;
+    size_t tlen = strlen(token);
+
+    if (haystack == NULL || token == NULL || tlen == 0)
+    {
+        return 0;
+    }
+
+    while ((p = strstr(p, token)) != NULL)
+    {
+        char before = (p == haystack) ? ' ' : *(p - 1);
+        char after = *(p + tlen);
+
+        if ((before == ' ' || before == ':') &&
+            (after == ' ' || after == '\0' || after == '\r'))
+        {
+            return 1;
+        }
+        p += tlen;
+    }
+
+    return 0;
+}
+
 int packer_add_seenby(char *existing_seenby, size_t size, int net, int node)
 {
     char addition[32];
@@ -500,12 +548,12 @@ int packer_add_seenby(char *existing_seenby, size_t size, int net, int node)
     }
 
     current_len = strlen(existing_seenby);
-    
+
     /* Format our node to add */
     snprintf(addition, sizeof(addition), "%d/%d", net, node);
 
     /* Check if already present */
-    if (strstr(existing_seenby, addition) != NULL)
+    if (packer_token_present(existing_seenby, addition))
     {
         return 1;  /* Already there */
     }
@@ -544,7 +592,7 @@ int packer_add_path(char *existing_path, size_t size, int net, int node)
     snprintf(addition, sizeof(addition), "%d/%d", net, node);
 
     /* Check if already present */
-    if (strstr(existing_path, addition) != NULL)
+    if (packer_token_present(existing_path, addition))
     {
         return 1;  /* Already there */
     }
@@ -726,9 +774,15 @@ int packer_write_message(PACKER_CONTEXT *ctx, const PACKER_MESSAGE *msg)
             path[0] = '\0';
         }
 
-        /* Add our node */
-        packer_add_seenby(seenby, sizeof(seenby), msg->orig_addr.net, msg->orig_addr.node);
-        packer_add_path(path, sizeof(path), msg->orig_addr.net, msg->orig_addr.node);
+        /* Add OUR node (this packet's AKA for its zone), NOT msg->orig_addr.
+         * For pass-through echomail msg->orig_addr is the original author, so
+         * the old code never stamped US into SEEN-BY - the echo would then be
+         * fed straight back to us by every peer (loop). ctx->orig_addr is our
+         * correct per-network identity (set by mailer_aka_for_zone). Incoming
+         * SEEN-BY history is preserved by the tosser inside the body, so the
+         * downstream union is {history} + {us}. */
+        packer_add_seenby(seenby, sizeof(seenby), ctx->orig_addr.net, ctx->orig_addr.node);
+        packer_add_path(path, sizeof(path), ctx->orig_addr.net, ctx->orig_addr.node);
 
         /* Write SEEN-BY */
         if (seenby[0] != '\0')
@@ -841,11 +895,21 @@ int packer_pack_message_from_filer(PACKER_CONTEXT *ctx, int base_id, int message
     msg.dest_addr.point = record->dstaddr.point;
     strncpy(msg.dest_addr.domain, record->dstaddr.domain, sizeof(msg.dest_addr.domain) - 1);
 
-    /* If origin address is empty, this is a locally posted message - use our AKA */
+    /* If origin address is empty, this is a locally posted message - stamp it
+     * with OUR identity in the destination network. The packet origin
+     * (ctx->orig_addr) was already selected to match the destination zone by
+     * the scanner (mailer_aka_for_zone), so a local cnet post lands with our
+     * 64:.. address in Origin/MSGID/SEEN-BY, not our_addrs[0] (fidonet).
+     * aka_index (area->akause) is now honoured upstream via routing, so it is
+     * only a last-resort hint here. */
     if (msg.orig_addr.zone == 0 && msg.orig_addr.net == 0)
     {
         msg.is_local = 1;  /* Needs tearline/origin */
-        if (aka_index >= 0 && aka_index < mailer.our_addr_count)
+        if (ctx->orig_addr.zone != 0)
+        {
+            msg.orig_addr = ctx->orig_addr;
+        }
+        else if (aka_index >= 0 && aka_index < mailer.our_addr_count)
         {
             msg.orig_addr = mailer.our_addrs[aka_index];
         }
@@ -1078,7 +1142,11 @@ int packer_create_arcmail(const char *packet_path, const FTN_ADDR *dest_addr)
                      (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
         }
     }
-    
+
+    /* Don't clobber an arcmail bundle already queued for this uplink; keep the
+       3-char day-of-week extension at the end so it stays a valid FTN bundle. */
+    ftn_uniquify_path(arc_path, sizeof(arc_path), 3);
+
     /* Create archive name for internal .pkt file (with / separators for ZIP) */
     snprintf(arc_name, sizeof(arc_name), "%s", pkt_leaf);
     
@@ -1160,7 +1228,10 @@ int packer_create_arcmail_multi(const char **packet_paths, int count, const FTN_
                      (unsigned long)time(NULL) & 0xFFFFFFFF, ext);
         }
     }
-    
+
+    /* Don't clobber a bundle already queued for this uplink (see above). */
+    ftn_uniquify_path(arc_path, sizeof(arc_path), 3);
+
     debug_printf("packer: Creating multi-packet arcmail %s", arc_path);
     
     result = zip_create(&archive, arc_path);

@@ -112,9 +112,11 @@ typedef struct
     char remote_system[64];
     char remote_location[64];
     char remote_hostname[64];
+    int remote_port;                /* Port of the host this session is with (for poll de-dup) */
 
     /* Authentication */
     int authenticated;
+    int secure;                     /* 1 = authenticated with a configured password; 0 = unsecured */
     char password[32];
     int cram_enabled;
     char cram_challenge[64];
@@ -279,6 +281,7 @@ void mailer_close_session(MAILER_SESSION *session, const char *reason);
 void mailer_process_sessions(void);
 void mailer_check_timeouts(void);
 int mailer_is_aka_busy(const FTN_ADDR *addr, MAILER_SESSION *exclude);
+int mailer_host_busy(const char *hostname, int port, MAILER_SESSION *exclude);
 
 /* Outbound connections */
 int mailer_connect_to_node(const FTN_ADDR *addr, const char *hostname, int port, int is_uplink);
@@ -329,6 +332,9 @@ void ftn_addr_to_string(const FTN_ADDR *addr, char *buffer, size_t size);
 int ftn_string_to_addr(const char *str, FTN_ADDR *addr);
 int ftn_addr_match(const FTN_ADDR *a, const FTN_ADDR *b);
 int ftn_addr_match_ignore_domain(const FTN_ADDR *a, const FTN_ADDR *b);
+
+/* Select our AKA (origin identity) for a given network zone. */
+const FTN_ADDR *mailer_aka_for_zone(int zone);
 
 /* Domain helpers */
 int ftn_get_domain_for_addr(const FTN_ADDR *addr, char *inbound, size_t in_size, char *outbound, size_t out_size);

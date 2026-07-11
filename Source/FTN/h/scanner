@@ -48,6 +48,7 @@ typedef struct
     FTN_ADDR dest_addr;                 /* For netmail: destination */
     unsigned short flags;               /* Message flags (MSG_FLAG_*) */
     SCANNER_FLAVOUR flavour;            /* Packet flavour (hold/crash/normal/etc) */
+    int packed_ok;                      /* 1 if this message was successfully packed (gates MARK_EXPORTED) */
 } SCANNER_MESSAGE;
 
 /* Messages grouped by destination uplink */
@@ -92,7 +93,7 @@ int scanner_get_message_dest(int base_id, int message_id, FTN_ADDR *dest_out);
 int scanner_get_message_flags(int base_id, int message_id, unsigned short *flags_out);
 SCANNER_FLAVOUR scanner_flags_to_flavour(unsigned short flags);
 int scanner_route_netmail(const FTN_ADDR *dest, FTN_ADDR *uplink_out, char *password_out, size_t pw_size);
-int scanner_get_echomail_uplinks(const char *area_groups, FTN_ADDR *uplinks, int max_uplinks);
+int scanner_get_echomail_uplinks(const char *area_groups, int area_zone, FTN_ADDR *uplinks, int max_uplinks);
 
 /* Packet creation helpers */
 int scanner_create_packets_for_uplink(SCANNER_UPLINK_BATCH *batch);

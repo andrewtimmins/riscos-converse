@@ -174,8 +174,10 @@ void tosser_free_message(TOSSER_MESSAGE *msg);
 /* Message processing */
 int tosser_parse_body(TOSSER_MESSAGE *msg, const char *raw_body, size_t raw_len);
 int tosser_match_area(const char *echotag, int *base_id, int *area_id);
+int tosser_find_area_by_type(int want_areatype, int *base_id, int *area_id);
 int tosser_store_message(const TOSSER_MESSAGE *msg, int base_id, int area_id);
 int tosser_check_duplicate(const char *msgid);
+void tosser_save_dupe_db(void);
 
 /* Utility functions */
 time_t tosser_parse_datetime(const char *datetime_str);

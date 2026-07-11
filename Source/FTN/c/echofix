@@ -159,18 +159,62 @@ static int groups_overlap(const char *groups1, const char *groups2)
     return 0;
 }
 
-/* FileFix access (H3): does the downlink's allowed_files tag-list permit this
-   file echo? Empty list = allow all (mirrors the empty-groups convention used
-   by AreaFix). The list is whitespace/comma-separated file-echo tags, matched
-   case-insensitively. */
-static int fileecho_tag_allowed(const char *list, const char *tag)
+/* Case-insensitive glob match. '*' matches any run (including empty), '?' any
+ * single char. Lets allow-lists use patterns like "RISCOS*", "BBS_*" or a bare
+ * "*" (match everything) - previously tags were compared literally, so "*"
+ * matched no real tag (deny-all) and prefix globs never worked. */
+static int wild_match(const char *pat, const char *str)
+{
+    while (*pat)
+    {
+        if (*pat == '*')
+        {
+            pat++;
+            if (*pat == '\0')
+            {
+                return 1;  /* trailing '*' swallows the rest */
+            }
+            while (*str)
+            {
+                if (wild_match(pat, str))
+                {
+                    return 1;
+                }
+                str++;
+            }
+            return wild_match(pat, str);  /* try matching against "" */
+        }
+        else if (*pat == '?')
+        {
+            if (*str == '\0') return 0;
+            pat++;
+            str++;
+        }
+        else
+        {
+            if (tolower((unsigned char)*pat) != tolower((unsigned char)*str))
+            {
+                return 0;
+            }
+            pat++;
+            str++;
+        }
+    }
+
+    return (*str == '\0');
+}
+
+/* Does a whitespace/comma-separated list of glob patterns permit this tag?
+ * An empty list = allow all (mirrors the empty-groups convention). Each token
+ * is a glob pattern (see wild_match), matched case-insensitively. */
+static int tag_in_list(const char *list, const char *tag)
 {
     const char *p;
     char token[ECHOFIX_AREA_TAG_LEN];
 
     if (list == NULL || list[0] == '\0')
     {
-        return 1;  /* empty allow-list = allow all file echoes */
+        return 1;  /* empty allow-list = allow all */
     }
     if (tag == NULL || tag[0] == '\0')
     {
@@ -191,13 +235,20 @@ static int fileecho_tag_allowed(const char *list, const char *tag)
         /* skip any remainder of an over-long token */
         while (*p && *p != ' ' && *p != '\t' && *p != ',') p++;
 
-        if (len > 0 && str_casecmp(token, tag) == 0)
+        if (len > 0 && wild_match(token, tag))
         {
             return 1;
         }
     }
 
     return 0;
+}
+
+/* FileFix access (H3): does the downlink's allowed_files list permit this file
+   echo? Now wildcard-aware (see tag_in_list). */
+static int fileecho_tag_allowed(const char *list, const char *tag)
+{
+    return tag_in_list(list, tag);
 }
 
 /* Load downlinks from Support module FTN config */
@@ -588,7 +639,37 @@ int echofix_add_subscription(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char
     {
         return 1;  /* Already subscribed, success */
     }
-    
+
+    /* Enforce the downlink's subscription cap (max_echoes for AreaFix,
+     * max_files for FileFix; 0 = unlimited). Previously these were dead config
+     * and a downlink could subscribe to unlimited areas. */
+    {
+        ECHOFIX_DOWNLINK_CONFIG *dl = echofix_find_downlink(addr);
+        if (dl != NULL)
+        {
+            int limit = (type == ECHOFIX_TYPE_AREAFIX) ? dl->max_echoes : dl->max_files;
+            if (limit > 0)
+            {
+                int current = 0, j;
+                for (j = 0; j < subscription_count; j++)
+                {
+                    if (subscriptions[j].active &&
+                        subscriptions[j].type == type &&
+                        addr_equal(&subscriptions[j].addr, addr))
+                    {
+                        current++;
+                    }
+                }
+                if (current >= limit)
+                {
+                    debug_printf("echofix: subscription cap reached for %d:%d/%d.%d (%d/%d)",
+                                 addr->zone, addr->net, addr->node, addr->point, current, limit);
+                    return 0;
+                }
+            }
+        }
+    }
+
     /* Find free slot or reuse inactive */
     sub = NULL;
     for (i = 0; i < subscription_count; i++)
@@ -831,7 +912,12 @@ int echofix_is_area_allowed(const FTN_ADDR *addr, ECHOFIX_TYPE type, const char 
                 ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
                 if (area->areatype == 1 && str_casecmp(area->tag, area_tag) == 0)
                 {
-                    return groups_overlap(dl->allowed_groups, area->groups) ? 1 : 0;
+                    /* Must pass BOTH the group gate AND the explicit
+                     * allowed_echoes list (empty list = allow all). The list
+                     * was previously dead config, so a downlink could pull any
+                     * echo in its groups regardless of the sysop's echo list. */
+                    return (groups_overlap(dl->allowed_groups, area->groups) &&
+                            tag_in_list(dl->allowed_echoes, area->tag)) ? 1 : 0;
                 }
             }
         }
@@ -896,7 +982,8 @@ int echofix_get_available_areas(const FTN_ADDR *addr, ECHOFIX_TYPE type,
             {
                 ECHOFIX_AREA_INFO *area = &cfg->bases[b].areas[a];
                 if (area->areatype == 1 && area->tag[0] != '\0' &&
-                    groups_overlap(dl->allowed_groups, area->groups))
+                    groups_overlap(dl->allowed_groups, area->groups) &&
+                    tag_in_list(dl->allowed_echoes, area->tag))
                 {
                     strncpy(areas[count], area->tag, ECHOFIX_AREA_TAG_LEN - 1);
                     areas[count][ECHOFIX_AREA_TAG_LEN - 1] = '\0';
