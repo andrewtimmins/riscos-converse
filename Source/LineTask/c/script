@@ -93,6 +93,8 @@ static char *script_duplicate_string(const char *source);
 static char *script_duplicate_range(const char *source, size_t length);
 static int script_append_instruction(script_state *state, script_instruction *instr);
 static int script_register_label(script_state *state, const char *name);
+static int script_register_functions(script_state *state);
+static void script_free_functions(script_state *state);
 static void script_execute_instruction(script_state *state, script_instruction *instruction);
 static void script_expand_macros(script_state *state, const char *input, char *buffer, size_t length);
 static int script_expand_macros_to_buffer(script_state *state, const char *input, script_buffer *buffer, int translate_newlines);
@@ -113,6 +115,7 @@ static void script_free_label(script_label *label);
 static void script_free_variable(script_variable *variable);
 static clock_t script_calculate_sleep_deadline(unsigned int milliseconds);
 static int script_stringcasecmp(const char *lhs, const char *rhs);
+static int script_strncasecmp(const char *lhs, const char *rhs, size_t n);
 static char *script_strcasestr(const char *haystack, const char *needle);
 static void script_apply_colour_change(script_state *state, const char *fg_text, const char *bg_text, int apply_fg, int apply_bg);
 static void script_set_flash(script_state *state, const char *arg);
@@ -148,6 +151,21 @@ static void script_save_user_history(script_state *state);
 static int script_evaluate_condition(script_state *state, const char *condition_expr);
 static void script_reset_loop_state(void);
 static int script_count_newlines(const char *text);
+
+/* Expression evaluator (recursive descent). Returns a malloc'd result string
+ * (caller frees) or NULL on error. script_expr_truthy() evaluates + tests
+ * truthiness for IF/WHILE. script_eval_condition_legacy() is the old flat-clause
+ * parser, kept as a fallback. */
+static char *script_expr_eval(script_state *state, const char *expr, int *ok);
+static int script_expr_truthy(script_state *state, const char *expr);
+static int expr_truthy_str(const char *s);
+static int script_evaluate_condition_legacy(script_state *state, const char *condition_expr);
+/* Built-in + user function dispatch; returns malloc'd result or NULL, sets *handled=0 if name unknown. */
+static char *script_expr_call_function(script_state *state, const char *name,
+                                       char **args, int nargs, int *handled);
+/* User-defined FUNCTION support (phase 3). */
+static char *script_run_user_function(script_state *state, const char *name,
+                                      char **args, int nargs, int *handled);
 
 void script_initialise(script_state *state, const script_host *host)
 {
@@ -283,6 +301,13 @@ int script_start(script_state *state, const char *path)
         return 0;
     }
 
+    if (!script_register_functions(state))
+    {
+        state->status = SCRIPT_STATUS_ERROR;
+        return 0;
+    }
+
+    state->func_call_depth = 0;
     state->program_counter = 0;
     state->status = SCRIPT_STATUS_RUNNING;
     script_reset_input(state);
@@ -2385,7 +2410,10 @@ static void script_clear_program(script_state *state)
         }
     }
     state->label_count = 0;
-    
+
+    /* Drop the user-function registry (indices reference the old program). */
+    script_free_functions(state);
+
     /* Reset IF block parsing state */
     script_reset_if_state();
 
@@ -2421,6 +2449,22 @@ static int script_evaluate_condition(script_state *state, const char *condition_
     if (condition_expr == NULL || condition_expr[0] == '\0')
     {
         return 0;
+    }
+
+    /* New expression evaluator (real math, string functions, precedence,
+       parens, NOT). It is a superset of the legacy clause syntax, so old
+       conditions still evaluate; the legacy parser below is the fallback if
+       the evaluator can't parse the string. */
+    {
+        int ok = 0;
+        char *v = script_expr_eval(state, condition_expr, &ok);
+        if (ok && v != NULL)
+        {
+            int t = expr_truthy_str(v);
+            free(v);
+            return t;
+        }
+        if (v) free(v);
     }
 
     strncpy(expr_copy, condition_expr, sizeof(expr_copy) - 1);
@@ -2751,10 +2795,15 @@ static int script_pop_call_stack(script_state *state)
     state->label_count = frame->label_count;
     state->label_capacity = frame->label_capacity;
     state->program_counter = frame->return_pc;
-    
+
     /* Clear the frame */
     memset(frame, 0, sizeof(*frame));
-    
+
+    /* The function registry indexes into the instruction array; now that the
+     * parent program is restored, rebuild it so its functions resolve again
+     * (the subscript's registry referenced the freed subscript instructions). */
+    script_register_functions(state);
+
     return 1;
 }
 
@@ -3205,20 +3254,20 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
             script_set_error(state, "If without goto or then on line %d", line_number);
             return 0;
         }
-        
+
         if (is_block_if)
         {
             /* Block IF: if <condition> then */
             char inverted_condition[1024];
             char *cond_start;
             char *cond_end;
-            
+
             if (script_if_depth >= SCRIPT_MAX_IF_DEPTH)
             {
                 script_set_error(state, "Too many nested if blocks on line %d", line_number);
                 return 0;
             }
-            
+
             /* Extract condition (everything before "then") */
             *then_keyword = '\0';
             condition_text = script_trim(rest);
@@ -3284,6 +3333,40 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         instruction->type = SCRIPT_CMD_SET;
         instruction->arg1 = script_duplicate_string(var_name);
         instruction->arg2 = value_string;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "let") == 0)
+    {
+        /* `let <var> = <expr>` (or `let <var> <expr>`) - always expression.
+         * Compiles to a SET whose value starts with '=', reusing the SET
+         * expression path. */
+        char *var_name = strtok(NULL, " \t");
+        char *value_text = strtok(NULL, "");
+        const char *v;
+        char *expr;
+        size_t n;
+        if (var_name == NULL || value_text == NULL)
+        {
+            script_set_error(state, "Malformed let on line %d", line_number);
+            return 0;
+        }
+        v = script_trim(value_text);
+        n = strlen(v);
+        if (*v == '=')
+        {
+            expr = script_duplicate_string(v);
+        }
+        else
+        {
+            expr = (char *)malloc(n + 2);
+            if (expr == NULL) return 0;
+            expr[0] = '=';
+            memcpy(expr + 1, v, n + 1);
+        }
+        instruction->type = SCRIPT_CMD_SET;
+        instruction->arg1 = script_duplicate_string(var_name);
+        instruction->arg2 = expr;
         return 1;
     }
 
@@ -3358,7 +3441,84 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     if (script_stringcasecmp(token, "return") == 0 || script_stringcasecmp(token, "stop") == 0)
     {
+        /* Optional return value: `return <expr>`. Evaluated as an expression by
+         * the synchronous function executor; ignored at top level. */
+        char *value_text = strtok(NULL, "");
         instruction->type = SCRIPT_CMD_RETURN;
+        if (value_text != NULL)
+        {
+            value_text = script_trim(value_text);
+            if (*value_text != '\0')
+                instruction->arg1 = script_duplicate_string(value_text);
+        }
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "function") == 0 || script_stringcasecmp(token, "func") == 0)
+    {
+        /* function name(p1, p2, ...)  -- arg1 = name, arg2 = comma params */
+        char *rest = strtok(NULL, "");
+        char namebuf[64];
+        char parambuf[256];
+        namebuf[0] = '\0';
+        parambuf[0] = '\0';
+        if (rest != NULL)
+        {
+            char *open;
+            rest = script_trim(rest);
+            open = strchr(rest, '(');
+            if (open != NULL)
+            {
+                char *close;
+                size_t nlen = (size_t)(open - rest);
+                while (nlen > 0 && isspace((unsigned char)rest[nlen - 1])) nlen--;
+                if (nlen >= sizeof(namebuf)) nlen = sizeof(namebuf) - 1;
+                memcpy(namebuf, rest, nlen);
+                namebuf[nlen] = '\0';
+                close = strchr(open, ')');
+                if (close != NULL && (size_t)(close - open - 1) < sizeof(parambuf))
+                {
+                    size_t plen = (size_t)(close - open - 1);
+                    memcpy(parambuf, open + 1, plen);
+                    parambuf[plen] = '\0';
+                }
+            }
+            else
+            {
+                /* function name  (no parens) */
+                strncpy(namebuf, rest, sizeof(namebuf) - 1);
+                namebuf[sizeof(namebuf) - 1] = '\0';
+            }
+        }
+        if (namebuf[0] == '\0')
+        {
+            script_set_error(state, "FUNCTION missing name on line %d", line_number);
+            return 0;
+        }
+        instruction->type = SCRIPT_CMD_FUNCTION;
+        instruction->arg1 = script_duplicate_string(namebuf);
+        instruction->arg2 = script_duplicate_string(parambuf);
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "endfunction") == 0 || script_stringcasecmp(token, "endfunc") == 0)
+    {
+        instruction->type = SCRIPT_CMD_ENDFUNCTION;
+        return 1;
+    }
+
+    if (script_stringcasecmp(token, "local") == 0)
+    {
+        /* local name [= expr]  -- declares a function-scoped variable */
+        char *var_name = strtok(NULL, " \t");
+        char *value_text = strtok(NULL, "");
+        instruction->type = SCRIPT_CMD_LOCAL;
+        instruction->arg1 = script_duplicate_string(var_name != NULL ? var_name : "");
+        if (value_text != NULL)
+        {
+            value_text = script_trim(value_text);
+            instruction->arg2 = script_duplicate_string(value_text);
+        }
         return 1;
     }
 
@@ -4198,6 +4358,1135 @@ static script_variable *script_find_variable(script_state *state, const char *na
     return &state->variables[state->variable_count - 1];
 }
 
+/* ===========================================================================
+ * EXPRESSION EVALUATOR  (recursive descent, string values on the heap)
+ *
+ * Grammar (low -> high precedence):
+ *   or   := and  ( ('||'|'or')  and  )*
+ *   and  := not  ( ('&&'|'and') not  )*
+ *   not  := ('!'|'not') not | cmp
+ *   cmp  := add  ( ('=='|'!='|'<'|'>'|'<='|'>='|'contains') add )?
+ *   add  := mul  ( ('+'|'-') mul )*        '+' concatenates if either side is non-numeric
+ *   mul  := un   ( ('*'|'/'|'%') un )*
+ *   un   := '-' un | primary
+ *   primary := number | '"'string'"' | `string` | %{macro} | ident['('args')'] | '(' or ')'
+ * Every level returns a malloc'd string; operators free their operands.
+ * =========================================================================== */
+
+typedef struct
+{
+    const char *p;
+    script_state *state;
+    int depth;
+    int error;
+} expr_ctx;
+
+#define SCRIPT_EXPR_MAX_DEPTH 48
+#define SCRIPT_EXPR_MAX_ARGS  16
+
+static char *expr_strdup(const char *s)
+{
+    return script_duplicate_string(s ? s : "");
+}
+
+static char *expr_from_long(long v)
+{
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%ld", v);
+    return expr_strdup(buf);
+}
+
+/* Is s a plain integer (optional sign + digits, surrounding whitespace ok)? */
+static int expr_is_num(const char *s)
+{
+    int digits = 0;
+    if (s == NULL) return 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '+' || *s == '-') s++;
+    while (*s >= '0' && *s <= '9') { s++; digits++; }
+    while (*s == ' ' || *s == '\t') s++;
+    return (digits > 0 && *s == '\0');
+}
+
+static long expr_to_long(const char *s)
+{
+    return s ? atol(s) : 0;
+}
+
+/* Truthiness: non-empty, not "0", not "false"/"no" (case-insensitive). */
+static int expr_truthy_str(const char *s)
+{
+    const char *t;
+    if (s == NULL) return 0;
+    t = s;
+    while (*t == ' ' || *t == '\t') t++;
+    if (*t == '\0') return 0;
+    if (strcmp(t, "0") == 0) return 0;
+    if (script_stringcasecmp(t, "false") == 0) return 0;
+    if (script_stringcasecmp(t, "no") == 0) return 0;
+    return 1;
+}
+
+static char *expr_bool(int v) { return expr_strdup(v ? "1" : "0"); }
+
+static void expr_ws(expr_ctx *c) { while (*c->p == ' ' || *c->p == '\t') c->p++; }
+
+static int expr_is_ident_char(char ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+           (ch >= '0' && ch <= '9') || ch == '_';
+}
+
+/* Match a keyword operator (and/or/not/contains) as a whole word; advances on match. */
+static int expr_match_word(expr_ctx *c, const char *word)
+{
+    size_t len = strlen(word);
+    const char *save = c->p;
+    expr_ws(c);
+    if (script_strncasecmp(c->p, word, len) == 0 && !expr_is_ident_char(c->p[len]))
+    {
+        c->p += len;
+        return 1;
+    }
+    c->p = save;
+    return 0;
+}
+
+static char *expr_parse_or(expr_ctx *c);
+
+/* primary */
+static char *expr_parse_primary(expr_ctx *c)
+{
+    char *result;
+    expr_ws(c);
+
+    if (c->depth > SCRIPT_EXPR_MAX_DEPTH) { c->error = 1; return NULL; }
+
+    /* parenthesised */
+    if (*c->p == '(')
+    {
+        c->p++;
+        c->depth++;
+        result = expr_parse_or(c);
+        c->depth--;
+        if (result == NULL) return NULL;
+        expr_ws(c);
+        if (*c->p == ')') c->p++;
+        else { c->error = 1; free(result); return NULL; }
+        return result;
+    }
+
+    /* number */
+    if ((*c->p >= '0' && *c->p <= '9'))
+    {
+        const char *start = c->p;
+        while (*c->p >= '0' && *c->p <= '9') c->p++;
+        {
+            size_t n = (size_t)(c->p - start);
+            char *v = (char *)malloc(n + 1);
+            if (v == NULL) { c->error = 1; return NULL; }
+            memcpy(v, start, n); v[n] = '\0';
+            return v;
+        }
+    }
+
+    /* string literal "..." with basic escapes */
+    if (*c->p == '"')
+    {
+        script_buffer sb;
+        script_buffer_init(&sb);
+        c->p++;
+        while (*c->p != '\0' && *c->p != '"')
+        {
+            char ch = *c->p++;
+            if (ch == '\\' && *c->p != '\0')
+            {
+                char e = *c->p++;
+                if (e == 'n') ch = '\n';
+                else if (e == 'r') ch = '\r';
+                else if (e == 't') ch = '\t';
+                else ch = e;
+            }
+            script_buffer_append_char(&sb, ch);
+        }
+        if (*c->p == '"') c->p++;
+        result = expr_strdup(sb.data ? sb.data : "");
+        script_buffer_free(&sb);
+        return result;
+    }
+
+    /* backtick raw string */
+    if (*c->p == '`')
+    {
+        const char *start = ++c->p;
+        while (*c->p != '\0' && *c->p != '`') c->p++;
+        {
+            size_t n = (size_t)(c->p - start);
+            char *v = (char *)malloc(n + 1);
+            if (v == NULL) { c->error = 1; return NULL; }
+            memcpy(v, start, n); v[n] = '\0';
+            if (*c->p == '`') c->p++;
+            return v;
+        }
+    }
+
+    /* %{macro} */
+    if (c->p[0] == '%' && c->p[1] == '{')
+    {
+        const char *start = c->p;
+        char macrobuf[256];
+        char expanded[SCRIPT_EXPAND_BUFFER_SIZE];
+        size_t n;
+        c->p += 2;
+        while (*c->p != '\0' && *c->p != '}') c->p++;
+        if (*c->p == '}') c->p++;
+        n = (size_t)(c->p - start);
+        if (n >= sizeof(macrobuf)) n = sizeof(macrobuf) - 1;
+        memcpy(macrobuf, start, n); macrobuf[n] = '\0';
+        script_expand_macros(c->state, macrobuf, expanded, sizeof(expanded));
+        return expr_strdup(expanded);
+    }
+
+    /* identifier: variable or function call */
+    if ((*c->p >= 'A' && *c->p <= 'Z') || (*c->p >= 'a' && *c->p <= 'z') || *c->p == '_')
+    {
+        char name[64];
+        size_t n = 0;
+        while (expr_is_ident_char(*c->p) && n < sizeof(name) - 1) name[n++] = *c->p++;
+        name[n] = '\0';
+        expr_ws(c);
+        if (*c->p == '(')
+        {
+            /* function call */
+            char *args[SCRIPT_EXPR_MAX_ARGS];
+            int nargs = 0, i, handled = 0;
+            char *fnres;
+            c->p++;
+            expr_ws(c);
+            if (*c->p != ')')
+            {
+                for (;;)
+                {
+                    char *a;
+                    if (nargs >= SCRIPT_EXPR_MAX_ARGS) { c->error = 1; break; }
+                    c->depth++;
+                    a = expr_parse_or(c);
+                    c->depth--;
+                    if (a == NULL) { c->error = 1; break; }
+                    args[nargs++] = a;
+                    expr_ws(c);
+                    if (*c->p == ',') { c->p++; continue; }
+                    break;
+                }
+            }
+            expr_ws(c);
+            if (*c->p == ')') c->p++; else c->error = 1;
+            if (c->error) { for (i = 0; i < nargs; i++) free(args[i]); return NULL; }
+
+            fnres = script_expr_call_function(c->state, name, args, nargs, &handled);
+            if (!handled)
+                fnres = script_run_user_function(c->state, name, args, nargs, &handled);
+            for (i = 0; i < nargs; i++) free(args[i]);
+            if (!handled)
+            {
+                /* unknown function -> empty (don't hard-error; keeps scripts forgiving) */
+                return expr_strdup("");
+            }
+            return fnres ? fnres : expr_strdup("");
+        }
+        /* plain variable; an UNSET bare word falls back to its own text as a
+         * string literal, so legacy conditions like `if choice == y` still work
+         * (barewords are literals unless they name a defined variable). */
+        {
+            const char *val = script_get_variable_value(c->state, name);
+            return expr_strdup(val ? val : name);
+        }
+    }
+
+    /* nothing recognised -> empty */
+    return expr_strdup("");
+}
+
+static char *expr_parse_unary(expr_ctx *c)
+{
+    expr_ws(c);
+    if (*c->p == '-')
+    {
+        char *v;
+        c->p++;
+        v = expr_parse_unary(c);
+        if (v == NULL) return NULL;
+        { char *r = expr_from_long(-expr_to_long(v)); free(v); return r; }
+    }
+    return expr_parse_primary(c);
+}
+
+static char *expr_parse_mul(expr_ctx *c)
+{
+    char *left = expr_parse_unary(c);
+    if (left == NULL) return NULL;
+    for (;;)
+    {
+        char op; char *right; long a, b, r;
+        expr_ws(c);
+        op = *c->p;
+        if (op != '*' && op != '/' && op != '%') break;
+        c->p++;
+        right = expr_parse_unary(c);
+        if (right == NULL) { free(left); return NULL; }
+        a = expr_to_long(left); b = expr_to_long(right);
+        if (op == '*') r = a * b;
+        else if (op == '/') r = (b != 0) ? a / b : 0;
+        else r = (b != 0) ? a % b : 0;
+        free(left); free(right);
+        left = expr_from_long(r);
+        if (left == NULL) return NULL;
+    }
+    return left;
+}
+
+static char *expr_parse_add(expr_ctx *c)
+{
+    char *left = expr_parse_mul(c);
+    if (left == NULL) return NULL;
+    for (;;)
+    {
+        char op; char *right;
+        expr_ws(c);
+        op = *c->p;
+        if (op != '+' && op != '-') break;
+        c->p++;
+        right = expr_parse_mul(c);
+        if (right == NULL) { free(left); return NULL; }
+        if (op == '-')
+        {
+            char *r = expr_from_long(expr_to_long(left) - expr_to_long(right));
+            free(left); free(right); left = r;
+        }
+        else /* '+' : numeric add if both numeric, else concatenate */
+        {
+            if (expr_is_num(left) && expr_is_num(right))
+            {
+                char *r = expr_from_long(expr_to_long(left) + expr_to_long(right));
+                free(left); free(right); left = r;
+            }
+            else
+            {
+                size_t la = strlen(left), lb = strlen(right);
+                char *r = (char *)malloc(la + lb + 1);
+                if (r == NULL) { free(left); free(right); c->error = 1; return NULL; }
+                memcpy(r, left, la); memcpy(r + la, right, lb); r[la + lb] = '\0';
+                free(left); free(right); left = r;
+            }
+        }
+        if (left == NULL) return NULL;
+    }
+    return left;
+}
+
+static char *expr_parse_cmp(expr_ctx *c)
+{
+    char *left = expr_parse_add(c);
+    char op[3]; char *right; int res;
+    if (left == NULL) return NULL;
+    expr_ws(c);
+
+    op[0] = op[1] = op[2] = '\0';
+    if (expr_match_word(c, "contains"))
+    {
+        right = expr_parse_add(c);
+        if (right == NULL) { free(left); return NULL; }
+        res = (strstr(left, right) != NULL);
+        free(left); free(right);
+        return expr_bool(res);
+    }
+    if ((c->p[0] == '=' && c->p[1] == '=') || (c->p[0] == '!' && c->p[1] == '=') ||
+        (c->p[0] == '<' && c->p[1] == '=') || (c->p[0] == '>' && c->p[1] == '='))
+    { op[0] = c->p[0]; op[1] = c->p[1]; c->p += 2; }
+    else if (c->p[0] == '<' || c->p[0] == '>')
+    { op[0] = c->p[0]; c->p += 1; }
+    else
+        return left; /* no comparison */
+
+    right = expr_parse_add(c);
+    if (right == NULL) { free(left); return NULL; }
+
+    if (op[0] == '=' && op[1] == '=')
+        res = (script_stringcasecmp(left, right) == 0);
+    else if (op[0] == '!' && op[1] == '=')
+        res = (script_stringcasecmp(left, right) != 0);
+    else
+    {
+        /* ordering: numeric if both numeric, else lexical */
+        if (expr_is_num(left) && expr_is_num(right))
+        {
+            long a = expr_to_long(left), b = expr_to_long(right);
+            if (op[0] == '<') res = op[1] == '=' ? (a <= b) : (a < b);
+            else               res = op[1] == '=' ? (a >= b) : (a > b);
+        }
+        else
+        {
+            int cmp = script_stringcasecmp(left, right);
+            if (op[0] == '<') res = op[1] == '=' ? (cmp <= 0) : (cmp < 0);
+            else               res = op[1] == '=' ? (cmp >= 0) : (cmp > 0);
+        }
+    }
+    free(left); free(right);
+    return expr_bool(res);
+}
+
+static char *expr_parse_not(expr_ctx *c)
+{
+    expr_ws(c);
+    if (*c->p == '!' || expr_match_word(c, "not"))
+    {
+        char *v;
+        if (*c->p == '!') c->p++;
+        v = expr_parse_not(c);
+        if (v == NULL) return NULL;
+        { int t = expr_truthy_str(v); free(v); return expr_bool(!t); }
+    }
+    return expr_parse_cmp(c);
+}
+
+static char *expr_parse_and(expr_ctx *c)
+{
+    char *left = expr_parse_not(c);
+    if (left == NULL) return NULL;
+    for (;;)
+    {
+        char *right; int l, r;
+        expr_ws(c);
+        if (!((c->p[0] == '&' && c->p[1] == '&') || expr_match_word(c, "and"))) break;
+        if (c->p[0] == '&') c->p += 2;
+        right = expr_parse_not(c);
+        if (right == NULL) { free(left); return NULL; }
+        l = expr_truthy_str(left); r = expr_truthy_str(right);
+        free(left); free(right);
+        left = expr_bool(l && r);
+    }
+    return left;
+}
+
+static char *expr_parse_or(expr_ctx *c)
+{
+    char *left = expr_parse_and(c);
+    if (left == NULL) return NULL;
+    for (;;)
+    {
+        char *right; int l, r;
+        expr_ws(c);
+        if (!((c->p[0] == '|' && c->p[1] == '|') || expr_match_word(c, "or"))) break;
+        if (c->p[0] == '|') c->p += 2;
+        right = expr_parse_and(c);
+        if (right == NULL) { free(left); return NULL; }
+        l = expr_truthy_str(left); r = expr_truthy_str(right);
+        free(left); free(right);
+        left = expr_bool(l || r);
+    }
+    return left;
+}
+
+static char *script_expr_eval(script_state *state, const char *expr, int *ok)
+{
+    expr_ctx c;
+    char *result;
+    if (ok) *ok = 0;
+    if (state == NULL || expr == NULL) return NULL;
+    c.p = expr; c.state = state; c.depth = 0; c.error = 0;
+    result = expr_parse_or(&c);
+    if (result == NULL || c.error)
+    {
+        if (result) free(result);
+        return NULL;
+    }
+    if (ok) *ok = 1;
+    return result;
+}
+
+static int script_expr_truthy(script_state *state, const char *expr)
+{
+    int ok = 0, t;
+    char *v = script_expr_eval(state, expr, &ok);
+    if (!ok || v == NULL) { if (v) free(v); return 0; }
+    t = expr_truthy_str(v);
+    free(v);
+    return t;
+}
+
+/* Built-in expression functions. Sets *handled=1 if the name is a builtin.
+ * Returns a malloc'd result string (or NULL). Data-API / file / KV builtins
+ * are appended in script_expr_call_function_ext (phase 2). */
+#define EXPR_ARG(i)  ((i) < nargs && args[i] ? args[i] : "")
+static char *script_expr_call_function_ext(script_state *state, const char *name,
+                                           char **args, int nargs, int *handled);
+
+static char *script_expr_call_function(script_state *state, const char *name,
+                                       char **args, int nargs, int *handled)
+{
+    *handled = 1;
+
+    if (script_stringcasecmp(name, "len") == 0 || script_stringcasecmp(name, "length") == 0)
+        return expr_from_long((long)strlen(EXPR_ARG(0)));
+
+    if (script_stringcasecmp(name, "upper") == 0)
+    {
+        char *r = expr_strdup(EXPR_ARG(0)); char *p = r;
+        if (r) for (; *p; p++) *p = (char)toupper((unsigned char)*p);
+        return r;
+    }
+    if (script_stringcasecmp(name, "lower") == 0)
+    {
+        char *r = expr_strdup(EXPR_ARG(0)); char *p = r;
+        if (r) for (; *p; p++) *p = (char)tolower((unsigned char)*p);
+        return r;
+    }
+    if (script_stringcasecmp(name, "trim") == 0 || script_stringcasecmp(name, "ltrim") == 0 ||
+        script_stringcasecmp(name, "rtrim") == 0)
+    {
+        const char *s = EXPR_ARG(0);
+        const char *b = s; const char *e = s + strlen(s);
+        char *r; size_t n;
+        int lt = (script_stringcasecmp(name, "rtrim") != 0);
+        int rt = (script_stringcasecmp(name, "ltrim") != 0);
+        if (lt) while (*b == ' ' || *b == '\t' || *b == '\r' || *b == '\n') b++;
+        if (rt) while (e > b && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) e--;
+        n = (size_t)(e - b);
+        r = (char *)malloc(n + 1);
+        if (r) { memcpy(r, b, n); r[n] = '\0'; }
+        return r ? r : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "left") == 0)
+    {
+        const char *s = EXPR_ARG(0); long n = expr_to_long(EXPR_ARG(1));
+        size_t sl = strlen(s); char *r;
+        if (n < 0) n = 0; if ((size_t)n > sl) n = (long)sl;
+        r = (char *)malloc((size_t)n + 1);
+        if (r) { memcpy(r, s, (size_t)n); r[n] = '\0'; }
+        return r ? r : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "right") == 0)
+    {
+        const char *s = EXPR_ARG(0); long n = expr_to_long(EXPR_ARG(1));
+        size_t sl = strlen(s);
+        if (n < 0) n = 0; if ((size_t)n > sl) n = (long)sl;
+        return expr_strdup(s + (sl - (size_t)n));
+    }
+    if (script_stringcasecmp(name, "substr") == 0 || script_stringcasecmp(name, "mid") == 0)
+    {
+        const char *s = EXPR_ARG(0); size_t sl = strlen(s);
+        long start = expr_to_long(EXPR_ARG(1));
+        long len = (nargs >= 3) ? expr_to_long(EXPR_ARG(2)) : (long)sl;
+        char *r;
+        if (start < 0) start = 0;
+        if ((size_t)start >= sl) return expr_strdup("");
+        if (len < 0) len = 0;
+        if ((size_t)(start + len) > sl) len = (long)(sl - (size_t)start);
+        r = (char *)malloc((size_t)len + 1);
+        if (r) { memcpy(r, s + start, (size_t)len); r[len] = '\0'; }
+        return r ? r : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "find") == 0 || script_stringcasecmp(name, "instr") == 0)
+    {
+        const char *s = EXPR_ARG(0); const char *sub = EXPR_ARG(1);
+        const char *hit = (*sub) ? strstr(s, sub) : s;
+        return expr_from_long(hit ? (long)(hit - s) : -1L);
+    }
+    if (script_stringcasecmp(name, "replace") == 0)
+    {
+        const char *s = EXPR_ARG(0), *from = EXPR_ARG(1), *to = EXPR_ARG(2);
+        script_buffer sb; char *r; size_t fl = strlen(from);
+        if (fl == 0) return expr_strdup(s);
+        script_buffer_init(&sb);
+        while (*s)
+        {
+            if (strncmp(s, from, fl) == 0) { script_buffer_append_string(&sb, to); s += fl; }
+            else script_buffer_append_char(&sb, *s++);
+        }
+        r = expr_strdup(sb.data ? sb.data : "");
+        script_buffer_free(&sb);
+        return r;
+    }
+    if (script_stringcasecmp(name, "repeat") == 0)
+    {
+        const char *s = EXPR_ARG(0); long n = expr_to_long(EXPR_ARG(1)); long i;
+        script_buffer sb; char *r;
+        script_buffer_init(&sb);
+        for (i = 0; i < n && i < 10000; i++) script_buffer_append_string(&sb, s);
+        r = expr_strdup(sb.data ? sb.data : "");
+        script_buffer_free(&sb);
+        return r;
+    }
+    if (script_stringcasecmp(name, "pad") == 0)
+    {
+        const char *s = EXPR_ARG(0); long w = expr_to_long(EXPR_ARG(1));
+        size_t sl = strlen(s); script_buffer sb; char *r;
+        script_buffer_init(&sb);
+        script_buffer_append_string(&sb, s);
+        while ((long)sl < w) { script_buffer_append_char(&sb, ' '); sl++; }
+        r = expr_strdup(sb.data ? sb.data : "");
+        script_buffer_free(&sb);
+        return r;
+    }
+    if (script_stringcasecmp(name, "chr") == 0)
+    {
+        char b[2]; b[0] = (char)(expr_to_long(EXPR_ARG(0)) & 0xFF); b[1] = '\0';
+        return expr_strdup(b);
+    }
+    if (script_stringcasecmp(name, "asc") == 0)
+        return expr_from_long((long)(unsigned char)EXPR_ARG(0)[0]);
+    if (script_stringcasecmp(name, "str") == 0 || script_stringcasecmp(name, "val") == 0 ||
+        script_stringcasecmp(name, "int") == 0)
+        return expr_from_long(expr_to_long(EXPR_ARG(0)));
+    if (script_stringcasecmp(name, "abs") == 0)
+    { long v = expr_to_long(EXPR_ARG(0)); return expr_from_long(v < 0 ? -v : v); }
+    if (script_stringcasecmp(name, "min") == 0)
+    { long a = expr_to_long(EXPR_ARG(0)), b = expr_to_long(EXPR_ARG(1)); return expr_from_long(a < b ? a : b); }
+    if (script_stringcasecmp(name, "max") == 0)
+    { long a = expr_to_long(EXPR_ARG(0)), b = expr_to_long(EXPR_ARG(1)); return expr_from_long(a > b ? a : b); }
+    if (script_stringcasecmp(name, "rand") == 0)
+    {
+        long lo = expr_to_long(EXPR_ARG(0)), hi = expr_to_long(EXPR_ARG(1));
+        if (hi < lo) { long t = lo; lo = hi; hi = t; }
+        return expr_from_long(lo + (long)(rand() % (hi - lo + 1)));
+    }
+
+    /* not a core builtin - try the extended (data/file/KV) set */
+    return script_expr_call_function_ext(state, name, args, nargs, handled);
+}
+
+/* ---- ScriptData helpers: sandboxed file store under <Converse$Dir>.ScriptData ---- */
+static void script_data_dir(char *out, size_t outsz, const char *sub)
+{
+    if (sub && *sub) snprintf(out, outsz, "<Converse$Dir>.ScriptData.%s", sub);
+    else            snprintf(out, outsz, "<Converse$Dir>.ScriptData");
+}
+
+static void script_ensure_dir(const char *path)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = 8;                 /* OS_File 8: create directory */
+    regs.r[1] = (int)path;
+    regs.r[4] = 0;
+    _kernel_swi(0x08, &regs, &regs);
+}
+
+/* Build a sandboxed leaf path; the caller-supplied name is reduced to a safe
+ * single leaf (alnum/_/- only) so a script cannot escape ScriptData. */
+static void script_data_path(char *out, size_t outsz, const char *sub, const char *name)
+{
+    char dir[256];
+    char leaf[128];
+    size_t i, j = 0;
+    for (i = 0; name && name[i] && j < sizeof(leaf) - 1; i++)
+    {
+        char ch = name[i];
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+            (ch >= '0' && ch <= '9') || ch == '_' || ch == '-')
+            leaf[j++] = ch;
+        else
+            leaf[j++] = '_';
+    }
+    leaf[j] = '\0';
+    if (j == 0) { leaf[0] = '_'; leaf[1] = '\0'; }
+    script_data_dir(dir, sizeof(dir), sub);
+    snprintf(out, outsz, "%s.%s", dir, leaf);
+}
+
+static char *script_file_read_all(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    char *buf;
+    long sz;
+    if (f == NULL) return NULL;
+    fseek(f, 0, SEEK_END); sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz < 0) sz = 0;
+    if (sz > 1024L * 1024L) sz = 1024L * 1024L;   /* 1 MB cap */
+    buf = (char *)malloc((size_t)sz + 1);
+    if (buf != NULL)
+    {
+        size_t rd = fread(buf, 1, (size_t)sz, f);
+        buf[rd] = '\0';
+    }
+    fclose(f);
+    return buf;
+}
+
+static int script_file_write_data(const char *path, const char *data, int append)
+{
+    FILE *f = fopen(path, append ? "ab" : "wb");
+    if (f == NULL) return 0;
+    if (data && *data) fwrite(data, 1, strlen(data), f);
+    fclose(f);
+    return 1;
+}
+
+/* Extended builtins: config, user field read/write, KV store, file I/O. */
+/* Set the RET/OK result register (readable as %{ret} / %{ok}) after an
+ * operation. code is typically 1 = success, 0 = failure. */
+static void script_set_ok(script_state *state, int code)
+{
+    char b[16];
+    snprintf(b, sizeof(b), "%d", code);
+    script_set_variable_value(state, "ok", b);
+    script_set_variable_value(state, "ret", b);
+}
+
+static char *script_expr_call_function_ext(script_state *state, const char *name,
+                                           char **args, int nargs, int *handled)
+{
+    const script_host *h = &state->host;
+    *handled = 1;
+
+    /* ---- config ---- */
+    if (script_stringcasecmp(name, "cfg") == 0 || script_stringcasecmp(name, "config") == 0)
+    {
+        const char *v = h->get_config ? h->get_config(h->context, EXPR_ARG(0)) : NULL;
+        return expr_strdup(v ? v : "");
+    }
+
+    /* ---- user field read: userget("realname"|"level"|"calls"|...) ---- */
+    if (script_stringcasecmp(name, "userget") == 0 || script_stringcasecmp(name, "user") == 0)
+    {
+        const char *f = EXPR_ARG(0);
+        if (script_stringcasecmp(f, "username") == 0)
+            return expr_strdup(h->get_user_username ? h->get_user_username(h->context) : "");
+        if (script_stringcasecmp(f, "realname") == 0)
+            return expr_strdup(h->get_user_realname ? h->get_user_realname(h->context) : "");
+        if (script_stringcasecmp(f, "keys") == 0)
+            return expr_strdup(h->get_user_keys ? h->get_user_keys(h->context) : "");
+        if (script_stringcasecmp(f, "level") == 0 || script_stringcasecmp(f, "accesslevel") == 0)
+            return expr_from_long(h->get_user_accesslevel ? h->get_user_accesslevel(h->context) : 0);
+        if (script_stringcasecmp(f, "sysop") == 0)
+            return expr_from_long(h->get_user_sysop ? h->get_user_sysop(h->context) : 0);
+        if (script_stringcasecmp(f, "id") == 0 || script_stringcasecmp(f, "userid") == 0)
+            return expr_from_long(h->get_user_id ? h->get_user_id(h->context) : 0);
+        if (h->get_user_stats)
+        {
+            const script_user_stats *s = h->get_user_stats(h->context);
+            if (s != NULL)
+            {
+                if (script_stringcasecmp(f, "calls") == 0)       return expr_from_long(s->calls);
+                if (script_stringcasecmp(f, "todaytime") == 0)   return expr_from_long(s->todaytime);
+                if (script_stringcasecmp(f, "uploadskb") == 0)   return expr_from_long(s->uploadskb);
+                if (script_stringcasecmp(f, "downloadskb") == 0) return expr_from_long(s->downloadskb);
+                if (script_stringcasecmp(f, "uploads") == 0)     return expr_from_long(s->uploads);
+                if (script_stringcasecmp(f, "downloads") == 0)   return expr_from_long(s->downloads);
+                if (script_stringcasecmp(f, "lastlogon") == 0)   return expr_from_long((long)s->lastlogon);
+                if (script_stringcasecmp(f, "lastscan") == 0)    return expr_from_long((long)s->lastscan);
+            }
+        }
+        if (h->get_user_flags)
+        {
+            const script_user_flags *fl = h->get_user_flags(h->context);
+            if (fl != NULL)
+            {
+                if (script_stringcasecmp(f, "ansi") == 0)     return expr_from_long(fl->ansi);
+                if (script_stringcasecmp(f, "more") == 0)     return expr_from_long(fl->more);
+                if (script_stringcasecmp(f, "expert") == 0)   return expr_from_long(fl->expert);
+                if (script_stringcasecmp(f, "nolimit") == 0)  return expr_from_long(fl->nolimit);
+                if (script_stringcasecmp(f, "maxtime") == 0)  return expr_from_long(fl->maxtime);
+                if (script_stringcasecmp(f, "protocol") == 0) return expr_from_long(fl->defaultprotocol);
+            }
+        }
+        return expr_strdup("");
+    }
+
+    /* ---- user field write: userset("level", 50) ---- */
+    if (script_stringcasecmp(name, "userset") == 0)
+    {
+        int r = 0;
+        if (h->set_user_field) r = h->set_user_field(h->context, EXPR_ARG(0), EXPR_ARG(1));
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- other-user access (sysop): usergetby(id|name, field) /
+            usersetby(id|name, field, value) ---- */
+    if (script_stringcasecmp(name, "usergetby") == 0)
+    {
+        const char *v = h->get_other_user_field ?
+            h->get_other_user_field(h->context, EXPR_ARG(0), EXPR_ARG(1)) : NULL;
+        script_set_ok(state, v != NULL);
+        return expr_strdup(v ? v : "");
+    }
+    if (script_stringcasecmp(name, "usersetby") == 0)
+    {
+        int r = h->set_other_user_field ?
+            h->set_other_user_field(h->context, EXPR_ARG(0), EXPR_ARG(1), EXPR_ARG(2)) : 0;
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- enumeration: usercount() / userbyindex(n, field) ---- */
+    if (script_stringcasecmp(name, "usercount") == 0)
+    {
+        return expr_from_long(h->get_board_stat ? h->get_board_stat(h->context, "totalusers") : 0);
+    }
+    if (script_stringcasecmp(name, "userbyindex") == 0)
+    {
+        const char *v = h->get_user_by_index ?
+            h->get_user_by_index(h->context, atoi(EXPR_ARG(0)), EXPR_ARG(1)) : NULL;
+        return expr_strdup(v ? v : "");
+    }
+
+    /* ---- current-user key mutations: addkey/delkey/togkey("W") ---- */
+    if (script_stringcasecmp(name, "addkey") == 0 ||
+        script_stringcasecmp(name, "delkey") == 0 ||
+        script_stringcasecmp(name, "togkey") == 0)
+    {
+        const char *cur = h->get_user_keys ? h->get_user_keys(h->context) : "";
+        const char *karg = EXPR_ARG(0);
+        char kc = karg[0];
+        char nk[160];
+        int present = 0, r = 0;
+        int add = (script_stringcasecmp(name, "addkey") == 0);
+        int tog = (script_stringcasecmp(name, "togkey") == 0);
+        size_t i, j = 0;
+        if (cur == NULL) cur = "";
+        for (i = 0; cur[i] && j < sizeof(nk) - 2; ++i)
+        {
+            if (cur[i] == kc)
+            {
+                present = 1;
+                if (add) nk[j++] = cur[i];   /* addkey: keep; del/tog: drop */
+            }
+            else nk[j++] = cur[i];
+        }
+        nk[j] = '\0';
+        if (kc != '\0' && ((add && !present) || (tog && !present)))
+        {
+            nk[j++] = kc;
+            nk[j] = '\0';
+        }
+        if (h->set_user_field) r = h->set_user_field(h->context, "keys", nk);
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- logline(file, text): append a date/user-stamped line under Files ---- */
+    if (script_stringcasecmp(name, "logline") == 0)
+    {
+        char dir[256], path[300], prefix[160], rec[SCRIPT_EXPAND_BUFFER_SIZE];
+        int r;
+        script_expand_macros(state, "%{date} %{time} %{username}: ", prefix, sizeof(prefix));
+        snprintf(rec, sizeof(rec), "%s%s\n", prefix, EXPR_ARG(1));
+        script_data_dir(dir, sizeof(dir), NULL); script_ensure_dir(dir);
+        script_data_dir(dir, sizeof(dir), "Files"); script_ensure_dir(dir);
+        script_data_path(path, sizeof(path), "Files", EXPR_ARG(0));
+        r = script_file_write_data(path, rec, 1);
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- key/value store (persistent, file-backed): kvget/kvset (global),
+            kvgetuser/kvsetuser (per-user) ---- */
+    if (script_stringcasecmp(name, "kvget") == 0)
+    {
+        char path[300]; char *v;
+        script_data_path(path, sizeof(path), "KV", EXPR_ARG(0));
+        v = script_file_read_all(path);
+        return v ? v : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "kvset") == 0)
+    {
+        char dir[256], path[300];
+        script_data_dir(dir, sizeof(dir), NULL); script_ensure_dir(dir);
+        script_data_dir(dir, sizeof(dir), "KV"); script_ensure_dir(dir);
+        script_data_path(path, sizeof(path), "KV", EXPR_ARG(0));
+        { int r = script_file_write_data(path, EXPR_ARG(1), 0); script_set_ok(state, r); return expr_from_long(r); }
+    }
+    if (script_stringcasecmp(name, "kvgetuser") == 0)
+    {
+        char sub[64], path[300]; char *v;
+        int uid = h->get_user_id ? h->get_user_id(h->context) : 0;
+        snprintf(sub, sizeof(sub), "KVUser.u%d", uid);
+        script_data_path(path, sizeof(path), sub, EXPR_ARG(0));
+        v = script_file_read_all(path);
+        return v ? v : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "kvsetuser") == 0)
+    {
+        char sub[64], dir[256], path[300];
+        int uid = h->get_user_id ? h->get_user_id(h->context) : 0;
+        snprintf(sub, sizeof(sub), "KVUser.u%d", uid);
+        script_data_dir(dir, sizeof(dir), NULL); script_ensure_dir(dir);
+        script_data_dir(dir, sizeof(dir), "KVUser"); script_ensure_dir(dir);
+        script_data_dir(dir, sizeof(dir), sub); script_ensure_dir(dir);
+        script_data_path(path, sizeof(path), sub, EXPR_ARG(0));
+        { int r = script_file_write_data(path, EXPR_ARG(1), 0); script_set_ok(state, r); return expr_from_long(r); }
+    }
+
+    /* ---- flat file I/O (sandboxed under ScriptData.Files) ---- */
+    if (script_stringcasecmp(name, "fileread") == 0)
+    {
+        char path[300]; char *v;
+        script_data_path(path, sizeof(path), "Files", EXPR_ARG(0));
+        v = script_file_read_all(path);
+        return v ? v : expr_strdup("");
+    }
+    if (script_stringcasecmp(name, "filewrite") == 0 || script_stringcasecmp(name, "fileappend") == 0)
+    {
+        char dir[256], path[300];
+        int append = (script_stringcasecmp(name, "fileappend") == 0);
+        script_data_dir(dir, sizeof(dir), NULL); script_ensure_dir(dir);
+        script_data_dir(dir, sizeof(dir), "Files"); script_ensure_dir(dir);
+        script_data_path(path, sizeof(path), "Files", EXPR_ARG(0));
+        { int r = script_file_write_data(path, EXPR_ARG(1), append); script_set_ok(state, r); return expr_from_long(r); }
+    }
+    if (script_stringcasecmp(name, "fileexists") == 0)
+    {
+        char path[300]; FILE *f;
+        script_data_path(path, sizeof(path), "Files", EXPR_ARG(0));
+        f = fopen(path, "rb");
+        if (f != NULL) { fclose(f); return expr_strdup("1"); }
+        return expr_strdup("0");
+    }
+    if (script_stringcasecmp(name, "filedelete") == 0)
+    {
+        char path[300];
+        int r;
+        script_data_path(path, sizeof(path), "Files", EXPR_ARG(0));
+        r = (remove(path) == 0);
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    *handled = 0;
+    return NULL;
+}
+
+/* Build the function registry by scanning the parsed instruction stream for
+ * FUNCTION..ENDFUNCTION pairs. Called once after load. No nesting. */
+static int script_register_functions(script_state *state)
+{
+    size_t i, j;
+
+    if (state == NULL) return 1;
+    script_free_functions(state);
+
+    for (i = 0; i < state->instruction_count; ++i)
+    {
+        if (state->instructions[i].type != SCRIPT_CMD_FUNCTION) continue;
+
+        {
+            size_t end = 0;
+            int found_end = 0;
+            script_function fn;
+            char *params;
+
+            memset(&fn, 0, sizeof(fn));
+
+            for (j = i + 1; j < state->instruction_count; ++j)
+            {
+                if (state->instructions[j].type == SCRIPT_CMD_FUNCTION)
+                {
+                    script_set_error(state, "Nested FUNCTION not allowed");
+                    return 0;
+                }
+                if (state->instructions[j].type == SCRIPT_CMD_ENDFUNCTION)
+                {
+                    end = j; found_end = 1; break;
+                }
+            }
+            if (!found_end)
+            {
+                script_set_error(state, "FUNCTION without ENDFUNCTION");
+                return 0;
+            }
+
+            fn.name = script_duplicate_string(state->instructions[i].arg1 ?
+                                              state->instructions[i].arg1 : "");
+            fn.body_start = i;
+            fn.body_end = end;
+            fn.param_count = 0;
+
+            params = state->instructions[i].arg2;
+            if (params != NULL && *params != '\0')
+            {
+                char tmp[256];
+                char *p;
+                strncpy(tmp, params, sizeof(tmp) - 1);
+                tmp[sizeof(tmp) - 1] = '\0';
+                p = tmp;
+                while (p != NULL && *p != '\0' && fn.param_count < SCRIPT_MAX_FUNC_PARAMS)
+                {
+                    char *comma = strchr(p, ',');
+                    char *start = p;
+                    char *endp;
+                    if (comma != NULL) *comma = '\0';
+                    while (*start && isspace((unsigned char)*start)) start++;
+                    endp = start + strlen(start);
+                    while (endp > start && isspace((unsigned char)endp[-1])) endp--;
+                    *endp = '\0';
+                    if (*start != '\0')
+                        fn.params[fn.param_count++] = script_duplicate_string(start);
+                    p = comma ? comma + 1 : NULL;
+                }
+            }
+
+            if (state->function_count >= state->function_capacity)
+            {
+                size_t newcap = state->function_capacity ? state->function_capacity * 2 : 8;
+                script_function *grown = (script_function *)realloc(state->functions,
+                                             newcap * sizeof(script_function));
+                if (grown == NULL)
+                {
+                    int k;
+                    if (fn.name) free(fn.name);
+                    for (k = 0; k < fn.param_count; ++k)
+                        if (fn.params[k]) free(fn.params[k]);
+                    script_set_error(state, "Out of memory registering functions");
+                    return 0;
+                }
+                state->functions = grown;
+                state->function_capacity = newcap;
+            }
+            state->functions[state->function_count++] = fn;
+            i = end; /* resume scanning after ENDFUNCTION */
+        }
+    }
+    return 1;
+}
+
+static void script_free_functions(script_state *state)
+{
+    size_t i;
+    int j;
+
+    if (state == NULL || state->functions == NULL) return;
+    for (i = 0; i < state->function_count; ++i)
+    {
+        if (state->functions[i].name) free(state->functions[i].name);
+        for (j = 0; j < state->functions[i].param_count; ++j)
+            if (state->functions[i].params[j]) free(state->functions[i].params[j]);
+    }
+    free(state->functions);
+    state->functions = NULL;
+    state->function_count = 0;
+    state->function_capacity = 0;
+}
+
+/* User-defined FUNCTION dispatch (expression-callable). Runs the body
+ * synchronously to a RETURN value; parameters and LOCALs are scoped by
+ * save/restore. Blocking commands inside a function abort it. */
+static char *script_run_user_function(script_state *state, const char *name,
+                                      char **args, int nargs, int *handled)
+{
+    script_function *fn = NULL;
+    size_t i, fpc;
+    struct { char name[32]; char *old; int existed; } saved[64];
+    int nsaved = 0;
+    char *retval = NULL;
+    int budget = 0;
+    size_t saved_pc;
+    script_status saved_status;
+
+    *handled = 0;
+    if (state == NULL || name == NULL) return NULL;
+
+    for (i = 0; i < state->function_count; ++i)
+    {
+        if (script_stringcasecmp(state->functions[i].name, name) == 0)
+        {
+            fn = &state->functions[i];
+            break;
+        }
+    }
+    if (fn == NULL) return NULL;      /* not a user function */
+    *handled = 1;
+
+    if (state->func_call_depth >= SCRIPT_MAX_FUNC_DEPTH)
+    {
+        script_set_error(state, "Function recursion too deep in %s", name);
+        return expr_strdup("");
+    }
+    state->func_call_depth++;
+
+    /* Bind parameters as locals (save current values for restore). */
+    for (i = 0; i < (size_t)fn->param_count && nsaved < 64; ++i)
+    {
+        const char *pn = fn->params[i];
+        const char *cur = script_get_variable_value(state, pn);
+        strncpy(saved[nsaved].name, pn, sizeof(saved[nsaved].name) - 1);
+        saved[nsaved].name[sizeof(saved[nsaved].name) - 1] = '\0';
+        saved[nsaved].existed = (cur != NULL);
+        saved[nsaved].old = cur ? expr_strdup(cur) : NULL;
+        nsaved++;
+        script_set_variable_value(state, pn,
+                                  (i < (size_t)nargs && args[i]) ? args[i] : "");
+    }
+
+    saved_pc = state->program_counter;
+    saved_status = state->status;
+    state->status = SCRIPT_STATUS_RUNNING;
+
+    fpc = fn->body_start + 1;
+    while (fpc < state->instruction_count && fpc < fn->body_end)
+    {
+        script_instruction *ins = &state->instructions[fpc];
+
+        if (ins->type == SCRIPT_CMD_ENDFUNCTION)
+            break;
+
+        if (ins->type == SCRIPT_CMD_RETURN)
+        {
+            if (ins->arg1 != NULL && ins->arg1[0] != '\0')
+            {
+                int ok = 0;
+                retval = script_expr_eval(state, ins->arg1, &ok);
+                if (!ok && retval) { free(retval); retval = NULL; }
+            }
+            break;
+        }
+
+        if (ins->type == SCRIPT_CMD_LOCAL)
+        {
+            const char *ln = ins->arg1 ? ins->arg1 : "";
+            if (ln[0] != '\0' && nsaved < 64)
+            {
+                const char *cur = script_get_variable_value(state, ln);
+                strncpy(saved[nsaved].name, ln, sizeof(saved[nsaved].name) - 1);
+                saved[nsaved].name[sizeof(saved[nsaved].name) - 1] = '\0';
+                saved[nsaved].existed = (cur != NULL);
+                saved[nsaved].old = cur ? expr_strdup(cur) : NULL;
+                nsaved++;
+            }
+        }
+
+        state->program_counter = fpc + 1;
+        script_execute_instruction(state, ins);
+
+        if (state->status != SCRIPT_STATUS_RUNNING)
+        {
+            script_set_error(state, "Blocking command in function %s", name);
+            state->status = SCRIPT_STATUS_RUNNING;
+            break;
+        }
+        fpc = state->program_counter;
+        if (++budget > SCRIPT_MAX_INSTRUCTIONS_PER_POLL)
+        {
+            script_set_error(state, "Function %s exceeded instruction budget", name);
+            break;
+        }
+    }
+
+    state->program_counter = saved_pc;
+    state->status = saved_status;
+
+    /* Restore locals in reverse so shadowed names unwind correctly. */
+    while (nsaved > 0)
+    {
+        nsaved--;
+        script_set_variable_value(state, saved[nsaved].name,
+                                  saved[nsaved].old ? saved[nsaved].old : "");
+        if (saved[nsaved].old) free(saved[nsaved].old);
+    }
+
+    state->func_call_depth--;
+    return retval ? retval : expr_strdup("");
+}
+
 static void script_execute_instruction(script_state *state, script_instruction *instruction)
 {
     if (state == NULL || instruction == NULL)
@@ -4271,6 +5560,22 @@ static void script_execute_instruction(script_state *state, script_instruction *
             const char *endif_label = instruction->arg4;
             int is_block_if = (instruction->arg3 != NULL && strcmp(instruction->arg3, "block") == 0);
             int final_result = 0;
+            int nev_ok = 0, nev_result = 0;
+
+            /* Prefer the full expression evaluator: it resolves variables on
+             * BOTH sides, honours precedence/parens/functions, and fixes the
+             * legacy flat-clause parser's bug where the right-hand operand of
+             * `if a > b` was treated as a literal (not a variable). Fall back to
+             * the legacy parser only for && / || (not in the expr grammar). */
+            if (condition_expr != NULL &&
+                strstr(condition_expr, "&&") == NULL &&
+                strstr(condition_expr, "||") == NULL)
+            {
+                char *nev = script_expr_eval(state, condition_expr, &nev_ok);
+                if (nev_ok && nev != NULL) nev_result = expr_truthy_str(nev);
+                else nev_ok = 0;
+                if (nev != NULL) free(nev);
+            }
 
             if (condition_expr != NULL)
             {
@@ -4535,6 +5840,9 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 final_result = current_result;
             }
 
+            /* The expression evaluator's verdict wins when it handled it. */
+            if (nev_ok) final_result = nev_result;
+
             /* For block IF, we want to jump if condition is FALSE (skip the block)
              * For goto IF, we want to jump if condition is TRUE */
             if (is_block_if)
@@ -4587,10 +5895,24 @@ static void script_execute_instruction(script_state *state, script_instruction *
         {
             if (instruction->arg1 != NULL)
             {
-                char buffer[SCRIPT_EXPAND_BUFFER_SIZE];
                 const char *value_text = instruction->arg2 != NULL ? instruction->arg2 : "";
-                script_expand_macros(state, value_text, buffer, sizeof(buffer));
-                script_set_variable_value(state, instruction->arg1, buffer);
+                const char *t = value_text;
+                while (*t == ' ' || *t == '\t') t++;
+                if (*t == '=')
+                {
+                    /* `set x = <expr>` : evaluate as an expression */
+                    int ok = 0;
+                    char *res = script_expr_eval(state, t + 1, &ok);
+                    script_set_variable_value(state, instruction->arg1, (ok && res) ? res : "");
+                    if (res) free(res);
+                }
+                else
+                {
+                    /* `set x <text>` : literal, macro-expanded (unchanged) */
+                    char buffer[SCRIPT_EXPAND_BUFFER_SIZE];
+                    script_expand_macros(state, value_text, buffer, sizeof(buffer));
+                    script_set_variable_value(state, instruction->arg1, buffer);
+                }
             }
         }
         break;
@@ -5366,6 +6688,57 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 script_expand_macros(state, text, buffer, sizeof(buffer));
                 script_translate_escapes(buffer);
                 state->host.report_activity(state->host.context, buffer);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_FUNCTION:
+        {
+            /* Reached a function definition in normal top-level flow: skip its
+             * whole body. The registry records where the matching ENDFUNCTION is. */
+            size_t here = state->program_counter - 1;
+            size_t i;
+            for (i = 0; i < state->function_count; ++i)
+            {
+                if (state->functions[i].body_start == here)
+                {
+                    state->program_counter = state->functions[i].body_end + 1;
+                    break;
+                }
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_ENDFUNCTION:
+            /* No-op at top level (bodies are skipped by SCRIPT_CMD_FUNCTION; the
+             * synchronous executor stops here explicitly). */
+            break;
+
+        case SCRIPT_CMD_LOCAL:
+        {
+            /* Outside a function this behaves like a plain SET; the synchronous
+             * executor intercepts LOCAL for scoping when run inside a function. */
+            const char *name = instruction->arg1 != NULL ? instruction->arg1 : "";
+            const char *val = instruction->arg2;
+            if (name[0] != '\0')
+            {
+                if (val == NULL)
+                {
+                    script_set_variable_value(state, name, "");
+                }
+                else if (val[0] == '=')
+                {
+                    int ok = 0;
+                    char *r = script_expr_eval(state, val + 1, &ok);
+                    script_set_variable_value(state, name, (ok && r) ? r : "");
+                    if (r) free(r);
+                }
+                else
+                {
+                    char buf[SCRIPT_EXPAND_BUFFER_SIZE];
+                    script_expand_macros(state, val, buf, sizeof(buf));
+                    script_set_variable_value(state, name, buf);
+                }
             }
         }
         break;
@@ -6555,6 +7928,25 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         return 1;
     }
 
+    /* Expression macro: %{ =EXPR } evaluates EXPR and inserts the result,
+     * so expressions/functions can be used inline in PRINT/TYPE/DOING etc. */
+    if (state != NULL)
+    {
+        const char *m = macro_name;
+        while (*m == ' ' || *m == '\t') m++;
+        if (*m == '=')
+        {
+            int ok = 0;
+            char *r = script_expr_eval(state, m + 1, &ok);
+            if (r != NULL)
+            {
+                script_buffer_append_string(buffer, r);
+                free(r);
+            }
+            return 1;
+        }
+    }
+
     if (state != NULL)
     {
         replacement = script_get_variable_value(state, macro_name);
@@ -6566,6 +7958,16 @@ static int script_emit_macro_replacement(script_state *state, const char *macro_
         {
             int line_id = state->host.get_line_id != NULL ? state->host.get_line_id(state->host.context) : 0;
             snprintf(temp, sizeof(temp), "%d", line_id);
+            replacement = temp;
+        }
+        else if (state != NULL && state->host.get_board_stat != NULL &&
+                 (script_stringcasecmp(macro_name, "onlineusers") == 0 ||
+                  script_stringcasecmp(macro_name, "memfree") == 0 ||
+                  script_stringcasecmp(macro_name, "totalusers") == 0 ||
+                  script_stringcasecmp(macro_name, "callstoday") == 0))
+        {
+            snprintf(temp, sizeof(temp), "%d",
+                     state->host.get_board_stat(state->host.context, macro_name));
             replacement = temp;
         }
         else if (state != NULL && script_stringcasecmp(macro_name, "t_handle") == 0)
@@ -7758,6 +9160,21 @@ static clock_t script_calculate_sleep_deadline(unsigned int milliseconds)
     return clock() + ticks;
 }
 
+static int script_strncasecmp(const char *lhs, const char *rhs, size_t n)
+{
+    size_t i;
+    if (lhs == NULL) lhs = "";
+    if (rhs == NULL) rhs = "";
+    for (i = 0; i < n; i++)
+    {
+        unsigned char cl = (unsigned char)tolower((unsigned char)lhs[i]);
+        unsigned char cr = (unsigned char)tolower((unsigned char)rhs[i]);
+        if (cl != cr) return (int)cl - (int)cr;
+        if (cl == '\0') return 0;
+    }
+    return 0;
+}
+
 static int script_stringcasecmp(const char *lhs, const char *rhs)
 {
     unsigned char cl;
@@ -8682,7 +10099,9 @@ static int script_process_embedded_block(script_state *state, const char *buffer
         script_buffer_clear(&command);
         {
             int in_quote = 0;
-            int in_macro = 0; /* Track %{...} macro depth */
+            int in_macro = 0;   /* Track %{...} macro depth */
+            int in_dquote = 0;  /* Track "..." string literal */
+            int paren_depth = 0;/* Track (...) so commas in f(a, b) don't split */
             while (*index < length)
             {
                 ch = buffer[*index];
@@ -8693,7 +10112,7 @@ static int script_process_embedded_block(script_state *state, const char *buffer
                     continue;
                 }
 
-                if (!in_quote && ch == '/' && *index + 1 < length && buffer[*index + 1] == '*')
+                if (!in_quote && !in_dquote && ch == '/' && *index + 1 < length && buffer[*index + 1] == '*')
                 {
                     if (!script_skip_comment(state, buffer, length, index, line_number, source_name))
                     {
@@ -8705,7 +10124,11 @@ static int script_process_embedded_block(script_state *state, const char *buffer
 
                 if (ch == '`')
                 {
-                    in_quote = !in_quote;
+                    if (!in_dquote) in_quote = !in_quote;
+                }
+                else if (ch == '"')
+                {
+                    if (!in_quote) in_dquote = !in_dquote;
                 }
                 else if (ch == '\n')
                 {
@@ -8717,20 +10140,30 @@ static int script_process_embedded_block(script_state *state, const char *buffer
                     result = 0;
                     break;
                 }
-                else if (!in_quote && !in_macro && (ch == ',' || ch == '}'))
+                else if (!in_quote && !in_dquote && !in_macro && paren_depth == 0 &&
+                         (ch == ',' || ch == '}'))
                 {
                     break;
                 }
-                
+
                 /* Track %{ macro start */
-                if (!in_quote && ch == '%' && *index + 1 < length && buffer[*index + 1] == '{')
+                if (!in_quote && !in_dquote && ch == '%' && *index + 1 < length && buffer[*index + 1] == '{')
                 {
                     in_macro++;
                 }
                 /* Track } that closes a macro */
-                else if (!in_quote && in_macro > 0 && ch == '}')
+                else if (!in_quote && !in_dquote && in_macro > 0 && ch == '}')
                 {
                     in_macro--;
+                }
+                /* Track (...) so commas inside function-call args don't split */
+                else if (!in_quote && !in_dquote && !in_macro && ch == '(')
+                {
+                    paren_depth++;
+                }
+                else if (!in_quote && !in_dquote && !in_macro && paren_depth > 0 && ch == ')')
+                {
+                    paren_depth--;
                 }
 
                 if (!script_buffer_append_char(&command, ch))

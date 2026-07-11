@@ -27,6 +27,7 @@ int userdb_update_record(int user_id, USER_RECORD *user_record);
 int userdb_update_history(int user_id, const USER_HISTORY *history);
 int userdb_update_stats(int user_id, const USER_STATS *stats);
 USER_RECORD *userdb_search_record(int user_id);
+USER_RECORD *userdb_get_by_index(int index);
 int userdb_delete_record(int user_id);
 USER_RECORD *userdb_find_username(const char *username);
 USER_RECORD *userdb_authenticate(const char *username, const char *password, FILER_USERDB_AUTH_RESULT *result);

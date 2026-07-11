@@ -319,6 +319,35 @@ USER_RECORD *userdb_find_username(const char *username)
     return userdb_find_record_by_username(username);
 }
 
+/* Read the user record at a 0-based file position (for enumeration). Returns a
+ * pointer to the decrypted cached record, or 0 if the index is out of range. */
+USER_RECORD *userdb_get_by_index(int index)
+{
+    FILE *file;
+    long position;
+
+    if (index < 0)
+    {
+        return 0;
+    }
+    file = fopen(USERDB, "rb");
+    if (file == NULL)
+    {
+        return 0;
+    }
+    position = (long)index * (long)sizeof(USER_RECORD);
+    if (fseek(file, position, SEEK_SET) == 0 &&
+        fread(&userdb_cached_record, sizeof(USER_RECORD), 1, file) == 1)
+    {
+        fclose(file);
+        userdb_decrypt_payload(&userdb_cached_record);
+        userdb_normalise_strings(&userdb_cached_record);
+        return &userdb_cached_record;
+    }
+    fclose(file);
+    return 0;
+}
+
 int userdb_delete_record(int user_id)
 {
     /* Soft delete: set deleted flag in-place using direct seek */

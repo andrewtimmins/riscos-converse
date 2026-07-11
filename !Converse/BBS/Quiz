@@ -1,0 +1,58 @@
+{
+   /* Demo: capture data from the user and store it.
+      - Questionnaire answers appended to a file (logline stamps date + user)
+      - One-liner board (append + show)
+      - Last-message-to-next-caller (board-global KV)
+      Reached from the main menu with the 'Z' hot-key. */
+
+   cls
+   fg 14
+   print `=== Questionnaire & One-liner demo ===`
+   print ``
+   std
+
+   /* ---- QUESTIONNAIRE -> file ---- */
+   fg 11
+   print `A couple of quick questions:`
+   std
+   print `  Your name    : `
+   prompt q_name line
+   print `  Your machine : `
+   prompt q_mach line
+   set junk = logline("survey.txt", `name=` + q_name + ` machine=` + q_mach)
+   print ``
+   fg 10
+   print `Saved, thanks! The survey file now holds:`
+   fg 6
+   print `%{ =fileread("survey.txt") }`
+   std
+   print ``
+
+   /* ---- ONE-LINER board ---- */
+   fg 11
+   print `Leave a one-liner for other callers:`
+   std
+   prompt q_line line
+   set junk = logline("oneliners.txt", q_line)
+   print ``
+   fg 10
+   print `Recent one-liners:`
+   fg 2
+   print `%{ =fileread("oneliners.txt") }`
+   std
+   print ``
+
+   /* ---- LAST MESSAGE to next caller (KV, board-global) ---- */
+   fg 11
+   print `The previous caller left: %{ =kvget("lastmsg") }`
+   print `Leave a message for the NEXT caller:`
+   std
+   prompt q_msg line
+   set junk = kvset("lastmsg", q_msg)
+   print ``
+   fg 10
+   print `Stored. Thanks for trying the demo!`
+   std
+   anykey
+   return
+}

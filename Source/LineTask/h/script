@@ -88,6 +88,21 @@ typedef struct script_host
                        const char *realname, const char *email);
     /* Check if username is available - returns 1 if available, 0 if taken */
     int (*check_username_available)(void *context, const char *username);
+    /* Write a field of the current user's record (scripting userset()).
+     * field: "level"/"realname"/"keys"/flag names; returns 1 on success. */
+    int (*set_user_field)(void *context, const char *field, const char *value);
+    /* Sysop: read/write ANY user's field, keyed by numeric id or username
+     * (scripting usergetby()/usersetby()). get returns a static string (numeric
+     * fields formatted) or NULL if the user/field is unknown. set returns 1 on
+     * success. */
+    const char *(*get_other_user_field)(void *context, const char *key, const char *field);
+    int (*set_other_user_field)(void *context, const char *key, const char *field, const char *value);
+    /* Board-wide statistic by name: "onlineusers"/"memfree"/"totalusers"/
+     * "callstoday" (unknown -> 0). */
+    int (*get_board_stat)(void *context, const char *which);
+    /* Read a field of the Nth user record, 0-based (scripting userbyindex()).
+     * Returns a static string or NULL past the end. */
+    const char *(*get_user_by_index)(void *context, int index, const char *field);
 } script_host;
 
 typedef enum
@@ -231,7 +246,11 @@ typedef enum
     SCRIPT_CMD_CONTINUE,
     /* F1: direct scripted mail */
     SCRIPT_CMD_SENDMAIL,
-    SCRIPT_CMD_SENDNETMAIL
+    SCRIPT_CMD_SENDNETMAIL,
+    /* User-defined functions */
+    SCRIPT_CMD_FUNCTION,
+    SCRIPT_CMD_ENDFUNCTION,
+    SCRIPT_CMD_LOCAL
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */
@@ -258,6 +277,22 @@ typedef struct script_label
     char *name;
     size_t instruction_index;
 } script_label;
+
+/* User-defined function registry entry. Functions are declared in the main
+ * script with FUNCTION name(p1, p2, ...) ... ENDFUNCTION and called from
+ * expressions (e.g. set x = myfunc(a, b)). They run synchronously to a
+ * RETURN value; blocking commands (PROMPT/PAUSE/door) are not allowed inside. */
+#define SCRIPT_MAX_FUNC_PARAMS 16
+#define SCRIPT_MAX_FUNC_DEPTH 16
+
+typedef struct script_function
+{
+    char *name;
+    char *params[SCRIPT_MAX_FUNC_PARAMS];
+    int param_count;
+    size_t body_start;   /* index of the FUNCTION instruction */
+    size_t body_end;     /* index of the matching ENDFUNCTION instruction */
+} script_function;
 
 typedef struct script_variable
 {
@@ -299,6 +334,11 @@ typedef struct script_state
     script_variable *variables;
     size_t variable_count;
     size_t variable_capacity;
+    /* User-defined function registry (built after load, main script only) */
+    script_function *functions;
+    size_t function_count;
+    size_t function_capacity;
+    int func_call_depth;                /* recursion guard for synchronous calls */
     size_t program_counter;
     script_status status;
     

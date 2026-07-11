@@ -60,8 +60,11 @@
 #define FILER_SWI_USERDB 1
 #define FILER_LOG_REASON_LINE 1
 #define FILER_LOG_REASON_CALL 2
+#define FILER_USERDB_CMD_UPDATE 1
 #define FILER_USERDB_CMD_SEARCH 3
 #define FILER_USERDB_CMD_AUTHENTICATE 4
+#define FILER_USERDB_CMD_COUNT 8
+#define FILER_USERDB_CMD_GET_BY_INDEX 9
 #define SWI_CONVERSE_FILER_LOGGING (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
 #define SWI_CONVERSE_FILER_USERDB (CONVERSE_FILER_BASE + FILER_SWI_USERDB)
 
@@ -199,6 +202,15 @@ static const char *script_host_get_user_keys(void *context);
 static const char *script_host_get_user_username(void *context);
 static const char *script_host_get_user_realname(void *context);
 static const char *script_host_get_config(void *context, const char *key);
+static int script_host_set_user_field(void *context, const char *field,
+                                      const char *value);
+static const char *script_host_get_other_user_field(void *context, const char *key,
+                                                     const char *field);
+static int script_host_set_other_user_field(void *context, const char *key,
+                                             const char *field, const char *value);
+static int script_host_get_board_stat(void *context, const char *which);
+static const char *script_host_get_user_by_index(void *context, int index,
+                                                  const char *field);
 static int script_host_filebase_download(void *context, int base_id,
                                          int file_id);
 static int script_host_authenticate_user(void *context, const char *username,
@@ -436,6 +448,11 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.get_user_username = script_host_get_user_username;
     host.get_user_realname = script_host_get_user_realname;
     host.get_config = script_host_get_config;
+    host.set_user_field = script_host_set_user_field;
+    host.get_other_user_field = script_host_get_other_user_field;
+    host.set_other_user_field = script_host_set_other_user_field;
+    host.get_board_stat = script_host_get_board_stat;
+    host.get_user_by_index = script_host_get_user_by_index;
     host.filebase_download = script_host_filebase_download;
     host.authenticate_user = script_host_authenticate_user;
     host.start_postlogon = script_host_start_postlogon;
@@ -2211,6 +2228,293 @@ static const char *script_host_get_config(void *context, const char *key) {
   }
 
   return (const char *)regs.r[0];
+}
+
+/* USER_RECORD field offsets (must match Filer/h/structs USER_RECORD).
+ * Total record size is 704 bytes: 580 header + 76 flags + 16 history + 32 stats. */
+#define UR_SIZE 704
+#define UR_OFF_ID 0
+#define UR_OFF_USERNAME 4     /* char[32]  */
+#define UR_OFF_REALNAME 36    /* char[64]  */
+#define UR_OFF_EMAIL 100      /* char[64]  */
+#define UR_OFF_KEYS 196       /* char[128] */
+#define UR_OFF_FLAGS 580      /* USER_FLAGS (19 ints) */
+#define UR_FLAG_ANSI 1
+#define UR_FLAG_MORE 2
+#define UR_FLAG_SYSOP 5
+#define UR_FLAG_REGISTERED 7
+#define UR_FLAG_EXPERT 8
+#define UR_FLAG_LOCKEDOUT 9
+#define UR_FLAG_NOLIMIT 10
+#define UR_FLAG_INVISIBLE 11
+#define UR_FLAG_ACCESSLEVEL 15
+#define UR_FLAG_MAXTIME 17
+#define UR_FLAG_PROTOCOL 18
+
+/* Case-insensitive string compare (returns 0 when equal). */
+static int converse_stricmp(const char *a, const char *b) {
+  while (*a && *b) {
+    int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a;
+    int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+    if (ca != cb) return ca - cb;
+    a++; b++;
+  }
+  return (unsigned char)*a - (unsigned char)*b;
+}
+
+/* Write a single named field of the current user's record and persist it.
+ * Returns 1 on success, 0 on failure. Scripting userset(field, value). */
+static int script_host_set_user_field(void *context, const char *field,
+                                      const char *value) {
+  line_task_state *state = (line_task_state *)context;
+  _kernel_swi_regs regs;
+  char record[UR_SIZE];
+  const char *src;
+  int *flags;
+
+  if (state == NULL || field == NULL || value == NULL || state->user.id <= 0) {
+    return 0;
+  }
+
+  /* Fetch the live record (Filer returns a pointer to its internal copy). */
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_SEARCH;
+  regs.r[1] = state->user.id;
+  if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL ||
+      regs.r[0] == 0) {
+    return 0;
+  }
+  memcpy(record, (const void *)regs.r[0], UR_SIZE);
+  flags = (int *)(record + UR_OFF_FLAGS);
+
+  if (converse_stricmp(field, "realname") == 0) {
+    strncpy(record + UR_OFF_REALNAME, value, 64 - 1);
+    record[UR_OFF_REALNAME + 64 - 1] = '\0';
+    strncpy(state->user.realname, value, sizeof(state->user.realname) - 1);
+    state->user.realname[sizeof(state->user.realname) - 1] = '\0';
+  } else if (converse_stricmp(field, "email") == 0) {
+    strncpy(record + UR_OFF_EMAIL, value, 64 - 1);
+    record[UR_OFF_EMAIL + 64 - 1] = '\0';
+  } else if (converse_stricmp(field, "keys") == 0) {
+    strncpy(record + UR_OFF_KEYS, value, 128 - 1);
+    record[UR_OFF_KEYS + 128 - 1] = '\0';
+    strncpy(state->user.keys, value, sizeof(state->user.keys) - 1);
+    state->user.keys[sizeof(state->user.keys) - 1] = '\0';
+  } else if (converse_stricmp(field, "level") == 0 ||
+             converse_stricmp(field, "accesslevel") == 0) {
+    int v = atoi(value);
+    flags[UR_FLAG_ACCESSLEVEL] = v;
+    state->user.accesslevel = v;
+  } else if (converse_stricmp(field, "sysop") == 0) {
+    int v = atoi(value);
+    flags[UR_FLAG_SYSOP] = v;
+    state->user.sysop = v;
+  } else if (converse_stricmp(field, "maxtime") == 0) {
+    flags[UR_FLAG_MAXTIME] = atoi(value);
+  } else if (converse_stricmp(field, "protocol") == 0) {
+    flags[UR_FLAG_PROTOCOL] = atoi(value);
+  } else if (converse_stricmp(field, "ansi") == 0) {
+    flags[UR_FLAG_ANSI] = atoi(value);
+  } else if (converse_stricmp(field, "more") == 0) {
+    flags[UR_FLAG_MORE] = atoi(value);
+  } else if (converse_stricmp(field, "expert") == 0) {
+    flags[UR_FLAG_EXPERT] = atoi(value);
+  } else if (converse_stricmp(field, "nolimit") == 0) {
+    flags[UR_FLAG_NOLIMIT] = atoi(value);
+  } else if (converse_stricmp(field, "lockedout") == 0) {
+    flags[UR_FLAG_LOCKEDOUT] = atoi(value);
+  } else if (converse_stricmp(field, "invisible") == 0) {
+    flags[UR_FLAG_INVISIBLE] = atoi(value);
+  } else if (converse_stricmp(field, "registered") == 0) {
+    flags[UR_FLAG_REGISTERED] = atoi(value);
+  } else {
+    return 0; /* unknown / non-writable field */
+  }
+
+  src = value; (void)src;
+
+  /* Persist via UPDATE (R1=user id, R2=record pointer). */
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_UPDATE;
+  regs.r[1] = state->user.id;
+  regs.r[2] = (int)record;
+  if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL) {
+    return 0;
+  }
+  return (regs.r[0] == 1) ? 1 : 0;
+}
+
+/* USER_STATS live at offset 672 (after 580 header + 76 flags + 16 history).
+ * int indices: 0=lastlogon 1=lastscan 2=calls 3=todaytime 4=uploadskb
+ * 5=downloadskb 6=uploads 7=downloads. */
+#define UR_OFF_STATS 672
+#define FILER_USERDB_CMD_FIND_USERNAME 7
+
+/* Look up a user by numeric id OR username; copy the 704-byte record into
+ * out_record. Returns 1 (+ id via out_id) on success, 0 if not found. */
+static int ouf_lookup(const char *key, char *out_record, int *out_id) {
+  _kernel_swi_regs regs;
+  const char *p = key;
+  int numeric = (key != NULL && *key != '\0');
+
+  if (key == NULL) return 0;
+  for (p = key; *p; ++p) { if (*p < '0' || *p > '9') { numeric = 0; break; } }
+
+  memset(&regs, 0, sizeof(regs));
+  if (numeric) { regs.r[0] = FILER_USERDB_CMD_SEARCH;        regs.r[1] = atoi(key); }
+  else         { regs.r[0] = FILER_USERDB_CMD_FIND_USERNAME; regs.r[1] = (int)key; }
+  if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL || regs.r[0] == 0)
+    return 0;
+  memcpy(out_record, (const void *)regs.r[0], UR_SIZE);
+  if (out_id != NULL) *out_id = *((int *)(out_record + UR_OFF_ID));
+  return 1;
+}
+
+/* Apply a named field to a record buffer (does NOT touch live session state).
+ * Returns 1 if the field is writable, 0 otherwise. */
+static int ouf_apply_field(char *record, const char *field, const char *value) {
+  int *flags = (int *)(record + UR_OFF_FLAGS);
+  if (converse_stricmp(field, "realname") == 0) { strncpy(record + UR_OFF_REALNAME, value, 63); record[UR_OFF_REALNAME + 63] = '\0'; }
+  else if (converse_stricmp(field, "email") == 0) { strncpy(record + UR_OFF_EMAIL, value, 63); record[UR_OFF_EMAIL + 63] = '\0'; }
+  else if (converse_stricmp(field, "keys") == 0) { strncpy(record + UR_OFF_KEYS, value, 127); record[UR_OFF_KEYS + 127] = '\0'; }
+  else if (converse_stricmp(field, "level") == 0 || converse_stricmp(field, "accesslevel") == 0) flags[UR_FLAG_ACCESSLEVEL] = atoi(value);
+  else if (converse_stricmp(field, "sysop") == 0) flags[UR_FLAG_SYSOP] = atoi(value);
+  else if (converse_stricmp(field, "maxtime") == 0) flags[UR_FLAG_MAXTIME] = atoi(value);
+  else if (converse_stricmp(field, "protocol") == 0) flags[UR_FLAG_PROTOCOL] = atoi(value);
+  else if (converse_stricmp(field, "ansi") == 0) flags[UR_FLAG_ANSI] = atoi(value);
+  else if (converse_stricmp(field, "more") == 0) flags[UR_FLAG_MORE] = atoi(value);
+  else if (converse_stricmp(field, "expert") == 0) flags[UR_FLAG_EXPERT] = atoi(value);
+  else if (converse_stricmp(field, "nolimit") == 0) flags[UR_FLAG_NOLIMIT] = atoi(value);
+  else if (converse_stricmp(field, "lockedout") == 0) flags[UR_FLAG_LOCKEDOUT] = atoi(value);
+  else if (converse_stricmp(field, "invisible") == 0) flags[UR_FLAG_INVISIBLE] = atoi(value);
+  else if (converse_stricmp(field, "registered") == 0) flags[UR_FLAG_REGISTERED] = atoi(value);
+  else return 0;
+  return 1;
+}
+
+/* Read a named field from a 704-byte record buffer -> static string, or NULL. */
+static const char *ouf_read_field(const char *record, const char *field) {
+  static char buf[128];
+  const int *flags = (const int *)(record + UR_OFF_FLAGS);
+  const int *stats = (const int *)(record + UR_OFF_STATS);
+  if (converse_stricmp(field, "username") == 0) return record + UR_OFF_USERNAME;
+  if (converse_stricmp(field, "realname") == 0) return record + UR_OFF_REALNAME;
+  if (converse_stricmp(field, "email") == 0)    return record + UR_OFF_EMAIL;
+  if (converse_stricmp(field, "keys") == 0)     return record + UR_OFF_KEYS;
+  if (converse_stricmp(field, "id") == 0 || converse_stricmp(field, "userid") == 0) { snprintf(buf, sizeof(buf), "%d", *((const int *)(record + UR_OFF_ID))); return buf; }
+  if (converse_stricmp(field, "level") == 0 || converse_stricmp(field, "accesslevel") == 0) { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_ACCESSLEVEL]); return buf; }
+  if (converse_stricmp(field, "sysop") == 0)      { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_SYSOP]); return buf; }
+  if (converse_stricmp(field, "maxtime") == 0)    { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_MAXTIME]); return buf; }
+  if (converse_stricmp(field, "protocol") == 0)   { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_PROTOCOL]); return buf; }
+  if (converse_stricmp(field, "ansi") == 0)       { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_ANSI]); return buf; }
+  if (converse_stricmp(field, "more") == 0)       { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_MORE]); return buf; }
+  if (converse_stricmp(field, "expert") == 0)     { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_EXPERT]); return buf; }
+  if (converse_stricmp(field, "nolimit") == 0)    { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_NOLIMIT]); return buf; }
+  if (converse_stricmp(field, "lockedout") == 0)  { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_LOCKEDOUT]); return buf; }
+  if (converse_stricmp(field, "invisible") == 0)  { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_INVISIBLE]); return buf; }
+  if (converse_stricmp(field, "registered") == 0) { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_REGISTERED]); return buf; }
+  if (converse_stricmp(field, "calls") == 0)       { snprintf(buf, sizeof(buf), "%d", stats[2]); return buf; }
+  if (converse_stricmp(field, "todaytime") == 0)   { snprintf(buf, sizeof(buf), "%d", stats[3]); return buf; }
+  if (converse_stricmp(field, "uploadskb") == 0)   { snprintf(buf, sizeof(buf), "%d", stats[4]); return buf; }
+  if (converse_stricmp(field, "downloadskb") == 0) { snprintf(buf, sizeof(buf), "%d", stats[5]); return buf; }
+  if (converse_stricmp(field, "uploads") == 0)     { snprintf(buf, sizeof(buf), "%d", stats[6]); return buf; }
+  if (converse_stricmp(field, "downloads") == 0)   { snprintf(buf, sizeof(buf), "%d", stats[7]); return buf; }
+  return NULL;
+}
+
+/* Read any user's field by id/name -> static string. Scripting usergetby(). */
+static const char *script_host_get_other_user_field(void *context, const char *key,
+                                                     const char *field) {
+  char record[UR_SIZE];
+  (void)context;
+  if (key == NULL || field == NULL) return NULL;
+  if (!ouf_lookup(key, record, NULL)) return NULL;
+  return ouf_read_field(record, field);
+}
+
+/* Read a field of the Nth user record (0-based). Scripting userbyindex(). */
+static const char *script_host_get_user_by_index(void *context, int index,
+                                                  const char *field) {
+  _kernel_swi_regs regs;
+  (void)context;
+  if (field == NULL) return NULL;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_GET_BY_INDEX;
+  regs.r[1] = index;
+  if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL || regs.r[0] == 0)
+    return NULL;
+  return ouf_read_field((const char *)regs.r[0], field);
+}
+
+/* Write any user's field by id/name + persist. Scripting usersetby(). */
+static int script_host_set_other_user_field(void *context, const char *key,
+                                             const char *field, const char *value) {
+  _kernel_swi_regs regs;
+  char record[UR_SIZE];
+  int uid = 0;
+  (void)context;
+  if (key == NULL || field == NULL || value == NULL) return 0;
+  if (!ouf_lookup(key, record, &uid) || uid <= 0) return 0;
+  if (!ouf_apply_field(record, field, value)) return 0;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = FILER_USERDB_CMD_UPDATE;
+  regs.r[1] = uid;
+  regs.r[2] = (int)record;
+  if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL) return 0;
+  return (regs.r[0] == 1) ? 1 : 0;
+}
+
+/* Board-wide statistics: onlineusers / memfree(KB) / totalusers / callstoday. */
+static int script_host_get_board_stat(void *context, const char *which) {
+  _kernel_swi_regs regs;
+  (void)context;
+  if (which == NULL) return 0;
+
+  if (converse_stricmp(which, "onlineusers") == 0) {
+    /* Count configured lines with a logged-in user (USER_ID > 0). The
+     * CONNECTED flag can read stale on idle lines, so key off USER_ID. */
+    int i, count = 0;
+    for (i = 0; i < 64; ++i) {
+      memset(&regs, 0, sizeof(regs));
+      regs.r[0] = LINE_REASON_GET;
+      regs.r[1] = i;
+      regs.r[2] = LINE_FIELD_CONFIGURED;
+      if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) != NULL || regs.r[0] == 0)
+        continue;
+      memset(&regs, 0, sizeof(regs));
+      regs.r[0] = LINE_REASON_GET;
+      regs.r[1] = i;
+      regs.r[2] = LINE_FIELD_USER_ID;
+      if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) == NULL && regs.r[0] > 0)
+        count++;
+    }
+    return count;
+  }
+  if (converse_stricmp(which, "totalusers") == 0) {
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = FILER_USERDB_CMD_COUNT;
+    if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) == NULL) return regs.r[0];
+    return 0;
+  }
+  if (converse_stricmp(which, "memfree") == 0) {
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = -1;   /* Wimp_SlotSize: read only */
+    regs.r[1] = -1;
+    if (_kernel_swi(0x400EC /* Wimp_SlotSize */, &regs, &regs) == NULL)
+      return regs.r[2] / 1024;   /* free-pool bytes -> KB */
+    return 0;
+  }
+  if (converse_stricmp(which, "callstoday") == 0 || converse_stricmp(which, "callcount") == 0) {
+    FILE *f = fopen("<Converse$Dir>.Resources.Data.CallCount", "rb");
+    char b[32];
+    int n = 0;
+    if (f != NULL) {
+      if (fgets(b, sizeof(b), f) != NULL) n = atoi(b);
+      fclose(f);
+    }
+    return n;
+  }
+  return 0;
 }
 
 static int script_host_filebase_download(void *context, int base_id,

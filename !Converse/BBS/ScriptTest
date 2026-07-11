@@ -1,0 +1,123 @@
+{
+   /* Scripting engine feature demo (Tier-1 upgrades):
+      1. expression evaluator   2. string library
+      3. data API + user-defined functions.
+      Reached from the main menu with the 'X' hot-key. */
+
+   cls
+   fg 14
+   print `=== Converse Scripting Engine Test ===`
+   print ``
+   std
+
+   /* ---- 1. EXPRESSIONS: precedence, parens, unary NOT ---- */
+   fg 11
+   print `1. Expressions`
+   std
+   set a = 3
+   set b = 4
+   set c = a*a + b*b
+   print `   a*a + b*b (3,4) = %{c}   (expect 25)`
+   set d = (a + b) * 2
+   print `   (a+b)*2          = %{d}   (expect 14)`
+   set flag = a < b and not (a == b)
+   print `   a<b and not(a==b)= %{flag}   (expect 1)`
+   print ``
+
+   /* ---- 2. STRING LIBRARY (inline expression macros %{ =... }) ---- */
+   fg 11
+   print `2. String functions`
+   std
+   print `   upper            = %{ =upper("converse") }   (expect CONVERSE)`
+   print `   left 4           = %{ =left("RISC OS", 4) }   (expect RISC)`
+   print `   substr 2,4       = %{ =substr("scripting", 2, 4) }   (expect ript)`
+   print `   replace - with : = %{ =replace("a-b-c", "-", ":") }   (expect a:b:c)`
+   print `   find 'pt'        = %{ =find("scripting", "pt") }   (expect 4, 0-based)`
+   print ``
+
+   /* ---- 3a. DATA API: user fields + config + KV store + files ---- */
+   fg 11
+   print `3a. Data API`
+   std
+   print `   your name        = %{ =userget("realname") }`
+   print `   access level     = %{ =userget("level") }`
+   print `   calls            = %{ =userget("calls") }`
+   print `   bbs name (cfg)   = %{ =cfg("bbs_name") }`
+   set junk = kvset("demo_key", "hello-from-script")
+   print `   kv round-trip    = %{ =kvget("demo_key") }   (expect hello-from-script)`
+   set junk = filewrite("demo.txt", "line one")
+   set junk = fileappend("demo.txt", "|line two")
+   print `   file round-trip  = %{ =fileread("demo.txt") }`
+   print ``
+
+   /* ---- 3b. USER-DEFINED FUNCTIONS ---- */
+   fg 11
+   print `3b. Functions`
+   std
+   print `   square(7)        = %{ =square(7) }   (expect 49)`
+   print `   greet(name)      = %{ =greet( userget("realname") ) }`
+   print `   factorial(5)     = %{ =fact(5) }   (expect 120)`
+   print `   max3(4,9,2)      = %{ =max3(4, 9, 2) }   (expect 9)`
+   print ``
+
+   /* ---- 4. SYSOP toolkit (RET/ok, key mutation, other-user access) ---- */
+   fg 11
+   print `4. Sysop toolkit`
+   std
+   set junk = userset("more", 1)
+   print `   userset -> ok      = %{ok}   (expect 1)`
+   set junk = addkey("W")
+   print `   addkey W -> keys    = %{ =userget("keys") }`
+   set junk = delkey("W")
+   print `   delkey W -> keys    = %{ =userget("keys") }`
+   print `   usergetby(id)  name = %{ =usergetby( userget("id"), "realname" ) }`
+   print `   usergetby(name) lvl = %{ =usergetby( userget("username"), "level" ) }`
+   set junk = kvset("lastcaller", userget("username"))
+   print `   last caller (kv)   = %{ =kvget("lastcaller") }`
+   print ``
+
+   /* ---- 5. Enumeration + board stats ---- */
+   fg 11
+   print `5. Enumeration + board stats`
+   std
+   print `   total users        = %{ =usercount() }`
+   print `   user #0 name        = %{ =userbyindex(0, "username") }`
+   print `   online now          = %{onlineusers}`
+   print `   free mem (KB)       = %{memfree}`
+   print `   call count          = %{callstoday}`
+   print ``
+
+   fg 10
+   print `All tests complete.`
+   std
+   anykey
+   return
+
+   /* ---- function definitions (skipped in normal flow) ---- */
+   function square(n)
+      return n * n
+   endfunction
+
+   function greet(who)
+      local msg = `Hello, ` + who + `!`
+      return msg
+   endfunction
+
+   function fact(n)
+      if n <= 1 then
+         return 1
+      endif
+      return n * fact(n - 1)
+   endfunction
+
+   function max3(x, y, z)
+      local m = x
+      if y > m then
+         set m = y
+      endif
+      if z > m then
+         set m = z
+      endif
+      return m
+   endfunction
+}

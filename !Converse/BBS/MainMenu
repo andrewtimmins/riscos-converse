@@ -35,6 +35,10 @@ label main_menu
    if choice == `H` goto go_stats
    if choice == `v` goto go_vote
    if choice == `V` goto go_vote
+   if choice == `x` goto go_test
+   if choice == `X` goto go_test
+   if choice == `z` goto go_quiz
+   if choice == `Z` goto go_quiz
    if choice == `?` goto go_help
    if choice == `q` goto go_quit
    if choice == `Q` goto go_quit
@@ -72,6 +76,12 @@ label go_vote
    goto main_menu
 label go_help
    script `<Converse$Dir>.BBS.Help`
+   goto main_menu
+label go_test
+   script `<Converse$Dir>.BBS.ScriptTest`
+   goto main_menu
+label go_quiz
+   script `<Converse$Dir>.BBS.Quiz`
    goto main_menu
 
 label go_scan
