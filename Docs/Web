@@ -3,9 +3,10 @@
 ## Overview
 
 The Web app (`Web,ff8`) is an optional HTTP server that gives users a browser
-front-end to the BBS: browsing/downloading filebases, reading message areas, and
-uploading files. It runs as a Wimp task alongside the Server and shares the
-Filer databases and Support config.
+front-end to the BBS: browsing and downloading filebases, reading message areas,
+and - when logged in - composing, replying to, and sending private messages, and
+uploading files. It runs as a Wimp task alongside the Server and shares the Filer
+databases and Support config.
 
 Enable it with the `webserver yes` key in `<Converse$Dir>.Config.System`.
 
@@ -14,56 +15,84 @@ Enable it with the `webserver yes` key in `<Converse$Dir>.Config.System`.
 | Setting | Default | Notes |
 |---------|---------|-------|
 | Listen port          | 80 | `WEB_DEFAULT_PORT` |
-| Document root        | `<Converse$Dir>.Web` | `WEB_DOCROOT` - HTML templates + static assets |
+| Document root        | `<Converse$Dir>.Web` | `WEB_DOCROOT` - stylesheet + template files |
 | Max concurrent clients | 8 | `WEB_MAX_CLIENTS` |
 | Max upload size      | 2 MB | `WEB_MAX_UPLOAD_SIZE` |
 | Client timeout       | 60 s | `WEB_CLIENT_TIMEOUT` |
 
 Activity is logged to `<Converse$Dir>.Logs.Web`.
 
+## Page model
+
+Most pages are generated in C from a shared "shell" (banner, Messages/Files nav,
+breadcrumb, and a status line), so the whole site is one consistent look driven
+by a single stylesheet served at `/style` (`style,f79`, filetype CSS &F79). The
+navigation is a drill-down: Messages -> area -> message, mirrored for Files.
+
+Only a couple of pages are still HTML template files under the document root
+(`login,faf`, `upload,faf`); they contain `{{...}}` tags expanded per request
+(see Template tags). Any other static file in the docroot is served directly.
+
 ## HTTP endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET  | `/`            | Index page (template) |
-| POST | `/login`       | Authenticate a user; establishes a session |
-| GET  | `/logout`      | End the session |
-| POST | `/upload`      | Upload a file into a filebase area (<= 2 MB) |
-| GET  | `/api/areas`   | JSON list of accessible file areas |
-| GET  | `/download/<file>` | Download a file from a filebase |
-
-Static files under the document root are served directly; files that contain
-template tags (see below) are processed first.
+| GET  | `/` or `/messages`            | Message-area index (cards) |
+| GET  | `/area/<base>/<area>`         | Message list for one area (newest first) |
+| GET  | `/message/<base>/<area>/<id>` | Read a single message (Prev/Next, Reply) |
+| GET  | `/compose/<base>/<area>`      | New-message form (login required) |
+| GET  | `/reply/<base>/<area>/<id>`   | Reply form, pre-filled (login required) |
+| POST | `/post`                       | Submit a new message / reply (login required) |
+| GET  | `/files`                      | File-area listing |
+| GET  | `/download/<base>/<id>/<name>`| Download a file |
+| GET  | `/upload`                     | Upload form (login required) |
+| POST | `/upload`                     | Upload a file into a filebase area (<= 2 MB) |
+| GET  | `/api/areas?filebase=<n>`     | JSON list of accessible areas (used by the upload form) |
+| GET  | `/login`                      | Login page |
+| POST | `/login`                      | Authenticate; establishes a session |
+| GET  | `/logout`                     | End the session |
+| GET  | `/style`                      | Shared stylesheet (static) |
 
 ## Sessions
 
 `/login` checks the supplied credentials against the user database (the same
-accounts as the BBS). On success a session is created and tracked server-side;
-subsequent requests are associated with it until `/logout` or timeout. Access to
-file/message areas and downloads is gated by the logged-in user's access level
-and keys, exactly as on the BBS side.
+accounts as the BBS). On success a cookie session (`CONVERSE_SESSION`) is created
+and tracked server-side until `/logout` or timeout. The nav shows the logged-in
+user with a logout link.
+
+## Access control
+
+Mirrors the BBS reader (`messagebase_can_read_message`):
+
+- Public message areas are readable by anyone.
+- Private-typed messages, and anything in a Private (areatype 4) or Netmail
+  (areatype 2) area, are shown only to the sender or receiver, and require login.
+- Restricted areas/messages honour the access level and keys of the logged-in
+  user; unknown area types fail closed.
+- Composing, replying and uploading require login. Posting to a public echo area
+  stores the message unexported so the FTN scanner ships it to the network.
+- Sending a private message resolves the recipient by username (`FIND_USERNAME`)
+  and stores it typed PRIVATE addressed to that user.
 
 ## Template tags
 
-HTML files served from the document root may contain `{{...}}` tags, expanded
-per request. A file is only processed if it contains `{{`; otherwise it is served
-verbatim.
+The remaining template files (`login,faf`, `upload,faf`) may contain `{{...}}`
+tags, expanded per request. A file is only processed if it contains `{{`.
 
 | Tag | Expands to |
 |-----|------------|
 | `{{bbsname}}`     | The BBS name (from System config) |
-| `{{username}}`    | The logged-in user's username (empty if not logged in) |
-| `{{realname}}`    | The logged-in user's real name |
-| `{{loggedin}}`    | Content block shown only when a user is logged in |
-| `{{loggedout}}`   | Content block shown only when NOT logged in |
-| `{{loginform}}`   | The login form HTML |
+| `{{loginform}}`   | Login/logout chip for the nav |
 | `{{uploadform}}`  | The file-upload form HTML |
-| `{{filebase}}`    | Rendered list of accessible file areas/files |
-| `{{messagebase}}` | Rendered list of accessible message areas |
+
+(The tag processor also still recognises `{{username}}`, `{{realname}}`,
+`{{loggedin}}`, `{{loggedout}}`, `{{filebase}}`, `{{messagebase}}` and
+`{{messageview}}` for backward compatibility, but the current drill-down and
+message pages are generated in C rather than from template files.)
 
 ## Notes
 
 - The server is intentionally small (single-threaded Wimp poll, capped client
   slots); it is a convenience front-end, not a general-purpose web server.
-- It respects the same access control as the BBS: unauthenticated users only see
-  public areas, and per-area access levels/keys apply.
+- File sizes are formatted with integer maths (this runtime has no floating-point
+  `printf`); empty file/message areas are omitted from the listings.

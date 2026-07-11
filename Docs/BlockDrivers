@@ -38,12 +38,13 @@ Binary Layout (per BlockDriver v2.31 spec)
   0x0100-0x017F   Speed table (DCD array, 0 terminated)
   0x0180+         Function code
 
-Flags (0x00C4)
+Flags (0x00C4)  -  value 0x1F030041
 --------------
   Bits 24-31: Maximum port number (31)
   Bit 17:     32-bit only (NOT 26-bit compatible)
   Bit 16:     32-bit compliant
   Bit 6:      Supports block get/put operations
+  Bit 0:      More than one port available
 
 Build Notes
 -----------
@@ -73,13 +74,13 @@ Supported Functions
   5  Driver_CheckRXBuffer   Bytes waiting in RX buffer
   6  Driver_FlushTXBuffer   Clear TX buffer
   7  Driver_FlushRXBuffer   Clear RX buffer
-  8  Driver_ControlLines    No-op (returns 0)
-  9  Driver_ReadControlLines Returns 0x0B (CTS|DSR|DCD high)
+  8  Driver_ControlLines    R/W this end's DTR/RTS/break (r2=-1 reads); crosses to the peer
+  9  Driver_ReadControlLines Reads the peer's lines: peer DTR->DCD+DSR, peer RTS->CTS
  10  Driver_ReadRXErrors    No-op (returns 0)
  11  Driver_SendBreak       No-op (returns 0)
- 12  Driver_ExamineByte     Not supported (returns -1)
- 13  Driver_BaudRateTX      No-op (returns 0)
- 14  Driver_BaudRateRX      No-op (returns 0)
+ 12  Driver_ExamineByte     Peeks next RX byte via Output/InputPeek (-1 if none)
+ 13  Driver_BaudRateTX      R/W; echoes a set value, reports 115200 on read
+ 14  Driver_BaudRateRX      R/W; echoes a set value, reports 115200 on read
  15  Driver_DataFormat      No-op (returns 0)
  16  Driver_Handshaking     No-op (returns 0)
  17  Driver_Initialise      Reset/clear buffers; r1=-1 for pre-init
@@ -90,11 +91,20 @@ Supported Functions
  22  Driver_Info            Not supported (returns -1)
  23  Driver_Description     Not supported (returns -1)
 
+Handshake / control lines
+-------------------------
+Control lines cross between the two ends (the classic virtual-pipe behaviour):
+raising DTR/RTS at one end shows as DCD+DSR / CTS at the other. Each end stores
+its outgoing lines via the ConversePipes_SetControl SWI (R0=line, R1=end 0/1,
+R2=lines: b0 DTR, b1 RTS, b2 break) and reads the peer's via
+ConversePipes_GetControl. Lines DROP on Driver_Initialise, so an end must raise
+DTR before the peer sees carrier (DCD) - it is no longer "always connected".
+
 Limitations
 -----------
-- No flow-control beyond Pipes watermarks; MODEMCONTROL always reports CTS/DSR/
-  DCD high (0x0B).
+- No flow-control beyond Pipes watermarks.
 - Client PUT/GET block operations are byte-looped; throughput depends on caller
   chunk sizes.
-- No persistent state beyond buffer resets on DRIVER_INITIALISE.
-- ExamineByte (peek) not implemented as Pipes has no peek SWI.
+- Control-line state persists per-end until Driver_Initialise; buffered data is
+  cleared on init.
+- TX/RX baud rates are cosmetic (a pipe has no real line rate).
