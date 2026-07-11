@@ -839,6 +839,7 @@ void script_process(script_state *state)
 /* Forward declarations for context completion handlers */
 static int input_complete_prompt(script_state *state);
 static int input_complete_menu(script_state *state);
+static int input_complete_menu_pw(script_state *state);
 static int input_complete_anykey(script_state *state);
 static int input_complete_logon_user(script_state *state);
 static int input_complete_logon_pass(script_state *state);
@@ -944,6 +945,9 @@ static int dispatch_input_complete(script_state *state)
         case SCRIPT_INPUT_CTX_MENU:
             return input_complete_menu(state);
 
+        case SCRIPT_INPUT_CTX_MENU_PW:
+            return input_complete_menu_pw(state);
+
         case SCRIPT_INPUT_CTX_ANYKEY:
             return input_complete_anykey(state);
             
@@ -1043,10 +1047,80 @@ static int input_complete_anykey(script_state *state)
     return 1;
 }
 
+/* Parse an `on` item's arg2 into gates + action (verb/target). */
+static void menu_parse_on(const char *arg2, int *lvl, char *rk, size_t rksz,
+                          char *pw, size_t pwsz, char *fail, size_t fsz,
+                          char *verb, size_t vsz, char *target, size_t tsz)
+{
+    char work[512];
+    char *p, *tok;
+    *lvl = 0;
+    rk[0] = pw[0] = fail[0] = verb[0] = target[0] = '\0';
+    strncpy(work, arg2 != NULL ? arg2 : "", sizeof(work) - 1);
+    work[sizeof(work) - 1] = '\0';
+    p = work;
+    while (script_arg_next(&p, &tok))
+    {
+        if (script_stringcasecmp(tok, "level") == 0) { if (script_arg_next(&p, &tok)) *lvl = atoi(tok); }
+        else if (script_stringcasecmp(tok, "keys") == 0) { if (script_arg_next(&p, &tok)) { strncpy(rk, tok, rksz - 1); rk[rksz - 1] = '\0'; } }
+        else if (script_stringcasecmp(tok, "password") == 0) { if (script_arg_next(&p, &tok)) { strncpy(pw, tok, pwsz - 1); pw[pwsz - 1] = '\0'; } }
+        else if (script_stringcasecmp(tok, "fail") == 0) { if (script_arg_next(&p, &tok)) { strncpy(fail, tok, fsz - 1); fail[fsz - 1] = '\0'; } }
+        else if (script_stringcasecmp(tok, "goto") == 0 || script_stringcasecmp(tok, "call") == 0 ||
+                 script_stringcasecmp(tok, "script") == 0)
+        {
+            strncpy(verb, tok, vsz - 1); verb[vsz - 1] = '\0';
+            if (script_arg_next(&p, &tok)) { strncpy(target, tok, tsz - 1); target[tsz - 1] = '\0'; }
+            break;
+        }
+    }
+}
+
+/* Perform a menu item's action. Returns 1 if it took control (caller returns);
+ * 0 means fall through to a redisplay. */
+static int menu_dispatch_action(script_state *state, const char *verb, const char *target, size_t menu_idx)
+{
+    if (script_stringcasecmp(verb, "goto") == 0)
+    {
+        int found = 0;
+        size_t pc = script_find_label(state, target, &found);
+        if (found) { state->program_counter = pc; state->status = SCRIPT_STATUS_RUNNING; script_process(state); return 1; }
+        return 0;
+    }
+    if (verb[0] != '\0')   /* script / call : run a sub-script, return to menu */
+    {
+        char path[256];
+        script_expand_macros(state, target, path, sizeof(path));
+        if (path[0] != '\0')
+        {
+            state->program_counter = menu_idx;   /* on subscript return, re-run the menu */
+            if (script_push_call_stack(state))
+            {
+                state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+                state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+                state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
+                state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+                if (state->instructions != NULL && state->labels != NULL && script_start(state, path))
+                { script_process(state); return 1; }
+                script_pop_call_stack(state);
+            }
+        }
+    }
+    return 0;
+}
+
+/* Redraw the active menu screen and wait for another key. */
+static void menu_redisplay(script_state *state)
+{
+    state->program_counter = state->menu_instr_index;
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+}
+
 /* Native menu: a key was pressed. Scan the `on` items following the active
  * `menu` instruction, gate-check, and dispatch (goto = leave the menu; script/
- * call = run a sub-script then return to the menu). Anything else (no match,
- * denied, missing target) redisplays the menu and waits again. */
+ * call = run a sub-script then return to the menu). A `password` gate prompts
+ * for a password first (input_complete_menu_pw resumes the dispatch). Anything
+ * else (no match, denied, missing target) redisplays the menu. */
 static int input_complete_menu(script_state *state)
 {
     char key = (state->input_buffer != NULL && state->input_length > 0) ? state->input_buffer[0] : '\0';
@@ -1058,38 +1132,16 @@ static int input_complete_menu(script_state *state)
     for (i = menu_idx + 1; i < state->instruction_count; ++i)
     {
         script_instruction *ins = &state->instructions[i];
-        char work[512];
-        char *p, *tok;
-        int need_level = 0;
-        char reqkeys[32], failmsg[160], verb[16], target[256];
+        int need_level;
+        char reqkeys[32], reqpw[64], failmsg[160], verb[16], target[256];
         int denied = 0;
 
         if (ins->type == SCRIPT_CMD_ENDMENU) break;
         if (ins->type != SCRIPT_CMD_ON || ins->arg1 == NULL || ins->arg1[0] == '\0') continue;
         if (tolower((unsigned char)ins->arg1[0]) != tolower((unsigned char)key)) continue;
 
-        reqkeys[0] = failmsg[0] = verb[0] = target[0] = '\0';
-        strncpy(work, ins->arg2 != NULL ? ins->arg2 : "", sizeof(work) - 1);
-        work[sizeof(work) - 1] = '\0';
-        p = work;
-        while (script_arg_next(&p, &tok))
-        {
-            if (script_stringcasecmp(tok, "level") == 0)
-            { if (script_arg_next(&p, &tok)) need_level = atoi(tok); }
-            else if (script_stringcasecmp(tok, "keys") == 0)
-            { if (script_arg_next(&p, &tok)) { strncpy(reqkeys, tok, sizeof(reqkeys) - 1); reqkeys[sizeof(reqkeys) - 1] = '\0'; } }
-            else if (script_stringcasecmp(tok, "password") == 0)
-            { script_arg_next(&p, &tok); /* password gate: TODO (needs a prompt round-trip) */ }
-            else if (script_stringcasecmp(tok, "fail") == 0)
-            { if (script_arg_next(&p, &tok)) { strncpy(failmsg, tok, sizeof(failmsg) - 1); failmsg[sizeof(failmsg) - 1] = '\0'; } }
-            else if (script_stringcasecmp(tok, "goto") == 0 || script_stringcasecmp(tok, "call") == 0 ||
-                     script_stringcasecmp(tok, "script") == 0)
-            {
-                strncpy(verb, tok, sizeof(verb) - 1); verb[sizeof(verb) - 1] = '\0';
-                if (script_arg_next(&p, &tok)) { strncpy(target, tok, sizeof(target) - 1); target[sizeof(target) - 1] = '\0'; }
-                break;
-            }
-        }
+        menu_parse_on(ins->arg2, &need_level, reqkeys, sizeof(reqkeys), reqpw, sizeof(reqpw),
+                      failmsg, sizeof(failmsg), verb, sizeof(verb), target, sizeof(target));
 
         if (need_level > 0)
         {
@@ -1116,49 +1168,52 @@ static int input_complete_menu(script_state *state)
             break;  /* -> redisplay */
         }
 
-        if (script_stringcasecmp(verb, "goto") == 0)
+        if (reqpw[0] != '\0')   /* password gate: prompt, then verify + dispatch */
         {
-            int found = 0;
-            size_t pc = script_find_label(state, target, &found);
-            if (found)
-            {
-                state->program_counter = pc;
-                state->status = SCRIPT_STATUS_RUNNING;
-                script_process(state);
-                return 1;
-            }
-            break; /* label missing -> redisplay */
+            state->menu_pw_item = (int)i;
+            script_write_output(state, "\r\nPassword: ");
+            script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_MENU_PW);
+            return 1;
         }
-        else if (verb[0] != '\0')   /* script / call : run a sub-script, return to menu */
-        {
-            char path[256];
-            script_expand_macros(state, target, path, sizeof(path));
-            if (path[0] != '\0')
-            {
-                state->program_counter = menu_idx;   /* on subscript return, re-run the menu */
-                if (script_push_call_stack(state))
-                {
-                    state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
-                    state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
-                    state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
-                    state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
-                    if (state->instructions != NULL && state->labels != NULL && script_start(state, path))
-                    {
-                        script_process(state);
-                        return 1;
-                    }
-                    script_pop_call_stack(state);
-                }
-            }
-            break; /* couldn't run -> redisplay */
-        }
-        break; /* matched item with no action -> redisplay */
+
+        if (menu_dispatch_action(state, verb, target, menu_idx)) return 1;
+        break; /* action failed -> redisplay */
     }
 
-    /* No dispatch: redraw the menu screen and wait for another key. */
-    state->program_counter = menu_idx;
-    state->status = SCRIPT_STATUS_RUNNING;
-    script_process(state);
+    menu_redisplay(state);
+    return 1;
+}
+
+/* Password entered for a gated menu item: verify then dispatch, else deny. */
+static int input_complete_menu_pw(script_state *state)
+{
+    char entered[64];
+    size_t menu_idx = state->menu_instr_index;
+    int idx = state->menu_pw_item;
+    state->menu_pw_item = -1;
+
+    strncpy(entered, (state->input_buffer != NULL && state->input_length > 0) ? state->input_buffer : "",
+            sizeof(entered) - 1);
+    entered[sizeof(entered) - 1] = '\0';
+    script_clear_input(state);
+
+    if (idx >= 0 && (size_t)idx < state->instruction_count && state->instructions[idx].type == SCRIPT_CMD_ON)
+    {
+        int need_level;
+        char reqkeys[32], reqpw[64], failmsg[160], verb[16], target[256];
+        menu_parse_on(state->instructions[idx].arg2, &need_level, reqkeys, sizeof(reqkeys),
+                      reqpw, sizeof(reqpw), failmsg, sizeof(failmsg), verb, sizeof(verb), target, sizeof(target));
+        if (reqpw[0] != '\0' && strcmp(entered, reqpw) == 0)
+        {
+            if (menu_dispatch_action(state, verb, target, menu_idx)) return 1;
+        }
+        else
+        {
+            script_write_output(state, "\r\n\033[1;31mIncorrect password.\033[0m\r\n");
+        }
+    }
+
+    menu_redisplay(state);
     return 1;
 }
 

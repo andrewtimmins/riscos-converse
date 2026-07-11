@@ -8,6 +8,7 @@
    menu `<Converse$Dir>.BBS.Screens.MenuDemo`
       on `t`  script `<Converse$Dir>.BBS.ScriptTest`
       on `s`  level 500  fail `Sorry, that's sysops only.`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `p`  password `secret`  script `<Converse$Dir>.BBS.ScriptTest`
       on `q`  goto md_done
    endmenu
 

@@ -74,6 +74,8 @@
    print `   usergetby(name) lvl = %{ =usergetby( userget("username"), "level" ) }`
    set junk = kvset("lastcaller", userget("username"))
    print `   last caller (kv)   = %{ =kvget("lastcaller") }`
+   set junk = userset("username", userget("username"))
+   print `   userset username   -> ok=%{ok}   (safe no-op, expect 1)`
    print ``
 
    /* ---- 5. Enumeration + board stats ---- */

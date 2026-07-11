@@ -63,6 +63,7 @@
 #define FILER_USERDB_CMD_UPDATE 1
 #define FILER_USERDB_CMD_SEARCH 3
 #define FILER_USERDB_CMD_AUTHENTICATE 4
+#define FILER_USERDB_CMD_FIND_USERNAME 7
 #define FILER_USERDB_CMD_COUNT 8
 #define FILER_USERDB_CMD_GET_BY_INDEX 9
 #define SWI_CONVERSE_FILER_LOGGING (CONVERSE_FILER_BASE + FILER_SWI_LOGGING)
@@ -2241,6 +2242,7 @@ static const char *script_host_get_config(void *context, const char *key) {
 #define UR_OFF_USERNAME 4     /* char[32]  */
 #define UR_OFF_REALNAME 36    /* char[64]  */
 #define UR_OFF_EMAIL 100      /* char[64]  */
+#define UR_OFF_PASSWORD 164   /* char[32]  (stored encrypted; UPDATE re-encrypts) */
 #define UR_OFF_KEYS 196       /* char[128] */
 #define UR_OFF_FLAGS 580      /* USER_FLAGS (19 ints) */
 #define UR_FLAG_ANSI 1
@@ -2304,6 +2306,23 @@ static int script_host_set_user_field(void *context, const char *field,
     record[UR_OFF_KEYS + 128 - 1] = '\0';
     strncpy(state->user.keys, value, sizeof(state->user.keys) - 1);
     state->user.keys[sizeof(state->user.keys) - 1] = '\0';
+  } else if (converse_stricmp(field, "password") == 0) {
+    /* stored plaintext in the record; the Filer UPDATE re-encrypts on write */
+    strncpy(record + UR_OFF_PASSWORD, value, 32 - 1);
+    record[UR_OFF_PASSWORD + 32 - 1] = '\0';
+  } else if (converse_stricmp(field, "username") == 0) {
+    /* reject if another user already holds this name */
+    _kernel_swi_regs fr;
+    memset(&fr, 0, sizeof(fr));
+    fr.r[0] = FILER_USERDB_CMD_FIND_USERNAME;
+    fr.r[1] = (int)value;
+    if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &fr, &fr) == NULL && fr.r[0] != 0) {
+      if (*((int *)(fr.r[0] + UR_OFF_ID)) != state->user.id) return 0; /* taken */
+    }
+    strncpy(record + UR_OFF_USERNAME, value, 32 - 1);
+    record[UR_OFF_USERNAME + 32 - 1] = '\0';
+    strncpy(state->user.username, value, sizeof(state->user.username) - 1);
+    state->user.username[sizeof(state->user.username) - 1] = '\0';
   } else if (converse_stricmp(field, "level") == 0 ||
              converse_stricmp(field, "accesslevel") == 0) {
     int v = atoi(value);
@@ -2352,7 +2371,6 @@ static int script_host_set_user_field(void *context, const char *field,
  * int indices: 0=lastlogon 1=lastscan 2=calls 3=todaytime 4=uploadskb
  * 5=downloadskb 6=uploads 7=downloads. */
 #define UR_OFF_STATS 672
-#define FILER_USERDB_CMD_FIND_USERNAME 7
 
 /* Look up a user by numeric id OR username; copy the 704-byte record into
  * out_record. Returns 1 (+ id via out_id) on success, 0 if not found. */
@@ -2381,6 +2399,8 @@ static int ouf_apply_field(char *record, const char *field, const char *value) {
   if (converse_stricmp(field, "realname") == 0) { strncpy(record + UR_OFF_REALNAME, value, 63); record[UR_OFF_REALNAME + 63] = '\0'; }
   else if (converse_stricmp(field, "email") == 0) { strncpy(record + UR_OFF_EMAIL, value, 63); record[UR_OFF_EMAIL + 63] = '\0'; }
   else if (converse_stricmp(field, "keys") == 0) { strncpy(record + UR_OFF_KEYS, value, 127); record[UR_OFF_KEYS + 127] = '\0'; }
+  else if (converse_stricmp(field, "password") == 0) { strncpy(record + UR_OFF_PASSWORD, value, 31); record[UR_OFF_PASSWORD + 31] = '\0'; }
+  else if (converse_stricmp(field, "username") == 0) { strncpy(record + UR_OFF_USERNAME, value, 31); record[UR_OFF_USERNAME + 31] = '\0'; }
   else if (converse_stricmp(field, "level") == 0 || converse_stricmp(field, "accesslevel") == 0) flags[UR_FLAG_ACCESSLEVEL] = atoi(value);
   else if (converse_stricmp(field, "sysop") == 0) flags[UR_FLAG_SYSOP] = atoi(value);
   else if (converse_stricmp(field, "maxtime") == 0) flags[UR_FLAG_MAXTIME] = atoi(value);
