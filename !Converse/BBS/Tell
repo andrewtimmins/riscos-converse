@@ -1,0 +1,37 @@
+{
+   /* Send a one-line message to another user who is currently online.
+      Uses the notifyuser() node-messaging primitive. Main-menu 'T' key. */
+   cls
+   fg 14
+   print `=== Send a Message to an Online User ===`
+   std
+   print ``
+   doing `Who's online...`
+   online
+   doing
+   print ``
+   print `Send to (username or number, blank to cancel): `
+   readline who
+   if who == `` goto tell_cancel
+   print `Message: `
+   readline msg
+   if msg == `` goto tell_cancel
+
+   set sent = notifyuser(who, `*** Message from ` + userget(`realname`) + `: ` + msg)
+   if ok == 1 goto ok_sent
+   fg 12
+   print `\r\nThat user isn't online (or wasn't found).`
+   std
+   anykey
+   return
+
+label ok_sent
+   fg 10
+   print `\r\nDelivered!`
+   std
+   anykey
+   return
+
+label tell_cancel
+   return
+}

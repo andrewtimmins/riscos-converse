@@ -1310,9 +1310,21 @@ static int input_complete_logon_user(script_state *state)
         return 1;
     }
 
-    /* Store the username and prompt for password */
-    strncpy(state->logon_username, state->input_buffer, sizeof(state->logon_username) - 1);
-    state->logon_username[sizeof(state->logon_username) - 1] = '\0';
+    /* Quick-login (ArmBBS parity): a leading '!' on the username logs straight
+       in and skips the post-login intro. Strip it and expose the `quicklogin`
+       variable so Postlogon can branch on it. */
+    {
+        const char *uname = state->input_buffer;
+        int quick = 0;
+        if (uname[0] == '!')
+        {
+            quick = 1;
+            uname++;
+        }
+        script_set_variable_value(state, "quicklogin", quick ? "1" : "0");
+        strncpy(state->logon_username, uname, sizeof(state->logon_username) - 1);
+        state->logon_username[sizeof(state->logon_username) - 1] = '\0';
+    }
 
     script_write_output(state, "Password: ");
     script_begin_input(state, SCRIPT_INPUT_MODE_LINE_NOECHO, SCRIPT_INPUT_CTX_LOGON_PASS);

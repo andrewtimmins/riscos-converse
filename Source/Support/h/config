@@ -49,6 +49,7 @@ typedef enum
 #define CONFIG_KEY_AFTERMAIL     "aftermail"
 #define CONFIG_KEY_MORE          "more"
 #define CONFIG_KEY_PROTOCOL      "protocol"
+#define CONFIG_KEY_RATIOFREEKB   "ratiofreekb"
 
 /* BBS configuration structure */
 typedef struct
@@ -60,6 +61,7 @@ typedef struct
     int max_lines;
     int listen_port;
     int idle_timeout;
+    int ratiofreekb;        /* free download allowance in KB before ratio applies */
     char botstopper[CONFIG_FLAG_LEN];
     char needlogin[CONFIG_FLAG_LEN];
     char closed[CONFIG_FLAG_LEN];

@@ -89,6 +89,7 @@
         char hostname[256];
         int port;
         int timeout;
+        int ratiofreekb;
         char botstopper[4];
         char needlogin[4];
         char closed[4];

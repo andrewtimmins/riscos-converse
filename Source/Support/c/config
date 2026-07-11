@@ -112,6 +112,7 @@ static void config_set_defaults(void)
     config_data.max_lines = 4;
     config_data.listen_port = 23;
     config_data.idle_timeout = 120;
+    config_data.ratiofreekb = 1024;
     snprintf(config_data.botstopper, sizeof(config_data.botstopper), "yes");
     snprintf(config_data.needlogin, sizeof(config_data.needlogin), "yes");
     snprintf(config_data.closed, sizeof(config_data.closed), "no");
@@ -172,6 +173,11 @@ static const char *config_get_value(const char *key)
     if (config_key_match(key, CONFIG_KEY_IDLE_TIMEOUT))
     {
         snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.idle_timeout);
+        return config_value_buffer;
+    }
+    if (config_key_match(key, CONFIG_KEY_RATIOFREEKB))
+    {
+        snprintf(config_value_buffer, sizeof(config_value_buffer), "%d", config_data.ratiofreekb);
         return config_value_buffer;
     }
     if (config_key_match(key, CONFIG_KEY_BOTSTOPPER))
@@ -347,6 +353,16 @@ static void config_set_value(const char *key, const char *value)
         if (config_data.idle_timeout < 0)
         {
             config_data.idle_timeout = 0;
+        }
+        return;
+    }
+
+    if (config_key_match(key, CONFIG_KEY_RATIOFREEKB))
+    {
+        config_data.ratiofreekb = (value != NULL) ? atoi(value) : 1024;
+        if (config_data.ratiofreekb < 0)
+        {
+            config_data.ratiofreekb = 0;
         }
         return;
     }

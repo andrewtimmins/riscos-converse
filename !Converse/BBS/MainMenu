@@ -43,6 +43,8 @@ label main_menu
    if choice == `Y` goto go_menudemo
    if choice == `k` goto go_queue
    if choice == `K` goto go_queue
+   if choice == `t` goto go_tell
+   if choice == `T` goto go_tell
    if choice == `?` goto go_help
    if choice == `q` goto go_quit
    if choice == `Q` goto go_quit
@@ -92,6 +94,9 @@ label go_menudemo
    goto main_menu
 label go_queue
    script `<Converse$Dir>.BBS.QueueDemo`
+   goto main_menu
+label go_tell
+   script `<Converse$Dir>.BBS.Tell`
    goto main_menu
 
 label go_scan

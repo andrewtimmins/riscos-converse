@@ -1,6 +1,8 @@
 {
-   /* Post-logon: the classic login sequence - news, last callers, new-scan */
+   /* Post-logon: the classic login sequence - news, last callers, new-scan.
+      A quick-login (username prefixed with '!') skips straight to the menu. */
    cls
+   if quicklogin == 1 goto quick
    type `<Converse$Dir>.BBS.Screens.Bulletins`
    anykey
    type `<Converse$Dir>.BBS.Screens.LastCall`
@@ -10,5 +12,6 @@
    loginscan
    doing
    anykey
+label quick
    script `<Converse$Dir>.BBS.MainMenu`
 }

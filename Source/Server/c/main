@@ -619,6 +619,13 @@ static void support_push_config(void)
 	regs.r[2] = (int)value_buf;
 	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
 
+	/* Push ratiofreekb (download free allowance) */
+	snprintf(value_buf, sizeof(value_buf), "%d", system_configuration[0].ratiofreekb);
+	regs.r[0] = CONFIG_REASON_SET;
+	regs.r[1] = (int)"ratiofreekb";
+	regs.r[2] = (int)value_buf;
+	_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs);
+
 	/* Push flags */
 	regs.r[0] = CONFIG_REASON_SET;
 	regs.r[1] = (int)"botstopper";
@@ -2758,6 +2765,7 @@ void load_system_config(void)
 	/* Set defaults */
 	system_configuration[0].port = 23;
 	system_configuration[0].timeout = 120;
+	system_configuration[0].ratiofreekb = 1024;
 	strncpy(system_configuration[0].ftnmail, "no", sizeof(system_configuration[0].ftnmail) - 1);
 	system_configuration[0].ftnmail[sizeof(system_configuration[0].ftnmail) - 1] = '\0';
 	strncpy(system_configuration[0].webserver, "no", sizeof(system_configuration[0].webserver) - 1);
@@ -2833,6 +2841,10 @@ void load_system_config(void)
 		if (strcmp(config_line,"timeout")==0)
 		{
 			system_configuration[0].timeout = atoi(temporary_line);
+		}
+		if (strcmp(config_line,"ratiofreekb")==0)
+		{
+			system_configuration[0].ratiofreekb = atoi(temporary_line);
 		}
 		if (strcmp(config_line,"botstopper")==0)
 		{

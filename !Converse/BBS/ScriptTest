@@ -122,6 +122,7 @@
    print `   time left (min)     = %{timeleft}   (-- = unlimited)`
    print `   download ratio      = %{dl_ratio}`
    print `   dl available (KB)   = %{dl_avail}`
+   print `   ratio free KB (cfg) = %{ =cfg("ratiofreekb") }`
    print ``
 
    fg 10

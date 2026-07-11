@@ -10,14 +10,15 @@ contact     andrew.timmins@gmail.com
 hostname    bbs.theyellowtoaser.co.uk
 port        23
 timeout     120
+ratiofreekb 2048
 
 botstopper  yes
 needlogin   yes
 closed      no
 pager       yes
 
-ftnmail     no
-webserver   no
+ftnmail     yes
+webserver   yes
 
 anykey      <Converse$Dir>.Resources.System.AnyKey
 protocol    <Converse$Dir>.Resources.System.Protocol
