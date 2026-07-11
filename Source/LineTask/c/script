@@ -93,6 +93,7 @@ static char *script_duplicate_string(const char *source);
 static char *script_duplicate_range(const char *source, size_t length);
 static int script_append_instruction(script_state *state, script_instruction *instr);
 static int script_register_label(script_state *state, const char *name);
+static size_t script_find_label(const script_state *state, const char *name, int *found);
 static int script_register_functions(script_state *state);
 static void script_free_functions(script_state *state);
 static void script_execute_instruction(script_state *state, script_instruction *instruction);
@@ -837,6 +838,7 @@ void script_process(script_state *state)
 
 /* Forward declarations for context completion handlers */
 static int input_complete_prompt(script_state *state);
+static int input_complete_menu(script_state *state);
 static int input_complete_anykey(script_state *state);
 static int input_complete_logon_user(script_state *state);
 static int input_complete_logon_pass(script_state *state);
@@ -938,7 +940,10 @@ static int dispatch_input_complete(script_state *state)
     {
         case SCRIPT_INPUT_CTX_PROMPT:
             return input_complete_prompt(state);
-            
+
+        case SCRIPT_INPUT_CTX_MENU:
+            return input_complete_menu(state);
+
         case SCRIPT_INPUT_CTX_ANYKEY:
             return input_complete_anykey(state);
             
@@ -1033,6 +1038,125 @@ static int input_complete_prompt(script_state *state)
 static int input_complete_anykey(script_state *state)
 {
     script_clear_input(state);
+    state->status = SCRIPT_STATUS_RUNNING;
+    script_process(state);
+    return 1;
+}
+
+/* Native menu: a key was pressed. Scan the `on` items following the active
+ * `menu` instruction, gate-check, and dispatch (goto = leave the menu; script/
+ * call = run a sub-script then return to the menu). Anything else (no match,
+ * denied, missing target) redisplays the menu and waits again. */
+static int input_complete_menu(script_state *state)
+{
+    char key = (state->input_buffer != NULL && state->input_length > 0) ? state->input_buffer[0] : '\0';
+    size_t menu_idx = state->menu_instr_index;
+    size_t i;
+
+    script_clear_input(state);
+
+    for (i = menu_idx + 1; i < state->instruction_count; ++i)
+    {
+        script_instruction *ins = &state->instructions[i];
+        char work[512];
+        char *p, *tok;
+        int need_level = 0;
+        char reqkeys[32], failmsg[160], verb[16], target[256];
+        int denied = 0;
+
+        if (ins->type == SCRIPT_CMD_ENDMENU) break;
+        if (ins->type != SCRIPT_CMD_ON || ins->arg1 == NULL || ins->arg1[0] == '\0') continue;
+        if (tolower((unsigned char)ins->arg1[0]) != tolower((unsigned char)key)) continue;
+
+        reqkeys[0] = failmsg[0] = verb[0] = target[0] = '\0';
+        strncpy(work, ins->arg2 != NULL ? ins->arg2 : "", sizeof(work) - 1);
+        work[sizeof(work) - 1] = '\0';
+        p = work;
+        while (script_arg_next(&p, &tok))
+        {
+            if (script_stringcasecmp(tok, "level") == 0)
+            { if (script_arg_next(&p, &tok)) need_level = atoi(tok); }
+            else if (script_stringcasecmp(tok, "keys") == 0)
+            { if (script_arg_next(&p, &tok)) { strncpy(reqkeys, tok, sizeof(reqkeys) - 1); reqkeys[sizeof(reqkeys) - 1] = '\0'; } }
+            else if (script_stringcasecmp(tok, "password") == 0)
+            { script_arg_next(&p, &tok); /* password gate: TODO (needs a prompt round-trip) */ }
+            else if (script_stringcasecmp(tok, "fail") == 0)
+            { if (script_arg_next(&p, &tok)) { strncpy(failmsg, tok, sizeof(failmsg) - 1); failmsg[sizeof(failmsg) - 1] = '\0'; } }
+            else if (script_stringcasecmp(tok, "goto") == 0 || script_stringcasecmp(tok, "call") == 0 ||
+                     script_stringcasecmp(tok, "script") == 0)
+            {
+                strncpy(verb, tok, sizeof(verb) - 1); verb[sizeof(verb) - 1] = '\0';
+                if (script_arg_next(&p, &tok)) { strncpy(target, tok, sizeof(target) - 1); target[sizeof(target) - 1] = '\0'; }
+                break;
+            }
+        }
+
+        if (need_level > 0)
+        {
+            int lvl = state->host.get_user_accesslevel ? state->host.get_user_accesslevel(state->host.context) : 0;
+            if (lvl < need_level) denied = 1;
+        }
+        if (!denied && reqkeys[0] != '\0')
+        {
+            const char *uk = state->host.get_user_keys ? state->host.get_user_keys(state->host.context) : "";
+            const char *k;
+            for (k = reqkeys; *k; ++k) { if (uk == NULL || strchr(uk, *k) == NULL) { denied = 1; break; } }
+        }
+
+        if (denied)
+        {
+            if (failmsg[0] != '\0')
+            {
+                char fexp[SCRIPT_EXPAND_BUFFER_SIZE];
+                script_expand_macros(state, failmsg, fexp, sizeof(fexp));
+                script_write_output(state, "\r\n");
+                script_write_output(state, fexp);
+                script_write_output(state, "\r\n");
+            }
+            break;  /* -> redisplay */
+        }
+
+        if (script_stringcasecmp(verb, "goto") == 0)
+        {
+            int found = 0;
+            size_t pc = script_find_label(state, target, &found);
+            if (found)
+            {
+                state->program_counter = pc;
+                state->status = SCRIPT_STATUS_RUNNING;
+                script_process(state);
+                return 1;
+            }
+            break; /* label missing -> redisplay */
+        }
+        else if (verb[0] != '\0')   /* script / call : run a sub-script, return to menu */
+        {
+            char path[256];
+            script_expand_macros(state, target, path, sizeof(path));
+            if (path[0] != '\0')
+            {
+                state->program_counter = menu_idx;   /* on subscript return, re-run the menu */
+                if (script_push_call_stack(state))
+                {
+                    state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+                    state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+                    state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
+                    state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+                    if (state->instructions != NULL && state->labels != NULL && script_start(state, path))
+                    {
+                        script_process(state);
+                        return 1;
+                    }
+                    script_pop_call_stack(state);
+                }
+            }
+            break; /* couldn't run -> redisplay */
+        }
+        break; /* matched item with no action -> redisplay */
+    }
+
+    /* No dispatch: redraw the menu screen and wait for another key. */
+    state->program_counter = menu_idx;
     state->status = SCRIPT_STATUS_RUNNING;
     script_process(state);
     return 1;
@@ -3522,6 +3646,43 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "menu") == 0)
+    {
+        /* menu <screen> -- native declarative menu; `on` items follow to endmenu */
+        char *rest = strtok(NULL, "");
+        char *v = NULL;
+        size_t consumed = 0;
+        instruction->type = SCRIPT_CMD_MENU;
+        if (rest != NULL)
+        {
+            rest = script_trim(rest);
+            if (!script_parse_backtick_string(rest, &consumed, &v))
+                v = script_duplicate_string(rest);
+            instruction->arg1 = v;
+        }
+        return 1;
+    }
+    if (script_stringcasecmp(token, "on") == 0)
+    {
+        /* on <key> [level N] [keys S] [password P] [fail <msg>] goto|call|script <target>
+         * arg1 = single key char, arg2 = the remainder (gates + action), parsed
+         * when the key is pressed. */
+        char *key = strtok(NULL, " \t");
+        char *rest = strtok(NULL, "");
+        char keych[2];
+        keych[0] = '\0'; keych[1] = '\0';
+        if (key != NULL) keych[0] = (key[0] == '`' && key[1] != '\0') ? key[1] : key[0];
+        instruction->type = SCRIPT_CMD_ON;
+        instruction->arg1 = script_duplicate_string(keych);
+        instruction->arg2 = script_duplicate_string(rest != NULL ? script_trim(rest) : "");
+        return 1;
+    }
+    if (script_stringcasecmp(token, "endmenu") == 0)
+    {
+        instruction->type = SCRIPT_CMD_ENDMENU;
+        return 1;
+    }
+
     if (script_stringcasecmp(token, "pause") == 0 || script_stringcasecmp(token, "sleep") == 0)
     {
         char *duration = strtok(NULL, " \t");
@@ -5073,6 +5234,28 @@ static LINETASK_FILEBASE_AREA_RECORD *ext_enum_filearea(int base_id, int index)
         return NULL;
     return (LINETASK_FILEBASE_AREA_RECORD *)regs.r[0];
 }
+static LINETASK_MESSAGE_RECORD *ext_enum_msg(int base_id, int area_id, int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+    regs.r[1] = base_id;
+    regs.r[2] = area_id;
+    regs.r[3] = index;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_MESSAGE_RECORD *)regs.r[0];
+}
+static LINETASK_FILE_RECORD *ext_enum_file(int base_id, int area_id, int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILEBASE_CMD_ENUMERATE_FILES;
+    regs.r[1] = base_id;
+    regs.r[2] = area_id;
+    regs.r[3] = index;
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_FILE_RECORD *)regs.r[0];
+}
 
 /* Return the (0-based) nth leaf name in a directory via OS_GBPB 9, or 0. */
 static int script_dir_nth_name(const char *dir, int want, char *out, size_t outsz)
@@ -5407,6 +5590,143 @@ static char *script_expr_call_function_ext(script_state *state, const char *name
         snprintf(sub, sizeof(sub), "KVUser.u%d", uid);
         script_data_dir(dir, sizeof(dir), sub);
         return expr_strdup(script_dir_nth_name(dir, atoi(EXPR_ARG(0)), nm, sizeof(nm)) ? nm : "");
+    }
+
+    /* ---- scriptable message access: msgcount(base,area) /
+            msgfield(base,area,n,field) ---- */
+    if (script_stringcasecmp(name, "msgcount") == 0)
+    {
+        int b = atoi(EXPR_ARG(0)), a = atoi(EXPR_ARG(1)), n = 0;
+        while (ext_enum_msg(b, a, n) != NULL) n++;
+        return expr_from_long(n);
+    }
+    if (script_stringcasecmp(name, "msgfield") == 0)
+    {
+        LINETASK_MESSAGE_RECORD *m = ext_enum_msg(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1)), atoi(EXPR_ARG(2)));
+        const char *f = EXPR_ARG(3);
+        if (m == NULL) return expr_strdup("");
+        if (script_stringcasecmp(f, "id") == 0)        return expr_from_long(m->id);
+        if (script_stringcasecmp(f, "subject") == 0)   return expr_strdup(m->subject);
+        if (script_stringcasecmp(f, "from") == 0)      return expr_strdup(m->fromname);
+        if (script_stringcasecmp(f, "to") == 0)        return expr_strdup(m->toname);
+        if (script_stringcasecmp(f, "sentby") == 0)    return expr_from_long(m->sentby);
+        if (script_stringcasecmp(f, "receivedby") == 0)return expr_from_long(m->receivedby);
+        if (script_stringcasecmp(f, "sent") == 0)      return expr_from_long((long)m->sent);
+        if (script_stringcasecmp(f, "imported") == 0)  return expr_from_long((long)m->imported);
+        if (script_stringcasecmp(f, "timesread") == 0) return expr_from_long(m->timesread);
+        if (script_stringcasecmp(f, "size") == 0)      return expr_from_long(m->bodysize);
+        if (script_stringcasecmp(f, "deleted") == 0)   return expr_from_long(m->deleted);
+        return expr_strdup("");
+    }
+
+    /* ---- scriptable file access: filecount(base,area) /
+            filefield(base,area,n,field) ---- */
+    if (script_stringcasecmp(name, "filecount") == 0)
+    {
+        int b = atoi(EXPR_ARG(0)), a = atoi(EXPR_ARG(1)), n = 0;
+        while (ext_enum_file(b, a, n) != NULL) n++;
+        return expr_from_long(n);
+    }
+    if (script_stringcasecmp(name, "filefield") == 0)
+    {
+        LINETASK_FILE_RECORD *fr = ext_enum_file(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1)), atoi(EXPR_ARG(2)));
+        const char *f = EXPR_ARG(3);
+        if (fr == NULL) return expr_strdup("");
+        if (script_stringcasecmp(f, "id") == 0)          return expr_from_long(fr->id);
+        if (script_stringcasecmp(f, "name") == 0)        return expr_strdup(fr->name);
+        if (script_stringcasecmp(f, "description") == 0 || script_stringcasecmp(f, "desc") == 0) return expr_strdup(fr->description);
+        if (script_stringcasecmp(f, "size") == 0)        return expr_from_long(fr->filesize);
+        if (script_stringcasecmp(f, "downloads") == 0)   return expr_from_long(fr->downloads);
+        if (script_stringcasecmp(f, "uploadedby") == 0)  return expr_from_long(fr->uploadedby);
+        if (script_stringcasecmp(f, "uploaddate") == 0)  return expr_from_long((long)fr->uploaddate);
+        if (script_stringcasecmp(f, "deleted") == 0)     return expr_from_long(fr->deleted);
+        return expr_strdup("");
+    }
+
+    /* ---- sysop paging: page([reason]) -> starts the chat pager ---- */
+    if (script_stringcasecmp(name, "page") == 0)
+    {
+        if (h->start_chat_pager)
+        {
+            const char *reason = EXPR_ARG(0);
+            h->start_chat_pager(h->context, (reason && *reason) ? reason : "Paged from a script");
+            state->status = SCRIPT_STATUS_WAIT_CHAT;   /* pager runs, resumes after */
+        }
+        script_set_ok(state, h->start_chat_pager != NULL);
+        return expr_from_long(h->start_chat_pager != NULL);
+    }
+
+    /* ---- flushib(): discard any pending typed-ahead input ---- */
+    if (script_stringcasecmp(name, "flushib") == 0)
+    {
+        script_clear_input(state);
+        script_set_ok(state, 1);
+        return expr_from_long(1);
+    }
+
+    /* ---- timetravel(days): rewind the new-scan cursor N days ---- */
+    if (script_stringcasecmp(name, "timetravel") == 0)
+    {
+        int days = atoi(EXPR_ARG(0));
+        int r = 0;
+        if (h->update_lastscan)
+        {
+            time_t back = time(NULL) - (time_t)days * 86400;
+            h->update_lastscan(h->context, back);
+            r = 1;
+        }
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- shellcli(cmd): run an OS command (SYSOP ONLY) ---- */
+    if (script_stringcasecmp(name, "shellcli") == 0)
+    {
+        int is_sysop = h->get_user_sysop ? h->get_user_sysop(h->context) : 0;
+        int r = 0;
+        if (is_sysop)
+        {
+            char cmd[SCRIPT_EXPAND_BUFFER_SIZE];
+            _kernel_swi_regs sr;
+            script_expand_macros(state, EXPR_ARG(0), cmd, sizeof(cmd));
+            if (cmd[0] != '\0')
+            {
+                sr.r[0] = (int)cmd;
+                _kernel_swi(Wimp_StartTask, &sr, &sr);
+                r = 1;
+            }
+        }
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+
+    /* ---- quitsys(): end the session (SYSOP ONLY). NB: disconnects the caller;
+            a full server shutdown would need a dedicated server SWI. ---- */
+    if (script_stringcasecmp(name, "quitsys") == 0)
+    {
+        int is_sysop = h->get_user_sysop ? h->get_user_sysop(h->context) : 0;
+        if (is_sysop && h->force_disconnect)
+        {
+            h->force_disconnect(h->context);
+            script_set_ok(state, 1);
+            return expr_from_long(1);
+        }
+        script_set_ok(state, 0);
+        return expr_from_long(0);
+    }
+
+    /* ---- node messaging: notify(line, text) / notifyuser(id|name, text) ---- */
+    if (script_stringcasecmp(name, "notify") == 0)
+    {
+        int r = h->notify_line ? h->notify_line(h->context, atoi(EXPR_ARG(0)), EXPR_ARG(1)) : 0;
+        script_set_ok(state, r);
+        return expr_from_long(r);
+    }
+    if (script_stringcasecmp(name, "notifyuser") == 0)
+    {
+        int r = h->notify_user ? h->notify_user(h->context, EXPR_ARG(0), EXPR_ARG(1)) : 0;
+        script_set_ok(state, r);
+        return expr_from_long(r);
     }
 
     *handled = 0;
@@ -7358,6 +7678,34 @@ static void script_execute_instruction(script_state *state, script_instruction *
             }
             return;
         }
+
+        case SCRIPT_CMD_MENU:
+        {
+            /* Native menu: draw the screen (no pagination) then wait for a key.
+             * The `on` items up to `endmenu` follow this instruction; the key
+             * handler (input_complete_menu) scans and dispatches them. */
+            const char *src = instruction->arg1 != NULL ? instruction->arg1 : "";
+            if (src[0] == '\0')
+            {
+                script_set_error(state, "menu: missing screen");
+                break;
+            }
+            state->menu_instr_index = state->program_counter - 1;
+            state->more_override = 0;         /* menus never paginate */
+            state->more_line_count = 0;
+            script_display_file(state, src, 0);
+            state->more_line_count = 0;
+            strncpy(state->input_target, "__mkey", sizeof(state->input_target) - 1);
+            state->input_target[sizeof(state->input_target) - 1] = '\0';
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MENU);
+            return;
+        }
+
+        case SCRIPT_CMD_ON:
+        case SCRIPT_CMD_ENDMENU:
+            /* Declarative menu markers - handled by the menu key dispatcher;
+             * no-ops if reached in normal flow. */
+            break;
 
         case SCRIPT_CMD_LOGOFF:
         {

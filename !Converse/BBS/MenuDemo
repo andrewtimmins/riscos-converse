@@ -1,0 +1,19 @@
+{
+   /* Demo of the native declarative menu primitive.
+      `menu <screen>` draws the screen then waits for a key; each `on` routes
+      by key with optional level/keys/password gates + a fail message.
+      `script` actions run and return to the menu; `goto` leaves it.
+      Reached from the main menu with the 'Y' hot-key. */
+
+   menu `<Converse$Dir>.BBS.Screens.MenuDemo`
+      on `t`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `s`  level 500  fail `Sorry, that's sysops only.`  script `<Converse$Dir>.BBS.ScriptTest`
+      on `q`  goto md_done
+   endmenu
+
+label md_done
+   cls
+   print `Left the menu - back to the main board.`
+   anykey
+   return
+}

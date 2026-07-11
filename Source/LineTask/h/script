@@ -103,6 +103,10 @@ typedef struct script_host
     /* Read a field of the Nth user record, 0-based (scripting userbyindex()).
      * Returns a static string or NULL past the end. */
     const char *(*get_user_by_index)(void *context, int index, const char *field);
+    /* Node messaging: write text to another line, or to the line where a given
+     * user (by id or username) is online. Return 1 on success. */
+    int (*notify_line)(void *context, int line, const char *text);
+    int (*notify_user)(void *context, const char *key, const char *text);
 } script_host;
 
 typedef enum
@@ -187,7 +191,8 @@ typedef enum
     /* Misc */
     SCRIPT_INPUT_CTX_CHAT_REASON,   /* Chat pager reason */
     SCRIPT_INPUT_CTX_MORE,          /* More? prompt */
-    SCRIPT_INPUT_CTX_ANSI_DETECT    /* ANSI terminal detection */
+    SCRIPT_INPUT_CTX_ANSI_DETECT,   /* ANSI terminal detection */
+    SCRIPT_INPUT_CTX_MENU           /* native menu key selection */
 } script_input_context;
 
 typedef enum
@@ -250,7 +255,11 @@ typedef enum
     /* User-defined functions */
     SCRIPT_CMD_FUNCTION,
     SCRIPT_CMD_ENDFUNCTION,
-    SCRIPT_CMD_LOCAL
+    SCRIPT_CMD_LOCAL,
+    /* Native declarative menu: menu <screen> / on <key> [gates] goto|script X / endmenu */
+    SCRIPT_CMD_MENU,
+    SCRIPT_CMD_ON,
+    SCRIPT_CMD_ENDMENU
 } script_command_type;
 
 /* Legacy enum - used by PROMPT command only, to be phased out */
@@ -357,6 +366,11 @@ typedef struct script_state
     
     clock_t sleep_deadline;
     char last_error[128];
+    /* Native menu state: while waiting on a menu key, menu_instr_index is the
+       index of the active `menu` instruction (its `on` items follow, up to
+       `endmenu`). Re-derived each time the menu command runs, so it survives
+       nested menus via the call stack. */
+    size_t menu_instr_index;
     /* Logon state */
     char logon_username[64];
     int logon_attempts;

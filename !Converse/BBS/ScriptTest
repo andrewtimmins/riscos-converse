@@ -100,6 +100,17 @@
    print `   first KV key        = %{ =kvkey(0) }`
    print ``
 
+   /* ---- 7. Scriptable message + file access ---- */
+   fg 11
+   print `7. Scriptable msg/file access`
+   std
+   set a0 = msgareaid(1, 0)
+   print `   msgs in base1 area0 = %{ =msgcount(1, a0) }`
+   print `   first msg subject   = %{ =msgfield(1, a0, 0, "subject") }`
+   set fa0 = fileareaid(1, 0)
+   print `   files in fbase1 a0  = %{ =filecount(1, fa0) }`
+   print ``
+
    fg 10
    print `All tests complete.`
    std

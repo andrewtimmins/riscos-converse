@@ -39,6 +39,8 @@ label main_menu
    if choice == `X` goto go_test
    if choice == `z` goto go_quiz
    if choice == `Z` goto go_quiz
+   if choice == `y` goto go_menudemo
+   if choice == `Y` goto go_menudemo
    if choice == `?` goto go_help
    if choice == `q` goto go_quit
    if choice == `Q` goto go_quit
@@ -82,6 +84,9 @@ label go_test
    goto main_menu
 label go_quiz
    script `<Converse$Dir>.BBS.Quiz`
+   goto main_menu
+label go_menudemo
+   script `<Converse$Dir>.BBS.MenuDemo`
    goto main_menu
 
 label go_scan

@@ -211,6 +211,8 @@ static int script_host_set_other_user_field(void *context, const char *key,
 static int script_host_get_board_stat(void *context, const char *which);
 static const char *script_host_get_user_by_index(void *context, int index,
                                                   const char *field);
+static int script_host_notify_line(void *context, int line, const char *text);
+static int script_host_notify_user(void *context, const char *key, const char *text);
 static int script_host_filebase_download(void *context, int base_id,
                                          int file_id);
 static int script_host_authenticate_user(void *context, const char *username,
@@ -453,6 +455,8 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.set_other_user_field = script_host_set_other_user_field;
     host.get_board_stat = script_host_get_board_stat;
     host.get_user_by_index = script_host_get_user_by_index;
+    host.notify_line = script_host_notify_line;
+    host.notify_user = script_host_notify_user;
     host.filebase_download = script_host_filebase_download;
     host.authenticate_user = script_host_authenticate_user;
     host.start_postlogon = script_host_start_postlogon;
@@ -2444,6 +2448,42 @@ static const char *script_host_get_user_by_index(void *context, int index,
   if (_kernel_swi(SWI_CONVERSE_FILER_USERDB, &regs, &regs) != NULL || regs.r[0] == 0)
     return NULL;
   return ouf_read_field((const char *)regs.r[0], field);
+}
+
+/* Write text to another line's terminal. Scripting notify(line, text). */
+static int script_host_notify_line(void *context, int line, const char *text) {
+  (void)context;
+  if (text == NULL || line < 0) return 0;
+  pipes_write_string(line, "\r\n");
+  pipes_write_string(line, text);
+  pipes_write_string(line, "\r\n");
+  return 1;
+}
+
+/* Write text to the line where a given user (id or username) is online.
+ * Scripting notifyuser(id|name, text). Returns 0 if the user isn't online. */
+static int script_host_notify_user(void *context, const char *key, const char *text) {
+  _kernel_swi_regs regs;
+  char record[UR_SIZE];
+  const char *p;
+  int target_id, numeric, i;
+
+  if (key == NULL || text == NULL) return 0;
+  numeric = (*key != '\0');
+  for (p = key; *p; ++p) { if (*p < '0' || *p > '9') { numeric = 0; break; } }
+  if (numeric) target_id = atoi(key);
+  else if (!ouf_lookup(key, record, &target_id)) return 0;
+  if (target_id <= 0) return 0;
+
+  for (i = 0; i < 64; ++i) {
+    memset(&regs, 0, sizeof(regs));
+    regs.r[0] = LINE_REASON_GET;
+    regs.r[1] = i;
+    regs.r[2] = LINE_FIELD_USER_ID;
+    if (_kernel_swi(SWI_CONVERSEBBS_LINE, &regs, &regs) == NULL && regs.r[0] == target_id)
+      return script_host_notify_line(context, i, text);
+  }
+  return 0; /* user not currently online */
 }
 
 /* Write any user's field by id/name + persist. Scripting usersetby(). */
