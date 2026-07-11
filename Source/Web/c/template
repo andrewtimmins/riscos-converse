@@ -20,6 +20,7 @@ static WEB_SESSION *current_session = NULL;
 /* Filer SWI numbers */
 #define SWI_FILER_FILEBASE      0x5AA43
 #define SWI_FILER_MESSAGEBASE   0x5AA42
+#define SWI_FILER_USERDB        0x5AA41
 #define SWI_SUPPORT_CONFIG      0x5AA80
 
 /* Filebase commands */
@@ -32,11 +33,20 @@ static WEB_SESSION *current_session = NULL;
 
 /* Messagebase commands */
 #define FILER_MESSAGEBASE_CMD_INFO              2
+#define FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD      3
+#define FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK      4
+#define FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK    5
+#define FILER_MESSAGEBASE_CMD_END_UPLOAD        15
 #define FILER_MESSAGEBASE_CMD_AREA_INFO         7
 #define FILER_MESSAGEBASE_CMD_ENUMERATE_BASES   8
 #define FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS   9
 #define FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES 10
 #define FILER_MESSAGEBASE_CMD_MESSAGE_INFO      11
+
+/* Message type + area type values (mirror Filer/h/structs) */
+#define WEB_MSG_TYPE_PRIVATE    3
+#define WEB_AREATYPE_NETMAIL    2
+#define WEB_AREATYPE_PRIVATE    4
 
 /* Structure sizes from Filer/h/structs */
 #define MAX_KEYS    128
@@ -140,7 +150,10 @@ typedef struct
     char fromname[MAX_FROMTO];
     char toname[MAX_FROMTO];
     int exported;
+    unsigned short flags;
 } MESSAGE_RECORD;
+/* Compile-time guard: MESSAGE_RECORD must match Filer/h/structs (748 bytes). */
+typedef char web_msgrec_size_check[(sizeof(MESSAGE_RECORD) == 748) ? 1 : -1];
 
 /* ******************************************************************************************************************************************************** */
 /* String Buffer Helper                                                                                                                                     */
@@ -253,17 +266,25 @@ typedef struct
 
 static void format_filesize(long size, char *buffer, size_t buflen)
 {
+    /* Integer-only formatting: this runtime's printf has no floating-point
+     * support, so "%.1f" produced garbage (e.g. "0077.6 KB", "???8.0 MB")
+     * while the "%ld B" path was always fine. Compute the one decimal digit by
+     * hand with integer maths. */
     if (size < 1024)
     {
         snprintf(buffer, buflen, "%ld B", size);
     }
-    else if (size < 1024 * 1024)
+    else if (size < 1024L * 1024L)
     {
-        snprintf(buffer, buflen, "%.1f KB", size / 1024.0);
+        long whole = size / 1024L;
+        long tenths = ((size % 1024L) * 10L) / 1024L;
+        snprintf(buffer, buflen, "%ld.%ld KB", whole, tenths);
     }
     else
     {
-        snprintf(buffer, buflen, "%.1f MB", size / (1024.0 * 1024.0));
+        long whole = size / (1024L * 1024L);
+        long tenths = ((size % (1024L * 1024L)) * 10L) / (1024L * 1024L);
+        snprintf(buffer, buflen, "%ld.%ld MB", whole, tenths);
     }
 }
 
@@ -366,6 +387,849 @@ static char *template_generate_filebase_options(void)
     return buf.data;
 }
 
+/* ******************************************************************************************************************************************************** */
+/* Single message view                                                                                                                                      */
+/* ******************************************************************************************************************************************************** */
+
+/* Per-request context, set by the handler before processing a message page. */
+static int msgview_base_id = 0;
+static int msgview_area_id = 0;
+static int msgview_msg_id = 0;
+static int msgview_user_id = 0;
+static int msgview_access = 0;
+static int msgview_sysop = 0;
+static int msgview_logged_in = 0;
+
+/* Set the target message; user identity is taken from the current session
+ * (call template_set_session() first). */
+void template_set_message_context(int base_id, int area_id, int msg_id)
+{
+    msgview_base_id = base_id;
+    msgview_area_id = area_id;
+    msgview_msg_id = msg_id;
+
+    if (current_session != NULL)
+    {
+        msgview_logged_in = 1;
+        msgview_user_id = current_session->user_id;
+        msgview_access = current_session->access_level;
+        msgview_sysop = current_session->sysop;
+    }
+    else
+    {
+        msgview_logged_in = 0;
+        msgview_user_id = 0;
+        msgview_access = 0;
+        msgview_sysop = 0;
+    }
+}
+
+/* Area type for a base/area, or -1 if it can't be determined. */
+static int msgview_area_type(int base_id, int area_id)
+{
+    _kernel_swi_regs regs;
+    MESSAGEBASE_AREA *area;
+
+    if (base_id <= 0)
+    {
+        return -1;
+    }
+    regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO;
+    regs.r[1] = base_id;
+    regs.r[2] = area_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        return -1;
+    }
+    area = (MESSAGEBASE_AREA *)regs.r[0];
+    return (int)area->areatype;
+}
+
+/* Mirror of LineTask messagebase_can_read_message, using the web session. */
+static int msgview_can_read(const MESSAGE_RECORD *msg, int area_type)
+{
+    if (msg == NULL || area_type < 0)  /* fail closed on unknown area type */
+    {
+        return 0;
+    }
+
+    /* Restricted messages need a logged-in user of sufficient access level. */
+    if (msg->accesslevel > 0)
+    {
+        if (!msgview_logged_in) return 0;
+        if (!msgview_sysop && msg->accesslevel > msgview_access) return 0;
+    }
+
+    /* Private messages: only sender or receiver. */
+    if (msg->type == WEB_MSG_TYPE_PRIVATE)
+    {
+        if (!msgview_logged_in) return 0;
+        if (msg->sentby != msgview_user_id && msg->receivedby != msgview_user_id) return 0;
+    }
+
+    /* Private / Netmail areas: only messages for or from this user. */
+    if (area_type == WEB_AREATYPE_PRIVATE || area_type == WEB_AREATYPE_NETMAIL)
+    {
+        if (!msgview_logged_in) return 0;
+        if (msg->receivedby != msgview_user_id && msg->sentby != msgview_user_id) return 0;
+    }
+
+    return 1;
+}
+
+/* Append s to buf with HTML-escaping (handles bodies larger than a fixed buffer). */
+static void buffer_append_escaped(STRING_BUFFER *buf, const char *s, long len)
+{
+    long i;
+    for (i = 0; i < len; i++)
+    {
+        char c = s[i];
+        switch (c)
+        {
+            case '&':  buffer_append(buf, "&amp;", 5); break;
+            case '<':  buffer_append(buf, "&lt;", 4); break;
+            case '>':  buffer_append(buf, "&gt;", 4); break;
+            case '\r': break;  /* drop CR, keep LF for <pre> */
+            default:   buffer_append(buf, &s[i], 1); break;
+        }
+    }
+}
+
+char *template_generate_message_view(long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    MESSAGE_RECORD rec;
+    int area_type;
+    char escaped[1024];
+    char date_str[32];
+    char line[1400];
+    char *body = NULL;
+    long body_len = 0;
+
+    if (!buffer_init(&buf, 4096))
+    {
+        return NULL;
+    }
+
+    /* Fetch message record */
+    regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO;
+    regs.r[1] = msgview_base_id;
+    regs.r[2] = msgview_msg_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+    {
+        buffer_append(&buf, "<div class=\"notice\">Message not found.</div>\n", -1);
+        goto done;
+    }
+    rec = *(MESSAGE_RECORD *)regs.r[0];  /* copy before further SWIs reuse the buffer */
+
+    if (rec.deleted)
+    {
+        buffer_append(&buf, "<div class=\"notice\">Message not found.</div>\n", -1);
+        goto done;
+    }
+
+    area_type = msgview_area_type(msgview_base_id, msgview_area_id);
+
+    if (!msgview_can_read(&rec, area_type))
+    {
+        if (!msgview_logged_in)
+        {
+            buffer_append(&buf,
+                "<div class=\"notice priv\">&#128274; This message is private. Please "
+                "<a href=\"/login\">log in</a> to read it.</div>\n", -1);
+        }
+        else
+        {
+            buffer_append(&buf,
+                "<div class=\"notice priv\">You do not have access to this message.</div>\n", -1);
+        }
+        goto done;
+    }
+
+    strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M", localtime((time_t *)&rec.sent));
+
+    buffer_append(&buf, "<div class=\"msg\">\n  <div class=\"head\">\n", -1);
+
+    buffer_append(&buf, "    <h3 class=\"subj\">", -1);
+    if (rec.type == WEB_MSG_TYPE_PRIVATE) buffer_append(&buf, "<span class=\"lock\">&#128274;</span> ", -1);
+    html_escape(rec.subject, escaped, sizeof(escaped));
+    buffer_append(&buf, escaped, -1);
+    buffer_append(&buf, "</h3>\n    <div class=\"meta\">", -1);
+
+    html_escape(rec.fromname, escaped, sizeof(escaped));
+    snprintf(line, sizeof(line), "<span><b>From</b> <span class=\"v\">%s</span></span>", escaped);
+    buffer_append(&buf, line, -1);
+    html_escape(rec.toname, escaped, sizeof(escaped));
+    snprintf(line, sizeof(line), "<span><b>To</b> <span class=\"v\">%s</span></span>"
+             "<span><b>Date</b> <span class=\"v\">%s</span></span>", escaped, date_str);
+    buffer_append(&buf, line, -1);
+    buffer_append(&buf, "</div>\n  </div>\n", -1);
+
+    /* Body */
+    if (rec.bodysize > 0 && rec.bodysize < 1024L * 1024L)
+    {
+        body = malloc((size_t)rec.bodysize + 1);
+        if (body != NULL)
+        {
+            regs.r[0] = FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK;
+            regs.r[1] = msgview_base_id;
+            regs.r[2] = msgview_msg_id;
+            regs.r[3] = (int)body;
+            regs.r[4] = 0;
+            regs.r[5] = (int)rec.bodysize;
+            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] > 0)
+            {
+                body_len = regs.r[0];
+                body[body_len] = '\0';
+            }
+            else
+            {
+                free(body);
+                body = NULL;
+            }
+        }
+    }
+
+    buffer_append(&buf, "  <pre class=\"body\">", -1);
+    if (body != NULL)
+    {
+        buffer_append_escaped(&buf, body, body_len);
+        free(body);
+    }
+    buffer_append(&buf, "</pre>\n</div>\n", -1);
+
+done:
+    if (out_len != NULL)
+    {
+        *out_len = buf.length;
+    }
+    return buf.data;
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Shared page chrome (Daylight design) + drill-down pages                                                                                                  */
+/* ******************************************************************************************************************************************************** */
+
+static void web_esc(STRING_BUFFER *b, const char *s)
+{
+    char e[512];
+    html_escape(s ? s : "", e, sizeof(e));
+    buffer_append(b, e, -1);
+}
+
+/* doctype -> head -> banner -> nav -> breadcrumb -> <main> */
+static void web_top(STRING_BUFFER *b, const char *title, int active_files,
+                    WEB_SESSION *s, const char *crumb)
+{
+    char line[512];
+    buffer_append(b,
+        "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n", -1);
+    snprintf(line, sizeof(line), "<title>%s</title>\n", title);
+    buffer_append(b, line, -1);
+    buffer_append(b,
+        "<link rel=\"stylesheet\" href=\"/style\">\n</head>\n<body>\n"
+        "<div class=\"shell\">\n"
+        "<div class=\"banner\"><a class=\"mark\" href=\"/\">THE YELLOW TOASTER<span class=\"cursor\"></span></a>"
+        "<span class=\"tag\">RISC OS &middot; Fidonet 2:250/9</span><span class=\"spacer\"></span></div>\n"
+        "<nav class=\"nav\">", -1);
+    buffer_append(b, "<a href=\"/\" class=\"", -1);
+    buffer_append(b, active_files ? "" : "on", -1);
+    buffer_append(b, "\">Messages</a><a href=\"/files\" class=\"", -1);
+    buffer_append(b, active_files ? "on" : "", -1);
+    buffer_append(b, "\">Files</a><span class=\"spacer\"></span><span class=\"userchip\">", -1);
+    if (s != NULL)
+    {
+        buffer_append(b, "<span>&#9679; <span class=\"who\">", -1);
+        web_esc(b, s->username);
+        buffer_append(b, "</span></span><a href=\"/logout\">Log out</a>", -1);
+    }
+    else
+    {
+        buffer_append(b, "<a href=\"/login\">Log in</a>", -1);
+    }
+    buffer_append(b, "</span></nav>\n<div class=\"crumb\">", -1);
+    buffer_append(b, crumb ? crumb : "", -1);
+    buffer_append(b, "</div>\n<main class=\"main\">\n", -1);
+}
+
+/* </main> -> status line -> close */
+static void web_bottom(STRING_BUFFER *b, WEB_SESSION *s)
+{
+    buffer_append(b,
+        "</main>\n<div class=\"status\">"
+        "<span><span class=\"dot\">&#9679;</span> online <b>1</b></span>"
+        "<span>node <b>1</b></span><span>addr <b>2:250/9</b></span>"
+        "<span class=\"spacer\"></span><span>", -1);
+    if (s != NULL) { web_esc(b, s->username); buffer_append(b, " &middot; user", -1); }
+    else buffer_append(b, "guest", -1);
+    buffer_append(b, "</span></div>\n</div>\n</body>\n</html>\n", -1);
+}
+
+/* Map areatype -> label; sets *priv for private/netmail areas. */
+static const char *web_area_kind(int areatype, int *priv)
+{
+    *priv = (areatype == WEB_AREATYPE_NETMAIL || areatype == WEB_AREATYPE_PRIVATE);
+    switch (areatype)
+    {
+        case 1:  return "echo";
+        case WEB_AREATYPE_NETMAIL: return "netmail";
+        case WEB_AREATYPE_PRIVATE: return "private";
+        default: return "local";
+    }
+}
+
+/* Count non-deleted messages in an area. */
+static int web_count_messages(int base_id, int area_id)
+{
+    _kernel_swi_regs regs;
+    int i, n = 0;
+    for (i = 0; i < 5000; i++)
+    {
+        MESSAGE_RECORD *m;
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+        regs.r[1] = base_id; regs.r[2] = area_id; regs.r[3] = i;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1) break;
+        m = (MESSAGE_RECORD *)regs.r[0];
+        if (m == NULL || m->deleted || m->messagebaseareaid != area_id) continue;
+        n++;
+    }
+    return n;
+}
+
+/* ---- Home: message-area index (cards) ---- */
+char *template_page_home(WEB_SESSION *s, long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    int bi, ai;
+
+    if (!buffer_init(&buf, 8192)) return NULL;
+    web_top(&buf, "Messages - The Yellow Toaster BBS", 0, s,
+        "<span class=\"here\">Messages</span>");
+    buffer_append(&buf,
+        "<div class=\"screenhead\"><span class=\"arrow\">&#9656;</span><h2>Message Areas</h2></div>\n"
+        "<div class=\"grid\">\n", -1);
+
+    for (bi = 0; bi < 100; bi++)
+    {
+        MESSAGEBASE_RECORD *base; int base_id;
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES; regs.r[1] = bi;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1) break;
+        base = (MESSAGEBASE_RECORD *)regs.r[0];
+        if (base == NULL) continue;
+        if (base->type == 3) continue;                       /* private base */
+        if (base->accesslevel > 0 && !(s && s->sysop)) continue;
+        base_id = base->id;
+
+        for (ai = 0; ai < 100; ai++)
+        {
+            MESSAGEBASE_AREA *ar; int atype, priv, cnt; const char *kind;
+            char line[900];
+            regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS; regs.r[1] = base_id; regs.r[2] = ai;
+            if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1) break;
+            ar = (MESSAGEBASE_AREA *)regs.r[0];
+            if (ar == NULL) continue;
+            atype = ar->areatype;
+            kind = web_area_kind(atype, &priv);
+
+            snprintf(line, sizeof(line), "<a class=\"card\" href=\"/area/%d/%d\">", base_id, ar->id);
+            buffer_append(&buf, line, -1);
+            buffer_append(&buf, "<div class=\"t\"><span class=\"g\">&#9656;</span> ", -1);
+            web_esc(&buf, ar->name);
+            buffer_append(&buf, "</div><div class=\"pillrow k\"><span class=\"pill ", -1);
+            buffer_append(&buf, atype == 1 ? "echo" : (priv ? "priv" : ""), -1);
+            snprintf(line, sizeof(line), "\">%s</span></div>", kind);
+            buffer_append(&buf, line, -1);
+            if (priv && s == NULL)
+            {
+                buffer_append(&buf, "<div class=\"n\"><span class=\"lock\">&#128274;</span> log in to read</div>", -1);
+            }
+            else
+            {
+                cnt = web_count_messages(base_id, ar->id);
+                snprintf(line, sizeof(line), "<div class=\"n\"><b>%d</b> message%s</div>",
+                         cnt, cnt == 1 ? "" : "s");
+                buffer_append(&buf, line, -1);
+            }
+            buffer_append(&buf, "</a>\n", -1);
+        }
+    }
+
+    buffer_append(&buf, "</div>\n", -1);
+    web_bottom(&buf, s);
+    if (out_len) *out_len = buf.length;
+    return buf.data;
+}
+
+/* Can this session see this message in a listing? (mirror of msgview_can_read) */
+static int web_list_can_see(const MESSAGE_RECORD *m, int area_type, WEB_SESSION *s)
+{
+    int uid = s ? s->user_id : 0;
+    int priv = (area_type == WEB_AREATYPE_NETMAIL || area_type == WEB_AREATYPE_PRIVATE);
+    if (m->accesslevel > 0)
+    {
+        if (s == NULL) return 0;
+        if (!s->sysop && m->accesslevel > s->access_level) return 0;
+    }
+    if (m->type == WEB_MSG_TYPE_PRIVATE || priv)
+    {
+        if (s == NULL) return 0;
+        if (m->sentby != uid && m->receivedby != uid) return 0;
+    }
+    return 1;
+}
+
+/* ---- Area: message list ---- */
+char *template_page_area(int base_id, int area_id, WEB_SESSION *s, long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    MESSAGEBASE_AREA arec;
+    int have = 0, atype = -1, priv = 0, i, shown = 0;
+    const char *kind = "local";
+    char areaname[64];
+    char crumb[400], line[1500];
+    int ids[1000], nids = 0;
+
+    if (!buffer_init(&buf, 8192)) return NULL;
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO; regs.r[1] = base_id; regs.r[2] = area_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        arec = *(MESSAGEBASE_AREA *)regs.r[0];
+        have = 1; atype = arec.areatype;
+    }
+    strncpy(areaname, have ? arec.name : "Area", sizeof(areaname) - 1);
+    areaname[sizeof(areaname) - 1] = '\0';
+    kind = web_area_kind(atype, &priv);
+
+    {
+        char en[128]; html_escape(areaname, en, sizeof(en));
+        snprintf(crumb, sizeof(crumb),
+            "<a href=\"/\">Messages</a><span class=\"sep\">&#9656;</span><span class=\"here\">%s</span>", en);
+    }
+    web_top(&buf, "The Yellow Toaster BBS", 0, s, crumb);
+
+    if (priv && s == NULL)
+    {
+        buffer_append(&buf, "<div class=\"notice priv\">&#128274; <b>", -1);
+        web_esc(&buf, areaname);
+        buffer_append(&buf, "</b> holds private mail. Please <a href=\"/login\">log in</a> to read messages addressed to you.</div>\n", -1);
+        web_bottom(&buf, s);
+        if (out_len) *out_len = buf.length;
+        return buf.data;
+    }
+
+    /* screen head + New message */
+    buffer_append(&buf, "<div class=\"screenhead\"><span class=\"arrow\">&#9656;</span><h2>", -1);
+    web_esc(&buf, areaname);
+    snprintf(line, sizeof(line), "</h2><span class=\"meta\">%s</span><span class=\"spacer\"></span>", kind);
+    buffer_append(&buf, line, -1);
+    if (s != NULL)
+    {
+        snprintf(line, sizeof(line), "<a class=\"btn amber\" href=\"/compose/%d/%d\">&#43; New message</a>", base_id, area_id);
+        buffer_append(&buf, line, -1);
+    }
+    else
+    {
+        buffer_append(&buf, "<span class=\"meta\">Log in to post</span>", -1);
+    }
+    buffer_append(&buf, "</div>\n", -1);
+
+    /* collect visible message ids (then render newest-first) */
+    for (i = 0; i < 5000 && nids < 1000; i++)
+    {
+        MESSAGE_RECORD *m;
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+        regs.r[1] = base_id; regs.r[2] = area_id; regs.r[3] = i;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1) break;
+        m = (MESSAGE_RECORD *)regs.r[0];
+        if (m == NULL || m->deleted || m->messagebaseareaid != area_id) continue;
+        if (!web_list_can_see(m, atype, s)) continue;
+        ids[nids++] = m->id;
+    }
+
+    buffer_append(&buf, "<div class=\"list\">\n", -1);
+    for (i = nids - 1; i >= 0; i--)   /* newest first */
+    {
+        MESSAGE_RECORD rec; char es[300], ds[32];
+        regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO; regs.r[1] = base_id; regs.r[2] = ids[i];
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0) continue;
+        rec = *(MESSAGE_RECORD *)regs.r[0];
+        strftime(ds, sizeof(ds), "%Y-%m-%d", localtime((time_t *)&rec.sent));
+
+        snprintf(line, sizeof(line), "<a class=\"row\" href=\"/message/%d/%d/%d\">", base_id, area_id, rec.id);
+        buffer_append(&buf, line, -1);
+        buffer_append(&buf, "<span class=\"subj\">", -1);
+        buffer_append(&buf, (rec.type == WEB_MSG_TYPE_PRIVATE || priv)
+            ? "<span class=\"m lock\">&#128274;</span>" : "<span class=\"m\">&#9656;</span>", -1);
+        html_escape(rec.subject, es, sizeof(es)); buffer_append(&buf, es, -1);
+        buffer_append(&buf, "</span><span class=\"frm\">", -1);
+        html_escape(rec.fromname, es, sizeof(es)); buffer_append(&buf, es, -1);
+        snprintf(line, sizeof(line), "</span><span class=\"dt\">%s</span></a>\n", ds);
+        buffer_append(&buf, line, -1);
+        shown++;
+    }
+    if (!shown) buffer_append(&buf, "<div class=\"empty\">No messages in this area yet.</div>\n", -1);
+    buffer_append(&buf, "</div>\n", -1);
+
+    web_bottom(&buf, s);
+    if (out_len) *out_len = buf.length;
+    return buf.data;
+}
+
+/* neighbour message ids within the area for prev/next (visible to session) */
+static void web_neighbours(int base_id, int area_id, int msg_id, WEB_SESSION *s,
+                           int area_type, int *prev_id, int *next_id)
+{
+    _kernel_swi_regs regs;
+    int i, ids[1000], nids = 0, pos = -1;
+    *prev_id = 0; *next_id = 0;
+    for (i = 0; i < 5000 && nids < 1000; i++)
+    {
+        MESSAGE_RECORD *m;
+        regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_MESSAGES;
+        regs.r[1] = base_id; regs.r[2] = area_id; regs.r[3] = i;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1) break;
+        m = (MESSAGE_RECORD *)regs.r[0];
+        if (m == NULL || m->deleted || m->messagebaseareaid != area_id) continue;
+        if (!web_list_can_see(m, area_type, s)) continue;
+        if (m->id == msg_id) pos = nids;
+        ids[nids++] = m->id;
+    }
+    /* listing is newest-first, so "prev" (newer) = higher index, "next" (older) = lower */
+    if (pos >= 0)
+    {
+        if (pos + 1 < nids) *prev_id = ids[pos + 1];
+        if (pos - 1 >= 0)   *next_id = ids[pos - 1];
+    }
+}
+
+/* ---- Single message page (wraps the message-view content in the shell) ---- */
+char *template_page_message(int base_id, int area_id, int msg_id, WEB_SESSION *s, long *out_len)
+{
+    STRING_BUFFER buf;
+    char *view; long vlen;
+    char crumb[500], line[400], areaname[64] = "Area";
+    int atype = -1, prev_id = 0, next_id = 0;
+    _kernel_swi_regs regs;
+
+    if (!buffer_init(&buf, 8192)) return NULL;
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO; regs.r[1] = base_id; regs.r[2] = area_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        MESSAGEBASE_AREA *ar = (MESSAGEBASE_AREA *)regs.r[0];
+        atype = ar->areatype;
+        strncpy(areaname, ar->name, sizeof(areaname) - 1); areaname[sizeof(areaname) - 1] = '\0';
+    }
+
+    {
+        char en[128]; html_escape(areaname, en, sizeof(en));
+        snprintf(crumb, sizeof(crumb),
+            "<a href=\"/\">Messages</a><span class=\"sep\">&#9656;</span>"
+            "<a href=\"/area/%d/%d\">%s</a><span class=\"sep\">&#9656;</span><span class=\"here\">Message</span>",
+            base_id, area_id, en);
+    }
+    web_top(&buf, "The Yellow Toaster BBS", 0, s, crumb);
+
+    template_set_session(s);
+    template_set_message_context(base_id, area_id, msg_id);
+    web_neighbours(base_id, area_id, msg_id, s, atype, &prev_id, &next_id);
+
+    /* prev/next + reply toolbar */
+    buffer_append(&buf, "<div class=\"msgbar\">", -1);
+    if (prev_id) { snprintf(line, sizeof(line), "<a class=\"btn ghost\" href=\"/message/%d/%d/%d\">&#9666; Prev</a>", base_id, area_id, prev_id); buffer_append(&buf, line, -1); }
+    else buffer_append(&buf, "<span class=\"btn ghost disabled\">&#9666; Prev</span>", -1);
+    if (next_id) { snprintf(line, sizeof(line), "<a class=\"btn ghost\" href=\"/message/%d/%d/%d\">Next &#9656;</a>", base_id, area_id, next_id); buffer_append(&buf, line, -1); }
+    else buffer_append(&buf, "<span class=\"btn ghost disabled\">Next &#9656;</span>", -1);
+    buffer_append(&buf, "<span class=\"spacer\"></span>", -1);
+    if (s != NULL) { snprintf(line, sizeof(line), "<a class=\"btn amber\" href=\"/reply/%d/%d/%d\">&#8617; Reply</a>", base_id, area_id, msg_id); buffer_append(&buf, line, -1); }
+    buffer_append(&buf, "</div>\n", -1);
+
+    view = template_generate_message_view(&vlen);
+    if (view != NULL) { buffer_append(&buf, view, vlen); free(view); }
+
+    web_bottom(&buf, s);
+    if (out_len) *out_len = buf.length;
+    return buf.data;
+}
+
+/* ---- Files page: filebase listing wrapped in the shell ---- */
+char *template_page_files(WEB_SESSION *s, long *out_len)
+{
+    STRING_BUFFER buf;
+    char *listing; long llen;
+
+    if (!buffer_init(&buf, 8192)) return NULL;
+    web_top(&buf, "Files - The Yellow Toaster BBS", 1, s, "<span class=\"here\">Files</span>");
+    buffer_append(&buf, "<div class=\"screenhead\"><span class=\"arrow\">&#9656;</span><h2>File Areas</h2>"
+        "<span class=\"spacer\"></span><a class=\"btn\" href=\"/upload\">Upload a file</a></div>\n", -1);
+    listing = template_generate_filebase_listing(&llen);
+    if (listing != NULL) { buffer_append(&buf, listing, llen); free(listing); }
+    web_bottom(&buf, s);
+    if (out_len) *out_len = buf.length;
+    return buf.data;
+}
+
+/* Append body text into a <textarea>, HTML-escaped, each line prefixed "> " (for reply quoting). */
+static void quote_append(STRING_BUFFER *b, const char *s, long len)
+{
+    long i; int at_line_start = 1;
+    for (i = 0; i < len; i++)
+    {
+        char c = s[i];
+        if (c == '\r') continue;
+        if (at_line_start) { buffer_append(b, "&gt; ", 5); at_line_start = 0; }
+        if (c == '\n') { buffer_append(b, "\n", 1); at_line_start = 1; continue; }
+        if (c == '&') buffer_append(b, "&amp;", 5);
+        else if (c == '<') buffer_append(b, "&lt;", 4);
+        else if (c == '>') buffer_append(b, "&gt;", 4);
+        else buffer_append(b, &s[i], 1);
+    }
+}
+
+/* Resolve a username to a user id (0 if not found). */
+static int web_find_user_id(const char *username)
+{
+    _kernel_swi_regs regs;
+    if (username == NULL || username[0] == '\0') return 0;
+    regs.r[0] = 7;                    /* FILER_USERDB_CMD_FIND_USERNAME */
+    regs.r[1] = (int)username;
+    if (_kernel_swi(SWI_FILER_USERDB, &regs, &regs) != NULL) return 0;
+    if (regs.r[0] == 0 || regs.r[0] == -1) return 0;
+    return *((int *)regs.r[0]);       /* id at offset 0 */
+}
+
+/* Resolve a user id to a username (returns 1 on success). */
+static int web_user_name(int user_id, char *out, size_t size)
+{
+    _kernel_swi_regs regs;
+    if (user_id <= 0 || out == NULL || size == 0) return 0;
+    regs.r[0] = 3;                    /* FILER_USERDB_CMD_SEARCH (by id) */
+    regs.r[1] = user_id;
+    if (_kernel_swi(SWI_FILER_USERDB, &regs, &regs) != NULL) return 0;
+    if (regs.r[0] == 0 || regs.r[0] == -1) return 0;
+    strncpy(out, (char *)regs.r[0] + 4, size - 1);   /* username at offset 4 */
+    out[size - 1] = '\0';
+    return 1;
+}
+
+/* Is this a private/netmail area (recipient-addressed)? */
+static int web_area_is_private(int areatype)
+{
+    return (areatype == WEB_AREATYPE_PRIVATE || areatype == WEB_AREATYPE_NETMAIL);
+}
+
+/* Write a new message to the messagebase. Returns the new id, -1 on failure,
+ * or -2 if a private post names an unknown recipient. Echo/netmail-area posts
+ * are stored unexported so the FTN scanner ships them; private posts are typed
+ * PRIVATE and addressed to the resolved recipient. */
+int template_post_message(int base_id, int area_id, WEB_SESSION *s,
+                          const char *subject, const char *to, const char *body)
+{
+    _kernel_swi_regs regs;
+    MESSAGE_RECORD rec;
+    int atype = 0, message_id, is_private, receivedby = 0;
+    const char *from;
+    long blen;
+
+    if (s == NULL || base_id <= 0) return -1;
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO; regs.r[1] = base_id; regs.r[2] = area_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] != 0)
+        atype = ((MESSAGEBASE_AREA *)regs.r[0])->areatype;
+
+    is_private = web_area_is_private(atype);
+    if (is_private)
+    {
+        receivedby = web_find_user_id(to);
+        if (receivedby <= 0) return -2;      /* unknown recipient */
+    }
+
+    memset(&rec, 0, sizeof(rec));
+    rec.messagebaseid = base_id;
+    rec.messagebaseareaid = area_id;
+    rec.type = is_private ? WEB_MSG_TYPE_PRIVATE : (atype == 1 ? 1 : 0);
+    rec.accesslevel = 0;
+    rec.sentby = s->user_id;
+    rec.receivedby = receivedby;
+    rec.imported = time(NULL);
+    rec.sent = time(NULL);
+    rec.bodysize = 0;   /* set by upload */
+    from = (s->realname[0] != '\0') ? s->realname : s->username;
+    snprintf(rec.subject, sizeof(rec.subject), "%s", (subject && *subject) ? subject : "(no subject)");
+    strncpy(rec.fromname, from, sizeof(rec.fromname) - 1);
+    strncpy(rec.toname, (to && *to) ? to : "All", sizeof(rec.toname) - 1);
+    rec.exported = 0;
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_BEGIN_UPLOAD;
+    regs.r[1] = base_id;
+    regs.r[2] = (int)&rec;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] <= 0)
+        return -1;
+    message_id = regs.r[0];
+
+    blen = (body != NULL) ? (long)strlen(body) : 0;
+    if (blen > 0)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_UPLOAD_BLOCK;
+        regs.r[1] = base_id;
+        regs.r[2] = message_id;
+        regs.r[3] = (int)body;
+        regs.r[4] = (int)blen;
+        _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+    }
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_END_UPLOAD;
+    regs.r[1] = base_id;
+    regs.r[2] = message_id;
+    _kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs);
+
+    return message_id;
+}
+
+/* Compose / reply form page. reply_id > 0 pre-fills subject/to/quoted body. */
+char *template_page_compose(int base_id, int area_id, int reply_id, WEB_SESSION *s, long *out_len)
+{
+    STRING_BUFFER buf;
+    _kernel_swi_regs regs;
+    MESSAGEBASE_AREA arec;
+    int atype = -1, priv = 0;
+    char areaname[64] = "Area";
+    char crumb[400], line[1200];
+    char subject_val[300] = "";
+    char to_val[64] = "All";
+
+    if (!buffer_init(&buf, 8192)) return NULL;
+
+    regs.r[0] = FILER_MESSAGEBASE_CMD_AREA_INFO; regs.r[1] = base_id; regs.r[2] = area_id;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] != 0)
+    {
+        arec = *(MESSAGEBASE_AREA *)regs.r[0];
+        atype = arec.areatype;
+        strncpy(areaname, arec.name, sizeof(areaname) - 1); areaname[sizeof(areaname) - 1] = '\0';
+    }
+    web_area_kind(atype, &priv);
+    if (priv) to_val[0] = '\0';   /* private: recipient username must be entered */
+
+    {
+        char en[128]; html_escape(areaname, en, sizeof(en));
+        snprintf(crumb, sizeof(crumb),
+            "<a href=\"/\">Messages</a><span class=\"sep\">&#9656;</span>"
+            "<a href=\"/area/%d/%d\">%s</a><span class=\"sep\">&#9656;</span><span class=\"here\">%s</span>",
+            base_id, area_id, en, reply_id ? "Reply" : "New message");
+    }
+    web_top(&buf, "The Yellow Toaster BBS", 0, s, crumb);
+
+    if (s == NULL)
+    {
+        buffer_append(&buf, "<div class=\"notice\">Please <a href=\"/login\">log in</a> to post messages.</div>\n", -1);
+        web_bottom(&buf, s);
+        if (out_len) *out_len = buf.length;
+        return buf.data;
+    }
+
+    buffer_append(&buf, "<div class=\"screenhead\"><span class=\"arrow\">&#9656;</span><h2>", -1);
+    buffer_append(&buf, reply_id ? "Reply" : "New message", -1);
+    buffer_append(&buf, " in ", -1); web_esc(&buf, areaname);
+    buffer_append(&buf, "</h2></div>\n<div class=\"hint\">Posting as <b>", -1);
+    web_esc(&buf, s->username);
+    if (priv)
+        buffer_append(&buf, "</b> &middot; private message &mdash; only the named recipient can read it", -1);
+    else if (atype == 1)
+        buffer_append(&buf, "</b> &middot; this echo is scanned out to the network", -1);
+    else
+        buffer_append(&buf, "</b>", -1);
+    buffer_append(&buf, "</div>\n", -1);
+
+    /* Pre-fill subject/to from the message being replied to */
+    if (reply_id > 0)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO; regs.r[1] = base_id; regs.r[2] = reply_id;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] > 0)
+        {
+            MESSAGE_RECORD rec = *(MESSAGE_RECORD *)regs.r[0];
+            const char *sj = rec.subject;
+            if ((sj[0] == 'R' || sj[0] == 'r') && (sj[1] == 'E' || sj[1] == 'e') && sj[2] == ':')
+                snprintf(subject_val, sizeof(subject_val), "%s", sj);
+            else
+                snprintf(subject_val, sizeof(subject_val), "Re: %s", sj);
+            if (priv)
+            {
+                /* private reply goes back to the original sender (by username) */
+                if (!web_user_name(rec.sentby, to_val, sizeof(to_val))) to_val[0] = '\0';
+            }
+            else
+            {
+                strncpy(to_val, rec.fromname, sizeof(to_val) - 1); to_val[sizeof(to_val) - 1] = '\0';
+            }
+        }
+    }
+
+    buffer_append(&buf, "<form class=\"form\" method=\"POST\" action=\"/post\">\n", -1);
+    snprintf(line, sizeof(line),
+        "<input type=\"hidden\" name=\"base\" value=\"%d\"><input type=\"hidden\" name=\"area\" value=\"%d\">\n",
+        base_id, area_id);
+    buffer_append(&buf, line, -1);
+
+    {
+        char e[600]; html_escape(subject_val, e, sizeof(e));
+        snprintf(line, sizeof(line),
+            "<div class=\"field\"><label>Subject</label><input name=\"subject\" value=\"%s\" placeholder=\"Subject line\" maxlength=\"250\"></div>\n", e);
+        buffer_append(&buf, line, -1);
+    }
+    {
+        char e[128]; html_escape(to_val, e, sizeof(e));
+        snprintf(line, sizeof(line),
+            "<div class=\"field\"><label>%s</label><input name=\"to\" value=\"%s\" maxlength=\"34\"%s></div>\n",
+            priv ? "To (username)" : "To", e, priv ? " required" : "");
+        buffer_append(&buf, line, -1);
+    }
+
+    buffer_append(&buf, "<div class=\"field\"><label>Message</label>"
+                        "<textarea name=\"body\" placeholder=\"Type your message...\">", -1);
+    if (reply_id > 0)
+    {
+        regs.r[0] = FILER_MESSAGEBASE_CMD_MESSAGE_INFO; regs.r[1] = base_id; regs.r[2] = reply_id;
+        if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] > 0)
+        {
+            MESSAGE_RECORD rec = *(MESSAGE_RECORD *)regs.r[0];
+            char *body;
+            web_esc(&buf, rec.fromname);
+            buffer_append(&buf, " wrote:\n", -1);
+            if (rec.bodysize > 0 && rec.bodysize < 256L * 1024L)
+            {
+                body = malloc((size_t)rec.bodysize + 1);
+                if (body != NULL)
+                {
+                    regs.r[0] = FILER_MESSAGEBASE_CMD_DOWNLOAD_BLOCK; regs.r[1] = base_id; regs.r[2] = reply_id;
+                    regs.r[3] = (int)body; regs.r[4] = 0; regs.r[5] = (int)rec.bodysize;
+                    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) == NULL && regs.r[0] > 0)
+                    {
+                        long blen = regs.r[0]; body[blen] = '\0';
+                        quote_append(&buf, body, blen);
+                    }
+                    free(body);
+                }
+            }
+        }
+    }
+    buffer_append(&buf, "</textarea></div>\n", -1);
+
+    snprintf(line, sizeof(line),
+        "<div class=\"formbar\"><a class=\"btn\" href=\"/area/%d/%d\">Cancel</a>"
+        "<button class=\"btn amber\" type=\"submit\">Post message</button></div>\n</form>\n",
+        base_id, area_id);
+    buffer_append(&buf, line, -1);
+
+    web_bottom(&buf, s);
+    if (out_len) *out_len = buf.length;
+    return buf.data;
+}
+
 char *template_generate_filebase_listing(long *out_len)
 {
     STRING_BUFFER buf;
@@ -429,6 +1293,7 @@ char *template_generate_filebase_listing(long *out_len)
             FILEBASE_AREA_RECORD *area_rec;
             int area_id;
             int has_files = 0;
+            long area_mark = 0;
 
             /* Get area by index */
             regs.r[0] = FILER_FILEBASE_CMD_ENUMERATE_AREAS;
@@ -447,7 +1312,12 @@ char *template_generate_filebase_listing(long *out_len)
             }
 
             area_id = area_rec->id;
-            has_content = 1;
+
+            /* Remember where this area's section starts. If the area turns out
+             * to hold no files we roll the buffer back to here and emit nothing
+             * at all - the board has dozens of areas and only a handful contain
+             * files, so rendering an empty table per area buried the listing. */
+            area_mark = buf.length;
 
             /* Start area section */
             html_escape(area_rec->name, escaped_name, sizeof(escaped_name));
@@ -529,17 +1399,21 @@ char *template_generate_filebase_listing(long *out_len)
                 buffer_append(&buf, row, -1);
             }
 
-            if (!has_files)
+            if (has_files)
             {
+                /* End area section */
                 buffer_append(&buf,
-                    "          <tr><td colspan=\"6\"><em>No files in this area</em></td></tr>\n", -1);
+                    "        </tbody>\n"
+                    "      </table>\n"
+                    "    </div>\n", -1);
+                has_content = 1;
             }
-
-            /* End area section */
-            buffer_append(&buf,
-                "        </tbody>\n"
-                "      </table>\n"
-                "    </div>\n", -1);
+            else
+            {
+                /* Empty area: discard the header we speculatively emitted. */
+                buf.length = area_mark;
+                buf.data[area_mark] = '\0';
+            }
         }
 
         /* Also show files not in any area (area_id = 0) */
@@ -740,6 +1614,7 @@ char *template_generate_messagebase_listing(long *out_len)
             MESSAGEBASE_AREA *area_rec;
             int area_id;
             int has_messages = 0;
+            long area_mark = 0;
 
             regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
             regs.r[1] = base_id;
@@ -764,7 +1639,9 @@ char *template_generate_messagebase_listing(long *out_len)
                 continue;
             }
 
-            has_content = 1;
+            /* Remember the section start so an empty area can be rolled back
+             * and rendered as nothing (see filebase listing for rationale). */
+            area_mark = buf.length;
 
             html_escape(area_rec->name, escaped_name, sizeof(escaped_name));
             snprintf(row, sizeof(row),
@@ -834,11 +1711,12 @@ char *template_generate_messagebase_listing(long *out_len)
 
                 snprintf(row, sizeof(row),
                     "          <tr>\n"
-                    "            <td>%s</td>\n"
+                    "            <td><a href=\"/message/%d/%d/%d\">%s</a></td>\n"
                     "            <td>%s</td>\n"
                     "            <td>%s</td>\n"
                     "            <td>%s</td>\n"
                     "          </tr>\n",
+                    base_id, msg_rec->messagebaseareaid, msg_rec->id,
                     escaped_subject,
                     escaped_from,
                     escaped_to,
@@ -846,16 +1724,20 @@ char *template_generate_messagebase_listing(long *out_len)
                 buffer_append(&buf, row, -1);
             }
 
-            if (!has_messages)
+            if (has_messages)
             {
                 buffer_append(&buf,
-                    "          <tr><td colspan=\"4\"><em>No messages in this area</em></td></tr>\n", -1);
+                    "        </tbody>\n"
+                    "      </table>\n"
+                    "    </div>\n", -1);
+                has_content = 1;
             }
-
-            buffer_append(&buf,
-                "        </tbody>\n"
-                "      </table>\n"
-                "    </div>\n", -1);
+            else
+            {
+                /* Empty area: discard the header we speculatively emitted. */
+                buf.length = area_mark;
+                buf.data[area_mark] = '\0';
+            }
         }
         
         /* Handle uncategorized messages (area_id = 0) */
@@ -931,11 +1813,12 @@ char *template_generate_messagebase_listing(long *out_len)
 
                 snprintf(row, sizeof(row),
                     "          <tr>\n"
-                    "            <td>%s</td>\n"
+                    "            <td><a href=\"/message/%d/%d/%d\">%s</a></td>\n"
                     "            <td>%s</td>\n"
                     "            <td>%s</td>\n"
                     "            <td>%s</td>\n"
                     "          </tr>\n",
+                    base_id, msg_rec->messagebaseareaid, msg_rec->id,
                     escaped_subject,
                     escaped_from,
                     escaped_to,
@@ -1151,30 +2034,18 @@ char *template_process(const char *content, long content_len, long *out_len)
         else if ((size_t)(tag_end + 2 - tag_start) == strlen(TEMPLATE_TAG_LOGINFORM) &&
                  strncmp(tag_start, TEMPLATE_TAG_LOGINFORM, strlen(TEMPLATE_TAG_LOGINFORM)) == 0)
         {
-            /* Generate login form or user info based on session state */
+            /* Userchip: matches the C-generated pages' nav (see web_top). */
             if (current_session != NULL)
             {
-                /* Logged in - show user info and logout link */
-                char user_html[512];
+                char user_html[256];
                 snprintf(user_html, sizeof(user_html),
-                    "<div class=\"user-info\">"
-                    "<span>Welcome, <strong>%s</strong></span> "
-                    "<a href=\"/logout\" class=\"logout-btn\">Logout</a>"
-                    "</div>",
+                    "<span>&#9679; <span class=\"who\">%s</span></span><a href=\"/logout\">Log out</a>",
                     current_session->username);
                 buffer_append(&buf, user_html, -1);
             }
             else
             {
-                /* Not logged in - show login form */
-                buffer_append(&buf,
-                    "<div class=\"login-form\">"
-                    "<form method=\"POST\" action=\"/login\">"
-                    "<input type=\"text\" name=\"username\" placeholder=\"Username\" required>"
-                    "<input type=\"password\" name=\"password\" placeholder=\"Password\" required>"
-                    "<button type=\"submit\">Login</button>"
-                    "</form>"
-                    "</div>", -1);
+                buffer_append(&buf, "<a href=\"/login\">Log in</a>", -1);
             }
         }
         else if ((size_t)(tag_end + 2 - tag_start) == strlen(TEMPLATE_TAG_UPLOADFORM) &&
@@ -1186,36 +2057,37 @@ char *template_process(const char *content, long content_len, long *out_len)
                 char *filebase_options = template_generate_filebase_options();
                 
                 buffer_append(&buf,
-                    "<form method=\"POST\" action=\"/upload\" enctype=\"multipart/form-data\" class=\"upload-form\">"
-                    "<div class=\"form-group\">"
-                    "<label for=\"filebase\">Filebase:</label>"
+                    "<form class=\"form\" method=\"POST\" action=\"/upload\" enctype=\"multipart/form-data\">"
+                    "<div class=\"field\">"
+                    "<label for=\"filebase\">Filebase</label>"
                     "<select name=\"filebase\" id=\"filebase\" required>", -1);
-                
+
                 if (filebase_options != NULL)
                 {
                     buffer_append(&buf, filebase_options, -1);
                     free(filebase_options);
                 }
-                
+
                 buffer_append(&buf,
                     "</select>"
                     "</div>"
-                    "<div class=\"form-group\">"
-                    "<label for=\"area\">Area:</label>"
+                    "<div class=\"field\">"
+                    "<label for=\"area\">Area</label>"
                     "<select name=\"area\" id=\"area\">"
                     "<option value=\"0\">-- None --</option>"
                     "</select>"
                     "</div>"
-                    "<div class=\"form-group\">"
-                    "<label for=\"description\">Description:</label>"
-                    "<textarea name=\"description\" id=\"description\" rows=\"3\" placeholder=\"Enter a description for this file\"></textarea>"
+                    "<div class=\"field\">"
+                    "<label for=\"description\">Description</label>"
+                    "<textarea name=\"description\" id=\"description\" placeholder=\"Enter a description for this file\"></textarea>"
                     "</div>"
-                    "<div class=\"form-group\">"
-                    "<label for=\"file\">File:</label>"
+                    "<div class=\"field\">"
+                    "<label for=\"file\">File</label>"
                     "<input type=\"file\" name=\"file\" id=\"file\" required>"
                     "</div>"
-                    "<div class=\"form-group\">"
-                    "<button type=\"submit\">Upload File</button>"
+                    "<div class=\"formbar\">"
+                    "<a class=\"btn\" href=\"/files\">Cancel</a>"
+                    "<button class=\"btn amber\" type=\"submit\">Upload file</button>"
                     "</div>"
                     "</form>", -1);
             }
@@ -1223,7 +2095,25 @@ char *template_process(const char *content, long content_len, long *out_len)
             {
                 /* Not logged in - show login prompt */
                 buffer_append(&buf,
-                    "<p class=\"login-required\">Please <a href=\"/login\">login</a> to upload files.</p>", -1);
+                    "<div class=\"notice\">Please <a href=\"/login\">log in</a> to upload files.</div>", -1);
+            }
+        }
+        else if ((size_t)(tag_end + 2 - tag_start) == strlen(TEMPLATE_TAG_MESSAGEVIEW) &&
+                 strncmp(tag_start, TEMPLATE_TAG_MESSAGEVIEW, strlen(TEMPLATE_TAG_MESSAGEVIEW)) == 0)
+        {
+            /* Replace with the single-message view (context set by handler) */
+            char *view;
+            long view_len;
+
+            view = template_generate_message_view(&view_len);
+            if (view != NULL)
+            {
+                buffer_append(&buf, view, view_len);
+                free(view);
+            }
+            else
+            {
+                buffer_append(&buf, "<!-- Error generating message view -->", -1);
             }
         }
         else

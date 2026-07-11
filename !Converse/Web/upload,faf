@@ -2,278 +2,67 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Upload File - {{bbsname}}</title>
-    <style>
-        body {
-            font-family: Arial, Helvetica, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f5f5f5;
-            color: #333;
-        }
-        h1 {
-            color: #2c3e50;
-            border-bottom: 2px solid #3498db;
-            padding-bottom: 10px;
-        }
-        h2 {
-            color: #2980b9;
-        }
-        h3 {
-            color: #34495e;
-            margin-top: 20px;
-        }
-        a {
-            color: #3498db;
-            text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
-        }
-        
-        /* Login form styles */
-        .login-form {
-            float: right;
-            margin-bottom: 20px;
-        }
-        .login-form form {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-        .login-form input {
-            padding: 8px 12px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        .login-form button {
-            padding: 8px 16px;
-            background-color: #3498db;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .login-form button:hover {
-            background-color: #2980b9;
-        }
-        .user-info {
-            float: right;
-            padding: 8px 16px;
-            background-color: #ecf0f1;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-        .user-info .logout-btn {
-            margin-left: 12px;
-            padding: 6px 12px;
-            background-color: #e74c3c;
-            color: white;
-            border-radius: 4px;
-        }
-        .user-info .logout-btn:hover {
-            background-color: #c0392b;
-            text-decoration: none;
-        }
-        .clearfix::after {
-            content: "";
-            display: table;
-            clear: both;
-        }
-        
-        /* Navigation */
-        .nav-links {
-            margin-bottom: 20px;
-        }
-        .nav-links a {
-            display: inline-block;
-            padding: 8px 16px;
-            background-color: #ecf0f1;
-            border-radius: 4px;
-            margin-right: 10px;
-        }
-        .nav-links a:hover {
-            background-color: #bdc3c7;
-            text-decoration: none;
-        }
-        
-        /* Upload styles */
-        .upload-box {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        .upload-form {
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-        }
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .form-group label {
-            font-weight: bold;
-            color: #2c3e50;
-        }
-        .form-group select,
-        .form-group textarea,
-        .form-group input[type="file"] {
-            padding: 12px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 16px;
-        }
-        .form-group select:focus,
-        .form-group textarea:focus {
-            outline: none;
-            border-color: #3498db;
-        }
-        .form-group textarea {
-            resize: vertical;
-            min-height: 80px;
-        }
-        .form-group button {
-            padding: 14px 24px;
-            background-color: #27ae60;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-            font-weight: bold;
-            transition: background-color 0.2s;
-        }
-        .form-group button:hover {
-            background-color: #219a52;
-        }
-        .success-message {
-            background-color: #27ae60;
-            color: white;
-            padding: 15px;
-            border-radius: 4px;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        .info-box {
-            background-color: #3498db;
-            color: white;
-            padding: 15px;
-            border-radius: 4px;
-            margin-bottom: 20px;
-        }
-        .info-box h3 {
-            margin: 0 0 10px 0;
-            color: white;
-        }
-        .info-box ul {
-            margin: 0;
-            padding-left: 20px;
-        }
-        .login-required {
-            text-align: center;
-            padding: 40px;
-            background-color: #fff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .login-required a {
-            font-weight: bold;
-        }
-        
-        footer {
-            margin-top: 40px;
-            text-align: center;
-            color: #7f8c8d;
-            font-size: 0.9em;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Upload - {{bbsname}}</title>
+    <link rel="stylesheet" href="/style">
 </head>
 <body>
-    {{loginform}}
-    <div class="clearfix"></div>
-
-    <h1>{{bbsname}}</h1>
-    
-    <div class="nav-links">
-        <a href="/">← Back to Home</a>
+    <div class="shell">
+        <div class="banner">
+            <a class="mark" href="/">THE YELLOW TOASTER<span class="cursor"></span></a>
+            <span class="tag">RISC OS &middot; Fidonet 2:250/9</span>
+            <span class="spacer"></span>
+        </div>
+        <nav class="nav">
+            <a href="/">Messages</a>
+            <a href="/files" class="on">Files</a>
+            <span class="spacer"></span>
+            <span class="userchip">{{loginform}}</span>
+        </nav>
+        <div class="crumb"><a href="/">Home</a><span class="sep">&#9656;</span><a href="/files">Files</a><span class="sep">&#9656;</span><span class="here">Upload</span></div>
+        <main class="main">
+            <div class="screenhead"><span class="arrow">&#9656;</span><h2>Upload a file</h2></div>
+            <div class="notice" id="success" style="display:none">&#10003; File uploaded.</div>
+            <div class="hint">Max 2&nbsp;MB &middot; pick the filebase and area, and add a short description.</div>
+            {{uploadform}}
+        </main>
+        <div class="status">
+            <span><span class="dot">&#9679;</span> online <b>1</b></span>
+            <span>node <b>1</b></span>
+            <span>addr <b>2:250/9</b></span>
+            <span class="spacer"></span>
+            <span>files</span>
+        </div>
     </div>
-
-    <h2>Upload File</h2>
-    
-    <div class="success-message" id="success" style="display: none;">
-        File uploaded successfully!
-    </div>
-    
-    <div class="info-box">
-        <h3>Upload Guidelines</h3>
-        <ul>
-            <li>Maximum file size: 2MB</li>
-            <li>Please provide a clear description</li>
-            <li>Select the appropriate filebase and area</li>
-        </ul>
-    </div>
-    
-    <div class="upload-box">
-        {{uploadform}}
-    </div>
-    
-    <footer>
-        <p>Powered by Converse - Running on RISC OS.</p>
-    </footer>
-    
     <script>
-        /* Show success message if ?success=1 in URL */
         if (window.location.search.indexOf('success=1') !== -1) {
             document.getElementById('success').style.display = 'block';
         }
-        
-        /* Fetch areas when filebase selection changes */
         var filebaseSelect = document.getElementById('filebase');
         var areaSelect = document.getElementById('area');
-        
         if (filebaseSelect && areaSelect) {
             filebaseSelect.addEventListener('change', function() {
                 var filebaseId = this.value;
-                
-                /* Clear current options */
                 areaSelect.innerHTML = '<option value="0">-- Loading... --</option>';
-                
                 if (!filebaseId || filebaseId === '0') {
                     areaSelect.innerHTML = '<option value="0">-- Select a filebase first --</option>';
                     return;
                 }
-                
-                /* Fetch areas from API */
                 fetch('/api/areas?filebase=' + filebaseId)
-                    .then(function(response) {
-                        return response.json();
-                    })
+                    .then(function(response) { return response.json(); })
                     .then(function(areas) {
                         areaSelect.innerHTML = '<option value="0">-- None (uncategorized) --</option>';
                         areas.forEach(function(area) {
-                            var option = document.createElement('option');
-                            option.value = area.id;
-                            option.textContent = area.name;
-                            areaSelect.appendChild(option);
+                            var opt = document.createElement('option');
+                            opt.value = area.id;
+                            opt.textContent = area.name;
+                            areaSelect.appendChild(opt);
                         });
                     })
-                    .catch(function(err) {
-                        console.error('Failed to fetch areas:', err);
-                        areaSelect.innerHTML = '<option value="0">-- Error loading areas --</option>';
+                    .catch(function() {
+                        areaSelect.innerHTML = '<option value="0">-- None --</option>';
                     });
             });
-            
-            /* Trigger initial load if filebase is pre-selected */
-            if (filebaseSelect.value && filebaseSelect.value !== '0') {
-                filebaseSelect.dispatchEvent(new Event('change'));
-            }
         }
     </script>
 </body>

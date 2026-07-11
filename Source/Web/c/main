@@ -1172,6 +1172,154 @@ static void handle_logout(int slot, HTTP_REQUEST *req)
 }
 
 /* ******************************************************************************************************************************************************** */
+/* Drill-down pages (message areas / files) - shared Daylight shell                                                                                          */
+/* ******************************************************************************************************************************************************** */
+
+/* Look up the session for a request (NULL = guest). */
+static WEB_SESSION *web_session(HTTP_REQUEST *req)
+{
+    char token[SESSION_TOKEN_LEN + 1];
+    if (session_parse_cookie(req->cookie, token, sizeof(token)))
+    {
+        return session_lookup(token);
+    }
+    return NULL;
+}
+
+/* Send a generated HTML page (frees it), or 500 if generation failed. */
+static void web_send_html(int slot, const char *path, char *html, long len)
+{
+    if (html == NULL)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Page generation failed");
+        close_client(slot);
+        return;
+    }
+    http_send_headers(clients[slot].socket, HTTP_STATUS_OK, "text/html; charset=utf-8", len);
+    http_send_data(clients[slot].socket, html, len);
+    web_log("%s GET %s - 200 OK (%ld bytes)", clients[slot].remote_addr, path, len);
+    free(html);
+    close_client(slot);
+}
+
+static void handle_home(int slot, HTTP_REQUEST *req)
+{
+    long len; char *html = template_page_home(web_session(req), &len);
+    web_send_html(slot, req->path, html, len);
+}
+
+static void handle_files_page(int slot, HTTP_REQUEST *req)
+{
+    long len; char *html = template_page_files(web_session(req), &len);
+    web_send_html(slot, req->path, html, len);
+}
+
+static void handle_area(int slot, HTTP_REQUEST *req)
+{
+    int base_id = 0, area_id = 0; long len; char *html;
+    if (sscanf(req->path, "/area/%d/%d", &base_id, &area_id) != 2 || base_id <= 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Bad area path");
+        close_client(slot);
+        return;
+    }
+    html = template_page_area(base_id, area_id, web_session(req), &len);
+    web_send_html(slot, req->path, html, len);
+}
+
+static void handle_message_view(int slot, HTTP_REQUEST *req)
+{
+    int base_id = 0, area_id = 0, msg_id = 0; long len; char *html;
+    if (sscanf(req->path, "/message/%d/%d/%d", &base_id, &area_id, &msg_id) != 3 ||
+        base_id <= 0 || msg_id <= 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Bad message path");
+        close_client(slot);
+        return;
+    }
+    html = template_page_message(base_id, area_id, msg_id, web_session(req), &len);
+    web_send_html(slot, req->path, html, len);
+}
+
+/* GET /compose/<base>/<area>  and  GET /reply/<base>/<area>/<id> */
+static void handle_compose(int slot, HTTP_REQUEST *req)
+{
+    int base_id = 0, area_id = 0, reply_id = 0; long len; char *html;
+    if (strncmp(req->path, "/reply/", 7) == 0)
+    {
+        if (sscanf(req->path, "/reply/%d/%d/%d", &base_id, &area_id, &reply_id) != 3 || base_id <= 0)
+        {
+            http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Bad reply path");
+            close_client(slot); return;
+        }
+    }
+    else
+    {
+        if (sscanf(req->path, "/compose/%d/%d", &base_id, &area_id) != 2 || base_id <= 0)
+        {
+            http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Bad compose path");
+            close_client(slot); return;
+        }
+    }
+    html = template_page_compose(base_id, area_id, reply_id, web_session(req), &len);
+    web_send_html(slot, req->path, html, len);
+}
+
+/* POST /post  - write a new message / reply (login required) */
+static void handle_post_message(int slot, HTTP_REQUEST *req)
+{
+    WEB_SESSION *s = web_session(req);
+    char base_s[16], area_s[16], subject[300], to[64], loc[64];
+    char *body;
+    int base_id, area_id, new_id;
+
+    if (s == NULL)
+    {
+        http_send_redirect(clients[slot].socket, "/login", NULL);
+        close_client(slot); return;
+    }
+    if (req->body == NULL || req->body_len == 0 ||
+        !http_parse_form_field(req->body, req->body_len, "base", base_s, sizeof(base_s)) ||
+        !http_parse_form_field(req->body, req->body_len, "area", area_s, sizeof(area_s)))
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Missing form data");
+        close_client(slot); return;
+    }
+    base_id = atoi(base_s); area_id = atoi(area_s);
+    if (!http_parse_form_field(req->body, req->body_len, "subject", subject, sizeof(subject))) subject[0] = '\0';
+    if (!http_parse_form_field(req->body, req->body_len, "to", to, sizeof(to))) strcpy(to, "All");
+
+    body = malloc(32768);
+    if (body == NULL)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Out of memory");
+        close_client(slot); return;
+    }
+    if (!http_parse_form_field(req->body, req->body_len, "body", body, 32768)) body[0] = '\0';
+
+    new_id = template_post_message(base_id, area_id, s, subject, to, body);
+    free(body);
+
+    if (new_id == -2)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST,
+                        "No such user - check the recipient's username and try again");
+        close_client(slot); return;
+    }
+    if (new_id < 0)
+    {
+        http_send_error(clients[slot].socket, HTTP_STATUS_SERVER_ERROR, "Could not post message");
+        close_client(slot); return;
+    }
+
+    web_log("%s POST /post - 302 posted id %d to %d/%d (%s)",
+            clients[slot].remote_addr, new_id, base_id, area_id, s->username);
+    snprintf(loc, sizeof(loc), "/area/%d/%d", base_id, area_id);
+    http_send_redirect(clients[slot].socket, loc, NULL);
+    close_client(slot);
+}
+
+/* ******************************************************************************************************************************************************** */
 /* Request Handling                                                                                                                                         */
 /* ******************************************************************************************************************************************************** */
 
@@ -1218,6 +1366,11 @@ void handle_client_request(int slot)
             handle_upload_post(slot, &req);
             return;
         }
+        if (strcmp(req.path, "/post") == 0)
+        {
+            handle_post_message(slot, &req);
+            return;
+        }
         /* Other POST routes not supported */
         web_log("%s POST %s - 400 Method not supported", clients[slot].remote_addr, req.path);
         http_send_error(clients[slot].socket, HTTP_STATUS_BAD_REQUEST, "Method not supported for this path");
@@ -1252,6 +1405,33 @@ void handle_client_request(int slot)
     if (strncmp(req.path, "/download/", 10) == 0)
     {
         handle_download_request(slot, req.path);
+        return;
+    }
+
+    /* Drill-down message/file pages (Daylight shell, generated in C) */
+    if (strcmp(req.path, "/") == 0 || strcmp(req.path, "/messages") == 0)
+    {
+        handle_home(slot, &req);
+        return;
+    }
+    if (strcmp(req.path, "/files") == 0)
+    {
+        handle_files_page(slot, &req);
+        return;
+    }
+    if (strncmp(req.path, "/area/", 6) == 0)
+    {
+        handle_area(slot, &req);
+        return;
+    }
+    if (strncmp(req.path, "/message/", 9) == 0)
+    {
+        handle_message_view(slot, &req);
+        return;
+    }
+    if (strncmp(req.path, "/compose/", 9) == 0 || strncmp(req.path, "/reply/", 7) == 0)
+    {
+        handle_compose(slot, &req);
         return;
     }
 

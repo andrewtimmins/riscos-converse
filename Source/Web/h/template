@@ -18,6 +18,7 @@
 #define TEMPLATE_TAG_LOGGEDOUT      "{{loggedout}}"
 #define TEMPLATE_TAG_LOGINFORM      "{{loginform}}"
 #define TEMPLATE_TAG_UPLOADFORM     "{{uploadform}}"
+#define TEMPLATE_TAG_MESSAGEVIEW    "{{messageview}}"
 
 /* Set current session context for template processing
  * session: pointer to session, or NULL if not logged in
@@ -49,5 +50,23 @@ char *template_generate_filebase_listing(long *out_len);
  * Caller must free() the returned buffer
  */
 char *template_generate_messagebase_listing(long *out_len);
+
+/* Set the message to render for {{messageview}} (user identity from session). */
+void template_set_message_context(int base_id, int area_id, int msg_id);
+
+/* Generate the single-message view HTML (access-gated). */
+char *template_generate_message_view(long *out_len);
+
+/* Full drill-down pages (shared Daylight shell). Caller free()s the result.
+ * session may be NULL (guest). */
+char *template_page_home(WEB_SESSION *session, long *out_len);
+char *template_page_area(int base_id, int area_id, WEB_SESSION *session, long *out_len);
+char *template_page_message(int base_id, int area_id, int msg_id, WEB_SESSION *session, long *out_len);
+char *template_page_files(WEB_SESSION *session, long *out_len);
+
+/* Compose/reply form (reply_id > 0 pre-fills); and the write itself. */
+char *template_page_compose(int base_id, int area_id, int reply_id, WEB_SESSION *session, long *out_len);
+int template_post_message(int base_id, int area_id, WEB_SESSION *session,
+                          const char *subject, const char *to, const char *body);
 
 #endif /* TEMPLATE_H */
