@@ -16,11 +16,23 @@ SWI_PIPES_INPUTWRITE    EQU     &5AA08 :OR: X_BIT
 SWI_PIPES_OUTPUTREAD    EQU     &5AA09 :OR: X_BIT
 SWI_PIPES_INPUTWBLK     EQU     &5AA0D :OR: X_BIT
 SWI_PIPES_OUTPUTRBLK    EQU     &5AA0E :OR: X_BIT
+SWI_PIPES_OUTPUTPEEK    EQU     &5AA0C :OR: X_BIT
+SWI_PIPES_SETCONTROL    EQU     &5AA11 :OR: X_BIT
+SWI_PIPES_GETCONTROL    EQU     &5AA12 :OR: X_BIT
 
-MODEM_PRESENT           EQU     &0B     ; CTS|DSR|DCD high
+; This driver is end A (host); the peer is end B.
+END_SELF                EQU     0
+END_PEER                EQU     1
 
-; Flags: bits 31-24=max port, bit 17=32bit only, bit 16=32bit ok, bit 6=block ops
-FLAGS                   EQU     ((PIPEDRV_MAX_PORTS-1) << 24) :OR: (1<<17) :OR: (1<<16) :OR: (1<<6)
+; Control-line bits (function 8) / modem-status bits (function 9)
+CTRL_DTR                EQU     1       ; b0
+CTRL_RTS                EQU     2       ; b1
+MODEM_CTS               EQU     1       ; b0
+MODEM_DSR               EQU     2       ; b1
+MODEM_DCD               EQU     8       ; b3
+
+; Flags: bit0=multiport, bits 31-24=max port, bit 17=32bit only, bit 16=32bit ok, bit 6=block ops
+FLAGS                   EQU     (1<<0) :OR: ((PIPEDRV_MAX_PORTS-1) << 24) :OR: (1<<17) :OR: (1<<16) :OR: (1<<6)
 VERSION_WORD            EQU     &00010000
 DRIVER_ID               EQU     (128<<8) ; Virtual pipe end A
 
@@ -199,23 +211,62 @@ func_getblock
         ; r0 = bytes transferred
         LDMFD   r13!,{pc}
 
-; ReadControlLines (9): always report modem present
-func_modemctrl
-        MOV     r0,#MODEM_PRESENT
+; ControlLines (8) R/W: set/read THIS end's DTR/RTS/break
+func_controllines
+        CMP     r2,#-1
+        BEQ     cl_read
+        MOV     r3,r2                   ; save value
+        MOV     r0,r1                   ; line
+        MOV     r1,#END_SELF
+        MOV     r2,r3                   ; value
+        SWI     SWI_PIPES_SETCONTROL
+        MOV     r0,r3                   ; return the value we set
+        LDMFD   r13!,{pc}
+cl_read
+        MOV     r0,r1                   ; line
+        MOV     r1,#END_SELF
+        SWI     SWI_PIPES_GETCONTROL    ; r0 = our control lines
+        BVS     func_ret0
         LDMFD   r13!,{pc}
 
-; ExamineByte (12): peek at next byte without removing
+; ReadModemStatus (9): cross the peer's lines - peer DTR -> our DCD+DSR,
+; peer RTS -> our CTS (the classic virtual-pipe handshake translation)
+func_modemctrl
+        MOV     r0,r1                   ; line
+        MOV     r1,#END_PEER
+        SWI     SWI_PIPES_GETCONTROL    ; r0 = peer control lines
+        BVS     func_ret0
+        AND     r0,r0,#3
+        MOV     r1,#0
+        TST     r0,#CTRL_DTR
+        ORRNE   r1,r1,#(MODEM_DCD :OR: MODEM_DSR)
+        TST     r0,#CTRL_RTS
+        ORRNE   r1,r1,#MODEM_CTS
+        MOV     r0,r1
+        LDMFD   r13!,{pc}
+
+; ExamineByte (12): peek RX (our RX = Output buffer) without removing
 func_examine
-        ; We don't have a peek SWI, so return -1 (not available)
-        MOV     r0,#-1
+        MOV     r0,r1
+        SWI     SWI_PIPES_OUTPUTPEEK
+        BVS     func_err
+        LDMFD   r13!,{pc}
+
+; TX/RX speed (13/14) R/W: echo a set, report a nominal rate on read
+func_txspeed
+func_rxspeed
+        CMP     r2,#-1
+        BEQ     spd_read
+        MOV     r0,r2                   ; echo requested speed
+        LDMFD   r13!,{pc}
+spd_read
+        MOV     r0,#&1C000
+        ADD     r0,r0,#&200             ; 115200
         LDMFD   r13!,{pc}
 
 ; These functions just return 0 (success/no-op)
-func_controllines
 func_rxerrors
 func_break
-func_txspeed
-func_rxspeed
 func_wordformat
 func_flowcontrol
         MOV     r0,#0

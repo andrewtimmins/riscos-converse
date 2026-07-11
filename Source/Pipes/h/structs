@@ -18,7 +18,8 @@ typedef struct
   uint32_t output_free;   /* Free space remaining in the slave->host buffer. */
   uint32_t output_head;   /* Write cursor for slave->host data. */
   uint32_t output_tail;   /* Read cursor for slave->host data. */
-  uint32_t reserved2;     /* Spare for future use; keeps total struct size at 32 bytes. */
+  uint8_t ctrl[2];        /* Control lines per end: [0]=end A (host), [1]=end B (client); b0=DTR b1=RTS b2=break. */
+  uint8_t reserved2[2];   /* Spare; keeps total struct size at 32 bytes. */
 } converse_pipe_line;
 
 #define PIPES_STATUS_INPUT_HIGH 0x80
@@ -43,7 +44,9 @@ enum
   SWI_CONVERSE_INPUT_WRITE_BLOCK,
   SWI_CONVERSE_OUTPUT_READ_BLOCK,
   SWI_CONVERSE_INPUT_READ_BLOCK,
-  SWI_CONVERSE_OUTPUT_WRITE_BLOCK
+  SWI_CONVERSE_OUTPUT_WRITE_BLOCK,
+  SWI_CONVERSE_SET_CONTROL,   /* R0=line, R1=end (0=A,1=B), R2=control lines (b0 DTR, b1 RTS, b2 break) */
+  SWI_CONVERSE_GET_CONTROL    /* R0=line, R1=end -> R0=that end's control lines */
 };
 
 #endif /* PIPES_STRUCTS_H */

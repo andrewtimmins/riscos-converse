@@ -43,6 +43,17 @@ Flags (0x00C4)
   Bit 17:     32-bit only (NOT 26-bit compatible)
   Bit 16:     32-bit compliant
   Bit 6:      Supports block get/put operations
+  Bit 0:      More than one port available
+
+Handshake lines
+---------------
+Control lines are crossed between the two ends, per the classic virtual-pipe
+spec: raising DTR/RTS at one end shows as DCD+DSR / CTS at the other. Each end
+stores its outgoing lines via ConversePipes_SetControl (R0=line, R1=end 0/1,
+R2=lines) and reads the peer's via ConversePipes_GetControl. Lines drop on
+ResetState (init), so an end must raise DTR before the peer sees carrier (DCD).
+ExamineByte (12) uses the Input/OutputPeek SWIs; TX/RX speed reads report a
+nominal 115200 (a pipe has no real line rate).
 
 Build Notes
 -----------

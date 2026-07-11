@@ -68,6 +68,8 @@ static void pipes_swi_input_write_block(_kernel_swi_regs *r);
 static void pipes_swi_output_read_block(_kernel_swi_regs *r);
 static void pipes_swi_input_read_block(_kernel_swi_regs *r);
 static void pipes_swi_output_write_block(_kernel_swi_regs *r);
+static void pipes_swi_set_control(_kernel_swi_regs *r);
+static void pipes_swi_get_control(_kernel_swi_regs *r);
 static void pipes_dump_buffer_status(void);
 
 /* Internal helpers *************************************************************************************************/
@@ -262,6 +264,12 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
       break;
     case SWI_CONVERSE_OUTPUT_WRITE_BLOCK:
       pipes_swi_output_write_block(r);
+      break;
+    case SWI_CONVERSE_SET_CONTROL:
+      pipes_swi_set_control(r);
+      break;
+    case SWI_CONVERSE_GET_CONTROL:
+      pipes_swi_get_control(r);
       break;
     default:
       break;
@@ -628,8 +636,52 @@ static void pipes_swi_reset_state(_kernel_swi_regs *r)
 
   record = pipes_line(line);
   record->status &= PIPES_STATUS_RESERVED_MASK;
+  record->ctrl[0] = 0;   /* both ends' control lines drop on reset */
+  record->ctrl[1] = 0;
   pipes_update_watermarks(line);
   r->r[0] = 0;
+}
+
+/* ConversePipes_SetControl
+ *  In : R0 = line, R1 = end (0=A/host, 1=B/client), R2 = control lines (b0 DTR, b1 RTS, b2 break)
+ * Out : R0 = 0, or -1 for an invalid line/end. Stores this end's outgoing control lines so the
+ *       peer's ReadModemStatus can report them (DTR->DCD/DSR, RTS->CTS across the pipe).
+ */
+static void pipes_swi_set_control(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  int end = r->r[1];
+  converse_pipe_line *record;
+
+  if (!pipes_is_valid_line(line) || (end != 0 && end != 1))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  record->ctrl[end] = (uint8_t)(r->r[2] & 0x07);
+  r->r[0] = 0;
+}
+
+/* ConversePipes_GetControl
+ *  In : R0 = line, R1 = end (0=A, 1=B)
+ * Out : R0 = that end's control lines (b0 DTR, b1 RTS, b2 break), or -1 for an invalid line/end.
+ */
+static void pipes_swi_get_control(_kernel_swi_regs *r)
+{
+  int line = r->r[0];
+  int end = r->r[1];
+  converse_pipe_line *record;
+
+  if (!pipes_is_valid_line(line) || (end != 0 && end != 1))
+  {
+    r->r[0] = -1;
+    return;
+  }
+
+  record = pipes_line(line);
+  r->r[0] = record->ctrl[end];
 }
 
 /* ConversePipes_InputPeek
