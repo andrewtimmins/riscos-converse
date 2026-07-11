@@ -5032,6 +5032,103 @@ static void script_set_ok(script_state *state, int code)
     script_set_variable_value(state, "ret", b);
 }
 
+/* ---- base/area enumeration helpers (reuse the Filer ENUMERATE SWIs the
+ *      loginscan already drives). Each returns a pointer to Filer's cached
+ *      record, or NULL past the end. ---- */
+static LINETASK_MESSAGEBASE_RECORD *ext_enum_msgbase(int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_BASES;
+    regs.r[1] = index;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_MESSAGEBASE_RECORD *)regs.r[0];
+}
+static LINETASK_MESSAGEBASE_AREA_RECORD *ext_enum_msgarea(int base_id, int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILER_MESSAGEBASE_CMD_ENUMERATE_AREAS;
+    regs.r[1] = base_id;
+    regs.r[2] = index;
+    if (_kernel_swi(SWI_FILER_MESSAGEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_MESSAGEBASE_AREA_RECORD *)regs.r[0];
+}
+static LINETASK_FILEBASE_RECORD *ext_enum_filebase(int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILEBASE_CMD_ENUMERATE_BASES;
+    regs.r[1] = index;
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_FILEBASE_RECORD *)regs.r[0];
+}
+static LINETASK_FILEBASE_AREA_RECORD *ext_enum_filearea(int base_id, int index)
+{
+    _kernel_swi_regs regs;
+    regs.r[0] = FILEBASE_CMD_ENUMERATE_AREAS;
+    regs.r[1] = base_id;
+    regs.r[2] = index;
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == -1 || regs.r[0] == 0)
+        return NULL;
+    return (LINETASK_FILEBASE_AREA_RECORD *)regs.r[0];
+}
+
+/* Return the (0-based) nth leaf name in a directory via OS_GBPB 9, or 0. */
+static int script_dir_nth_name(const char *dir, int want, char *out, size_t outsz)
+{
+    _kernel_swi_regs regs;
+    char namebuf[80];
+    int offset = 0;
+    int count = 0;
+
+    if (out == NULL || outsz == 0) return 0;
+    out[0] = '\0';
+    for (;;)
+    {
+        regs.r[0] = 9;                 /* OS_GBPB: read directory entries (names) */
+        regs.r[1] = (int)dir;
+        regs.r[2] = (int)namebuf;
+        regs.r[3] = 1;                 /* read one entry */
+        regs.r[4] = offset;
+        regs.r[5] = (int)sizeof(namebuf);
+        regs.r[6] = (int)"*";
+        if (_kernel_swi(0x0C /* OS_GBPB */, &regs, &regs) != NULL) return 0;
+        if (regs.r[3] == 1)
+        {
+            if (count == want)
+            {
+                strncpy(out, namebuf, outsz - 1);
+                out[outsz - 1] = '\0';
+                return 1;
+            }
+            count++;
+        }
+        offset = regs.r[4];
+        if (offset == -1) return 0;    /* no more entries */
+    }
+}
+static int script_dir_count(const char *dir)
+{
+    _kernel_swi_regs regs;
+    char namebuf[80];
+    int offset = 0, count = 0;
+    for (;;)
+    {
+        regs.r[0] = 9;
+        regs.r[1] = (int)dir;
+        regs.r[2] = (int)namebuf;
+        regs.r[3] = 1;
+        regs.r[4] = offset;
+        regs.r[5] = (int)sizeof(namebuf);
+        regs.r[6] = (int)"*";
+        if (_kernel_swi(0x0C, &regs, &regs) != NULL) return count;
+        if (regs.r[3] == 1) count++;
+        offset = regs.r[4];
+        if (offset == -1) return count;
+    }
+}
+
 static char *script_expr_call_function_ext(script_state *state, const char *name,
                                            char **args, int nargs, int *handled)
 {
@@ -5250,6 +5347,66 @@ static char *script_expr_call_function_ext(script_state *state, const char *name
         r = (remove(path) == 0);
         script_set_ok(state, r);
         return expr_from_long(r);
+    }
+
+    /* ---- message-base + area enumeration ---- */
+    if (script_stringcasecmp(name, "msgbasecount") == 0)
+    { int n = 0; while (ext_enum_msgbase(n) != NULL) n++; return expr_from_long(n); }
+    if (script_stringcasecmp(name, "msgbaseid") == 0)
+    { LINETASK_MESSAGEBASE_RECORD *r = ext_enum_msgbase(atoi(EXPR_ARG(0))); return r ? expr_from_long(r->id) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "msgbasename") == 0)
+    { LINETASK_MESSAGEBASE_RECORD *r = ext_enum_msgbase(atoi(EXPR_ARG(0))); return r ? expr_strdup(r->name) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "msgareacount") == 0)
+    { int b = atoi(EXPR_ARG(0)), n = 0; while (ext_enum_msgarea(b, n) != NULL) n++; return expr_from_long(n); }
+    if (script_stringcasecmp(name, "msgareaid") == 0)
+    { LINETASK_MESSAGEBASE_AREA_RECORD *r = ext_enum_msgarea(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1))); return r ? expr_from_long(r->id) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "msgareaname") == 0)
+    { LINETASK_MESSAGEBASE_AREA_RECORD *r = ext_enum_msgarea(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1))); return r ? expr_strdup(r->name) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "msgareatype") == 0)
+    { LINETASK_MESSAGEBASE_AREA_RECORD *r = ext_enum_msgarea(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1))); return r ? expr_from_long((long)r->areatype) : expr_strdup(""); }
+
+    /* ---- file-base + area enumeration ---- */
+    if (script_stringcasecmp(name, "filebasecount") == 0)
+    { int n = 0; while (ext_enum_filebase(n) != NULL) n++; return expr_from_long(n); }
+    if (script_stringcasecmp(name, "filebaseid") == 0)
+    { LINETASK_FILEBASE_RECORD *r = ext_enum_filebase(atoi(EXPR_ARG(0))); return r ? expr_from_long(r->id) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "filebasename") == 0)
+    { LINETASK_FILEBASE_RECORD *r = ext_enum_filebase(atoi(EXPR_ARG(0))); return r ? expr_strdup(r->name) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "fileareacount") == 0)
+    { int b = atoi(EXPR_ARG(0)), n = 0; while (ext_enum_filearea(b, n) != NULL) n++; return expr_from_long(n); }
+    if (script_stringcasecmp(name, "fileareaid") == 0)
+    { LINETASK_FILEBASE_AREA_RECORD *r = ext_enum_filearea(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1))); return r ? expr_from_long(r->id) : expr_strdup(""); }
+    if (script_stringcasecmp(name, "fileareaname") == 0)
+    { LINETASK_FILEBASE_AREA_RECORD *r = ext_enum_filearea(atoi(EXPR_ARG(0)), atoi(EXPR_ARG(1))); return r ? expr_strdup(r->name) : expr_strdup(""); }
+
+    /* ---- KV-key iteration (kvkeycount/kvkey global, ...user per-user) ---- */
+    if (script_stringcasecmp(name, "kvkeycount") == 0)
+    {
+        char dir[256];
+        script_data_dir(dir, sizeof(dir), "KV");
+        return expr_from_long(script_dir_count(dir));
+    }
+    if (script_stringcasecmp(name, "kvkey") == 0)
+    {
+        char dir[256], nm[80];
+        script_data_dir(dir, sizeof(dir), "KV");
+        return expr_strdup(script_dir_nth_name(dir, atoi(EXPR_ARG(0)), nm, sizeof(nm)) ? nm : "");
+    }
+    if (script_stringcasecmp(name, "kvkeycountuser") == 0)
+    {
+        char sub[64], dir[256];
+        int uid = h->get_user_id ? h->get_user_id(h->context) : 0;
+        snprintf(sub, sizeof(sub), "KVUser.u%d", uid);
+        script_data_dir(dir, sizeof(dir), sub);
+        return expr_from_long(script_dir_count(dir));
+    }
+    if (script_stringcasecmp(name, "kvkeyuser") == 0)
+    {
+        char sub[64], dir[256], nm[80];
+        int uid = h->get_user_id ? h->get_user_id(h->context) : 0;
+        snprintf(sub, sizeof(sub), "KVUser.u%d", uid);
+        script_data_dir(dir, sizeof(dir), sub);
+        return expr_strdup(script_dir_nth_name(dir, atoi(EXPR_ARG(0)), nm, sizeof(nm)) ? nm : "");
     }
 
     *handled = 0;

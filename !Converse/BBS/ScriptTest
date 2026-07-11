@@ -87,6 +87,19 @@
    print `   call count          = %{callstoday}`
    print ``
 
+   /* ---- 6. Base/area + KV-key enumeration ---- */
+   fg 11
+   print `6. Base/area + KV-key enumeration`
+   std
+   print `   msg bases          = %{ =msgbasecount() }`
+   print `   msg base 0 name     = %{ =msgbasename(0) }`
+   print `   areas in base 1     = %{ =msgareacount(1) }`
+   print `   base1 area0 name    = %{ =msgareaname(1, 0) }`
+   print `   file bases         = %{ =filebasecount() }`
+   print `   KV keys stored     = %{ =kvkeycount() }`
+   print `   first KV key        = %{ =kvkey(0) }`
+   print ``
+
    fg 10
    print `All tests complete.`
    std
