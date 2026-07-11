@@ -1,0 +1,59 @@
+{
+   /* Download-queue demo. Flag files with `queueadd`, list them, then
+      batch-download the lot with `queuesend`. The queue is session-only and
+      respects the caller's download ratio. Reached from the main menu 'K' key. */
+
+   filebase select 1
+   filebase area 0
+   more 0
+
+label qd_loop
+   cls
+   fg 14
+   print `=== Download Queue Demo ===`
+   fg 11
+   print `%{queuecount} file(s) flagged for download`
+   std
+   print ``
+   filebase files
+   print ``
+   print `  <number>  flag that file ID      L  list the queue`
+   print `  C  clear the queue               S  send the queue (ZMODEM)`
+   print `  Q  back to the main menu`
+   print ``
+   print `Choice: `
+   readline cmd
+   if cmd == `` goto qd_loop
+   if cmd == `l` goto qd_list
+   if cmd == `L` goto qd_list
+   if cmd == `c` goto qd_clear
+   if cmd == `C` goto qd_clear
+   if cmd == `s` goto qd_send
+   if cmd == `S` goto qd_send
+   if cmd == `q` goto qd_quit
+   if cmd == `Q` goto qd_quit
+   queueadd %{cmd}
+   goto qd_loop
+
+label qd_list
+   queuelist
+   print ``
+   anykey
+   goto qd_loop
+
+label qd_clear
+   queueclear
+   goto qd_loop
+
+label qd_send
+   doing `Batch download`
+   queuesend zmodem
+   doing
+   print ``
+   anykey
+   goto qd_loop
+
+label qd_quit
+   more 1
+   return
+}

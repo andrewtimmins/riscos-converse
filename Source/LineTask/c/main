@@ -164,6 +164,8 @@ static const char *config_get_postlogon_script(void);
 static const char *config_get_anykey_file(void);
 static const char *config_get_more_file(void);
 static const char *config_get_protocol_file(void);
+static const char *config_get_timeup_file(void);
+static void send_file_to_line(int line_id, const char *path);
 static const char *config_get_newuser_script(void);
 const char *config_get_sysop_name(void);
 static const char *lineconfig_get_hello(int line_id);
@@ -501,6 +503,10 @@ static void initialise_task_state(line_task_state *state, int argc,
   state->user.realname[0] = '\0';
   memset(&state->user.stats, 0, sizeof(state->user.stats));
   memset(&state->user.flags, 0, sizeof(state->user.flags));
+  state->user.today_base = 0;
+  state->user.time_warn_stage = 0;
+  state->user.time_up_pending = 0;
+  state->user.time_up_deadline = 0;
 }
 
 static void initialise_resources(void) {
@@ -754,6 +760,10 @@ static void reset_line_session_state(line_task_state *state) {
   state->user.realname[0] = '\0';
   memset(&state->user.stats, 0, sizeof(state->user.stats));
   memset(&state->user.flags, 0, sizeof(state->user.flags));
+  state->user.today_base = 0;
+  state->user.time_warn_stage = 0;
+  state->user.time_up_pending = 0;
+  state->user.time_up_deadline = 0;
 }
 
 static void perform_session_disconnect(line_task_state *state) {
@@ -1124,15 +1134,39 @@ static Desk_bool handle_null_poll(Desk_event_pollblock *event, void *ref) {
             state->user.time_warn_stage = 1;
           }
 
-          if (remaining <= 0) {
-            pipes_write_string(
-                state->line_id,
-                "\r\n\033[1;31mYour time allocation for today has expired. "
-                "Please call back tomorrow.\033[0m\r\n");
+          if (remaining <= 0 && !state->user.time_up_pending) {
+            /* Show the configured TimeUp notice, then disconnect ~1.5s later so
+               it has time to flush before the socket closes. The stock TimeUp is
+               a script (ends in `logoff`), so run it via the engine; fall back to
+               a raw dump if it isn't a script, or a plain message if unset. */
+            const char *tu = config_get_timeup_file();
             log_line_event(state->line_id,
                            "Daily time limit reached - disconnecting");
-            script_host_force_disconnect(state);
+            pipes_write_string(state->line_id, "\r\n");
+            if (tu != NULL && tu[0] != '\0') {
+              if (script_start(&state->script, tu)) {
+                log_line_event(state->line_id, "TimeUp: running script");
+                script_process(&state->script);
+              } else {
+                log_line_event(state->line_id, "TimeUp: script load failed, raw dump");
+                send_file_to_line(state->line_id, tu);
+              }
+            } else {
+              log_line_event(state->line_id, "TimeUp: no config, plain message");
+              pipes_write_string(
+                  state->line_id,
+                  "\033[1;31mYour time allocation for today has expired. "
+                  "Please call back tomorrow.\033[0m\r\n");
+            }
+            state->user.time_up_pending = 1;
+            state->user.time_up_deadline = now + 400; /* ~4s @ 100cs/s to flush */
           }
+        }
+
+        /* Deferred hang-up once the TimeUp screen has had time to transmit. */
+        if (state->user.time_up_pending &&
+            (int)(now - state->user.time_up_deadline) >= 0) {
+          script_host_force_disconnect(state);
         }
       }
     }
@@ -1592,6 +1626,40 @@ static const char *config_get_more_file(void) {
  * Get the protocol prompt file path from config.
  * Returns pointer to static string or NULL if not configured.
  */
+/* Get the "time up" ANSI screen path from config (shown when a caller's daily
+ * time allowance is exhausted). Returns a static string or NULL. */
+static const char *config_get_timeup_file(void) {
+  _kernel_swi_regs regs;
+
+  regs.r[0] = 0; /* CONFIG_REASON_GET */
+  regs.r[1] = (int)"timeup";
+  if (_kernel_swi(SWI_CONVERSEBBS_CONFIG, &regs, &regs) != NULL ||
+      regs.r[0] == 0) {
+    return NULL;
+  }
+  return (const char *)regs.r[0];
+}
+
+/* Dump a file's raw bytes to a line (used for pre-canned ANSI screens like the
+ * time-up notice, outside the script engine). No paging or interpretation. */
+static void send_file_to_line(int line_id, const char *path) {
+  FILE *fp;
+  char buf[512];
+  size_t n;
+
+  if (path == NULL || path[0] == '\0') {
+    return;
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return;
+  }
+  while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+    pipes_write_block(line_id, (const uint8_t *)buf, (int)n);
+  }
+  fclose(fp);
+}
+
 static const char *config_get_protocol_file(void) {
   _kernel_swi_regs regs;
 
@@ -2315,6 +2383,7 @@ static const char *script_host_get_config(void *context, const char *key) {
 #define UR_FLAG_NOLIMIT 10
 #define UR_FLAG_INVISIBLE 11
 #define UR_FLAG_ACCESSLEVEL 15
+#define UR_FLAG_RATIOS 16
 #define UR_FLAG_MAXTIME 17
 #define UR_FLAG_PROTOCOL 18
 
@@ -2395,6 +2464,10 @@ static int script_host_set_user_field(void *context, const char *field,
     state->user.sysop = v;
   } else if (converse_stricmp(field, "maxtime") == 0) {
     flags[UR_FLAG_MAXTIME] = atoi(value);
+  } else if (converse_stricmp(field, "ratios") == 0) {
+    int v = atoi(value);
+    flags[UR_FLAG_RATIOS] = v;
+    state->user.flags.ratios = v;   /* keep live copy in step for enforcement */
   } else if (converse_stricmp(field, "protocol") == 0) {
     flags[UR_FLAG_PROTOCOL] = atoi(value);
   } else if (converse_stricmp(field, "ansi") == 0) {
@@ -2465,6 +2538,7 @@ static int ouf_apply_field(char *record, const char *field, const char *value) {
   else if (converse_stricmp(field, "level") == 0 || converse_stricmp(field, "accesslevel") == 0) flags[UR_FLAG_ACCESSLEVEL] = atoi(value);
   else if (converse_stricmp(field, "sysop") == 0) flags[UR_FLAG_SYSOP] = atoi(value);
   else if (converse_stricmp(field, "maxtime") == 0) flags[UR_FLAG_MAXTIME] = atoi(value);
+  else if (converse_stricmp(field, "ratios") == 0) flags[UR_FLAG_RATIOS] = atoi(value);
   else if (converse_stricmp(field, "protocol") == 0) flags[UR_FLAG_PROTOCOL] = atoi(value);
   else if (converse_stricmp(field, "ansi") == 0) flags[UR_FLAG_ANSI] = atoi(value);
   else if (converse_stricmp(field, "more") == 0) flags[UR_FLAG_MORE] = atoi(value);
@@ -2473,6 +2547,15 @@ static int ouf_apply_field(char *record, const char *field, const char *value) {
   else if (converse_stricmp(field, "lockedout") == 0) flags[UR_FLAG_LOCKEDOUT] = atoi(value);
   else if (converse_stricmp(field, "invisible") == 0) flags[UR_FLAG_INVISIBLE] = atoi(value);
   else if (converse_stricmp(field, "registered") == 0) flags[UR_FLAG_REGISTERED] = atoi(value);
+  /* Stats (persisted because UPDATE writes the whole record). Lets a sysop
+     reset a caller's daily time or transfer counters. Indices match USER_STATS:
+     [2]=calls [3]=todaytime [4]=uploadskb [5]=downloadskb [6]=uploads [7]=downloads. */
+  else if (converse_stricmp(field, "calls") == 0)       ((int *)(record + UR_OFF_STATS))[2] = atoi(value);
+  else if (converse_stricmp(field, "todaytime") == 0)   ((int *)(record + UR_OFF_STATS))[3] = atoi(value);
+  else if (converse_stricmp(field, "uploadskb") == 0)   ((int *)(record + UR_OFF_STATS))[4] = atoi(value);
+  else if (converse_stricmp(field, "downloadskb") == 0) ((int *)(record + UR_OFF_STATS))[5] = atoi(value);
+  else if (converse_stricmp(field, "uploads") == 0)     ((int *)(record + UR_OFF_STATS))[6] = atoi(value);
+  else if (converse_stricmp(field, "downloads") == 0)   ((int *)(record + UR_OFF_STATS))[7] = atoi(value);
   else return 0;
   return 1;
 }
@@ -2490,6 +2573,7 @@ static const char *ouf_read_field(const char *record, const char *field) {
   if (converse_stricmp(field, "level") == 0 || converse_stricmp(field, "accesslevel") == 0) { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_ACCESSLEVEL]); return buf; }
   if (converse_stricmp(field, "sysop") == 0)      { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_SYSOP]); return buf; }
   if (converse_stricmp(field, "maxtime") == 0)    { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_MAXTIME]); return buf; }
+  if (converse_stricmp(field, "ratios") == 0)     { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_RATIOS]); return buf; }
   if (converse_stricmp(field, "protocol") == 0)   { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_PROTOCOL]); return buf; }
   if (converse_stricmp(field, "ansi") == 0)       { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_ANSI]); return buf; }
   if (converse_stricmp(field, "more") == 0)       { snprintf(buf, sizeof(buf), "%d", flags[UR_FLAG_MORE]); return buf; }

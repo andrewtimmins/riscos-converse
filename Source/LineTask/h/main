@@ -127,6 +127,8 @@ typedef struct user_session
     char current_activity[128];
     int today_base;         /* minutes used today BEFORE this session (post daily-reset) */
     int time_warn_stage;    /* 0=none, 1=5min sent, 2=2min sent, 3=1min sent */
+    int time_up_pending;    /* 1 once the TimeUp screen has been shown, awaiting disconnect */
+    unsigned int time_up_deadline;  /* monotonic cs at which to force the disconnect */
 } user_session;
 
 /* Chat session state - sysop chat functionality */
