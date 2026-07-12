@@ -1,12 +1,20 @@
 {
-   /* Post-logon: the classic login sequence - news, last callers, new-scan.
-      A quick-login (username prefixed with '!') skips straight to the menu. */
+   /* Post-logon: record this call into the last-callers ring, then run the
+      classic login sequence - news, last callers, new-scan. A quick-login
+      (username prefixed with '!') skips straight to the menu. */
+
+   /* record into the 10-slot ring: lc_<slot> = user|realname|when, lc_count++ */
+   set lcn = val( kvget(`lc_count`) )
+   set slot = lcn - (lcn / 10) * 10
+   set nowstr = `%{date} %{time}`
+   set junk = kvset(`lc_` + slot, userget(`username`) + `|` + userget(`realname`) + `|` + nowstr)
+   set junk = kvset(`lc_count`, lcn + 1)
+
    cls
    if quicklogin == 1 goto quick
    type `<Converse$Dir>.BBS.Screens.Bulletins`
    anykey
-   type `<Converse$Dir>.BBS.Screens.LastCall`
-   anykey
+   script `<Converse$Dir>.BBS.LastCallers`
    cls
    doing `Scanning for new content...`
    loginscan
