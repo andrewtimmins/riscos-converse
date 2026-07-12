@@ -1,6 +1,75 @@
 {
-   /* User settings - display screen (toggles are showcase-only for now) */
+   /* User Settings - live, persisted preferences overlaid on the boxed
+      Screens.Settings. Toggles flip in place; the screen redraws each round. */
+
+label set_top
    type `<Converse$Dir>.BBS.Screens.Settings`
-   anykey
+   pos 20 4
+   fg 6
+   print `%{ =userget("realname") } (%{ =userget("username") })`
+   fg 15
+   pos 45 7
+   print `%{ =onoff( userget("ansi") ) }`
+   pos 45 8
+   print `%{ =onoff( userget("more") ) }`
+   pos 45 9
+   print `%{ =onoff( userget("expert") ) }`
+   std
+   pos 27 24
+   prompt sc char echo
+
+   if sc == `a` goto tog_ansi
+   if sc == `A` goto tog_ansi
+   if sc == `m` goto tog_more
+   if sc == `M` goto tog_more
+   if sc == `e` goto tog_expert
+   if sc == `E` goto tog_expert
+   if sc == `n` goto set_name
+   if sc == `N` goto set_name
+   if sc == `p` goto set_pass
+   if sc == `P` goto set_pass
+   if sc == `q` goto set_quit
+   if sc == `Q` goto set_quit
+   goto set_top
+
+label tog_ansi
+   set junk = userset(`ansi`, 1 - userget(`ansi`))
+   goto set_top
+label tog_more
+   set junk = userset(`more`, 1 - userget(`more`))
+   goto set_top
+label tog_expert
+   set junk = userset(`expert`, 1 - userget(`expert`))
+   goto set_top
+
+label set_name
+   pos 7 16
+   fg 11
+   print `New real name / location: `
+   std
+   readline newname
+   if newname == `` goto set_top
+   set junk = userset(`realname`, newname)
+   goto set_top
+
+label set_pass
+   pos 7 16
+   fg 11
+   print `New password: `
+   std
+   prompt newpass line noecho
+   if newpass == `` goto set_top
+   set junk = userset(`password`, newpass)
+   goto set_top
+
+label set_quit
    return
+
+   /* render a boolean field as ON / OFF */
+   function onoff(v)
+      if v == 1 then
+         return `ON`
+      endif
+      return `OFF`
+   endfunction
 }

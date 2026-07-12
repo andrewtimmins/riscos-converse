@@ -13,7 +13,7 @@ FONT = "/projects/riscos-converse/!Converse/Resources/Font,ffd"
 CW, CH = 16, 16          # cell pixel size (font is 16x16)
 # 79 wide (never touch the wrap column -> no phantom lines on any client) and
 # 24 tall (fits an 80x24 terminal with no scroll). Layout derives from these.
-COLS, ROWS = 79, 24
+COLS, ROWS = 79, 25
 
 # Standard VGA/ANSI 16-colour palette (index 0-15)
 PAL = [
@@ -152,16 +152,32 @@ def chrome(s, title, statL="", statR=""):
     if statL: s.put(1,ROWS-1," "+statL, 14, 4)
     if statR: s.put(COLS-len(statR)-2, ROWS-1, statR+" ", 15, 4)
 
+def frame(s, title, boxcol=6):
+    """House-style page frame that FILLS the 80x25 terminal: amber top rule
+    (row 0), cyan double box whose bottom border sits on the LAST row (row
+    ROWS-1, no status-bar gap), and a centred title tab. Used by every menu and
+    content page so the board reads as one system."""
+    for x in range(COLS): s.putc(x,0, FULL, 3, 0)              # amber top rule
+    s.box(0,1,COLS,ROWS-1,boxcol,0,double=True)                # box rows 1..ROWS-1 (bottom = last row)
+    s.putc(0,1,D_TL,14,0); s.putc(COLS-1,1,D_TR,14,0)
+    tab=" "+title+" "
+    tx=(COLS-len(tab)-2)//2
+    s.putc(tx,1,D_RT,14,0); s.put(tx+1,1,tab,15,0); s.putc(tx+1+len(tab),1,D_LT,14,0)
+
+# consistent >> item marker used across all framed menus
+def item(s,x,y,key,label,keycol=11):
+    s.putc(x,y,0xAF,14,0); s.put(x+2,y,"["+key+"]",keycol,0); s.put(x+6,y,label,15,0)
+
 def menuitem(s,x,y,ic,key,label,desc,keycol=11,iccol=14):
     s.putc(x,y, ic, iccol, 0)
     s.put(x+2,y, "["+key+"]", keycol, 0)
     s.put(x+6,y, label, 15, 0)
-    if desc: s.put(x+6,y+1, desc, 8, 0)
+    if desc: s.put(x+6,y+1, desc, 6, 0)
 
 def panelhead(s,y,left,right="",fg=6):
     for x in range(3,COLS-3): s.putc(x,y, S_H, fg, 0)
     if left: s.put(5,y," "+left+" ", 11, 0)
-    if right: s.put(COLS-3-len(right)-2,y," "+right+" ", 8, 0)
+    if right: s.put(COLS-3-len(right)-2,y," "+right+" ", 6, 0)
 
 def prompt(s,y,label="Command"):
     s.put(6,y, label, 6, 0); s.putc(6+len(label)+1,y, ARR, 11, 0)

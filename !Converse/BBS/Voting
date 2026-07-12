@@ -1,21 +1,118 @@
 {
-   /* Voting booth - display + acknowledge a vote (results are showcase-only) */
-label vote_menu
+   /* Voting Booth - real poll (KV tallies, one vote per caller), overlaid on the
+      boxed Screens.Voting. Options and results share the same middle region. */
+
+label v_top
    type `<Converse$Dir>.BBS.Screens.Voting`
-   pos 6 22
-   prompt choice char echo
-   if choice == `q` goto vote_quit
-   if choice == `Q` goto vote_quit
-   if choice == `1` goto vote_cast
-   if choice == `2` goto vote_cast
-   if choice == `3` goto vote_cast
-   if choice == `4` goto vote_cast
-   if choice == `5` goto vote_cast
-   goto vote_menu
-label vote_cast
-   print `\r\n\r\n  Thanks - your vote has been counted!`
-   pause 1500
-   goto vote_menu
-label vote_quit
+   pos 14 4
+   fg 11
+   print `What's the greatest 8-bit micro of all time?`
+   std
+   set voted = kvgetuser(`voted_micros`)
+   if voted == `1` goto v_results
+
+   fg 11
+   pos 7 8
+   print `[1] BBC Micro`
+   pos 7 9
+   print `[2] Commodore 64`
+   pos 7 10
+   print `[3] ZX Spectrum`
+   pos 7 11
+   print `[4] Amstrad CPC`
+   pos 7 12
+   print `[5] Acorn Electron`
+   std
+   pos 19 24
+   fg 6
+   print `(1-5, or [Q] to return)`
+   std
+   pos 16 24
+   prompt v char echo
+   if v == `1` goto v_cast
+   if v == `2` goto v_cast
+   if v == `3` goto v_cast
+   if v == `4` goto v_cast
+   if v == `5` goto v_cast
+   if v == `q` goto v_quit
+   if v == `Q` goto v_quit
+   goto v_top
+
+label v_cast
+   set vkey = `vote` + v
+   set junk = kvset(vkey, val( kvget(vkey) ) + 1)
+   set junk = kvsetuser(`voted_micros`, `1`)
+   goto v_results
+
+label v_results
+   set c1 = val( kvget(`vote1`) )
+   set c2 = val( kvget(`vote2`) )
+   set c3 = val( kvget(`vote3`) )
+   set c4 = val( kvget(`vote4`) )
+   set c5 = val( kvget(`vote5`) )
+   set total = c1 + c2 + c3 + c4 + c5
+   if total == 0 goto v_novotes
+
+   fg 15
+   pos 7 8
+   print `BBC Micro`
+   pos 7 9
+   print `Commodore 64`
+   pos 7 10
+   print `ZX Spectrum`
+   pos 7 11
+   print `Amstrad CPC`
+   pos 7 12
+   print `Acorn Electron`
+   fg 10
+   pos 22 8
+   print `%{ =bar(c1,total) }`
+   pos 22 9
+   print `%{ =bar(c2,total) }`
+   pos 22 10
+   print `%{ =bar(c3,total) }`
+   pos 22 11
+   print `%{ =bar(c4,total) }`
+   pos 22 12
+   print `%{ =bar(c5,total) }`
+   fg 14
+   pos 63 8
+   print `%{ =pct(c1,total) }`
+   pos 63 9
+   print `%{ =pct(c2,total) }`
+   pos 63 10
+   print `%{ =pct(c3,total) }`
+   pos 63 11
+   print `%{ =pct(c4,total) }`
+   pos 63 12
+   print `%{ =pct(c5,total) }`
+   std
+   pos 16 24
+   fg 6
+   print `%{total} vote(s) cast - one per caller.  Press ENTER.`
+   std
+   anykey
    return
+
+label v_novotes
+   pos 7 8
+   fg 6
+   print `No votes yet - be the first!`
+   std
+   pos 16 24
+   print `Press ENTER to return.`
+   anykey
+   return
+
+label v_quit
+   return
+
+   /* a bar of block glyphs sized to this option's share of the vote (max 32) */
+   function bar(n, tot)
+      return repeat( chr(219), n * 32 / tot )
+   endfunction
+   /* percentage label */
+   function pct(n, tot)
+      return str( n * 100 / tot ) + `%`
+   endfunction
 }

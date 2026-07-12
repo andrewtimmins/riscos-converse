@@ -1,33 +1,36 @@
 {
-   /* Send a one-line message to another user who is currently online.
-      Uses the notifyuser() node-messaging primitive. Main-menu 'T' key. */
-   cls
-   fg 14
-   print `=== Send a Message to an Online User ===`
+   /* Tell a User - send a one-line message to another online caller via
+      notifyuser(), overlaid on the boxed Screens.Tell. */
+
+   type `<Converse$Dir>.BBS.Screens.Tell`
+   pos 33 6
+   fg 15
+   print `%{onlineusers}`
    std
-   print ``
-   doing `Who's online...`
-   online
-   doing
-   print ``
-   print `Send to (username or number, blank to cancel): `
+   pos 17 10
+   fg 15
    readline who
+   std
    if who == `` goto tell_cancel
-   print `Message: `
+   pos 17 11
+   fg 15
    readline msg
+   std
    if msg == `` goto tell_cancel
 
    set sent = notifyuser(who, `*** Message from ` + userget(`realname`) + `: ` + msg)
-   if ok == 1 goto ok_sent
+   if ok == 1 goto tell_ok
+   pos 7 24
    fg 12
-   print `\r\nThat user isn't online (or wasn't found).`
+   print `That user isn't online (or wasn't found).  Press ENTER.`
    std
    anykey
    return
 
-label ok_sent
+label tell_ok
+   pos 7 24
    fg 10
-   print `\r\nDelivered!`
+   print `Delivered!  Press ENTER.`
    std
    anykey
    return

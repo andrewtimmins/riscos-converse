@@ -1,6 +1,66 @@
 {
-   /* Feedback to sysop - display screen (compose wiring is a follow-up) */
+   /* Feedback to the Sysop - real private mail, overlaid on the boxed
+      Screens.Feedback. Recipient (the sysop) is the highest-access-level user. */
+
+   set nusers = usercount()
+   set sysop_user = userbyindex(0, `username`)
+   set best = 0
+   set idx = 0
+label fb_scan
+   if idx >= nusers goto fb_intro
+   set lvl = userbyindex(idx, `level`)
+   if lvl > best then
+      set best = lvl
+      set sysop_user = userbyindex(idx, `username`)
+   endif
+   set idx = idx + 1
+   goto fb_scan
+
+label fb_intro
    type `<Converse$Dir>.BBS.Screens.Feedback`
+   pos 25 4
+   fg 6
+   print `%{ =cfg("sysop_name") } - nobody else will see it.`
+   std
+   pos 17 10
+   fg 15
+   readline fb_subj
+   std
+   if fb_subj == `` goto fb_cancel
+
+   set fb_body = ``
+   set fb_lines = 0
+   set esc = chr(27)
+label fb_collect
+   set row = 12 + fb_lines
+   set seq = esc + `[` + str(row) + `;7H`
+   print `%{seq}`
+   fg 14
+   print `%{ =chr(175) } `
+   fg 15
+   readline fb_ln
+   std
+   if fb_ln == `` goto fb_send
+   set fb_body = fb_body + fb_ln + "\r\n"
+   set fb_lines = fb_lines + 1
+   if fb_lines >= 8 goto fb_send
+   goto fb_collect
+
+label fb_send
+   if fb_body == `` goto fb_cancel
+   sendmail %{sysop_user} `%{fb_subj}` `%{fb_body}`
+   pos 7 24
+   fg 10
+   print `Thanks - delivered to %{ =cfg("sysop_name") }.  Press ENTER.`
+   std
+   anykey
+   return
+
+label fb_cancel
+   pos 7 24
+   fg 6
+   print `Cancelled - nothing sent.  Press ENTER.`
+   std
    anykey
    return
 }

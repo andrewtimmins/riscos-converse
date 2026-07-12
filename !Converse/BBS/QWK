@@ -1,21 +1,12 @@
 {
-   /* QWK offline mail - download a packet to read/reply offline, then upload
-      the .REP reply packet. Reached from the main menu 'A' key.
+   /* QWK Offline Mail - boxed. Download a packet to read/reply offline, then
+      upload the .REP reply packet. Reached from the main menu 'A' key.
       Packages the caller's current message base, so select one first (M). */
 
 label qwk_menu
-   cls
-   fg 14
-   print `=== QWK Offline Mail ===`
-   std
-   print ``
-   print `  [D] Download a mail packet - all messages`
-   print `  [N] Download a mail packet - new messages only`
-   print `  [U] Upload your reply packet (.REP)`
-   print `  [Q] Back to the main menu`
-   print ``
-   print `Choice: `
-   readline c
+   type `<Converse$Dir>.BBS.Screens.QWK`
+   pos 27 24
+   prompt c char echo
    if c == `d` goto qwk_dl
    if c == `D` goto qwk_dl
    if c == `n` goto qwk_new
@@ -27,25 +18,41 @@ label qwk_menu
    goto qwk_menu
 
 label qwk_dl
-   doing `Building + sending your QWK packet`
+   pos 7 20
+   fg 14
+   print `Building + sending your QWK packet...`
+   std
    qwkdownload zmodem
-   doing
-   print `\r\nDownload finished.`
+   pos 7 20
+   fg 10
+   print `Download finished.                                       `
+   std
    anykey
    goto qwk_menu
 
 label qwk_new
-   doing `Building + sending new mail`
+   pos 7 20
+   fg 14
+   print `Building + sending new mail...`
+   std
    qwkdownload zmodem new
-   doing
-   print `\r\nDownload finished.`
+   pos 7 20
+   fg 10
+   print `Download finished.                                       `
+   std
    anykey
    goto qwk_menu
 
 label qwk_ul
-   print `\r\nStart your ZMODEM upload of the .REP reply packet now...`
+   pos 7 20
+   fg 14
+   print `Start your ZMODEM upload of the .REP reply packet now...`
+   std
    qwkupload zmodem
-   doing
+   pos 7 20
+   fg 10
+   print `Upload processed.                                        `
+   std
    anykey
    goto qwk_menu
 

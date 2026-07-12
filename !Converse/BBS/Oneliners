@@ -1,6 +1,70 @@
 {
-   /* The Wall / one-liners - display screen */
+   /* The Wall - live one-liner board overlaid on the boxed Screens.Oneliner.
+      Shows the newest scrawls, then invites the caller to add one. */
+
    type `<Converse$Dir>.BBS.Screens.Oneliner`
-   anykey
+   set lf = chr(10)
+   set blob = fileread(`oneliners.txt`)
+
+   /* pass 1: count lines so we can show only the newest 12 */
+   set total = 0
+   set scan = blob
+label wc_count
+   if scan == `` goto wc_counted
+   set p = find(scan, lf)
+   if p < 0 goto wc_countlast
+   set total = total + 1
+   set scan = substr(scan, p + 1)
+   goto wc_count
+label wc_countlast
+   set total = total + 1
+   set scan = ``
+   goto wc_count
+label wc_counted
+   set skip = total - 12
+   if skip < 0 then
+      set skip = 0
+   endif
+
+   /* pass 2: walk again, skip the older lines, overlay the rest into rows 7.. */
+   set esc = chr(27)
+   set idx = 0
+   set shownrow = 0
+   set scan = blob
+label wc_show
+   if scan == `` goto wc_shown
+   set p = find(scan, lf)
+   if p < 0 goto wc_showlast
+   set line = left(scan, p)
+   set scan = substr(scan, p + 1)
+   goto wc_emit
+label wc_showlast
+   set line = scan
+   set scan = ``
+label wc_emit
+   if idx < skip goto wc_next
+   if shownrow >= 12 goto wc_shown
+   set row = 7 + shownrow
+   set seq = esc + `[` + str(row) + `;7H`
+   print `%{seq}`
+   fg 14
+   print `%{ =chr(175) } `
+   fg 7
+   print `%{ =left(line, 68) }`
+   set shownrow = shownrow + 1
+label wc_next
+   set idx = idx + 1
+   goto wc_show
+label wc_shown
+   std
+
+   /* invite a new scrawl */
+   pos 9 24
+   fg 15
+   readline wall_line
+   std
+   if wall_line == `` goto wall_done
+   set junk = logline(`oneliners.txt`, wall_line)
+label wall_done
    return
 }

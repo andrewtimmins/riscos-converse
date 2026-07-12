@@ -1,6 +1,79 @@
 {
-   /* Hall of Fame / system stats - display screen */
+   /* Hall of Fame - live board statistics overlaid on the boxed Screens.Stats.
+      Scalar stats sit at fixed columns; the member roster is written row by row
+      with ESC[r;cH sequences (pos does not macro-expand, so dynamic rows are
+      positioned via a sequence built in a set). */
+
+   /* sum messages across every area of message base 1 */
+   set mtotal = 0
+   set nma = msgareacount(1)
+   set i = 0
+label st_msgloop
+   if i >= nma goto st_msgdone
+   set mtotal = mtotal + msgcount(1, msgareaid(1, i))
+   set i = i + 1
+   goto st_msgloop
+label st_msgdone
+
+   /* sum files across every area of file base 1 */
+   set ftotal = 0
+   set nfa = fileareacount(1)
+   set i = 0
+label st_fileloop
+   if i >= nfa goto st_filedone
+   set ftotal = ftotal + filecount(1, fileareaid(1, i))
+   set i = i + 1
+   goto st_fileloop
+label st_filedone
+
    type `<Converse$Dir>.BBS.Screens.Stats`
+
+   /* scalar stats at fixed columns */
+   fg 15
+   pos 29 6
+   print `%{ =usercount() }`
+   pos 67 6
+   print `%{onlineusers}`
+   pos 29 7
+   print `%{ =msgbasecount() }`
+   pos 67 7
+   print `%{mtotal}`
+   pos 29 8
+   print `%{ =filebasecount() }`
+   pos 67 8
+   print `%{ftotal}`
+   pos 29 9
+   print `%{callstoday}`
+   pos 67 9
+   print `%{memfree} KB`
+   std
+
+   /* member roster (up to 9 rows starting at grid row 11 = screen row 12) */
+   set esc = chr(27)
+   set shown = usercount()
+   if shown > 9 then
+      set shown = 9
+   endif
+   set i = 0
+label st_userloop
+   if i >= shown goto st_userdone
+   set row = 12 + i
+   set seq = esc + `[` + str(row) + `;6H`
+   print `%{seq}`
+   fg 14
+   print `%{ =chr(175) } `
+   fg 15
+   print `%{ =pad(userbyindex(i,"username"),33) }`
+   fg 10
+   print `%{ =pad(userbyindex(i,"level"),14) }`
+   fg 11
+   print `%{ =userbyindex(i,"calls") }`
+   std
+   set i = i + 1
+   goto st_userloop
+label st_userdone
+
+   pos 21 24
    anykey
    return
 }

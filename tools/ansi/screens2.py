@@ -1,46 +1,64 @@
 #!/usr/bin/env python3
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
+import gen
+gen.ROWS = 25            # the local ansiterm terminal is 80x25 - fill it
 from gen import *
-g = load_font()
+try:
+    g = load_font()
+except Exception as e:
+    g = None            # PNG preview needs the font; .ans emit does not
+    print("(font unavailable, skipping PNG previews: %s)" % e)
 OUT = os.path.dirname(__file__)
-def save(s,name):
-    render_png(s,g,os.path.join(OUT,name+".png"))
-    emit_ans(s,os.path.join(OUT,name+".ans"))
+def save(s,name,rows=None):
+    if rows is None: rows = gen.ROWS
+    if g is not None:
+        render_png(s,g,os.path.join(OUT,name+".png"))
+    emit_ans(s,os.path.join(OUT,name+".ans"),rows=rows)
 STAT = chr(TRI)+" Line 1  "+chr(BULLET)+"  GUEST"
 
 def citem(s,x,y,ic,key,label,kc=11):
-    s.putc(x,y,ic,14,0); s.put(x+2,y,"["+key+"]",kc,0); s.put(x+6,y,label,15,0)
+    # every item uses the same >> marker (0xAF) for consistency
+    s.putc(x,y,0xAF,14,0); s.put(x+2,y,"["+key+"]",kc,0); s.put(x+6,y,label,15,0)
 def grouphead(s,x,y,txt,w=20):
     s.put(x,y,txt,3,0)
     for i in range(len(txt),w): s.putc(x+i,y,S_H,6,0)
 
-# ============================ MAIN MENU (fuller redesign) ============================
+# ===================== MAIN MENU (fills 80x25, full-width, left-aligned) =====================
+# 25 rows: the box bottom border + Command prompt sit on the last rows so there's
+# no dead black space. Manual frame (chrome leaves a row for a status bar we don't
+# want). Header rows 3 (welcome + [?] Help) and 5 (stats) are filled with live data
+# by tools/ansi/patch_mainmenu.py; rows 2/4/6 stay blank for breathing room.
+LEFT=4; C1=4; C2=29; C3=54; GW=21; RIGHT=74
 s=Screen()
-chrome(s,"The Yellow Toaster  -  Main Menu", STAT, "[?] Help  "+chr(BULLET)+"  choose ")
-s.put(4,3,"Welcome back,",7,0); s.put(18,3,"GUEST",11,0)
-s.put(4,4,"Access:",7,0); s.put(12,4,"Sysop",10,0)
-s.put(48,3,"Calls:",7,0); s.put(56,3,"1,024",14,0)
-s.put(48,4,"Time left:",7,0); s.put(59,4,"58 min",14,0)
-for x in range(3,COLS-3): s.putc(x,5,S_H,6,0)
+for x in range(COLS): s.putc(x,0,FULL,3,0)                 # amber top rule
+s.box(0,1,COLS,gen.ROWS-1,6,0,double=True)                 # box rows 1..24 (bottom = last row)
+s.putc(0,1,D_TL,14,0); s.putc(COLS-1,1,D_TR,14,0)
+_tab=" The Yellow Toaster  -  Main Menu "
+_tx=(COLS-len(_tab)-2)//2
+s.putc(_tx,1,D_RT,14,0); s.put(_tx+1,1,_tab,15,0); s.putc(_tx+1+len(_tab),1,D_LT,14,0)
 
-grouphead(s,5,7,"MESSAGES");
-citem(s,5,8,0x0E,"M","Message Bases"); citem(s,5,9,0x18,"S","Scan for New"); citem(s,5,10,0xF0,"I","Your Inbox")
-grouphead(s,30,7,"FILES & FUN")
-citem(s,30,8,0x1A,"F","File Libraries"); citem(s,30,9,0x06,"D","Doors & Games"); citem(s,30,10,0x09,"O","Who's Online")
-grouphead(s,55,7,"COMMUNITY")
-citem(s,55,8,0x13,"W","The Wall"); citem(s,55,9,0x10,"B","Bulletins"); citem(s,55,10,0x07,"L","Last Callers")
+for x in range(LEFT,RIGHT+1): s.putc(x,7,S_H,6,0)          # divider under header
 
-for x in range(3,COLS-3): s.putc(x,12,S_H,6,0)
-grouphead(s,5,14,"YOUR ACCOUNT")
-citem(s,5,15,0x0F,"U","Settings"); citem(s,5,16,0x03,"G","Feedback"); citem(s,5,17,0x02,"C","Chat to Sysop")
-grouphead(s,30,14,"THE SYSTEM")
-citem(s,30,15,0x0A,"H","Hall of Fame"); citem(s,30,16,0x04,"V","Voting Booth"); citem(s,30,17,0x3F,"?","Help & Commands")
-grouphead(s,55,14,"EXIT")
-citem(s,55,15,0x1E,"Q","Log Off",12)
+grouphead(s,C1,9,"MESSAGES",GW)
+citem(s,C1,10,0,"M","Message Bases"); citem(s,C1,11,0,"S","Scan for New"); citem(s,C1,12,0,"I","Your Inbox")
+grouphead(s,C2,9,"FILES & FUN",GW)
+citem(s,C2,10,0,"F","File Libraries"); citem(s,C2,11,0,"D","Doors & Games"); citem(s,C2,12,0,"O","Who's Online")
+grouphead(s,C3,9,"COMMUNITY",GW)
+citem(s,C3,10,0,"W","The Wall"); citem(s,C3,11,0,"B","Bulletins"); citem(s,C3,12,0,"L","Last Callers")
 
-prompt(s,20)
-save(s,"mainmenu")
+for x in range(LEFT,RIGHT+1): s.putc(x,14,S_H,6,0)         # divider between blocks
+grouphead(s,C1,16,"YOUR ACCOUNT",GW)
+citem(s,C1,17,0,"U","Settings"); citem(s,C1,18,0,"G","Feedback"); citem(s,C1,19,0,"C","Chat to Sysop")
+grouphead(s,C2,16,"THE SYSTEM",GW)
+citem(s,C2,17,0,"H","Hall of Fame"); citem(s,C2,18,0,"V","Voting Booth"); citem(s,C2,19,0,"?","Help & Commands")
+grouphead(s,C3,16,"EXIT",GW)
+citem(s,C3,17,0,"Q","Log Off",12)
+
+for x in range(LEFT,RIGHT+1): s.putc(x,21,S_H,6,0)         # divider above the prompt
+# prompt on the last interior row (row 23); box bottom border is row 24
+s.put(LEFT,23,"Command",6,0); s.putc(LEFT+8,23,ARR,11,0); s.putc(LEFT+10,23,FULL,15,0)
+save(s,"mainmenu",rows=gen.ROWS)
 
 # ============================ USER SETTINGS ============================
 s=Screen()

@@ -1,2 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Screen backdrops and the generated .ans art are raw CP437/ANSI byte streams
+# sent verbatim to the terminal by the `type` command. They MUST keep their
+# CRLF line endings -- a bare LF staircases the display on real telnet clients.
+# Treat them as binary so git never rewrites their line endings on commit/checkout.
+\!Converse/BBS/Screens/** -text
+tools/ansi/*.ans -text
