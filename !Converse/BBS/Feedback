@@ -53,7 +53,7 @@ label fb_send
    fg 10
    print `Thanks - delivered to %{ =cfg("sysop_name") }.  Press ENTER.`
    std
-   anykey
+   prompt k char
    return
 
 label fb_cancel
@@ -61,6 +61,6 @@ label fb_cancel
    fg 6
    print `Cancelled - nothing sent.  Press ENTER.`
    std
-   anykey
+   prompt k char
    return
 }

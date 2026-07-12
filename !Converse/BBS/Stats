@@ -73,7 +73,6 @@ label st_userloop
    goto st_userloop
 label st_userdone
 
-   pos 21 24
-   anykey
+   prompt k char
    return
 }

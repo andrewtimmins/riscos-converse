@@ -27,7 +27,7 @@ label qwk_dl
    fg 10
    print `Download finished.                                       `
    std
-   anykey
+   prompt k char
    goto qwk_menu
 
 label qwk_new
@@ -40,7 +40,7 @@ label qwk_new
    fg 10
    print `Download finished.                                       `
    std
-   anykey
+   prompt k char
    goto qwk_menu
 
 label qwk_ul
@@ -53,7 +53,7 @@ label qwk_ul
    fg 10
    print `Upload processed.                                        `
    std
-   anykey
+   prompt k char
    goto qwk_menu
 
 label qwk_done

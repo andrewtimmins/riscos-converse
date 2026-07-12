@@ -6,7 +6,7 @@
    /* record into the 10-slot ring: lc_<slot> = user|realname|when, lc_count++ */
    set lcn = val( kvget(`lc_count`) )
    set slot = lcn - (lcn / 10) * 10
-   set nowstr = `%{date} %{time}`
+   set nowstr %{date} %{time}
    set junk = kvset(`lc_` + slot, userget(`username`) + `|` + userget(`realname`) + `|` + nowstr)
    set junk = kvset(`lc_count`, lcn + 1)
 

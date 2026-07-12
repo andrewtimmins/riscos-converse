@@ -91,7 +91,7 @@ label v_results
    fg 6
    print `%{total} vote(s) cast - one per caller.  Press ENTER.`
    std
-   anykey
+   prompt k char
    return
 
 label v_novotes
@@ -101,7 +101,7 @@ label v_novotes
    std
    pos 16 24
    print `Press ENTER to return.`
-   anykey
+   prompt k char
    return
 
 label v_quit

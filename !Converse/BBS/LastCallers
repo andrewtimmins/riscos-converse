@@ -41,6 +41,6 @@ label lc_done
    fg 6
    print `Press ENTER for the Main Menu`
    std
-   anykey
+   prompt k char
    return
 }
