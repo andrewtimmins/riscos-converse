@@ -2496,21 +2496,33 @@ static int script_host_set_user_field(void *context, const char *field,
     flags[UR_FLAG_SYSOP] = v;
     state->user.sysop = v;
   } else if (converse_stricmp(field, "maxtime") == 0) {
-    flags[UR_FLAG_MAXTIME] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_MAXTIME] = v;
+    state->user.flags.maxtime = v;   /* mirror live so userget reads it in-session */
   } else if (converse_stricmp(field, "ratios") == 0) {
     int v = atoi(value);
     flags[UR_FLAG_RATIOS] = v;
     state->user.flags.ratios = v;   /* keep live copy in step for enforcement */
   } else if (converse_stricmp(field, "protocol") == 0) {
-    flags[UR_FLAG_PROTOCOL] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_PROTOCOL] = v;
+    state->user.flags.defaultprotocol = v;
   } else if (converse_stricmp(field, "ansi") == 0) {
-    flags[UR_FLAG_ANSI] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_ANSI] = v;
+    state->user.flags.ansi = v;
   } else if (converse_stricmp(field, "more") == 0) {
-    flags[UR_FLAG_MORE] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_MORE] = v;
+    state->user.flags.more = v;
   } else if (converse_stricmp(field, "expert") == 0) {
-    flags[UR_FLAG_EXPERT] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_EXPERT] = v;
+    state->user.flags.expert = v;
   } else if (converse_stricmp(field, "nolimit") == 0) {
-    flags[UR_FLAG_NOLIMIT] = atoi(value);
+    int v = atoi(value);
+    flags[UR_FLAG_NOLIMIT] = v;
+    state->user.flags.nolimit = v;
   } else if (converse_stricmp(field, "lockedout") == 0) {
     flags[UR_FLAG_LOCKEDOUT] = atoi(value);
   } else if (converse_stricmp(field, "invisible") == 0) {
