@@ -53,23 +53,23 @@ _tab = chr(D_RT)+" The Yellow Toaster "+chr(D_LT)
 s.put((COLS-len(_tab))//2,1, _tab, 14, 0)
 
 # ---- wordmark ----
-word(None,2,"YELLOW", 11, shadow=1)     # bright yellow + red shadow (amber blended
-                                        # into the yellow letters - no contrast)
-word(None,8,"TOASTER", 3, shadow=1)     # amber + red shadow
+# Both wordmarks get a RED (1) drop shadow so the block letters read 3D against
+# black; a clear blank row (8) separates YELLOW from TOASTER so they don't merge.
+word(None,2,"YELLOW",  11, shadow=1)    # bright yellow block + red shadow (rows 2-7)
+word(None,9,"TOASTER",  3, shadow=1)    # amber block      + red shadow (rows 9-14)
 
 # ---- subtitle band ----
-for x in range(6,COLS-5): s.putc(x,14, MED, 3, 0)
-s.center(14, "  a retro BBS for fans of classic computing  ", 14, 0)
+for x in range(6,COLS-5): s.putc(x,15, MED, 3, 0)
+s.center(15, "  a retro BBS for fans of classic computing  ", 14, 0)
 
-# ---- feature bullets ----
+# ---- feature bullets (3 - leaves room for the server's logon prompt below) ----
 feats=[
  "Chat across six FidoNet-style networks",
- "Download demos, utilities & software for retro kit",
  "Play classic door games - Tetris, Snake, Breakout & more",
  "A friendly community that still remembers dial-up",
 ]
 for i,t in enumerate(feats):
-    s.putc(13,15+i, BULLET, 11, 0); s.put(15,15+i, t, 7, 0)
+    s.putc(13,16+i, BULLET, 11, 0); s.put(15,16+i, t, 7, 0)
 
 if g is not None:
     render_png(s,g,os.path.join(os.path.dirname(__file__),"login.png"))
