@@ -280,15 +280,13 @@ void door_native_process(line_task_state *state)
                     state->pending.pipe_out_length = remaining;
                 }
                 
-                /* Feed to terminal for sysop snoop (always snoop all data) */
-                if (state->terminal != NULL && state->terminal->snoop_mode)
-                {
-                    ansiterm_process_block(state->terminal, buffer, output_count);
-                    ansiterm_update_dirty(state->terminal);
-                }
+                /* NB: do NOT feed the terminal here - pipes_write_block already
+                   renders locally / mirrors to snoop in one pass. Feeding again
+                   re-runs the same bytes through the shared ANSI parser and
+                   doubles/corrupts output (see door_arcbbs.c for the detail). */
             }
         }
-        
+
         /* Read input from pipe and send to door (user->door) */
         if (state->pending.door_in_length == 0)
         {

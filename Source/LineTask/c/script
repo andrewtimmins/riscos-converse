@@ -844,6 +844,7 @@ void script_process(script_state *state)
 static int input_complete_prompt(script_state *state);
 static int input_complete_menu(script_state *state);
 static int input_complete_menu_pw(script_state *state);
+static int input_complete_menu_help(script_state *state);
 static int input_complete_anykey(script_state *state);
 static int input_complete_logon_user(script_state *state);
 static int input_complete_logon_pass(script_state *state);
@@ -951,6 +952,9 @@ static int dispatch_input_complete(script_state *state)
 
         case SCRIPT_INPUT_CTX_MENU_PW:
             return input_complete_menu_pw(state);
+
+        case SCRIPT_INPUT_CTX_MENU_HELP:
+            return input_complete_menu_help(state);
 
         case SCRIPT_INPUT_CTX_ANYKEY:
             return input_complete_anykey(state);
@@ -1136,13 +1140,16 @@ static int input_complete_menu(script_state *state)
 
     script_clear_input(state);
 
-    /* '?' lists context help: every `on` item that carries a `help "..."` token,
-       shown as key + help text. Then the menu redisplays. */
+    /* '?' shows a help page: every `on` item that carries a `help "..."` token,
+       as key + help text, on a cleared screen. Waits for any key (CTX_MENU_HELP)
+       so it stays readable, then input_complete_menu_help redisplays the menu.
+       (Redisplaying immediately would flash the help off-screen.) */
     if (key == '?')
     {
         size_t j;
         int shown = 0;
-        script_write_output(state, "\r\n");
+        script_send_clear_screen(state);
+        script_write_output(state, "\r\n  \033[1;33mMenu Help\033[0m\r\n\r\n");
         for (j = menu_idx + 1; j < state->instruction_count; ++j)
         {
             script_instruction *hins = &state->instructions[j];
@@ -1154,14 +1161,17 @@ static int input_complete_menu(script_state *state)
             if (hh[0] == '\0') continue;
             {
                 char hline[240];
-                snprintf(hline, sizeof(hline), "  \033[1;37m%c\033[0m  %s\r\n", hins->arg1[0], hh);
+                snprintf(hline, sizeof(hline), "   \033[1;37m%c\033[0m   %s\r\n", hins->arg1[0], hh);
                 script_write_output(state, hline);
                 shown++;
             }
         }
         if (!shown)
             script_write_output(state, "  No help available for this menu.\r\n");
-        menu_redisplay(state);
+        script_write_output(state, "\r\n  \033[0;36mPress any key to continue...\033[0m");
+        strncpy(state->input_target, "__mkey", sizeof(state->input_target) - 1);
+        state->input_target[sizeof(state->input_target) - 1] = '\0';
+        script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MENU_HELP);
         return 1;
     }
 
@@ -1249,6 +1259,14 @@ static int input_complete_menu_pw(script_state *state)
         }
     }
 
+    menu_redisplay(state);
+    return 1;
+}
+
+/* '?' help page dismissed (any key): redraw the active menu. */
+static int input_complete_menu_help(script_state *state)
+{
+    script_clear_input(state);
     menu_redisplay(state);
     return 1;
 }
@@ -3839,7 +3857,10 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
 
     if (script_stringcasecmp(token, "menu") == 0)
     {
-        /* menu <screen> -- native declarative menu; `on` items follow to endmenu */
+        /* menu <screen> [overlay <script>] -- native declarative menu; `on`
+         * items follow to endmenu. An optional overlay script is run after each
+         * (re)display to draw live data over the static screen (status strip,
+         * current base/area, prompt). arg1 = screen, arg2 = overlay (or NULL). */
         char *rest = strtok(NULL, "");
         char *v = NULL;
         size_t consumed = 0;
@@ -3847,9 +3868,24 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         if (rest != NULL)
         {
             rest = script_trim(rest);
-            if (!script_parse_backtick_string(rest, &consumed, &v))
-                v = script_duplicate_string(rest);
-            instruction->arg1 = v;
+            if (script_parse_backtick_string(rest, &consumed, &v))
+            {
+                char *p = rest + consumed;
+                char *t1 = NULL, *t2 = NULL;
+                instruction->arg1 = v;
+                if (script_arg_next(&p, &t1) && t1 != NULL &&
+                    script_stringcasecmp(t1, "overlay") == 0)
+                {
+                    if (script_arg_next(&p, &t2) && t2 != NULL)
+                        instruction->arg2 = script_duplicate_string(t2);
+                }
+                if (t1 != NULL) free(t1);
+                if (t2 != NULL) free(t2);
+            }
+            else
+            {
+                instruction->arg1 = script_duplicate_string(rest);
+            }
         }
         return 1;
     }
@@ -7931,20 +7967,59 @@ static void script_execute_instruction(script_state *state, script_instruction *
 
         case SCRIPT_CMD_MENU:
         {
-            /* Native menu: draw the screen (no pagination) then wait for a key.
-             * The `on` items up to `endmenu` follow this instruction; the key
-             * handler (input_complete_menu) scans and dispatches them. */
+            /* Native menu: draw the screen (no pagination), optionally run an
+             * overlay sub-script to paint live data over it, then wait for a
+             * key. The `on` items up to `endmenu` follow this instruction; the
+             * key handler (input_complete_menu) scans and dispatches them.
+             *
+             * Two-phase so the overlay can run as a normal sub-script (same
+             * mechanism as `on script`, so its live macros resolve against the
+             * current session): phase 0 draws the screen + runs the overlay;
+             * on the overlay's return we re-enter this instruction at phase 1
+             * to arm the key input. The overlay MUST be pure output (no
+             * prompt/anykey) or the menu would never arm. */
             const char *src = instruction->arg1 != NULL ? instruction->arg1 : "";
+            const char *ovl = instruction->arg2;   /* optional overlay script, or NULL */
             if (src[0] == '\0')
             {
                 script_set_error(state, "menu: missing screen");
                 break;
             }
             state->menu_instr_index = state->program_counter - 1;
-            state->more_override = 0;         /* menus never paginate */
-            state->more_line_count = 0;
-            script_display_file(state, src, 0);
-            state->more_line_count = 0;
+
+            if (state->menu_overlay_phase == 0)
+            {
+                state->more_override = 0;         /* menus never paginate */
+                state->more_line_count = 0;
+                script_display_file(state, src, 0);
+                state->more_line_count = 0;
+
+                if (ovl != NULL && ovl[0] != '\0')
+                {
+                    char path[256];
+                    script_expand_macros(state, ovl, path, sizeof(path));
+                    state->menu_overlay_phase = 1;
+                    state->program_counter = state->menu_instr_index;  /* re-run MENU after overlay */
+                    if (path[0] != '\0' && script_push_call_stack(state))
+                    {
+                        state->instruction_capacity = SCRIPT_DEFAULT_INSTRUCTION_CAPACITY;
+                        state->instructions = (script_instruction *)calloc(state->instruction_capacity, sizeof(script_instruction));
+                        state->label_capacity = SCRIPT_DEFAULT_LABEL_CAPACITY;
+                        state->labels = (script_label *)calloc(state->label_capacity, sizeof(script_label));
+                        if (state->instructions != NULL && state->labels != NULL && script_start(state, path))
+                        {
+                            script_process(state);   /* run overlay; on return, MENU re-runs (phase 1) */
+                            return;
+                        }
+                        script_pop_call_stack(state);
+                    }
+                    /* overlay failed to start: arm input anyway */
+                    state->menu_overlay_phase = 0;
+                }
+            }
+
+            /* phase 1 (overlay done) or no overlay: arm the menu key input */
+            state->menu_overlay_phase = 0;
             strncpy(state->input_target, "__mkey", sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
             script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MENU);

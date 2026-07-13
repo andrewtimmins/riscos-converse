@@ -203,7 +203,8 @@ typedef enum
     SCRIPT_INPUT_CTX_MORE,          /* More? prompt */
     SCRIPT_INPUT_CTX_ANSI_DETECT,   /* ANSI terminal detection */
     SCRIPT_INPUT_CTX_MENU,          /* native menu key selection */
-    SCRIPT_INPUT_CTX_MENU_PW        /* native menu: password gate entry */
+    SCRIPT_INPUT_CTX_MENU_PW,       /* native menu: password gate entry */
+    SCRIPT_INPUT_CTX_MENU_HELP      /* native menu: '?' help page, any key returns */
 } script_input_context;
 
 typedef enum
@@ -394,6 +395,7 @@ typedef struct script_state
        nested menus via the call stack. */
     size_t menu_instr_index;
     int menu_pw_item;               /* index of the `on` item awaiting a password, -1 = none */
+    int menu_overlay_phase;         /* menu overlay: 0 = draw art (+ run overlay), 1 = overlay done, arm input */
     /* Logon state */
     char logon_username[64];
     int logon_attempts;

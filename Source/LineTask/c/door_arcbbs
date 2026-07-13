@@ -318,12 +318,12 @@ void door_arcbbs_process(line_task_state *state)
                     state->pending.pipe_out_length = remaining;
                 }
                 
-                /* Feed to terminal for sysop snoop (always snoop all data) */
-                if (state->terminal != NULL && state->terminal->snoop_mode)
-                {
-                    ansiterm_process_block(state->terminal, buffer, output_count);
-                    ansiterm_update_dirty(state->terminal);
-                }
+                /* NB: do NOT feed the terminal here. pipes_write_block already
+                   renders to the local terminal (local mode) and mirrors to the
+                   snoop terminal (remote mode) in a single pass. Feeding it again
+                   re-processes the same bytes through the SAME ANSI parser, which
+                   (when a chunk ends mid-escape) misparses escape sequences and
+                   doubles/triples output - the door "corruption" bug. */
             }
         }
 
