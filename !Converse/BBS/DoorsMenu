@@ -1,23 +1,27 @@
 {
-   /* Doors & Games - ANSI. Draws Screens.DoorsGm then launches the game. */
-   /* Door launch: `call riscbbsdoor <cmd>` starts the door on this line;     */
-   /* the door's !Run receives the line number via %*0.                       */
+   /* Doors & Games - declarative menu primitive. `menu` draws the screen and
+      runs DoorsOverlay (status strip + prompt) on each (re)display; each `on`
+      routes a number to a door with a `help` string for '?'. Action blocks
+      launch the door then `goto doors_menu` to redisplay; `q` leaves.
+      Doors are launched by TYPE (verified against each door's binary/config):
+        RiscBBS (Wimp task &4B534154, gets the line via %{line} as %*0):
+          Tetris, Breakout (Carl Declerck) + Purity, Wall.
+          `call riscbbsdoor \`<path>.!Run %{line}\``
+        ArcBBS (Richard Paddle, polls the ARCbbsDoors module for its DoorNumber
+          from its own Config - no line param): Snake=4, Boxed=5, Trivia=6.
+          `call arcbbsdoor <DoorNumber> \`<path>.!Run\`` */
 
 label doors_menu
-   type `<Converse$Dir>.BBS.Screens.DoorsGm`
-   pos 13 22
-   prompt choice char echo
-
-   if choice == `1` goto run_tetris
-   if choice == `2` goto run_snake
-   if choice == `3` goto run_breakout
-   if choice == `4` goto run_boxed
-   if choice == `5` goto run_trivia
-   if choice == `6` goto run_purity
-   if choice == `7` goto run_wall
-   if choice == `q` goto doors_quit
-   if choice == `Q` goto doors_quit
-   goto doors_menu
+   menu `<Converse$Dir>.BBS.Screens.DoorsGm` overlay `<Converse$Dir>.BBS.DoorsOverlay`
+      on `1`  help `Play Tetris`            goto run_tetris
+      on `2`  help `Play Snake`             goto run_snake
+      on `3`  help `Play Breakout`          goto run_breakout
+      on `4`  help `Play Boxed In`          goto run_boxed
+      on `5`  help `Play Trivia`            goto run_trivia
+      on `6`  help `Take the Purity Test`   goto run_purity
+      on `7`  help `Visit The Wall`         goto run_wall
+      on `q`  help `Back to the main menu`  goto doors_quit
+   endmenu
 
 label run_tetris
    doing `Playing Tetris...`
@@ -26,7 +30,7 @@ label run_tetris
    goto doors_menu
 label run_snake
    doing `Playing Snake...`
-   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!SnakeDoor.!Run %{line}`
+   call arcbbsdoor 4 `<Converse$Dir>.BBS.Doors.!SnakeDoor.!Run`
    doing
    goto doors_menu
 label run_breakout
@@ -36,12 +40,12 @@ label run_breakout
    goto doors_menu
 label run_boxed
    doing `Playing Boxed In...`
-   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!BoxedDoor.!Run %{line}`
+   call arcbbsdoor 5 `<Converse$Dir>.BBS.Doors.!BoxedDoor.!Run`
    doing
    goto doors_menu
 label run_trivia
    doing `Playing Trivia...`
-   call riscbbsdoor `<Converse$Dir>.BBS.Doors.!TrivDoor.!Run %{line}`
+   call arcbbsdoor 6 `<Converse$Dir>.BBS.Doors.!TrivDoor.!Run`
    doing
    goto doors_menu
 label run_purity

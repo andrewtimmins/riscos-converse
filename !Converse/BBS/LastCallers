@@ -23,13 +23,13 @@ label lc_loop
    set p2 = find(rest, `|`)
    set rname = left(rest, p2)
    set when = substr(rest, p2 + 1)
-   set row = 8 + i
-   set seq = esc + `[` + str(row) + `;8H`
+   set row = 14 + i
+   set seq = esc + `[` + str(row) + `;6H`
    print `%{seq}`
    fg 15
    print `%{ =pad(uname,16) }`
    fg 7
-   print `%{ =pad(rname,27) }`
+   print `%{ =pad(rname,26) }`
    fg 6
    print `%{when}`
 label lc_next
@@ -37,10 +37,6 @@ label lc_next
    goto lc_loop
 label lc_done
    std
-   pos 6 23
-   fg 6
-   print `Press ENTER for the Main Menu`
-   std
-   prompt k char
+   anykey
    return
 }

@@ -1,26 +1,19 @@
 {
-   /* File Libraries - ANSI. Draws Screens.FileMenu then dispatches. */
+   /* File Libraries - declarative menu primitive. `menu` draws the screen and
+      runs FileOverlay (status strip + library/area + prompt) on each
+      (re)display; each `on` routes a key with a `help` string for '?'. Action
+      blocks run then `goto fb_menu` to redisplay; `q` leaves via fb_quit. */
 
 label fb_menu
-   type `<Converse$Dir>.BBS.Screens.FileMenu`
-   pos 16 21
-   prompt choice char echo
-
-   if choice == `l` goto fb_list
-   if choice == `L` goto fb_list
-   if choice == `a` goto fb_areas
-   if choice == `A` goto fb_areas
-   if choice == `s` goto fb_scan
-   if choice == `S` goto fb_scan
-   if choice == `v` goto fb_view
-   if choice == `V` goto fb_view
-   if choice == `d` goto fb_down
-   if choice == `D` goto fb_down
-   if choice == `u` goto fb_up
-   if choice == `U` goto fb_up
-   if choice == `q` goto fb_quit
-   if choice == `Q` goto fb_quit
-   goto fb_menu
+   menu `<Converse$Dir>.BBS.Screens.FileMenu` overlay `<Converse$Dir>.BBS.FileOverlay`
+      on `l`  help `List files in the current area`   goto fb_list
+      on `a`  help `Change file library or area`      goto fb_areas
+      on `s`  help `Scan for new files`               goto fb_scan
+      on `v`  help `View a file's details`            goto fb_view
+      on `d`  help `Download a file`                   goto fb_down
+      on `u`  help `Upload a file`                     goto fb_up
+      on `q`  help `Back to the main menu`             goto fb_quit
+   endmenu
 
 label fb_list
    cls

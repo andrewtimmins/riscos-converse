@@ -1,0 +1,40 @@
+{
+   /* Live overlay for the Files menu. Run by the `menu ... overlay` hook over
+      Screens.FileMenu on each (re)display: status strip (Header), the current
+      library/area context, and the command prompt. Pure output - no input. */
+
+   script `<Converse$Dir>.BBS.Header`
+
+   set dot = chr(250)
+   set fbid = %{filebaseid}
+   pos 6 23
+   fg 6
+   if fbid > 0 then
+      print `Library `
+      fg 11
+      print `%{filebasename}`
+      set farid = %{filebaseareaid}
+      if farid > 0 then
+         fg 6
+         print `   %{dot}   Area `
+         fg 11
+         print `%{filebaseareaname}`
+      endif
+   else
+      print `No file library selected - press `
+      fg 11
+      print `[A]`
+      fg 6
+      print ` to choose one`
+   endif
+   std
+
+   set arrow = chr(16)
+   pos 6 24
+   fg 11
+   print `Command `
+   fg 14
+   print `%{arrow} `
+   std
+   return
+}

@@ -1,0 +1,17 @@
+{
+   /* Live overlay for the Doors menu. Run by the `menu ... overlay` hook over
+      Screens.DoorsGm on each (re)display: status strip (Header) + command
+      prompt. (The flavour hint is baked into the screen; there's no base/area
+      to track here.) Pure output - no input. */
+
+   script `<Converse$Dir>.BBS.Header`
+
+   set arrow = chr(16)
+   pos 6 24
+   fg 11
+   print `Command `
+   fg 14
+   print `%{arrow} `
+   std
+   return
+}

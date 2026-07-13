@@ -1,0 +1,41 @@
+{
+   /* Live overlay for the Messages menu. Run by the `menu ... overlay` hook
+      over Screens.MsgMenu on each (re)display: persistent status strip
+      (Header), the current base/area context, and the command prompt. Pure
+      output - no input commands (the menu owns the keypress). */
+
+   script `<Converse$Dir>.BBS.Header`
+
+   set dot = chr(250)
+   set mbid = %{messagebaseid}
+   pos 6 23
+   fg 6
+   if mbid > 0 then
+      print `Base `
+      fg 11
+      print `%{messagebasename}`
+      set arid = %{messagebaseareaid}
+      if arid > 0 then
+         fg 6
+         print `   %{dot}   Area `
+         fg 11
+         print `%{messagebaseareaname}`
+      endif
+   else
+      print `No message base selected - press `
+      fg 11
+      print `[A]`
+      fg 6
+      print ` to choose one`
+   endif
+   std
+
+   set arrow = chr(16)
+   pos 6 24
+   fg 11
+   print `Command `
+   fg 14
+   print `%{arrow} `
+   std
+   return
+}

@@ -1,0 +1,36 @@
+{
+   /* Live overlay for the main menu. Run by the `menu ... overlay` hook over
+      Screens.MainMenu on each (re)display: status strip (Header), a rotating
+      thought for the day, and the command prompt. Pure output - no input. */
+
+   script `<Converse$Dir>.BBS.Header`
+
+   set qn = rand(1, 5)
+   set quote = `Some men are discovered; others are found out.`
+   if qn == 2 then
+      set quote = `Simplicity is the ultimate sophistication.`
+   endif
+   if qn == 3 then
+      set quote = `Weeks of coding can save you hours of planning.`
+   endif
+   if qn == 4 then
+      set quote = `Make it work, make it right, make it fast.`
+   endif
+   if qn == 5 then
+      set quote = `The best way to predict the future is to invent it.`
+   endif
+   pos 6 23
+   fg 6
+   print `Thought for the day - `
+   fg 14
+   print `%{quote}`
+
+   set arrow = chr(16)
+   pos 6 24
+   fg 11
+   print `Command `
+   fg 14
+   print `%{arrow} `
+   std
+   return
+}

@@ -1,108 +1,35 @@
 {
-   /* Main Menu - ANSI. Draws Screens.MainMenu then dispatches the hot-key. */
+   /* Main Menu - declarative menu primitive. `menu` draws Screens.MainMenu and
+      runs MainOverlay (status strip + rotating thought + prompt) on each
+      (re)display. Submenu / content keys dispatch straight to their script
+      (which returns here and redisplays); the inline actions and log-off use
+      action labels. '?' lists the on-item help. The dev-demo keys (x/z/y/k) are
+      hidden (not on the art) and gated to sysop level. */
 
 label main_menu
-   doing `Main menu`
-   type `<Converse$Dir>.BBS.Screens.MainMenu`
-   pos 16 20
-   prompt choice char echo
-
-   if choice == `m` goto go_msg
-   if choice == `M` goto go_msg
-   if choice == `f` goto go_file
-   if choice == `F` goto go_file
-   if choice == `d` goto go_doors
-   if choice == `D` goto go_doors
-   if choice == `s` goto go_scan
-   if choice == `S` goto go_scan
-   if choice == `i` goto go_inbox
-   if choice == `I` goto go_inbox
-   if choice == `o` goto go_online
-   if choice == `O` goto go_online
-   if choice == `c` goto go_chat
-   if choice == `C` goto go_chat
-   if choice == `w` goto go_wall
-   if choice == `W` goto go_wall
-   if choice == `b` goto go_bull
-   if choice == `B` goto go_bull
-   if choice == `l` goto go_last
-   if choice == `L` goto go_last
-   if choice == `u` goto go_set
-   if choice == `U` goto go_set
-   if choice == `g` goto go_feed
-   if choice == `G` goto go_feed
-   if choice == `h` goto go_stats
-   if choice == `H` goto go_stats
-   if choice == `v` goto go_vote
-   if choice == `V` goto go_vote
-   if choice == `x` goto go_test
-   if choice == `X` goto go_test
-   if choice == `z` goto go_quiz
-   if choice == `Z` goto go_quiz
-   if choice == `y` goto go_menudemo
-   if choice == `Y` goto go_menudemo
-   if choice == `k` goto go_queue
-   if choice == `K` goto go_queue
-   if choice == `t` goto go_tell
-   if choice == `T` goto go_tell
-   if choice == `a` goto go_qwk
-   if choice == `A` goto go_qwk
-   if choice == `?` goto go_help
-   if choice == `q` goto go_quit
-   if choice == `Q` goto go_quit
-   goto main_menu
-
-label go_msg
-   script `<Converse$Dir>.BBS.Messagebase`
-   goto main_menu
-label go_file
-   script `<Converse$Dir>.BBS.Filebase`
-   goto main_menu
-label go_doors
-   script `<Converse$Dir>.BBS.DoorsMenu`
-   goto main_menu
-label go_wall
-   script `<Converse$Dir>.BBS.Oneliners`
-   goto main_menu
-label go_bull
-   script `<Converse$Dir>.BBS.Bulletins`
-   goto main_menu
-label go_last
-   script `<Converse$Dir>.BBS.LastCallers`
-   goto main_menu
-label go_set
-   script `<Converse$Dir>.BBS.Settings`
-   goto main_menu
-label go_feed
-   script `<Converse$Dir>.BBS.Feedback`
-   goto main_menu
-label go_stats
-   script `<Converse$Dir>.BBS.Stats`
-   goto main_menu
-label go_vote
-   script `<Converse$Dir>.BBS.Voting`
-   goto main_menu
-label go_help
-   script `<Converse$Dir>.BBS.Help`
-   goto main_menu
-label go_test
-   script `<Converse$Dir>.BBS.ScriptTest`
-   goto main_menu
-label go_quiz
-   script `<Converse$Dir>.BBS.Quiz`
-   goto main_menu
-label go_menudemo
-   script `<Converse$Dir>.BBS.MenuDemo`
-   goto main_menu
-label go_queue
-   script `<Converse$Dir>.BBS.QueueDemo`
-   goto main_menu
-label go_tell
-   script `<Converse$Dir>.BBS.Tell`
-   goto main_menu
-label go_qwk
-   script `<Converse$Dir>.BBS.QWK`
-   goto main_menu
+   menu `<Converse$Dir>.BBS.Screens.MainMenu` overlay `<Converse$Dir>.BBS.MainOverlay`
+      on `m` help `Message bases`        script `<Converse$Dir>.BBS.Messagebase`
+      on `f` help `File libraries`       script `<Converse$Dir>.BBS.Filebase`
+      on `d` help `Doors & games`        script `<Converse$Dir>.BBS.DoorsMenu`
+      on `w` help `The Wall (one-liners)` script `<Converse$Dir>.BBS.Oneliners`
+      on `b` help `Bulletins & news`     script `<Converse$Dir>.BBS.Bulletins`
+      on `l` help `Last callers`         script `<Converse$Dir>.BBS.LastCallers`
+      on `u` help `Your settings`        script `<Converse$Dir>.BBS.Settings`
+      on `g` help `Leave feedback`       script `<Converse$Dir>.BBS.Feedback`
+      on `h` help `Hall of fame / stats` script `<Converse$Dir>.BBS.Stats`
+      on `v` help `Voting booth`         script `<Converse$Dir>.BBS.Voting`
+      on `t` help `Tell a user`          script `<Converse$Dir>.BBS.Tell`
+      on `a` help `QWK offline mail`     script `<Converse$Dir>.BBS.QWK`
+      on `s` help `Scan for new content` goto go_scan
+      on `i` help `Your inbox`           goto go_inbox
+      on `o` help `Who's online`         goto go_online
+      on `c` help `Chat to the sysop`    goto go_chat
+      on `x` level 500                   script `<Converse$Dir>.BBS.ScriptTest`
+      on `z` level 500                   script `<Converse$Dir>.BBS.Quiz`
+      on `y` level 500                   script `<Converse$Dir>.BBS.MenuDemo`
+      on `k` level 500                   script `<Converse$Dir>.BBS.QueueDemo`
+      on `q` help `Log off`              goto go_quit
+   endmenu
 
 label go_scan
    cls
