@@ -878,6 +878,38 @@ int messagebase_list_areas(messagebase_session *session,
  * redrawn (the caller keeps list.active set while a read is nested).
  * ============================================================ */
 
+/* Twit/ignore filter: does caller <viewer_id> have <sender_id> on their ignore
+   list? The list lives in the script KV as ScriptData/KV/ignore_<viewer_id>, a
+   comma-separated list of ignored user ids (fopen expands <Converse$Dir>). */
+int messagebase_user_ignores(int viewer_id, int sender_id)
+{
+    char path[256];
+    char buf[512];
+    FILE *f;
+    char *p, *tok;
+    size_t n;
+
+    if (viewer_id <= 0 || sender_id <= 0) return 0;
+    snprintf(path, sizeof(path), "<Converse$Dir>.ScriptData.KV.ignore_%d", viewer_id);
+    f = fopen(path, "rb");
+    if (f == NULL) return 0;
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    p = buf;
+    while (*p != '\0')
+    {
+        while (*p == ',' || *p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
+        if (*p == '\0') break;
+        tok = p;
+        while (*p != '\0' && *p != ',' && *p != ' ' && *p != '\r' && *p != '\n' && *p != '\t') p++;
+        if (*p != '\0') *p++ = '\0';
+        if (atoi(tok) == sender_id) return 1;
+    }
+    return 0;
+}
+
 int messagebase_list_is_active(messagebase_session *session)
 {
     return session != NULL && session->list.active;
@@ -975,7 +1007,13 @@ int messagebase_list_enter(messagebase_session *session,
     while (id > 0 && L->count < MB_LIST_MAX && guard++ < MB_LIST_MAX * 2)
     {
         int nx;
-        L->ids[L->count++] = id;
+        LINETASK_MESSAGE_RECORD rec;
+        /* twit filter: skip messages from users on this caller's ignore list */
+        if (!messagebase_get_message_info(session->current_messagebase, id, &rec) ||
+            !messagebase_user_ignores(session->user_id, rec.sentby))
+        {
+            L->ids[L->count++] = id;
+        }
         nx = messagebase_get_next_message_id(session, id);
         if (nx <= 0 || nx == id) break;
         id = nx;

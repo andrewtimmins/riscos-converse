@@ -31,6 +31,7 @@ label main_menu
       on `k` level 500                   script `<Converse$Dir>.BBS.QueueDemo`
       on `j` level 500 help `Validate new users (sysop)` script `<Converse$Dir>.BBS.Validate`
       on `p` at 32 21 text `Who's Who`     help `User profiles / who's who`  script `<Converse$Dir>.BBS.Profiles`
+      on `r` help `Ignore list (twit filter)` script `<Converse$Dir>.BBS.Ignore`
       on `q` at 57 20 text `Log off`       help `Log off`              goto go_quit
    endmenu
 

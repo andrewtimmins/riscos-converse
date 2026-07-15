@@ -2927,6 +2927,13 @@ static int script_host_notify_user(void *context, const char *key, const char *t
   else if (!ouf_lookup(key, record, &target_id)) return 0;
   if (target_id <= 0) return 0;
 
+  /* twit filter: if the target is ignoring the sender, silently drop (looks to
+     the sender exactly like the target being offline). */
+  {
+    line_task_state *st = (line_task_state *)context;
+    if (st != NULL && messagebase_user_ignores(target_id, st->user.id)) return 0;
+  }
+
   for (i = 0; i < 64; ++i) {
     memset(&regs, 0, sizeof(regs));
     regs.r[0] = LINE_REASON_GET;

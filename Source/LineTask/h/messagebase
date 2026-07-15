@@ -314,6 +314,9 @@ int messagebase_show_message_info(messagebase_session *session,
 /* Message Viewer                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
 
+/* Twit/ignore: is sender_id on viewer_id's ignore list (ScriptData KV)? */
+int messagebase_user_ignores(int viewer_id, int sender_id);
+
 /* Arrow-navigable message-selection list */
 int messagebase_list_enter(messagebase_session *session,
                            void (*output)(void *ctx, const char *text), void *ctx);

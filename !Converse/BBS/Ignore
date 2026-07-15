@@ -1,0 +1,94 @@
+{
+   /* Twit / ignore list. Stored as a global KV `ignore_<myid>` of ignored user
+      ids, kept with leading+trailing commas (",5,12,") so contains/add/remove
+      are simple find/replace. The C side (messagebase_user_ignores) reads this
+      to skip ignored senders from the message list and drop their Tells. */
+
+   set esc = chr(27)
+   set nl  = chr(13) + chr(10)
+   set myid = userget(`id`)
+
+label ig_menu
+   cls
+   set line = nl + `  ` + esc + `[1;33mIGNORE LIST` + esc + `[0m   ` + esc + `[0;36m(hide a user's posts + block their Tells)` + esc + `[0m` + nl + nl
+   print %{line}
+
+   set list = kvget(`ignore_` + myid)
+   if list == `` then
+      set line = `  ` + esc + `[0;37mYou aren't ignoring anyone.` + esc + `[0m` + nl
+      print %{line}
+   endif
+   if list == `,` then
+      set line = `  ` + esc + `[0;37mYou aren't ignoring anyone.` + esc + `[0m` + nl
+      print %{line}
+   endif
+   set rest = list
+   while len(rest) > 1
+      set after = substr(rest, 1, 100000)
+      set p = find(after, `,`)
+      set idstr = substr(rest, 1, p)
+      set rest = substr(rest, p + 1, 100000)
+      if idstr != `` then
+         set uname = usergetby(idstr, `username`)
+         set line = `  ` + esc + `[1;31m*` + esc + `[0m ` + uname + nl
+         print %{line}
+      endif
+   endwhile
+
+   set line = nl + `  [A]dd   [R]emove   [Q]uit: `
+   print %{line}
+   prompt ic char
+   if upper(ic) == `A` then
+      goto ig_add
+   endif
+   if upper(ic) == `R` then
+      goto ig_remove
+   endif
+   goto ig_done
+
+label ig_add
+   set line = nl + `  Username to ignore: `
+   print %{line}
+   prompt aname line
+   if aname != `` then
+      set aid = usergetby(aname, `id`)
+      if aid <= 0 then
+         set line = `  ` + esc + `[1;31mNo such user.` + esc + `[0m` + nl
+         print %{line}
+         anykey
+      endif
+      if aid == myid then
+         set line = `  ` + esc + `[1;31mYou can't ignore yourself.` + esc + `[0m` + nl
+         print %{line}
+         anykey
+      endif
+      if aid > 0 then
+         if aid != myid then
+            set list = kvget(`ignore_` + myid)
+            if list == `` then
+               set list = `,`
+            endif
+            if find(list, `,` + aid + `,`) < 0 then
+               set r = kvset(`ignore_` + myid, list + aid + `,`)
+            endif
+         endif
+      endif
+   endif
+   goto ig_menu
+
+label ig_remove
+   set line = nl + `  Username to un-ignore: `
+   print %{line}
+   prompt rname line
+   if rname != `` then
+      set rid = usergetby(rname, `id`)
+      if rid > 0 then
+         set list = kvget(`ignore_` + myid)
+         set list = replace(list, `,` + rid + `,`, `,`)
+         set r = kvset(`ignore_` + myid, list)
+      endif
+   endif
+   goto ig_menu
+
+label ig_done
+}
