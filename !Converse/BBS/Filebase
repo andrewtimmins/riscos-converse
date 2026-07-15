@@ -17,10 +17,9 @@ label fb_menu
 
 label fb_list
    cls
-   doing `Browsing files...`
-   filebase browse
-   doing
-   anykey
+   more 0
+   filebase pick
+   more 1
    goto fb_menu
 label fb_areas
    cls

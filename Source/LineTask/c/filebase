@@ -1374,6 +1374,164 @@ int filebase_viewer_is_active(filebase_session *session)
     return (session->viewer.phase != FILE_VIEW_IDLE);
 }
 
+/* ============================================================
+ * ARROW-NAVIGABLE FILE-SELECTION LIST
+ * Mirrors the messagebase picker: a scrollable list of the area's files;
+ * arrows move, Enter opens the file in the browser, Q leaves. Opening keeps
+ * list.active set so the browser's quit returns to the list.
+ * ============================================================ */
+
+int filebase_list_is_active(filebase_session *session)
+{
+    return session != NULL && session->list.active;
+}
+
+void filebase_list_close(filebase_session *session)
+{
+    if (session != NULL) session->list.active = 0;
+}
+
+int filebase_list_selected_id(filebase_session *session)
+{
+    file_list_state *L;
+    if (session == NULL) return 0;
+    L = &session->list;
+    if (L->selected < 0 || L->selected >= L->count) return 0;
+    return L->ids[L->selected];
+}
+
+static void fb_list_rule(void (*output)(void *ctx, const char *text), void *ctx)
+{
+    char rule[80];
+    int i;
+    strcpy(rule, "\033[0;36m  ");
+    for (i = 0; i < 60; i++) rule[9 + i] = (char)205;
+    strcpy(rule + 9 + 60, "\033[0m\033[K\r\n");
+    output(ctx, rule);
+}
+
+void filebase_list_render(filebase_session *session,
+                          void (*output)(void *ctx, const char *text), void *ctx)
+{
+    file_list_state *L = &session->list;
+    char line[256];
+    int row, idx;
+
+    output(ctx, "\033[H");
+
+    snprintf(line, sizeof(line),
+             "\033[1;33m  FILES\033[0m   \033[0;36m%d file%s\033[0m\033[K\r\n",
+             L->count, L->count == 1 ? "" : "s");
+    output(ctx, line);
+    fb_list_rule(output, ctx);
+
+    for (row = 0; row < FB_LIST_PAGE; row++)
+    {
+        LINETASK_FILE_RECORD rec;
+        char name[28];
+        long kb;
+        int sel;
+
+        idx = L->top + row;
+        if (idx >= L->count) { output(ctx, "\033[K\r\n"); continue; }
+
+        if (!filebase_get_file_info(session->current_filebase, L->ids[idx], &rec))
+            memset(&rec, 0, sizeof(rec));
+        strncpy(name, rec.name[0] ? rec.name : "(unnamed)", sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+        kb = (rec.filesize + 1023) / 1024;          /* integer KB - never %f */
+        sel = (idx == L->selected);
+
+        if (sel)
+            snprintf(line, sizeof(line),
+                     "\033[30;43m %3d  %-27.27s %6ldK  %4d dl \033[0m\033[K\r\n",
+                     idx + 1, name, kb, rec.downloads);
+        else
+            snprintf(line, sizeof(line),
+                     " \033[1;37m%3d\033[0m  \033[0;37m%-27.27s\033[0m \033[1;32m%6ldK\033[0m  \033[0;36m%4d dl\033[0m\033[K\r\n",
+                     idx + 1, name, kb, rec.downloads);
+        output(ctx, line);
+    }
+
+    fb_list_rule(output, ctx);
+    output(ctx, "  \033[1;33m\x18\x19\033[0m select   \033[1;33mEnter\033[0m view/download   "
+                "\033[1;33mPgUp/PgDn\033[0m page   \033[1;33mQ\033[0m back\033[K");
+}
+
+int filebase_list_enter(filebase_session *session,
+                        void (*output)(void *ctx, const char *text), void *ctx)
+{
+    file_list_state *L = &session->list;
+    int id, guard = 0;
+
+    if (session->current_filebase <= 0)
+    {
+        output(ctx, "\r\n[No filebase selected]\r\n");
+        return 0;
+    }
+
+    L->count = 0;
+    id = filebase_get_first_file_id(session);
+    while (id > 0 && L->count < FB_LIST_MAX && guard++ < FB_LIST_MAX * 2)
+    {
+        int nx;
+        L->ids[L->count++] = id;
+        nx = filebase_get_next_file_id(session, id);
+        if (nx <= 0 || nx == id) break;
+        id = nx;
+    }
+
+    if (L->count == 0)
+    {
+        output(ctx, "\r\n\033[1;37mNo files in this area.\033[0m\r\n");
+        return 0;
+    }
+
+    L->selected = 0;                            /* start on the first file */
+    L->top = 0;
+    L->esc = 0;
+    L->active = 1;
+
+    output(ctx, "\033[2J");
+    filebase_list_render(session, output, ctx);
+    return 1;
+}
+
+int filebase_list_handle_key(filebase_session *session, unsigned char byte,
+                             void (*output)(void *ctx, const char *text), void *ctx)
+{
+    file_list_state *L = &session->list;
+    int old = L->selected;
+
+    if (L->esc == 3) { L->esc = 0; return FB_LIST_CONTINUE; }
+    if (L->esc == 1) { L->esc = (byte == '[' || byte == 'O') ? 2 : 0; return FB_LIST_CONTINUE; }
+    if (L->esc == 2)
+    {
+        L->esc = 0;
+        switch (byte)
+        {
+            case 'A': if (L->selected > 0) L->selected--; break;
+            case 'B': if (L->selected < L->count - 1) L->selected++; break;
+            case '5': L->selected -= FB_LIST_PAGE; L->esc = 3; break;
+            case '6': L->selected += FB_LIST_PAGE; L->esc = 3; break;
+            case 'H': L->selected = 0; break;
+            case 'F': L->selected = L->count - 1; break;
+            default: break;
+        }
+        if (L->selected < 0) L->selected = 0;
+        if (L->selected >= L->count) L->selected = L->count - 1;
+        if (L->selected < L->top) L->top = L->selected;
+        if (L->selected >= L->top + FB_LIST_PAGE) L->top = L->selected - FB_LIST_PAGE + 1;
+        if (L->selected != old) filebase_list_render(session, output, ctx);
+        return FB_LIST_CONTINUE;
+    }
+
+    if (byte == 0x1b) { L->esc = 1; return FB_LIST_CONTINUE; }
+    if (byte == '\r' || byte == '\n') return FB_LIST_OPEN;
+    if (byte == 'q' || byte == 'Q') return FB_LIST_QUIT;
+    return FB_LIST_CONTINUE;
+}
+
 int filebase_enter_browser(filebase_session *session,
                            void (*output)(void *ctx, const char *text),
                            void *ctx)

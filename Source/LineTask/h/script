@@ -199,6 +199,7 @@ typedef enum
     SCRIPT_INPUT_CTX_FB_SELECT,     /* Filebase selection */
     SCRIPT_INPUT_CTX_FB_AREA,       /* Filebase area selection */
     SCRIPT_INPUT_CTX_FB_BROWSE,     /* Filebase browser navigation */
+    SCRIPT_INPUT_CTX_FB_LIST,       /* Arrow-navigable file-selection list */
     SCRIPT_INPUT_CTX_MB_VIEWER,     /* Message viewer navigation */
     SCRIPT_INPUT_CTX_MB_LIST,       /* Arrow-navigable message-selection list */
     SCRIPT_INPUT_CTX_MB_COMPOSE,    /* Message composer line input */

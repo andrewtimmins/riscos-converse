@@ -867,6 +867,7 @@ static int input_complete_more(script_state *state);
 static int handle_mb_viewer_char(script_state *state, unsigned char byte);
 static int handle_mb_list_char(script_state *state, unsigned char byte);
 static int handle_fb_browse_char(script_state *state, unsigned char byte);
+static int handle_fb_list_char(script_state *state, unsigned char byte);
 static int handle_mb_compose_line(script_state *state);
 static int handle_mb_search_line(script_state *state);
 /* ANSI detection special handler */
@@ -2599,8 +2600,16 @@ static int handle_fb_browse_char(script_state *state, unsigned char byte)
             return 1;
 
         case FILEVIEWER_ACTION_QUIT:
-            /* Quit browser - return to script */
+            /* Quit browser. If we came from the file-selection list, redraw it
+               and stay in it; otherwise return to the script. */
             filebase_viewer_close(session);
+            if (filebase_list_is_active(session))
+            {
+                script_write_output(state, "\033[2J");
+                filebase_list_render(session, (void (*)(void*, const char*))script_write_output, state);
+                script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_LIST);
+                return 1;
+            }
             script_clear_input(state);
             state->status = SCRIPT_STATUS_RUNNING;
             script_process(state);
@@ -2611,6 +2620,53 @@ static int handle_fb_browse_char(script_state *state, unsigned char byte)
             /* Invalid input - already handled by viewer */
             return 1;
     }
+}
+
+/* Handle the arrow-navigable file-selection list. Mirrors handle_mb_list_char:
+   arrows move, Enter opens the file in the browser (list stays active so the
+   browser's quit returns here), Q leaves the list back to the script. */
+static int handle_fb_list_char(script_state *state, unsigned char byte)
+{
+    filebase_session *session = NULL;
+    int action;
+
+    if (state->host.get_filebase_session != NULL)
+        session = (filebase_session *)state->host.get_filebase_session(state->host.context);
+
+    if (session == NULL || !filebase_list_is_active(session))
+    {
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    action = filebase_list_handle_key(session, byte,
+                 (void (*)(void*, const char*))script_write_output, state);
+
+    if (action == FB_LIST_OPEN)
+    {
+        int id = filebase_list_selected_id(session);
+        if (id > 0)
+        {
+            state->more_override = 0;
+            filebase_viewer_init(session, id);
+            script_write_output(state, "\033[2J\033[H");
+            filebase_viewer_show_file(session, (void (*)(void*, const char*))script_write_output, state);
+            filebase_viewer_show_prompt(session, (void (*)(void*, const char*))script_write_output, state);
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_BROWSE);
+        }
+        return 1;
+    }
+    if (action == FB_LIST_QUIT)
+    {
+        filebase_list_close(session);
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+    return 1;   /* FB_LIST_CONTINUE */
 }
 
 /* Handle messagebase composer line input completion */
@@ -2761,6 +2817,10 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                 if (state->input_context == SCRIPT_INPUT_CTX_FB_BROWSE)
                 {
                     return handle_fb_browse_char(state, byte);
+                }
+                if (state->input_context == SCRIPT_INPUT_CTX_FB_LIST)
+                {
+                    return handle_fb_list_char(state, byte);
                 }
                 if (state->input_context == SCRIPT_INPUT_CTX_LIGHTBAR)
                 {
@@ -8666,12 +8726,23 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 /* Enter continuous file browser */
                 /* Disable More? prompts during browser */
                 state->more_override = 0;
-                
+
                 if (filebase_enter_browser(session, (void (*)(void*, const char*))script_write_output, state))
                 {
                     /* Wait for char input via unified system */
                     script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_BROWSE);
                 }
+            }
+            else if (script_stringcasecmp(subcmd, "pick") == 0)
+            {
+                /* Arrow-navigable file-selection list */
+                state->more_override = 0;
+                if (filebase_list_enter(session, (void (*)(void*, const char*))script_write_output, state))
+                {
+                    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_FB_LIST);
+                    return;
+                }
+                /* empty / no filebase - list_enter printed a message */
             }
             else if (script_stringcasecmp(subcmd, "info") == 0)
             {

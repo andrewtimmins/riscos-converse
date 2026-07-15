@@ -114,6 +114,23 @@ typedef struct
     int saved_area;                 /* Saved area when switching areas */
 } filebase_viewer;
 
+/* Arrow-navigable file-selection list (pick a file, Enter to view/download). */
+#define FB_LIST_MAX      400
+#define FB_LIST_PAGE     16
+#define FB_LIST_CONTINUE 0
+#define FB_LIST_OPEN     1
+#define FB_LIST_QUIT     2
+
+typedef struct
+{
+    int active;
+    int ids[FB_LIST_MAX];
+    int count;
+    int selected;
+    int top;
+    int esc;
+} file_list_state;
+
 /* Session filebase state */
 typedef struct
 {
@@ -122,7 +139,18 @@ typedef struct
     int user_accesslevel;           /* User's access level for filtering */
     char user_keys[FB_MAX_KEYS];    /* User's access keys for filtering */
     filebase_viewer viewer;         /* Continuous file viewer state */
+    file_list_state list;           /* Arrow-navigable file-selection list */
 } filebase_session;
+
+int filebase_list_enter(filebase_session *session,
+                        void (*output)(void *ctx, const char *text), void *ctx);
+void filebase_list_render(filebase_session *session,
+                          void (*output)(void *ctx, const char *text), void *ctx);
+int filebase_list_is_active(filebase_session *session);
+int filebase_list_handle_key(filebase_session *session, unsigned char byte,
+                             void (*output)(void *ctx, const char *text), void *ctx);
+int filebase_list_selected_id(filebase_session *session);
+void filebase_list_close(filebase_session *session);
 
 /* Initialise filebase session state */
 void filebase_session_init(filebase_session *session);
