@@ -3938,7 +3938,7 @@ static int script_host_create_user(void *context, const char *username,
   user_record.cls = 1;             /* Allow screen clearing */
   user_record.sysop = 0;           /* Not a sysop */
   user_record.cli = 0;             /* No CLI access */
-  user_record.registered = 1;      /* Is registered */
+  user_record.registered = 0;      /* Pending sysop validation (existing users are all registered=1, so grandfathered) */
   user_record.expert = 0;          /* Not expert mode */
   user_record.lockedout = 0;       /* Not locked out */
   user_record.nolimit = 0;         /* Has time limits */

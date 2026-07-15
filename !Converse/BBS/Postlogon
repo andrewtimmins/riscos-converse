@@ -10,6 +10,16 @@
       return base + int(kvget(`pts_` + id + `_posts`)) * 10 + int(kvget(`pts_` + id + `_bonus`))
    endfunction
 
+   /* new-user validation gate: a non-sysop whose account is not yet registered
+      (registered != 1) is awaiting sysop approval - notice + log off. */
+   set amsysop = userget(`sysop`)
+   set amreg = userget(`registered`)
+   if amsysop != 1 then
+      if amreg != 1 then
+         goto pending
+      endif
+   endif
+
    /* record into the 10-slot ring: lc_<slot> = user|realname|when, lc_count++ */
    set lcn = val( kvget(`lc_count`) )
    set slot = lcn - (lcn / 10) * 10
@@ -47,4 +57,22 @@
    anykey
 label quick
    script `<Converse$Dir>.BBS.MainMenu`
+   goto pl_done
+
+label pending
+   cls
+   set esc = chr(27)
+   set nl = chr(13) + chr(10)
+   set line = nl + nl + esc + `[1;33m  Welcome, ` + userget(`username`) + `!` + esc + `[0m` + nl + nl
+   print %{line}
+   set line = `  ` + esc + `[1;37mYour account is awaiting validation by the sysop.` + esc + `[0m` + nl
+   print %{line}
+   set line = `  You'll have full access once your account is approved -` + nl
+   print %{line}
+   set line = `  please call back soon. Thanks for registering!` + nl + nl
+   print %{line}
+   anykey
+   logoff
+
+label pl_done
 }
