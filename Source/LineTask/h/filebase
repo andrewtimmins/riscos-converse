@@ -27,6 +27,7 @@
 #define FILEBASE_CMD_ENUMERATE_FILES 10
 #define FILEBASE_CMD_FILE_INFO   11
 #define FILEBASE_CMD_END_UPLOAD  12
+#define FILEBASE_CMD_GET_PATH    13    /* r1=base r2=file -> r0 = payload path ptr */
 
 /* Field sizes (must match Filer/h/structs) */
 #define FB_MAX_NAME              64

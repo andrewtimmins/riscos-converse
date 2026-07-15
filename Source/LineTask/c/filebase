@@ -13,6 +13,7 @@
 #include "swis.h"
 
 #include "filebase.h"
+#include "unzip.h"
 #include "debug.h"
 
 /* Safety limit for enumeration loops to prevent infinite loops on corrupted data */
@@ -1743,7 +1744,7 @@ int filebase_viewer_show_prompt(filebase_session *session,
     snprintf(line, sizeof(line),
              "\033[1;32mRead Files:\033[0m [\033[1;36mCR\033[0m/\033[1;36mSPC\033[0m] Next  "
              "[\033[1;33mF\033[0m]orward  [\033[1;33mB\033[0m]ackward  "
-             "[\033[1;33mC\033[0m]urrent  [\033[1;33mD\033[0m]ownload\r\n");
+             "[\033[1;33mC\033[0m]urrent  [\033[1;33mD\033[0m]ownload  [\033[1;33mV\033[0m]iew\r\n");
     output(ctx, line);
 
     /* Line 2: Area navigation */
@@ -1774,6 +1775,53 @@ int filebase_viewer_show_prompt(filebase_session *session,
 /* ============================================================
  * INPUT HANDLER
  * ============================================================ */
+
+/* List the contents of the file being viewed, if it's a ZIP archive. Gets the
+   stored payload's path from the Filer (FILEBASE_CMD_GET_PATH) and reads its
+   central directory via the unzip lib - no coupling to the storage layout. */
+static void filebase_view_archive(filebase_session *session,
+                                  void (*output)(void *ctx, const char *text), void *ctx)
+{
+    _kernel_swi_regs regs;
+    UNZIP_ARCHIVE archive;
+    UNZIP_ENTRY entry;
+    char line[288];
+    const char *path;
+    int n, i;
+
+    regs.r[0] = FILEBASE_CMD_GET_PATH;
+    regs.r[1] = session->current_filebase;
+    regs.r[2] = session->viewer.file_id;
+    if (_kernel_swi(SWI_FILER_FILEBASE, &regs, &regs) != NULL || regs.r[0] == 0)
+    {
+        output(ctx, "\r\n[Cannot locate the stored file]\r\n");
+        filebase_viewer_show_prompt(session, output, ctx);
+        return;
+    }
+    path = (const char *)regs.r[0];
+
+    if (unzip_open(&archive, path) != UNZIP_OK)
+    {
+        output(ctx, "\r\n\033[1;33m[This file is not a ZIP archive]\033[0m\r\n");
+        filebase_viewer_show_prompt(session, output, ctx);
+        return;
+    }
+
+    n = unzip_get_entry_count(&archive);
+    snprintf(line, sizeof(line), "\r\n\033[1;33mArchive contents (%d item%s):\033[0m\r\n",
+             n, n == 1 ? "" : "s");
+    output(ctx, line);
+    for (i = 0; i < n; i++)
+    {
+        if (unzip_get_entry(&archive, i, &entry) != UNZIP_OK) continue;
+        snprintf(line, sizeof(line),
+                 "  \033[0;37m%-44.44s\033[0m \033[0;36m%8lu\033[0m\r\n",
+                 entry.filename, entry.uncompressed_size);
+        output(ctx, line);
+    }
+    unzip_close(&archive);
+    filebase_viewer_show_prompt(session, output, ctx);
+}
 
 int filebase_viewer_handle_input(filebase_session *session, char input,
                                  void (*output)(void *ctx, const char *text),
@@ -1815,6 +1863,12 @@ int filebase_viewer_handle_input(filebase_session *session, char input,
         case 'C':
             /* Re-display current file */
             filebase_viewer_show_current(session, output, ctx);
+            return FILEVIEWER_ACTION_CONTINUE;
+
+        case 'v':
+        case 'V':
+            /* List the archive's contents (if it's a ZIP) */
+            filebase_view_archive(session, output, ctx);
             return FILEVIEWER_ACTION_CONTINUE;
 
         case 's':

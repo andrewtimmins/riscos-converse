@@ -852,6 +852,28 @@ void filebase_swi_handler(_kernel_swi_regs *r)
       break;
     }
 
+    case FILER_FILEBASE_CMD_GET_PATH:
+    {
+      /* R1 = base_id, R2 = file_id -> R0 = pointer to the payload's on-disk
+         path (static buffer). Lets callers open the stored file directly
+         (e.g. to peek inside an archive) without duplicating the layout. */
+      static char get_path_buf[300];
+      int base_id = r->r[1];
+      int file_id = r->r[2];
+      FILE_RECORD record;
+
+      if (base_id <= 0 || file_id <= 0 ||
+          !filebase_find_file_record(base_id, file_id, &record) ||
+          !filebase_format_file_path(get_path_buf, sizeof(get_path_buf),
+                                     base_id, record.filebaseareaid, file_id))
+      {
+        r->r[0] = 0;
+        break;
+      }
+      r->r[0] = (int)get_path_buf;
+      break;
+    }
+
     default:
       r->r[0] = -1;
       break;

@@ -75,7 +75,8 @@
         FILER_FILEBASE_CMD_ENUMERATE_AREAS,
         FILER_FILEBASE_CMD_ENUMERATE_FILES,
         FILER_FILEBASE_CMD_FILE_INFO,
-        FILER_FILEBASE_CMD_END_UPLOAD   /* 12: Flush and close cached file handle */
+        FILER_FILEBASE_CMD_END_UPLOAD,  /* 12: Flush and close cached file handle */
+        FILER_FILEBASE_CMD_GET_PATH     /* 13: r1=base r2=file -> r0 = payload path ptr */
     } FILER_FILEBASE_COMMAND;
 
     typedef enum
