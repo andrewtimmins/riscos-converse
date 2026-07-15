@@ -29,6 +29,7 @@ label main_menu
       on `z` level 500                   script `<Converse$Dir>.BBS.Quiz`
       on `y` level 500                   script `<Converse$Dir>.BBS.MenuDemo`
       on `k` level 500                   script `<Converse$Dir>.BBS.QueueDemo`
+      on `p` at 32 21 text `Who's Who`     help `User profiles / who's who`  script `<Converse$Dir>.BBS.Profiles`
       on `q` at 57 20 text `Log off`       help `Log off`              goto go_quit
    endmenu
 

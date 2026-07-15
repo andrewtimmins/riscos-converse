@@ -1,0 +1,184 @@
+{
+   /* Who's Who - user profile directory + view + edit-your-own.
+      Pure script: userget/usergetby/userbyindex/usercount for the user DB,
+      global KV keyed by user id for viewer-readable extras
+      (prof_<id>_tag / _loc / _cmts), sendmail for messaging.
+
+      Engine rules honoured here: `print` does NOT evaluate `+`/functions or
+      translate \033 - so every composed line is built with `set` (chr(27)=ESC,
+      chr(13)+chr(10)=CRLF) then `print %{var}`; bare `print` = blank line;
+      a plain `print \`literal\`` is used only for prompt labels (no newline).
+      sendmail is a COMMAND (sendmail <user> <subj> <body>), not a function. */
+
+   set esc = chr(27)
+   set nl  = chr(13) + chr(10)
+   set rule = repeat(chr(205), 60)
+
+label whoswho_dir
+   cls
+   set line = nl + `  ` + esc + `[1;33mWHO'S WHO` + esc + `[0m   ` + esc + `[0;36mthe caller directory` + esc + `[0m` + nl
+   print %{line}
+   set line = `  ` + esc + `[0;36m` + rule + esc + `[0m` + nl + nl
+   print %{line}
+
+   set total = usercount()
+   set i = 0
+   while i < total
+      set inv = userbyindex(i, `invisible`)
+      if inv != 1 then
+         set uname = userbyindex(i, `username`)
+         set ulevel = userbyindex(i, `level`)
+         set ucalls = userbyindex(i, `calls`)
+         set line = `  ` + esc + `[1;37m` + pad(str(i), 3) + esc + `[0m  ` + esc + `[1;33m` + pad(uname, 20) + esc + `[0m` + esc + `[0;37mlvl ` + pad(str(ulevel), 5) + esc + `[0;36m` + ucalls + ` calls` + esc + `[0m` + nl
+         print %{line}
+      endif
+      set i = i + 1
+   endwhile
+
+   set line = nl + `  ` + esc + `[0;36m` + rule + esc + `[0m` + nl
+   print %{line}
+   set line = `  Enter a number to view, [E] edit your profile, [Q] back: `
+   print %{line}
+   prompt choice line
+
+   if upper(choice) == `Q` then
+      goto whoswho_done
+   endif
+   if upper(choice) == `E` then
+      goto whoswho_edit
+   endif
+   set viewidx = int(choice)
+   if viewidx < 0 then
+      goto whoswho_dir
+   endif
+   if viewidx >= total then
+      goto whoswho_dir
+   endif
+   goto whoswho_view
+
+label whoswho_view
+   cls
+   set vname = userbyindex(viewidx, `username`)
+   set vreal = userbyindex(viewidx, `realname`)
+   set vid   = userbyindex(viewidx, `id`)
+   set vlvl  = userbyindex(viewidx, `level`)
+   set vsysop = userbyindex(viewidx, `sysop`)
+   set vcalls = userbyindex(viewidx, `calls`)
+   set vups  = userbyindex(viewidx, `uploads`)
+   set vdowns = userbyindex(viewidx, `downloads`)
+   set vupkb = userbyindex(viewidx, `uploadskb`)
+   set vtag  = kvget(`prof_` + vid + `_tag`)
+   set vloc  = kvget(`prof_` + vid + `_loc`)
+
+   set line = nl + `  ` + esc + `[1;33m` + rule + esc + `[0m` + nl
+   print %{line}
+   set line = `  ` + esc + `[1;37m` + vname + esc + `[0m`
+   if vsysop == 1 then
+      set line = line + `   ` + esc + `[1;31m[SYSOP]` + esc + `[0m`
+   endif
+   set line = line + nl
+   print %{line}
+   if vtag != `` then
+      set line = `  ` + esc + `[0;36m"` + vtag + `"` + esc + `[0m` + nl
+      print %{line}
+   endif
+   set line = `  ` + esc + `[1;33m` + rule + esc + `[0m` + nl + nl
+   print %{line}
+
+   set line = `  ` + esc + `[0;37mReal name : ` + esc + `[1;37m` + vreal + esc + `[0m` + nl
+   print %{line}
+   if vloc != `` then
+      set line = `  ` + esc + `[0;37mLocation  : ` + esc + `[1;37m` + vloc + esc + `[0m` + nl
+      print %{line}
+   endif
+   set line = `  ` + esc + `[0;37mAccess    : ` + esc + `[1;37mlevel ` + vlvl + esc + `[0m` + nl
+   print %{line}
+   set line = `  ` + esc + `[0;37mCalls     : ` + esc + `[1;37m` + vcalls + esc + `[0m` + nl
+   print %{line}
+   set line = `  ` + esc + `[0;37mUploads   : ` + esc + `[1;37m` + vups + esc + `[0;37m  (` + vupkb + ` KB)` + esc + `[0m` + nl
+   print %{line}
+   set line = `  ` + esc + `[0;37mDownloads : ` + esc + `[1;37m` + vdowns + esc + `[0m` + nl
+   print %{line}
+
+   set cmts = kvget(`prof_` + vid + `_cmts`)
+   if cmts != `` then
+      set line = nl + `  ` + esc + `[0;36m~ comments ~` + esc + `[0m` + nl
+      print %{line}
+      set cmts = replace(cmts, chr(10), nl + `  `)
+      set line = `  ` + cmts + nl
+      print %{line}
+   endif
+
+   set line = nl + `  ` + esc + `[1;33m` + rule + esc + `[0m` + nl
+   print %{line}
+   set line = `  [M] send mail   [C] leave a comment   [Q] back: `
+   print %{line}
+   prompt vchoice char
+
+   if upper(vchoice) == `M` then
+      goto whoswho_mail
+   endif
+   if upper(vchoice) == `C` then
+      goto whoswho_comment
+   endif
+   goto whoswho_dir
+
+label whoswho_mail
+   set targetname = userbyindex(viewidx, `username`)
+   print `  Subject: `
+   prompt msubj line
+   print `  Message: `
+   prompt mbody line
+   sendmail %{targetname} %{msubj} %{mbody}
+   set line = nl + `  ` + esc + `[1;32mMail sent to ` + targetname + `.` + esc + `[0m` + nl
+   print %{line}
+   anykey
+   goto whoswho_view
+
+label whoswho_comment
+   print `  Your comment: `
+   prompt ctext line
+   if ctext != `` then
+      set myname = userget(`username`)
+      set ckey = `prof_` + userbyindex(viewidx, `id`) + `_cmts`
+      set old = kvget(ckey)
+      set entry = myname + `: ` + ctext
+      if old == `` then
+         set r = kvset(ckey, entry)
+      else
+         set r = kvset(ckey, old + chr(10) + entry)
+      endif
+      set line = nl + `  ` + esc + `[1;32mComment added.` + esc + `[0m` + nl
+      print %{line}
+      anykey
+   endif
+   goto whoswho_view
+
+label whoswho_edit
+   cls
+   set myid = userget(`id`)
+   set curtag = kvget(`prof_` + myid + `_tag`)
+   set curloc = kvget(`prof_` + myid + `_loc`)
+   set line = nl + `  ` + esc + `[1;33mEDIT YOUR PROFILE` + esc + `[0m` + nl + nl
+   print %{line}
+   set line = `  Current tagline : ` + curtag + nl
+   print %{line}
+   set line = `  Current location: ` + curloc + nl + nl
+   print %{line}
+   print `  New tagline (blank keeps current): `
+   prompt newtag line
+   if newtag != `` then
+      set r = kvset(`prof_` + myid + `_tag`, newtag)
+   endif
+   print `  New location (blank keeps current): `
+   prompt newloc line
+   if newloc != `` then
+      set r = kvset(`prof_` + myid + `_loc`, newloc)
+   endif
+   set line = nl + `  ` + esc + `[1;32mProfile updated.` + esc + `[0m` + nl
+   print %{line}
+   anykey
+   goto whoswho_dir
+
+label whoswho_done
+}

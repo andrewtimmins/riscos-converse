@@ -77,7 +77,7 @@ def build_mainmenu():
     tab(s,5,17,"YOUR ACCOUNT"); tab(s,31,17,"SYSTEM"); tab(s,56,17,"SESSION")
     key(s,5,18,"U","Settings");    key(s,31,18,"C","Chat to sysop"); key(s,56,18,"?","Help")
     key(s,5,19,"G","Feedback");    key(s,31,19,"H","Hall of fame");  key(s,56,19,"Q","Log off")
-    key(s,5,20,"T","Tell a user")
+    key(s,5,20,"T","Tell a user"); key(s,31,20,"P","Who's Who")
 
     # ---- footer ----
     ggrad(s, 21, 4, COLS-4, 3)
