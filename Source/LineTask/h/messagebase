@@ -235,6 +235,23 @@ typedef struct
     LINETASK_FTN_ADDRESS from_ftn_address;  /* User's FTN AKA for this area */
 } message_composer_state;
 
+/* Arrow-navigable message-selection list (pick a message, Enter to read). */
+#define MB_LIST_MAX      400        /* message ids retained in the list */
+#define MB_LIST_PAGE     16         /* visible rows per screen */
+#define MB_LIST_CONTINUE 0          /* handle_key: stay in the list */
+#define MB_LIST_OPEN     1          /* handle_key: open the selected message */
+#define MB_LIST_QUIT     2          /* handle_key: leave the list */
+
+typedef struct
+{
+    int active;                     /* list mode is on (stays 1 while a read is nested) */
+    int ids[MB_LIST_MAX];           /* message ids in area order (oldest..newest) */
+    int count;
+    int selected;                   /* 0-based index into ids */
+    int top;                        /* index of the first visible row */
+    int esc;                        /* arrow escape parse state: 0/1/2 */
+} message_list_state;
+
 /* Session messagebase state */
 typedef struct
 {
@@ -246,6 +263,7 @@ typedef struct
     char user_realname[MAX_FROM_NAME];
     message_viewer_state viewer;
     message_composer_state composer;
+    message_list_state list;
 } messagebase_session;
 
 /* ******************************************************************************************************************************************************** */
@@ -295,6 +313,17 @@ int messagebase_show_message_info(messagebase_session *session,
 /* ******************************************************************************************************************************************************** */
 /* Message Viewer                                                                                                                                           */
 /* ******************************************************************************************************************************************************** */
+
+/* Arrow-navigable message-selection list */
+int messagebase_list_enter(messagebase_session *session,
+                           void (*output)(void *ctx, const char *text), void *ctx);
+void messagebase_list_render(messagebase_session *session,
+                             void (*output)(void *ctx, const char *text), void *ctx);
+int messagebase_list_is_active(messagebase_session *session);
+int messagebase_list_handle_key(messagebase_session *session, unsigned char byte,
+                                void (*output)(void *ctx, const char *text), void *ctx);
+int messagebase_list_selected_id(messagebase_session *session);
+void messagebase_list_close(messagebase_session *session);
 
 int messagebase_viewer_init(messagebase_session *session, int message_id);
 int messagebase_viewer_close(messagebase_session *session);

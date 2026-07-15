@@ -19,12 +19,9 @@ label mb_menu
 
 label mb_read
    cls
-   doing `Reading messages...`
    more 0
-   messagebase messages
+   messagebase browse
    more 1
-   doing
-   anykey
    goto mb_menu
 label mb_areas
    cls

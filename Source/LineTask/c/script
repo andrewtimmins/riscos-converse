@@ -865,6 +865,7 @@ static int input_complete_chat_reason(script_state *state);
 static int input_complete_more(script_state *state);
 /* Viewer/browser char input handlers */
 static int handle_mb_viewer_char(script_state *state, unsigned char byte);
+static int handle_mb_list_char(script_state *state, unsigned char byte);
 static int handle_fb_browse_char(script_state *state, unsigned char byte);
 static int handle_mb_compose_line(script_state *state);
 static int handle_mb_search_line(script_state *state);
@@ -2476,13 +2477,68 @@ static int handle_mb_viewer_char(script_state *state, unsigned char byte)
 
         case VIEWER_ACTION_QUIT:
         default:
-            /* Quit viewer - return to script */
+            /* Quit viewer. If we came from the message-selection list, redraw
+               the list and stay in it; otherwise return to the script. */
             messagebase_viewer_close(session);
+            if (messagebase_list_is_active(session))
+            {
+                script_write_output(state, "\033[2J");
+                messagebase_list_render(session, (void (*)(void*, const char*))script_write_output, state);
+                script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_LIST);
+                return 1;
+            }
             script_clear_input(state);
             state->status = SCRIPT_STATUS_RUNNING;
             script_process(state);
             return 1;
     }
+}
+
+/* Handle the arrow-navigable message-selection list. Arrows/PgUp/PgDn move the
+   highlight, Enter opens the selected message in the viewer (list stays active
+   so the viewer's quit returns here), Q leaves the list back to the script. */
+static int handle_mb_list_char(script_state *state, unsigned char byte)
+{
+    messagebase_session *session = NULL;
+    int action;
+
+    if (state->host.get_messagebase_session != NULL)
+        session = (messagebase_session *)state->host.get_messagebase_session(state->host.context);
+
+    if (session == NULL || !messagebase_list_is_active(session))
+    {
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+
+    action = messagebase_list_handle_key(session, byte,
+                 (void (*)(void*, const char*))script_write_output, state);
+
+    if (action == MB_LIST_OPEN)
+    {
+        int id = messagebase_list_selected_id(session);
+        if (id > 0)
+        {
+            messagebase_viewer_init(session, id);
+            script_write_output(state, "\033[2J\033[H");
+            messagebase_viewer_show_header(session, (void (*)(void*, const char*))script_write_output, state);
+            messagebase_viewer_show_body(session, (void (*)(void*, const char*))script_write_output, state);
+            messagebase_viewer_show_prompt(session, (void (*)(void*, const char*))script_write_output, state);
+            script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_VIEWER);
+        }
+        return 1;
+    }
+    if (action == MB_LIST_QUIT)
+    {
+        messagebase_list_close(session);
+        script_clear_input(state);
+        state->status = SCRIPT_STATUS_RUNNING;
+        script_process(state);
+        return 1;
+    }
+    return 1;   /* MB_LIST_CONTINUE - stay in the list */
 }
 
 /* Handle filebase browser char input */
@@ -2697,6 +2753,10 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                 if (state->input_context == SCRIPT_INPUT_CTX_MB_VIEWER)
                 {
                     return handle_mb_viewer_char(state, byte);
+                }
+                if (state->input_context == SCRIPT_INPUT_CTX_MB_LIST)
+                {
+                    return handle_mb_list_char(state, byte);
                 }
                 if (state->input_context == SCRIPT_INPUT_CTX_FB_BROWSE)
                 {
@@ -7365,6 +7425,27 @@ static void script_execute_instruction(script_state *state, script_instruction *
                     return;
                 }
                 /* enter_reader already displayed error message */
+            }
+            else if (script_stringcasecmp(subcmd, "browse") == 0)
+            {
+                /* Arrow-navigable message-selection list */
+                if (session->current_messagebase <= 0)
+                {
+                    script_write_output(state, "\r\n[Select a messagebase first]\r\n");
+                    break;
+                }
+                if (session->current_area <= 0)
+                {
+                    script_write_output(state, "\r\n[Select an area first]\r\n");
+                    break;
+                }
+
+                if (messagebase_list_enter(session, (void (*)(void*, const char*))script_write_output, state))
+                {
+                    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MB_LIST);
+                    return;
+                }
+                /* empty area / not selected - list_enter printed a message */
             }
             else if (script_stringcasecmp(subcmd, "read") == 0)
             {
