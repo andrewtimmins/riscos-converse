@@ -6,13 +6,13 @@
 
 label fb_menu
    menu `<Converse$Dir>.BBS.Screens.FileMenu` overlay `<Converse$Dir>.BBS.FileOverlay`
-      on `l`  help `List files in the current area`   goto fb_list
-      on `a`  help `Change file library or area`      goto fb_areas
-      on `s`  help `Scan for new files`               goto fb_scan
-      on `v`  help `View a file's details`            goto fb_view
-      on `d`  help `Download a file`                   goto fb_down
-      on `u`  help `Upload a file`                     goto fb_up
-      on `q`  help `Back to the main menu`             goto fb_quit
+      on `l`  at 6 13  text `List files`     help `List files in the current area`   goto fb_list
+      on `a`  at 6 14  text `Change area`    help `Change file library or area`      goto fb_areas
+      on `s`  at 6 15  text `Scan new files` help `Scan for new files`               goto fb_scan
+      on `v`  at 6 16  text `View file info` help `View a file's details`            goto fb_view
+      on `d`  at 32 13 text `Download a file` help `Download a file`                  goto fb_down
+      on `u`  at 32 14 text `Upload a file`  help `Upload a file`                     goto fb_up
+      on `q`  at 57 13 text `Back to main`   help `Back to the main menu`             goto fb_quit
    endmenu
 
 label fb_list

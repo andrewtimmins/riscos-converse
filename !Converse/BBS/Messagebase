@@ -6,15 +6,15 @@
 
 label mb_menu
    menu `<Converse$Dir>.BBS.Screens.MsgMenu` overlay `<Converse$Dir>.BBS.MsgOverlay`
-      on `r`  help `Read messages in the current area`   goto mb_read
-      on `a`  help `Change message base or area`         goto mb_areas
-      on `s`  help `Scan for new posts`                  goto mb_scan
-      on `i`  help `Read your private inbox`             goto mb_inbox
-      on `p`  help `Post a public message`               goto mb_post
-      on `e`  help `Send private email`                  goto mb_email
-      on `n`  help `Send FidoNet netmail`                goto mb_netmail
-      on `f`  help `Leave feedback for the sysop`        goto mb_feedback
-      on `q`  help `Back to the main menu`               goto mb_quit
+      on `r`  at 6 13  text `Read messages`  help `Read messages in the current area`   goto mb_read
+      on `a`  at 6 14  text `Change area`    help `Change message base or area`         goto mb_areas
+      on `s`  at 6 15  text `Scan new posts` help `Scan for new posts`                  goto mb_scan
+      on `i`  at 6 16  text `Your inbox`     help `Read your private inbox`             goto mb_inbox
+      on `p`  at 32 13 text `Post public`    help `Post a public message`               goto mb_post
+      on `e`  at 32 14 text `Private email`  help `Send private email`                  goto mb_email
+      on `n`  at 32 15 text `Netmail`        help `Send FidoNet netmail`                goto mb_netmail
+      on `f`  at 32 16 text `Feedback`       help `Leave feedback for the sysop`        goto mb_feedback
+      on `q`  at 57 13 text `Back to main`   help `Back to the main menu`               goto mb_quit
    endmenu
 
 label mb_read

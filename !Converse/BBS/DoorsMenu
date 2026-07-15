@@ -13,17 +13,17 @@
 
 label doors_menu
    menu `<Converse$Dir>.BBS.Screens.DoorsGm` overlay `<Converse$Dir>.BBS.DoorsOverlay`
-      on `1`  help `Play Tetris`            goto run_tetris
-      on `2`  help `Play Snake`             goto run_snake
-      on `3`  help `Play Breakout`          goto run_breakout
-      on `4`  help `Play Boxed In`          goto run_boxed
-      on `5`  help `Play Trivia`            goto run_trivia
-      on `6`  help `Take the Purity Test`   goto run_purity
-      on `7`  help `Visit The Wall`         goto run_wall
-      on `l`  help `InterBBS league table`  goto run_league
+      on `1`  at 6 13  text `Tetris`      help `Play Tetris`            goto run_tetris
+      on `2`  at 6 14  text `Snake`       help `Play Snake`             goto run_snake
+      on `3`  at 6 15  text `Breakout`    help `Play Breakout`          goto run_breakout
+      on `4`  at 32 13 text `Boxed In`    help `Play Boxed In`          goto run_boxed
+      on `5`  at 32 14 text `Trivia`      help `Play Trivia`            goto run_trivia
+      on `6`  at 32 15 text `Purity Test` help `Take the Purity Test`   goto run_purity
+      on `7`  at 57 13 text `The Wall`    help `Visit The Wall`         goto run_wall
+      on `l`  at 57 14 text `InterBBS League` help `InterBBS league table`  goto run_league
       on `s`  level 500 help `Sync league to peers (sysop)`  goto run_leaguesync
       on `r`  level 500 help `Reset the league table (sysop)` goto run_leaguereset
-      on `q`  help `Back to the main menu`  goto doors_quit
+      on `q`  at 57 15 text `Back to main` help `Back to the main menu`  goto doors_quit
    endmenu
 
 label run_tetris
