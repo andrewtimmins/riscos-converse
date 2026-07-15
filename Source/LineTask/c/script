@@ -6228,6 +6228,31 @@ static char *script_expr_call_function_ext(script_state *state, const char *name
         script_set_ok(state, r);
         return expr_from_long(r);
     }
+    /* InterBBS league. leaguescore(key,player,score) posts a local score;
+       leaguecount() -> entries; leagueentry(index, "key"|"player"|"board"|"score"). */
+    if (script_stringcasecmp(name, "leaguescore") == 0)
+    {
+        int r = h->league_report ? h->league_report(h->context, EXPR_ARG(0), EXPR_ARG(1), atoi(EXPR_ARG(2))) : -1;
+        script_set_ok(state, r >= 0 ? 1 : 0);
+        return expr_from_long(r);
+    }
+    if (script_stringcasecmp(name, "leaguecount") == 0)
+    {
+        return expr_from_long(h->league_count ? h->league_count(h->context) : 0);
+    }
+    if (script_stringcasecmp(name, "leagueentry") == 0)
+    {
+        char buf[64];
+        const char *f = EXPR_ARG(1);
+        int want_score = (script_stringcasecmp(f, "score") == 0);
+        int fld = script_stringcasecmp(f, "player") == 0 ? 1 :
+                  script_stringcasecmp(f, "board")  == 0 ? 2 : 0;   /* 0 = key */
+        int score;
+        buf[0] = '\0';
+        score = h->league_entry ? h->league_entry(h->context, atoi(EXPR_ARG(0)), fld, buf, (int)sizeof(buf)) : -1;
+        if (want_score) return expr_from_long(score);
+        return expr_strdup(buf);
+    }
     /* qwkpack(path) -> build a QWK offline-mail packet at path; returns the
        number of messages packed, or -1 on error. */
     if (script_stringcasecmp(name, "qwkpack") == 0)

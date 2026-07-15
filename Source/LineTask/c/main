@@ -81,6 +81,7 @@
 #define SWI_CONVERSEBBS_LINE 0x5AA81
 #define SWI_CONVERSEBBS_ACTIVITY 0x5AA82
 #define SWI_CONVERSEBBS_CHAT 0x5AA89
+#define SWI_CONVERSEBBS_LEAGUE 0x5AA8A
 
 /* Multi-node chat (teleconference) reason codes - match Support h/linestate */
 #define CHAT_REASON_JOIN 0
@@ -90,6 +91,13 @@
 #define CHAT_REASON_ACTIVE 4
 #define CHAT_REASON_NICK 5
 #define CHAT_MSG_LEN 200        /* must match Support h/linestate */
+
+/* InterBBS league reason codes - match Support h/linestate */
+#define LEAGUE_REASON_REPORT 0
+#define LEAGUE_REASON_IMPORT 1
+#define LEAGUE_REASON_COUNT 2
+#define LEAGUE_REASON_ENTRY 3
+#define LEAGUE_REASON_CLEAR 4
 
 /* Line state reason codes and field indices */
 #define LINE_REASON_SET 0
@@ -235,6 +243,11 @@ static const char *script_host_get_user_by_index(void *context, int index,
                                                   const char *field);
 static int script_host_notify_line(void *context, int line, const char *text);
 static int script_host_notify_user(void *context, const char *key, const char *text);
+static int script_host_league_report(void *context, const char *key,
+                                     const char *player, int score);
+static int script_host_league_count(void *context);
+static int script_host_league_entry(void *context, int index, int field,
+                                    char *buf, int buflen);
 static int script_host_qwk_pack(void *context, const char *out_path);
 static int script_host_qwk_download(void *context, int protocol, int new_only);
 static int script_host_qwk_upload(void *context, int protocol);
@@ -484,6 +497,9 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.get_user_by_index = script_host_get_user_by_index;
     host.notify_line = script_host_notify_line;
     host.notify_user = script_host_notify_user;
+    host.league_report = script_host_league_report;
+    host.league_count = script_host_league_count;
+    host.league_entry = script_host_league_entry;
     host.qwk_pack = script_host_qwk_pack;
     host.qwk_download = script_host_qwk_download;
     host.qwk_upload = script_host_qwk_upload;
@@ -2918,6 +2934,45 @@ static int script_host_notify_user(void *context, const char *key, const char *t
       return script_host_notify_line(context, i, text);
   }
   return 0; /* user not currently online */
+}
+
+/* InterBBS league: post a local score / read the shared table, via the Support
+   module SWI ConverseBBS_League (0x5AA8A). */
+static int script_host_league_report(void *context, const char *key,
+                                     const char *player, int score) {
+  _kernel_swi_regs regs;
+  (void)context;
+  if (key == NULL || player == NULL) return -1;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = LEAGUE_REASON_REPORT;
+  regs.r[1] = (int)key;
+  regs.r[2] = (int)player;
+  regs.r[3] = score;
+  if (_kernel_swi(SWI_CONVERSEBBS_LEAGUE, &regs, &regs) != NULL) return -1;
+  return regs.r[0];
+}
+
+static int script_host_league_count(void *context) {
+  _kernel_swi_regs regs;
+  (void)context;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = LEAGUE_REASON_COUNT;
+  if (_kernel_swi(SWI_CONVERSEBBS_LEAGUE, &regs, &regs) != NULL) return 0;
+  return regs.r[0];
+}
+
+static int script_host_league_entry(void *context, int index, int field,
+                                    char *buf, int buflen) {
+  _kernel_swi_regs regs;
+  (void)context;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = LEAGUE_REASON_ENTRY;
+  regs.r[1] = index;
+  regs.r[2] = field;
+  regs.r[3] = (int)buf;
+  regs.r[4] = buflen;
+  if (_kernel_swi(SWI_CONVERSEBBS_LEAGUE, &regs, &regs) != NULL) return -1;
+  return regs.r[0];
 }
 
 /* Build a QWK offline-mail packet of the caller's current message base. */

@@ -66,6 +66,7 @@ door = build("D O O R S   &   G A M E S", [
                             ("5","Trivia"),
                             ("6","Purity Test")]),
     (C3, "MORE",           [("7","The Wall"),
+                            ("L","InterBBS League"),
                             ("Q","Back to main")]),
 ])
 # static flavour hint on the context row for doors (no live base/area here)

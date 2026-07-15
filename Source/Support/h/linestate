@@ -60,6 +60,33 @@ typedef enum
 #define CHAT_MSG_LEN     200    /* max bytes per posted message */
 #define CHAT_NICK_LEN    32     /* max nick length */
 
+/* InterBBS door-score league - a normalised high-score store shared across all
+   line processes (and fed by the FTN mailer from peer boards). Doors report a
+   score by SWI, so no per-door score-file parsing. SWI ConverseBBS_League
+   (0x5AA8A). Reason codes: */
+typedef enum
+{
+    LEAGUE_REASON_REPORT = 0,   /* R1=key ptr, R2=player ptr, R3=score: post a LOCAL score */
+    LEAGUE_REASON_IMPORT = 1,   /* R1=key ptr, R2=player ptr, R3=score, R4=board ptr: merge a PEER score */
+    LEAGUE_REASON_COUNT  = 2,   /* -> R0 = number of used entries */
+    LEAGUE_REASON_ENTRY  = 3,   /* R1=index, R2=field(0=key/1=player/2=board), R3=buf, R4=len -> R0=score */
+    LEAGUE_REASON_CLEAR  = 4    /* wipe the table (sysop reset) */
+} LEAGUE_REASON;
+
+#define LEAGUE_MAX_ENTRIES  256    /* total (key,player,board) rows retained */
+#define LEAGUE_KEY_LEN      24     /* shared door key, e.g. "snake" */
+#define LEAGUE_PLAYER_LEN   40
+#define LEAGUE_BOARD_LEN    40     /* "" = this (local) board */
+
+typedef struct
+{
+    char key[LEAGUE_KEY_LEN];
+    char player[LEAGUE_PLAYER_LEN];
+    char board[LEAGUE_BOARD_LEN];
+    int  score;
+    int  used;
+} LEAGUE_ENTRY;
+
 /* Per-line state structure */
 typedef struct
 {
@@ -81,6 +108,7 @@ void linestate_finalise(void);
 void linestate_swi_handler(_kernel_swi_regs *r);
 void activity_swi_handler(_kernel_swi_regs *r);
 void chat_swi_handler(_kernel_swi_regs *r);
+void league_swi_handler(_kernel_swi_regs *r);
 
 /* Direct access for CLI commands */
 const LINE_STATE *linestate_get(int line);

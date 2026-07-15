@@ -17,8 +17,16 @@ static int   chat_in_room[LINESTATE_MAX_LINES];
 static long  chat_last_seen[LINESTATE_MAX_LINES];
 static char  chat_nick[LINESTATE_MAX_LINES][CHAT_NICK_LEN];
 
+/* InterBBS league score table (see the league section below for the SWI
+   handler). In-RMA and volatile for now; the FTN mailer owns the on-disk copy
+   and re-populates this via LEAGUE_REASON_IMPORT at startup. */
+static LEAGUE_ENTRY league_table[LEAGUE_MAX_ENTRIES];
+static int          league_count;               /* contiguous: entries [0..count) are used */
+
 /* Static helpers */
 static int linestate_valid_line(int line);
+static void league_merge(const char *key, const char *player, const char *board, int score);
+static void league_sort(void);
 
 /* ******************************************************************************************************************************************************** */
 /* Initialisation and Finalisation                                                                                                                          */
@@ -37,6 +45,8 @@ void linestate_initialise(void)
     }
     chat_seq = 0;
     memset(chat_ring, 0, sizeof(chat_ring));
+    memset(league_table, 0, sizeof(league_table));
+    league_count = 0;
 }
 
 void linestate_finalise(void)
@@ -327,6 +337,124 @@ void chat_swi_handler(_kernel_swi_regs *r)
 
         case CHAT_REASON_NICK:
             r->r[0] = chat_in_room[line] ? (int)chat_nick[line] : 0;
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* InterBBS score league (SWI ConverseBBS_League 0x5AA8A)                                                                                                   */
+/* ******************************************************************************************************************************************************** */
+
+/* Merge one (key, player, board) score into the table: keep the player's best
+   score per door per board. board=="" is the local board. When the table is
+   full, a genuinely higher score evicts the current lowest; otherwise it is
+   dropped. Entries are kept contiguous in [0..league_count). */
+static void league_merge(const char *key, const char *player, const char *board, int score)
+{
+    int i, minidx = 0;
+    if (key == NULL || player == NULL) return;
+    if (board == NULL) board = "";
+    if (key[0] == '\0' || player[0] == '\0') return;
+
+    for (i = 0; i < league_count; i++)
+    {
+        if (strcmp(league_table[i].key, key) == 0 &&
+            strcmp(league_table[i].player, player) == 0 &&
+            strcmp(league_table[i].board, board) == 0)
+        {
+            if (score > league_table[i].score) league_table[i].score = score;
+            return;                              /* existing entry updated */
+        }
+        if (league_table[i].score < league_table[minidx].score) minidx = i;
+    }
+
+    if (league_count >= LEAGUE_MAX_ENTRIES)
+    {
+        if (league_count == 0 || score <= league_table[minidx].score) return;  /* full, not better */
+        i = minidx;                              /* evict the weakest */
+    }
+    else
+    {
+        i = league_count++;                      /* append */
+    }
+
+    memset(&league_table[i], 0, sizeof(LEAGUE_ENTRY));
+    strncpy(league_table[i].key, key, LEAGUE_KEY_LEN - 1);
+    strncpy(league_table[i].player, player, LEAGUE_PLAYER_LEN - 1);
+    strncpy(league_table[i].board, board, LEAGUE_BOARD_LEN - 1);
+    league_table[i].score = score;
+    league_table[i].used = 1;
+    league_sort();
+}
+
+/* Keep the table ordered by door key (ascending) then score (descending), so a
+   reader can walk it, start a new section when the key changes, and rank rows
+   within each door top-first. Insertion sort - the table is small. */
+static void league_sort(void)
+{
+    int i, j;
+    for (i = 1; i < league_count; i++)
+    {
+        LEAGUE_ENTRY tmp = league_table[i];
+        j = i - 1;
+        while (j >= 0)
+        {
+            int c = strcmp(league_table[j].key, tmp.key);
+            if (c < 0 || (c == 0 && league_table[j].score >= tmp.score)) break;
+            league_table[j + 1] = league_table[j];
+            j--;
+        }
+        league_table[j + 1] = tmp;
+    }
+}
+
+void league_swi_handler(_kernel_swi_regs *r)
+{
+    switch ((LEAGUE_REASON)r->r[0])
+    {
+        case LEAGUE_REASON_REPORT:
+            league_merge((const char *)r->r[1], (const char *)r->r[2], "", (int)r->r[3]);
+            r->r[0] = 0;
+            break;
+
+        case LEAGUE_REASON_IMPORT:
+            league_merge((const char *)r->r[1], (const char *)r->r[2],
+                         (const char *)r->r[4], (int)r->r[3]);
+            r->r[0] = 0;
+            break;
+
+        case LEAGUE_REASON_COUNT:
+            r->r[0] = league_count;
+            break;
+
+        case LEAGUE_REASON_ENTRY:
+        {
+            int idx = (int)r->r[1];
+            int field = (int)r->r[2];
+            char *buf = (char *)r->r[3];
+            int buflen = (int)r->r[4];
+            const char *src;
+            if (idx < 0 || idx >= league_count) { r->r[0] = -1; break; }
+            src = field == 1 ? league_table[idx].player :
+                  field == 2 ? league_table[idx].board  :
+                               league_table[idx].key;
+            if (buf != NULL && buflen > 0)
+            {
+                strncpy(buf, src, (size_t)(buflen - 1));
+                buf[buflen - 1] = '\0';
+            }
+            r->r[0] = league_table[idx].score;
+            break;
+        }
+
+        case LEAGUE_REASON_CLEAR:
+            memset(league_table, 0, sizeof(league_table));
+            league_count = 0;
+            r->r[0] = 0;
             break;
 
         default:

@@ -20,6 +20,7 @@ label doors_menu
       on `5`  help `Play Trivia`            goto run_trivia
       on `6`  help `Take the Purity Test`   goto run_purity
       on `7`  help `Visit The Wall`         goto run_wall
+      on `l`  help `InterBBS league table`  goto run_league
       on `q`  help `Back to the main menu`  goto doors_quit
    endmenu
 
@@ -57,6 +58,9 @@ label run_wall
    doing `Visiting The Wall...`
    call riscbbsdoor `<Converse$Dir>.BBS.Doors.!Wall.!Run %{line}`
    doing
+   goto doors_menu
+label run_league
+   script `<Converse$Dir>.BBS.League`
    goto doors_menu
 
 label doors_quit

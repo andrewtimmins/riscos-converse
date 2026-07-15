@@ -108,6 +108,12 @@ typedef struct script_host
      * user (by id or username) is online. Return 1 on success. */
     int (*notify_line)(void *context, int line, const char *text);
     int (*notify_user)(void *context, const char *key, const char *text);
+    /* InterBBS score league (Support module SWI ConverseBBS_League 0x5AA8A).
+     * report: post a local score. count: number of table entries. entry: read
+     * one entry's field (0=key/1=player/2=board) into buf, returns its score. */
+    int (*league_report)(void *context, const char *key, const char *player, int score);
+    int (*league_count)(void *context);
+    int (*league_entry)(void *context, int index, int field, char *buf, int buflen);
     /* Build a QWK offline-mail packet of the caller's current message base into
      * out_path (a .QWK zip). Returns messages packed (>=0), or -1 on error. */
     int (*qwk_pack)(void *context, const char *out_path);

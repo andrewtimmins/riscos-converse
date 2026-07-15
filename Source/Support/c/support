@@ -30,7 +30,8 @@ typedef enum
     SWI_FTNCONFIG = 6,
     SWI_ACCESSCONFIG = 7,
     SWI_SERIALCONFIG = 8,
-    SWI_CHAT = 9                /* 0x5AA89: multi-node chat room */
+    SWI_CHAT = 9,               /* 0x5AA89: multi-node chat room */
+    SWI_LEAGUE = 10             /* 0x5AA8A: InterBBS score league */
 } SUPPORT_SWI;
 
 /* Command numbers */
@@ -137,6 +138,10 @@ _kernel_oserror *module_swi_handler(int swi_no, _kernel_swi_regs *r, void *pw)
 
         case SWI_CHAT:
             chat_swi_handler(r);
+            break;
+
+        case SWI_LEAGUE:
+            league_swi_handler(r);
             break;
 
         case SWI_SERIALCONFIG:
