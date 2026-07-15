@@ -29,6 +29,7 @@
 #include "door_native.h"
 #include "door_riscbbs.h"
 #include "filebase.h"
+#include "unzip.h"
 #include "iconnames.h"
 #include "main.h"
 #include "messagebase.h"
@@ -905,6 +906,53 @@ static int line_force_quit_door(line_task_state *state) {
 /* Begin an incremental temp->filebase copy: open the temp file, reserve a file
    id, and record the state. The bytes are copied by upload_copy_step() across
    subsequent polls. Returns the new file id (>0), or -1 if nothing started. */
+/* If temp_path is a ZIP containing FILE_ID.DIZ, capture its text into out as a
+   compact one-line description (newlines -> " / ", control chars dropped).
+   Returns 1 if a description was extracted. */
+static int extract_diz(const char *temp_path, char *out, size_t outsz) {
+  UNZIP_ARCHIVE archive;
+  UNZIP_ENTRY entry;
+  int idx;
+  FILE *df;
+  size_t n, i, o;
+  char raw[512];
+  const char *diztmp = "<Converse$Dir>.Temp.diztmp";
+
+  if (temp_path == NULL || out == NULL || outsz == 0) return 0;
+  if (unzip_open(&archive, temp_path) != UNZIP_OK) return 0;
+  idx = unzip_find_entry(&archive, "FILE_ID.DIZ");
+  if (idx < 0 || unzip_get_entry(&archive, idx, &entry) != UNZIP_OK ||
+      unzip_extract_entry(&archive, &entry, diztmp) != UNZIP_OK) {
+    unzip_close(&archive);
+    return 0;
+  }
+  unzip_close(&archive);
+
+  df = fopen(diztmp, "rb");
+  if (df == NULL) return 0;
+  n = fread(raw, 1, sizeof(raw) - 1, df);
+  raw[n] = '\0';
+  fclose(df);
+  remove(diztmp);
+
+  o = 0;
+  for (i = 0; i < n && o < outsz - 1; i++) {
+    unsigned char c = (unsigned char)raw[i];
+    if (c == '\r') continue;
+    if (c == '\n') {
+      if (o > 0 && out[o - 1] != ' ' && o + 3 < outsz - 1) {
+        out[o++] = ' '; out[o++] = '/'; out[o++] = ' ';
+      }
+      continue;
+    }
+    if (c < 32) continue;
+    out[o++] = (char)c;
+  }
+  out[o] = '\0';
+  while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '/')) out[--o] = '\0';
+  return o > 0 ? 1 : 0;
+}
+
 static int upload_copy_start(line_task_state *state, int base_id, int area_id,
                              const char *temp_path, const char *filename,
                              const char *description, int uploaded_by,
@@ -912,6 +960,8 @@ static int upload_copy_start(line_task_state *state, int base_id, int area_id,
   FILE *fp;
   long size;
   int file_id;
+  char diz_desc[FB_MAX_DESC];
+  const char *use_desc = description;
 
   fp = fopen(temp_path, "rb");
   if (fp == NULL) {
@@ -925,7 +975,21 @@ static int upload_copy_start(line_task_state *state, int base_id, int area_id,
     return -1;
   }
 
-  file_id = filebase_begin_upload(base_id, area_id, filename, description,
+  /* FILE_ID.DIZ: if the uploader left the description blank, pull it from a
+     FILE_ID.DIZ inside the (still-in-temp) archive. */
+  {
+    int blank = (description == NULL);
+    if (!blank) {
+      const char *q = description;
+      blank = 1;
+      while (*q) { if (*q != ' ' && *q != '\t') { blank = 0; break; } q++; }
+    }
+    if (blank && extract_diz(temp_path, diz_desc, sizeof(diz_desc))) {
+      use_desc = diz_desc;
+    }
+  }
+
+  file_id = filebase_begin_upload(base_id, area_id, filename, use_desc,
                                   uploaded_by, 0, NULL);
   if (file_id <= 0) {
     fclose(fp);
