@@ -178,6 +178,15 @@ typedef struct upload_copy_state
     char  size_str[32];           /* pretty size string for the message */
 } upload_copy_state;
 
+/* Multi-node teleconference. The shared room lives in the Support module
+   (SWI ConverseBBS_Chat); this is just the per-line input line for the chat UI. */
+typedef struct mchat_state
+{
+    int  active;
+    char input[200];
+    int  input_len;
+} mchat_state;
+
 typedef struct line_task_state
 {
     /* Core line/session identity */
@@ -218,7 +227,10 @@ typedef struct line_task_state
     
     /* Sysop chat */
     chat_state chat;
-    
+
+    /* Multi-node teleconference */
+    mchat_state mchat;
+
     /* ANSI terminal emulator */
     ansiterm_state *terminal;
     

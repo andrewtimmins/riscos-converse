@@ -44,6 +44,22 @@ typedef enum
     ACTIVITY_REASON_GET = 1     /* R1=line -> R0=text string ptr */
 } ACTIVITY_REASON;
 
+/* Multi-node chat (teleconference) - single global room shared across all line
+   processes. SWI ConverseBBS_Chat (0x5AA89). Reason codes: */
+typedef enum
+{
+    CHAT_REASON_JOIN   = 0,     /* R1=line, R2=nick ptr: enter room, start seeing new messages */
+    CHAT_REASON_LEAVE  = 1,     /* R1=line: leave room */
+    CHAT_REASON_POST   = 2,     /* R1=line, R2=text ptr: post a line to the room */
+    CHAT_REASON_POLL   = 3,     /* R1=line, R2=buf, R3=buflen -> R0=1 + next unseen msg, or R0=0 */
+    CHAT_REASON_ACTIVE = 4,     /* R1=line -> R0 = is this line in the room? */
+    CHAT_REASON_NICK   = 5      /* R1=line -> R0 = ptr to that line's nick (in-room only, else NULL) */
+} CHAT_REASON;
+
+#define CHAT_RING_SIZE   64     /* messages retained in the shared ring */
+#define CHAT_MSG_LEN     200    /* max bytes per posted message */
+#define CHAT_NICK_LEN    32     /* max nick length */
+
 /* Per-line state structure */
 typedef struct
 {
@@ -64,6 +80,7 @@ void linestate_finalise(void);
 /* SWI handlers */
 void linestate_swi_handler(_kernel_swi_regs *r);
 void activity_swi_handler(_kernel_swi_regs *r);
+void chat_swi_handler(_kernel_swi_regs *r);
 
 /* Direct access for CLI commands */
 const LINE_STATE *linestate_get(int line);

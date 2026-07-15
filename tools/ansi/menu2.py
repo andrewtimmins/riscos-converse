@@ -71,6 +71,7 @@ def build_mainmenu():
     key(s,5,13,"S","Scan new posts"); key(s,31,13,"D","Doors & games");  key(s,56,13,"B","Bulletins")
     key(s,5,14,"I","Your inbox");     key(s,31,14,"O","Who's online");   key(s,56,14,"L","Last callers")
     key(s,5,15,"A","QWK mail");                                          key(s,56,15,"V","Voting booth")
+    key(s,56,16,"N","Node chat")
 
     # ---- menu block 2 ----
     tab(s,5,17,"YOUR ACCOUNT"); tab(s,31,17,"SYSTEM"); tab(s,56,17,"SESSION")

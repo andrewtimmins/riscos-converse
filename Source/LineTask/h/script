@@ -46,6 +46,7 @@ typedef struct script_host
     void (*force_disconnect)(void *context);
     void (*report_activity)(void *context, const char *text);
     void (*report_online_users)(void *context);
+    void (*enter_teleconference)(void *context);   /* multi-node chat: enters chat mode; script parks (WAIT_DOOR) until /quit */
     int (*get_line_id)(void *context);
     int (*get_task_handle)(void *context);
     /* Filebase callbacks */
@@ -229,6 +230,7 @@ typedef enum
     SCRIPT_CMD_DOING,
     SCRIPT_CMD_LOGOFF,
     SCRIPT_CMD_ONLINE,
+    SCRIPT_CMD_TELECONF,
     SCRIPT_CMD_FILEBASE,
     SCRIPT_CMD_LOGON,
     SCRIPT_CMD_SENDFILE,

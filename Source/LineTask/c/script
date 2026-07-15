@@ -4312,6 +4312,12 @@ static int script_build_instruction(script_state *state, char *line, int line_nu
         return 1;
     }
 
+    if (script_stringcasecmp(token, "teleconf") == 0)
+    {
+        instruction->type = SCRIPT_CMD_TELECONF;
+        return 1;
+    }
+
     if (script_stringcasecmp(token, "loginscan") == 0)
     {
         instruction->type = SCRIPT_CMD_LOGINSCAN;
@@ -8047,6 +8053,21 @@ static void script_execute_instruction(script_state *state, script_instruction *
             if (state->host.report_online_users != NULL)
             {
                 state->host.report_online_users(state->host.context);
+            }
+        }
+        break;
+
+        case SCRIPT_CMD_TELECONF:
+        {
+            /* Enter the multi-node chat room. The host puts the line into chat
+               mode; the script parks until the caller types /quit, at which
+               point mchat_stop() calls script_notify_door_closed() to resume
+               (reusing the door wait/resume path - no real door is running). */
+            if (state->host.enter_teleconference != NULL)
+            {
+                state->host.enter_teleconference(state->host.context);
+                state->status = SCRIPT_STATUS_WAIT_DOOR;
+                return;
             }
         }
         break;

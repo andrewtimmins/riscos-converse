@@ -10,6 +10,13 @@
 
 static LINE_STATE line_states[LINESTATE_MAX_LINES];
 
+/* Multi-node chat room (see the chat section below for the SWI handler). */
+static char  chat_ring[CHAT_RING_SIZE][CHAT_MSG_LEN];
+static long  chat_seq;                          /* seq of the most recent message (0 = none yet) */
+static int   chat_in_room[LINESTATE_MAX_LINES];
+static long  chat_last_seen[LINESTATE_MAX_LINES];
+static char  chat_nick[LINESTATE_MAX_LINES][CHAT_NICK_LEN];
+
 /* Static helpers */
 static int linestate_valid_line(int line);
 
@@ -24,7 +31,12 @@ void linestate_initialise(void)
     for (i = 0; i < LINESTATE_MAX_LINES; i++)
     {
         memset(&line_states[i], 0, sizeof(LINE_STATE));
+        chat_in_room[i] = 0;
+        chat_last_seen[i] = 0;
+        chat_nick[i][0] = '\0';
     }
+    chat_seq = 0;
+    memset(chat_ring, 0, sizeof(chat_ring));
 }
 
 void linestate_finalise(void)
@@ -208,6 +220,113 @@ void activity_swi_handler(_kernel_swi_regs *r)
 
         case ACTIVITY_REASON_GET:
             r->r[0] = (int)line_states[line].activity;
+            break;
+
+        default:
+            r->r[0] = -1;
+            break;
+    }
+}
+
+/* ******************************************************************************************************************************************************** */
+/* Multi-node chat (teleconference) - single global room                                                                                                    */
+/*                                                                                                                                                          */
+/* A shared message ring + a monotonic sequence counter live here in the Support */
+/* module, so every line process (they are separate LineTask instances) sees one */
+/* room. A line JOINs (its last-seen seq is set to "now" so it only sees new      */
+/* traffic), POSTs formatted lines, and POLLs to drain messages it hasn't seen.   */
+/* ******************************************************************************************************************************************************** */
+
+void chat_swi_handler(_kernel_swi_regs *r)
+{
+    CHAT_REASON reason;
+    int line;
+
+    if (r == NULL)
+    {
+        return;
+    }
+
+    reason = (CHAT_REASON)r->r[0];
+    line = r->r[1];
+
+    if (!linestate_valid_line(line))
+    {
+        r->r[0] = -1;
+        return;
+    }
+
+    switch (reason)
+    {
+        case CHAT_REASON_JOIN:
+        {
+            const char *nick = (const char *)r->r[2];
+            chat_in_room[line] = 1;
+            chat_last_seen[line] = chat_seq;    /* only see messages from now on */
+            if (nick != NULL)
+            {
+                strncpy(chat_nick[line], nick, CHAT_NICK_LEN - 1);
+                chat_nick[line][CHAT_NICK_LEN - 1] = '\0';
+            }
+            else
+            {
+                chat_nick[line][0] = '\0';
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case CHAT_REASON_LEAVE:
+            chat_in_room[line] = 0;
+            r->r[0] = 0;
+            break;
+
+        case CHAT_REASON_POST:
+        {
+            const char *text = (const char *)r->r[2];
+            if (text != NULL)
+            {
+                long idx;
+                chat_seq++;
+                idx = (chat_seq - 1) % CHAT_RING_SIZE;
+                strncpy(chat_ring[idx], text, CHAT_MSG_LEN - 1);
+                chat_ring[idx][CHAT_MSG_LEN - 1] = '\0';
+            }
+            r->r[0] = 0;
+            break;
+        }
+
+        case CHAT_REASON_POLL:
+        {
+            char *buf = (char *)r->r[2];
+            int buflen = r->r[3];
+            long target = chat_last_seen[line] + 1;
+            long oldest;
+
+            if (buf == NULL || buflen <= 0 || target > chat_seq)
+            {
+                r->r[0] = 0;                    /* nothing new */
+                break;
+            }
+
+            /* If we have fallen behind the ring, skip to the oldest retained. */
+            oldest = chat_seq - CHAT_RING_SIZE + 1;
+            if (oldest < 1) oldest = 1;
+            if (target < oldest) target = oldest;
+
+            strncpy(buf, chat_ring[(target - 1) % CHAT_RING_SIZE], (size_t)(buflen - 1));
+            buf[buflen - 1] = '\0';
+            chat_last_seen[line] = target;
+            r->r[0] = 1;                        /* delivered one message */
+            break;
+        }
+
+        case CHAT_REASON_ACTIVE:
+            r->r[0] = chat_in_room[line];
+            break;
+
+        case CHAT_REASON_NICK:
+            r->r[0] = chat_in_room[line] ? (int)chat_nick[line] : 0;
             break;
 
         default:

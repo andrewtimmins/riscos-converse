@@ -14,6 +14,7 @@ label main_menu
       on `w` help `The Wall (one-liners)` script `<Converse$Dir>.BBS.Oneliners`
       on `b` help `Bulletins & news`     script `<Converse$Dir>.BBS.Bulletins`
       on `l` help `Last callers`         script `<Converse$Dir>.BBS.LastCallers`
+      on `n` help `Node chat (live teleconference with other callers)` goto go_chatroom
       on `u` help `Your settings`        script `<Converse$Dir>.BBS.Settings`
       on `g` help `Leave feedback`       script `<Converse$Dir>.BBS.Feedback`
       on `h` help `Hall of fame / stats` script `<Converse$Dir>.BBS.Stats`
@@ -60,6 +61,10 @@ label go_chat
    sysopchat
    doing
    anykey
+   goto main_menu
+
+label go_chatroom
+   teleconf
    goto main_menu
 
 label go_quit
