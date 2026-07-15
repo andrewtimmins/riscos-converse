@@ -205,7 +205,8 @@ typedef enum
     SCRIPT_INPUT_CTX_ANSI_DETECT,   /* ANSI terminal detection */
     SCRIPT_INPUT_CTX_MENU,          /* native menu key selection */
     SCRIPT_INPUT_CTX_MENU_PW,       /* native menu: password gate entry */
-    SCRIPT_INPUT_CTX_MENU_HELP      /* native menu: '?' help page, any key returns */
+    SCRIPT_INPUT_CTX_MENU_HELP,     /* native menu: '?' help page, any key returns */
+    SCRIPT_INPUT_CTX_LIGHTBAR       /* native lightbar menu: arrow nav + Enter/hotkey */
 } script_input_context;
 
 typedef enum
@@ -398,6 +399,13 @@ typedef struct script_state
     size_t menu_instr_index;
     int menu_pw_item;               /* index of the `on` item awaiting a password, -1 = none */
     int menu_overlay_phase;         /* menu overlay: 0 = draw art (+ run overlay), 1 = overlay done, arm input */
+    /* Lightbar menu state: a menu is a lightbar if any `on` item carries an
+       `at <col> <row>` position. The engine highlights the selected chip (amber
+       bar) over the backdrop art and moves it with the arrow keys; Enter fires
+       the selected item, hotkeys still work. Re-derived from the `on` items each
+       (re)display, so it survives nested menus via the call stack. */
+    int lightbar_sel;               /* index (0-based, into positioned `on` items) of the highlighted chip */
+    int lightbar_esc;               /* arrow-key escape parse: 0 idle, 1 got ESC, 2 got ESC[ or ESC O */
     /* Logon state */
     char logon_username[64];
     int logon_attempts;

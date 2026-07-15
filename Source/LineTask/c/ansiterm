@@ -918,10 +918,14 @@ int ansiterm_keypress(ansiterm_state *term, int key_code)
 
     switch (key_code)
     {
-    case 0x18C: return -1;
-    case 0x18D: return -2;
-    case 0x18E: return -3;
-    case 0x18F: return -4;
+    /* RISC OS Wimp cursor-key codes -> arrow result codes (caller emits the
+       matching VT100 sequence: -1=ESC[A up, -2=ESC[B down, -3=ESC[C right,
+       -4=ESC[D left). These were previously mis-mapped (left produced up, etc.),
+       which only surfaced once the lightbar menu used the arrows locally. */
+    case 0x18C: return -4;   /* Left  */
+    case 0x18D: return -3;   /* Right */
+    case 0x18E: return -2;   /* Down  */
+    case 0x18F: return -1;   /* Up    */
     default:
         if (key_code >= 32 && key_code < 127)
             return key_code;

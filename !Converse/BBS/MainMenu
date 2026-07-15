@@ -8,28 +8,28 @@
 
 label main_menu
    menu `<Converse$Dir>.BBS.Screens.MainMenu` overlay `<Converse$Dir>.BBS.MainOverlay`
-      on `m` help `Message bases`        script `<Converse$Dir>.BBS.Messagebase`
-      on `f` help `File libraries`       script `<Converse$Dir>.BBS.Filebase`
-      on `d` help `Doors & games`        script `<Converse$Dir>.BBS.DoorsMenu`
-      on `w` help `The Wall (one-liners)` script `<Converse$Dir>.BBS.Oneliners`
-      on `b` help `Bulletins & news`     script `<Converse$Dir>.BBS.Bulletins`
-      on `l` help `Last callers`         script `<Converse$Dir>.BBS.LastCallers`
-      on `n` help `Node chat (live teleconference with other callers)` goto go_chatroom
-      on `u` help `Your settings`        script `<Converse$Dir>.BBS.Settings`
-      on `g` help `Leave feedback`       script `<Converse$Dir>.BBS.Feedback`
-      on `h` help `Hall of fame / stats` script `<Converse$Dir>.BBS.Stats`
-      on `v` help `Voting booth`         script `<Converse$Dir>.BBS.Voting`
-      on `t` help `Tell a user`          script `<Converse$Dir>.BBS.Tell`
-      on `a` help `QWK offline mail`     script `<Converse$Dir>.BBS.QWK`
-      on `s` help `Scan for new content` goto go_scan
-      on `i` help `Your inbox`           goto go_inbox
-      on `o` help `Who's online`         goto go_online
-      on `c` help `Chat to the sysop`    goto go_chat
+      on `m` at 6 13  text `Message bases`  help `Message bases`        script `<Converse$Dir>.BBS.Messagebase`
+      on `f` at 32 13 text `File libraries` help `File libraries`       script `<Converse$Dir>.BBS.Filebase`
+      on `d` at 32 14 text `Doors & games`  help `Doors & games`        script `<Converse$Dir>.BBS.DoorsMenu`
+      on `w` at 57 13 text `The Wall`       help `The Wall (one-liners)` script `<Converse$Dir>.BBS.Oneliners`
+      on `b` at 57 14 text `Bulletins`      help `Bulletins & news`     script `<Converse$Dir>.BBS.Bulletins`
+      on `l` at 57 15 text `Last callers`   help `Last callers`         script `<Converse$Dir>.BBS.LastCallers`
+      on `n` at 57 17 text `Node chat`      help `Node chat (live teleconference with other callers)` goto go_chatroom
+      on `u` at 6 19  text `Settings`       help `Your settings`        script `<Converse$Dir>.BBS.Settings`
+      on `g` at 6 20  text `Feedback`       help `Leave feedback`       script `<Converse$Dir>.BBS.Feedback`
+      on `h` at 32 20 text `Hall of fame`   help `Hall of fame / stats` script `<Converse$Dir>.BBS.Stats`
+      on `v` at 57 16 text `Voting booth`   help `Voting booth`         script `<Converse$Dir>.BBS.Voting`
+      on `t` at 6 21  text `Tell a user`    help `Tell a user`          script `<Converse$Dir>.BBS.Tell`
+      on `a` at 6 16  text `QWK mail`       help `QWK offline mail`     script `<Converse$Dir>.BBS.QWK`
+      on `s` at 6 14  text `Scan new posts` help `Scan for new content` goto go_scan
+      on `i` at 6 15  text `Your inbox`     help `Your inbox`           goto go_inbox
+      on `o` at 32 15 text `Who's online`   help `Who's online`         goto go_online
+      on `c` at 32 19 text `Chat to sysop`  help `Chat to the sysop`    goto go_chat
       on `x` level 500                   script `<Converse$Dir>.BBS.ScriptTest`
       on `z` level 500                   script `<Converse$Dir>.BBS.Quiz`
       on `y` level 500                   script `<Converse$Dir>.BBS.MenuDemo`
       on `k` level 500                   script `<Converse$Dir>.BBS.QueueDemo`
-      on `q` help `Log off`              goto go_quit
+      on `q` at 57 20 text `Log off`       help `Log off`              goto go_quit
    endmenu
 
 label go_scan

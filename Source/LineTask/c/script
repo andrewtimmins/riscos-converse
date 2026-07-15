@@ -1119,6 +1119,145 @@ static int menu_dispatch_action(script_state *state, const char *verb, const cha
     return 0;
 }
 
+/* ---- Lightbar menu support -------------------------------------------------
+ * A menu becomes a "lightbar" when one or more of its `on` items carry an
+ * `at <col> <row>` position (1-based, matching the `pos` command) plus a
+ * `text <label>` giving the chip's caption. The engine then draws a movable
+ * amber highlight bar over the matching chip in the backdrop art, moved with
+ * the arrow keys; Enter fires the highlighted item and the hotkeys still work.
+ * Items without an `at` (hidden/dev keys, `?`) are hotkey-only, never drawn. */
+
+#define LIGHTBAR_MAX_ITEMS 40
+
+typedef struct {
+    size_t instr;      /* index of the `on` instruction */
+    int    col, row;   /* 1-based screen position of the chip */
+    char   key;        /* hotkey letter */
+    char   label[64];  /* chip caption (matches the art) */
+} lightbar_item;
+
+/* Pull the optional `at <col> <row>` position and `text <label>` out of an
+ * `on` item's arg2. Returns 1 if a full position was found, 0 otherwise.
+ * (menu_parse_on ignores these tokens, so the two parsers coexist.) */
+static int menu_parse_pos(const char *arg2, int *col, int *row, char *label, size_t lsz)
+{
+    char work[512];
+    char *p, *tok;
+    int have_at = 0;
+    *col = *row = 0;
+    if (label != NULL && lsz > 0) label[0] = '\0';
+    strncpy(work, arg2 != NULL ? arg2 : "", sizeof(work) - 1);
+    work[sizeof(work) - 1] = '\0';
+    p = work;
+    while (script_arg_next(&p, &tok))
+    {
+        if (script_stringcasecmp(tok, "at") == 0)
+        {
+            if (script_arg_next(&p, &tok)) *col = atoi(tok);
+            if (script_arg_next(&p, &tok)) *row = atoi(tok);
+            if (*col > 0 && *row > 0) have_at = 1;
+        }
+        else if (script_stringcasecmp(tok, "text") == 0)
+        {
+            if (script_arg_next(&p, &tok) && label != NULL && lsz > 0)
+            { strncpy(label, tok, lsz - 1); label[lsz - 1] = '\0'; }
+        }
+    }
+    return have_at;
+}
+
+/* Walk the active menu's `on` items and collect the positioned, access-allowed
+ * chips into `items` (declaration order = nav order). Returns the count. */
+static int lightbar_collect(script_state *state, lightbar_item *items, int max)
+{
+    size_t i;
+    int n = 0;
+    int user_level = state->host.get_user_accesslevel ? state->host.get_user_accesslevel(state->host.context) : 0;
+    for (i = state->menu_instr_index + 1; i < state->instruction_count && n < max; ++i)
+    {
+        script_instruction *ins = &state->instructions[i];
+        int col, row, lvl;
+        char lbl[64];
+        char rk[32], pw[64], fail[160], verb[16], target[256];
+        if (ins->type == SCRIPT_CMD_ENDMENU) break;
+        if (ins->type != SCRIPT_CMD_ON || ins->arg1 == NULL || ins->arg1[0] == '\0') continue;
+        if (!menu_parse_pos(ins->arg2, &col, &row, lbl, sizeof(lbl))) continue;
+        /* honour the level gate so a chip a caller can't use isn't shown/reachable */
+        menu_parse_on(ins->arg2, &lvl, rk, sizeof(rk), pw, sizeof(pw), fail, sizeof(fail),
+                      verb, sizeof(verb), target, sizeof(target), NULL, 0);
+        if (lvl > 0 && user_level < lvl) continue;
+        items[n].instr = i;
+        items[n].col = col;
+        items[n].row = row;
+        items[n].key = ins->arg1[0];
+        strncpy(items[n].label, lbl, sizeof(items[n].label) - 1);
+        items[n].label[sizeof(items[n].label) - 1] = '\0';
+        n++;
+    }
+    return n;
+}
+
+/* Draw one chip at its position, either normal (matching the baked art:
+ * `[`/`]` cyan, key bright-yellow, label white) or highlighted (black on an
+ * amber bar). Positioned via an absolute cursor move so only these cells move. */
+static void lightbar_draw_chip(script_state *state, const lightbar_item *it, int selected)
+{
+    char buf[160];
+    if (selected)
+        snprintf(buf, sizeof(buf),
+                 "\033[%d;%dH\033[30;43m[%c] %s\033[0m",
+                 it->row, it->col, it->key, it->label);
+    else
+        snprintf(buf, sizeof(buf),
+                 "\033[%d;%dH\033[0;36m[\033[1;33m%c\033[0;36m] \033[1;37m%s\033[0m",
+                 it->row, it->col, it->key, it->label);
+    script_write_output(state, buf);
+}
+
+/* Move the selection from `cur` in a direction (0=up 1=down 2=left 3=right).
+ * Up/down keep to the column (nearest column dominates, then nearest row down/
+ * up); left/right keep to the row (nearest row dominates, then nearest column).
+ * Weighting the primary axis by 1000 makes movement sequential down a column /
+ * along a row even when the grid is ragged (columns of unequal length). No
+ * wrap: at an edge the selection stays put. Returns the new index. */
+static int lightbar_navigate(const lightbar_item *items, int count, int cur, int dir)
+{
+    int i, best = -1;
+    long bestscore = 0;
+    int cr = items[cur].row, cc = items[cur].col;
+    for (i = 0; i < count; ++i)
+    {
+        int r, c;
+        long score = -1;
+        if (i == cur) continue;
+        r = items[i].row; c = items[i].col;
+        if (dir == 1 && r > cr)      score = labs(c - cc) * 1000 + (r - cr);  /* down: same column first */
+        else if (dir == 0 && r < cr) score = labs(c - cc) * 1000 + (cr - r);  /* up:   same column first */
+        else if (dir == 3 && c > cc) score = labs(r - cr) * 1000 + (c - cc);  /* right: same row first */
+        else if (dir == 2 && c < cc) score = labs(r - cr) * 1000 + (cc - c);  /* left:  same row first */
+        if (score >= 0 && (best < 0 || score < bestscore)) { best = i; bestscore = score; }
+    }
+    return best < 0 ? cur : best;
+}
+
+/* Draw the initial highlight for a lightbar menu and arm arrow-key input.
+ * Called from SCRIPT_CMD_MENU once the backdrop + overlay are on screen. */
+static void lightbar_arm(script_state *state)
+{
+    lightbar_item items[LIGHTBAR_MAX_ITEMS];
+    int count = lightbar_collect(state, items, LIGHTBAR_MAX_ITEMS);
+    if (state->lightbar_sel < 0 || state->lightbar_sel >= count) state->lightbar_sel = 0;
+    state->lightbar_esc = 0;
+    if (count > 0)
+    {
+        script_write_output(state, "\033[?25l");   /* hide the cursor */
+        lightbar_draw_chip(state, &items[state->lightbar_sel], 1);
+    }
+    strncpy(state->input_target, "__mkey", sizeof(state->input_target) - 1);
+    state->input_target[sizeof(state->input_target) - 1] = '\0';
+    script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_LIGHTBAR);
+}
+
 /* Redraw the active menu screen and wait for another key. */
 static void menu_redisplay(script_state *state)
 {
@@ -1269,6 +1408,79 @@ static int input_complete_menu_help(script_state *state)
     script_clear_input(state);
     menu_redisplay(state);
     return 1;
+}
+
+/* Lightbar key handler: arrow keys move the highlight, Enter fires the
+ * highlighted chip, and any other key is treated as a classic hotkey. Both
+ * Enter and hotkeys route through input_complete_menu so the level/password
+ * gates and goto/script/call dispatch are shared with the plain menu path. */
+static int handle_lightbar_char(script_state *state, unsigned char byte)
+{
+    lightbar_item items[LIGHTBAR_MAX_ITEMS];
+    int count;
+
+    /* Arrow-key escape sequence: ESC [ A/B/C/D  (also accept ESC O ...). */
+    if (state->lightbar_esc == 1)
+    {
+        state->lightbar_esc = (byte == '[' || byte == 'O') ? 2 : 0;
+        return 1;
+    }
+    if (state->lightbar_esc == 2)
+    {
+        int dir = -1;
+        state->lightbar_esc = 0;
+        switch (byte)
+        {
+            case 'A': dir = 0; break;   /* up */
+            case 'B': dir = 1; break;   /* down */
+            case 'D': dir = 2; break;   /* left */
+            case 'C': dir = 3; break;   /* right */
+            default: break;
+        }
+        if (dir >= 0)
+        {
+            count = lightbar_collect(state, items, LIGHTBAR_MAX_ITEMS);
+            if (count > 0)
+            {
+                int cur = state->lightbar_sel;
+                int nxt;
+                if (cur < 0 || cur >= count) cur = 0;
+                nxt = lightbar_navigate(items, count, cur, dir);
+                if (nxt != cur)
+                {
+                    lightbar_draw_chip(state, &items[cur], 0);
+                    lightbar_draw_chip(state, &items[nxt], 1);
+                    state->lightbar_sel = nxt;
+                }
+            }
+        }
+        return 1;
+    }
+    if (byte == 0x1b) { state->lightbar_esc = 1; return 1; }
+
+    /* Enter fires the highlighted chip via its hotkey. */
+    if (byte == '\r' || byte == '\n')
+    {
+        count = lightbar_collect(state, items, LIGHTBAR_MAX_ITEMS);
+        script_write_output(state, "\033[?25h");   /* restore the cursor */
+        if (count > 0 && state->lightbar_sel >= 0 && state->lightbar_sel < count)
+        {
+            state->input_buffer[0] = items[state->lightbar_sel].key;
+            state->input_buffer[1] = '\0';
+            state->input_length = 1;
+            return input_complete_menu(state);
+        }
+        script_clear_input(state);
+        menu_redisplay(state);
+        return 1;
+    }
+
+    /* Anything else = a classic hotkey (including '?'): reuse the dispatcher. */
+    script_write_output(state, "\033[?25h");        /* restore the cursor for whatever follows */
+    state->input_buffer[0] = (char)byte;
+    state->input_buffer[1] = '\0';
+    state->input_length = 1;
+    return input_complete_menu(state);
 }
 
 /* More prompt completion - user pressed a key */
@@ -2489,6 +2701,10 @@ int script_handle_user_byte(script_state *state, unsigned char byte)
                 if (state->input_context == SCRIPT_INPUT_CTX_FB_BROWSE)
                 {
                     return handle_fb_browse_char(state, byte);
+                }
+                if (state->input_context == SCRIPT_INPUT_CTX_LIGHTBAR)
+                {
+                    return handle_lightbar_char(state, byte);
                 }
                 /* Single character - complete immediately */
                 state->input_buffer[0] = (char)byte;
@@ -8024,8 +8240,18 @@ static void script_execute_instruction(script_state *state, script_instruction *
                 }
             }
 
-            /* phase 1 (overlay done) or no overlay: arm the menu key input */
+            /* phase 1 (overlay done) or no overlay: arm the menu key input.
+               If any `on` item carries an `at` position this is a lightbar menu
+               (arrow-driven highlight); otherwise it's a plain hotkey menu. */
             state->menu_overlay_phase = 0;
+            {
+                lightbar_item probe[LIGHTBAR_MAX_ITEMS];
+                if (lightbar_collect(state, probe, LIGHTBAR_MAX_ITEMS) > 0)
+                {
+                    lightbar_arm(state);
+                    return;
+                }
+            }
             strncpy(state->input_target, "__mkey", sizeof(state->input_target) - 1);
             state->input_target[sizeof(state->input_target) - 1] = '\0';
             script_begin_input(state, SCRIPT_INPUT_MODE_CHAR, SCRIPT_INPUT_CTX_MENU);
