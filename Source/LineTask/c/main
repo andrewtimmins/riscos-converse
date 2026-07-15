@@ -248,6 +248,7 @@ static int script_host_league_report(void *context, const char *key,
 static int script_host_league_count(void *context);
 static int script_host_league_entry(void *context, int index, int field,
                                     char *buf, int buflen);
+static int script_host_league_clear(void *context);
 static int script_host_qwk_pack(void *context, const char *out_path);
 static int script_host_qwk_download(void *context, int protocol, int new_only);
 static int script_host_qwk_upload(void *context, int protocol);
@@ -500,6 +501,7 @@ static void initialise_task_state(line_task_state *state, int argc,
     host.league_report = script_host_league_report;
     host.league_count = script_host_league_count;
     host.league_entry = script_host_league_entry;
+    host.league_clear = script_host_league_clear;
     host.qwk_pack = script_host_qwk_pack;
     host.qwk_download = script_host_qwk_download;
     host.qwk_upload = script_host_qwk_upload;
@@ -2971,6 +2973,15 @@ static int script_host_league_entry(void *context, int index, int field,
   regs.r[2] = field;
   regs.r[3] = (int)buf;
   regs.r[4] = buflen;
+  if (_kernel_swi(SWI_CONVERSEBBS_LEAGUE, &regs, &regs) != NULL) return -1;
+  return regs.r[0];
+}
+
+static int script_host_league_clear(void *context) {
+  _kernel_swi_regs regs;
+  (void)context;
+  memset(&regs, 0, sizeof(regs));
+  regs.r[0] = LEAGUE_REASON_CLEAR;
   if (_kernel_swi(SWI_CONVERSEBBS_LEAGUE, &regs, &regs) != NULL) return -1;
   return regs.r[0];
 }

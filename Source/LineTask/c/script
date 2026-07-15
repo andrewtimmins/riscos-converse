@@ -6240,6 +6240,12 @@ static char *script_expr_call_function_ext(script_state *state, const char *name
     {
         return expr_from_long(h->league_count ? h->league_count(h->context) : 0);
     }
+    if (script_stringcasecmp(name, "leagueclear") == 0)
+    {
+        int r = h->league_clear ? h->league_clear(h->context) : -1;
+        script_set_ok(state, r >= 0 ? 1 : 0);
+        return expr_from_long(r);
+    }
     if (script_stringcasecmp(name, "leagueentry") == 0)
     {
         char buf[64];

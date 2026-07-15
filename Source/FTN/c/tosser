@@ -39,6 +39,8 @@
 #define SWI_FILER_MESSAGEBASE       0x5AA42
 #define SWI_SUPPORT_MSGBASECONFIG   0x5AA84
 #define SWI_SUPPORT_FTN             0x5AA86
+#define SWI_SUPPORT_LEAGUE          0x5AA8A   /* InterBBS score league */
+#define LEAGUE_REASON_IMPORT        1         /* R1=key R2=player R3=score R4=board */
 
 /* FTN config reasons */
 #define FTN_CONFIG_GET_GLOBAL       0
@@ -1334,6 +1336,86 @@ static void tosser_notify(const char *format, ...)
     mailer_log("%s", buffer);
 }
 
+/* ---- InterBBS score league (peer scores arrive as netmail to "LEAGUE") ------
+ * Payload carried in the netmail body:
+ *     #ILEAGUE1
+ *     BOARD <sending board name>
+ *     <door key>|<player>|<score>
+ *     ...
+ *     #END
+ * We merge each row into the shared Support league store (SWI ConverseBBS_League
+ * IMPORT), tagged with the sender's board name, instead of filing it as mail. */
+
+static int league_detect_recipient(const char *to)
+{
+    /* Case-insensitive "LEAGUE" (the To: name a peer addresses scores to). */
+    static const char *want = "LEAGUE";
+    int i;
+    if (to == NULL) return 0;
+    for (i = 0; want[i] != '\0'; i++)
+        if (toupper((unsigned char)to[i]) != want[i]) return 0;
+    return to[i] == '\0';
+}
+
+/* Push one score into the Support store. board=="" would mean local, but peer
+ * imports always carry the sending board's name. */
+static void league_import_score(const char *key, const char *player,
+                                int score, const char *board)
+{
+    _kernel_swi_regs regs;
+    if (key == NULL || player == NULL || key[0] == '\0' || player[0] == '\0') return;
+    regs.r[0] = LEAGUE_REASON_IMPORT;
+    regs.r[1] = (int)key;
+    regs.r[2] = (int)player;
+    regs.r[3] = score;
+    regs.r[4] = (int)(board != NULL ? board : "");
+    _kernel_swi(SWI_SUPPORT_LEAGUE, &regs, &regs);
+}
+
+/* Parse a league netmail body and merge its scores. Returns the count merged. */
+static int league_import_body(const char *body)
+{
+    char board[64];
+    char line[256];
+    const char *p;
+    int merged = 0;
+    board[0] = '\0';
+    if (body == NULL) return 0;
+
+    p = body;
+    while (*p != '\0')
+    {
+        size_t n = 0;
+        /* copy one line (up to CR/LF) */
+        while (*p != '\0' && *p != '\r' && *p != '\n' && n < sizeof(line) - 1)
+            line[n++] = *p++;
+        line[n] = '\0';
+        while (*p == '\r' || *p == '\n') p++;   /* skip the line ending(s) */
+
+        if (line[0] == '\0' || line[0] == '#') continue;   /* blank / #ILEAGUE1 / #END */
+
+        if (strncmp(line, "BOARD ", 6) == 0)
+        {
+            strncpy(board, line + 6, sizeof(board) - 1);
+            board[sizeof(board) - 1] = '\0';
+        }
+        else
+        {
+            /* <key>|<player>|<score> */
+            char *bar1 = strchr(line, '|');
+            char *bar2 = bar1 ? strchr(bar1 + 1, '|') : NULL;
+            if (bar1 != NULL && bar2 != NULL)
+            {
+                *bar1 = '\0';
+                *bar2 = '\0';
+                league_import_score(line, bar1 + 1, atoi(bar2 + 1), board);
+                merged++;
+            }
+        }
+    }
+    return merged;
+}
+
 int tosser_process_packet(const char *path)
 {
     PKT_HEADER pkt_hdr;
@@ -1488,8 +1570,22 @@ int tosser_process_packet(const char *path)
                     tosser_free_message(&msg);
                     continue;
                 }
+
+                /* InterBBS league: a netmail to "LEAGUE" carries a peer board's
+                 * scores - merge them into the shared store, don't file as mail. */
+                if (league_detect_recipient(msg.to))
+                {
+                    int merged = league_import_body(msg.body);
+                    tosser_notify("InterBBS league: merged %d score(s) from %d:%d/%d.%d",
+                                  merged, msg.orig_addr.zone, msg.orig_addr.net,
+                                  msg.orig_addr.node, msg.orig_addr.point);
+                    tosser_stats.messages_tossed++;
+                    msg.tossed = 1;
+                    tosser_free_message(&msg);
+                    continue;
+                }
             }
-            
+
             /* Store netmail in the configured Netmail area (areatype 2), NOT
              * the hardcoded area 0 - area 0 is not a browsable area, so
              * personal netmail and AreaFix/FileFix result netmails were tossed

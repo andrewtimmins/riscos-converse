@@ -1,0 +1,30 @@
+{
+   /* InterBBS League - sysop reset. Wipes the whole shared score table (local
+      AND imported peer scores) via leagueclear() -> SWI CLEAR. Destructive but
+      recoverable: local scores re-report as doors are played, peer scores
+      re-import on the next FTN exchange. Gated to sysop by the Doors menu.
+
+      `print` doesn't translate \n, so display strings use chr(13)+chr(10). */
+
+   set nl  = chr(13) + chr(10)
+   set esc = chr(27)
+
+   cls
+   set line = nl + `  ` + esc + `[1;31mReset the InterBBS league?` + esc + `[0m` + nl
+   print %{line}
+   set line = `  This wipes all ` + leaguecount() + ` entries (local + peer).` + nl + nl
+   print %{line}
+
+   yesno confirm `  Are you sure? `
+   if upper(confirm) == `Y` then
+      set x = leagueclear()
+      set line = nl + `  ` + esc + `[1;32mLeague table cleared.` + esc + `[0m` + nl
+      print %{line}
+   else
+      set line = nl + `  Cancelled - nothing changed.` + nl
+      print %{line}
+   endif
+
+   print
+   anykey
+}

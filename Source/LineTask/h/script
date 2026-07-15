@@ -114,6 +114,7 @@ typedef struct script_host
     int (*league_report)(void *context, const char *key, const char *player, int score);
     int (*league_count)(void *context);
     int (*league_entry)(void *context, int index, int field, char *buf, int buflen);
+    int (*league_clear)(void *context);   /* sysop reset: wipe the whole table */
     /* Build a QWK offline-mail packet of the caller's current message base into
      * out_path (a .QWK zip). Returns messages packed (>=0), or -1 on error. */
     int (*qwk_pack)(void *context, const char *out_path);

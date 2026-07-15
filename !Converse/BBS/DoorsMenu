@@ -21,6 +21,8 @@ label doors_menu
       on `6`  help `Take the Purity Test`   goto run_purity
       on `7`  help `Visit The Wall`         goto run_wall
       on `l`  help `InterBBS league table`  goto run_league
+      on `s`  level 500 help `Sync league to peers (sysop)`  goto run_leaguesync
+      on `r`  level 500 help `Reset the league table (sysop)` goto run_leaguereset
       on `q`  help `Back to the main menu`  goto doors_quit
    endmenu
 
@@ -61,6 +63,12 @@ label run_wall
    goto doors_menu
 label run_league
    script `<Converse$Dir>.BBS.League`
+   goto doors_menu
+label run_leaguesync
+   script `<Converse$Dir>.BBS.LeagueSync`
+   goto doors_menu
+label run_leaguereset
+   script `<Converse$Dir>.BBS.LeagueReset`
    goto doors_menu
 
 label doors_quit

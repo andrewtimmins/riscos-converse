@@ -1,0 +1,66 @@
+{
+   /* InterBBS League - export our LOCAL scores to peer boards as FTN netmail.
+      Sysop-triggered (schedule later). Reads peer FTN addresses from
+      ScriptData/Files/LeaguePeers (one address per line, # = comment), builds
+      the league payload from local store entries, and sendnetmails it to each.
+
+      The payload uses literal \n separators; sendnetmail runs translate_escapes
+      on the body, turning them into real newlines that the FTN tosser's league
+      importer (netmail to "LEAGUE") parses. Display strings use chr(13)+chr(10)
+      because `print` does NOT translate \n. */
+
+   set nl  = chr(13) + chr(10)
+   set esc = chr(27)
+
+   set peers = fileread(`LeaguePeers`)
+   set peers = replace(peers, chr(13), ``)          /* normalise CRLF -> LF */
+
+   /* --- build the payload from LOCAL scores (board == "") --- */
+   set body = `#ILEAGUE1\nBOARD ` + cfg(`bbs_name`) + `\n`
+   set n = leaguecount()
+   set i = 0
+   set scores = 0
+   while i < n
+      if leagueentry(i, `board`) == `` then
+         set body = body + leagueentry(i,`key`) + `|` + leagueentry(i,`player`) + `|` + leagueentry(i,`score`) + `\n`
+         set scores = scores + 1
+      endif
+      set i = i + 1
+   endwhile
+   set body = body + `#END\n`
+
+   cls
+   set line = nl + `  ` + esc + `[1;33mInterBBS League - sync to peers` + esc + `[0m` + nl + nl
+   print %{line}
+
+   /* --- send to each configured peer address --- */
+   set sent = 0
+   set rest = peers
+   set more = 1
+   while more == 1
+      set pos = find(rest, chr(10))
+      if pos < 0 then
+         set addr = trim(rest)
+         set more = 0
+      else
+         set addr = trim(left(rest, pos))
+         set rest = substr(rest, pos + 1, 100000)
+      endif
+      if addr != `` then
+         if left(addr, 1) != `#` then
+            sendnetmail %{addr} LEAGUE `InterBBS League` %{body}
+            set sent = sent + 1
+            set line = `  ` + esc + `[1;32m>` + esc + `[0m sent ` + scores + ` score(s) to ` + addr + nl
+            print %{line}
+         endif
+      endif
+   endwhile
+
+   if sent == 0 then
+      set line = `  ` + esc + `[1;31mNo peers configured` + esc + `[0m (edit ScriptData/Files/LeaguePeers).` + nl
+      print %{line}
+   endif
+
+   print
+   anykey
+}
