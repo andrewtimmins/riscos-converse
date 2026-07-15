@@ -297,16 +297,13 @@ static unsigned short get_current_attr(const ansiterm_state *term)
 
 static void put_char(ansiterm_state *term, unsigned char ch)
 {
-    if (term->cursor_x >= 0 && term->cursor_x < ANSITERM_COLS &&
-        term->cursor_y >= 0 && term->cursor_y < ANSITERM_ROWS)
-    {
-        term->cells[term->cursor_y][term->cursor_x].ch = ch;
-        term->cells[term->cursor_y][term->cursor_x].attr = get_current_attr(term);
-        mark_dirty(term, term->cursor_y);
-    }
-
-    term->cursor_x++;
-    if (term->cursor_x >= ANSITERM_COLS)
+    /* DEC/ANSI.SYS delayed auto-wrap: a character written in the last column
+       parks the cursor there with pending_wrap set; the wrap to column 0 of the
+       next row happens on the NEXT printed char, not immediately. DOS/ArcBBS-
+       heritage doors draw to column 80 and rely on this - immediate wrap shears
+       every such row one line early. pending_wrap is cleared by any cursor
+       move / CR / LF (see execute_csi and the control-char handler). */
+    if (term->pending_wrap)
     {
         term->cursor_x = 0;
         term->cursor_y++;
@@ -315,6 +312,24 @@ static void put_char(ansiterm_state *term, unsigned char ch)
             ansiterm_scroll_up(term, 1);
             term->cursor_y = ANSITERM_ROWS - 1;
         }
+        term->pending_wrap = 0;
+    }
+
+    if (term->cursor_x >= 0 && term->cursor_x < ANSITERM_COLS &&
+        term->cursor_y >= 0 && term->cursor_y < ANSITERM_ROWS)
+    {
+        term->cells[term->cursor_y][term->cursor_x].ch = ch;
+        term->cells[term->cursor_y][term->cursor_x].attr = get_current_attr(term);
+        mark_dirty(term, term->cursor_y);
+    }
+
+    if (term->cursor_x >= ANSITERM_COLS - 1)
+    {
+        term->pending_wrap = 1;   /* park at the last column */
+    }
+    else
+    {
+        term->cursor_x++;
     }
 }
 
@@ -323,6 +338,12 @@ static void execute_csi(ansiterm_state *term, unsigned char cmd)
     int i, n, m;
     int param0 = (term->param_count > 0) ? term->params[0] : 0;
     int param1 = (term->param_count > 1) ? term->params[1] : 0;
+
+    /* Any CSI that moves the cursor or erases cancels a pending auto-wrap.
+       SGR ('m', colour/attributes) must NOT - it may sit between the last-column
+       char and the char that wraps. */
+    if (cmd != 'm')
+        term->pending_wrap = 0;
 
     switch (cmd)
     {
@@ -564,11 +585,13 @@ void ansiterm_process_byte(ansiterm_state *term, unsigned char byte)
             break;
 
         case 8:
+            term->pending_wrap = 0;
             if (term->cursor_x > 0)
                 term->cursor_x--;
             break;
 
         case 9:
+            term->pending_wrap = 0;
             term->cursor_x = (term->cursor_x + 8) & ~7;
             if (term->cursor_x >= ANSITERM_COLS)
                 term->cursor_x = ANSITERM_COLS - 1;
@@ -577,6 +600,7 @@ void ansiterm_process_byte(ansiterm_state *term, unsigned char byte)
         case 10:
         case 11:
         case 12:
+            term->pending_wrap = 0;
             if (byte == 12)
             {
                ansiterm_clear(term);
@@ -593,6 +617,7 @@ void ansiterm_process_byte(ansiterm_state *term, unsigned char byte)
             break;
 
         case 13:
+            term->pending_wrap = 0;
             term->cursor_x = 0;
             break;
 
@@ -987,6 +1012,7 @@ void ansiterm_clear(ansiterm_state *term)
 
     term->cursor_x = 0;
     term->cursor_y = 0;
+    term->pending_wrap = 0;
     term->dirty_top = 0;
     term->dirty_bottom = ANSITERM_ROWS - 1;
 }

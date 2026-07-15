@@ -47,7 +47,10 @@ typedef struct ansiterm_state_tag {
     /* Cursor position (0-based) */
     int cursor_x;
     int cursor_y;
-    
+    int pending_wrap;       /* DEC delayed auto-wrap: a char was written in the
+                               last column; the wrap happens on the NEXT printed
+                               char (cleared by any cursor move / CR / LF). */
+
     /* Saved cursor position */
     int saved_x;
     int saved_y;
