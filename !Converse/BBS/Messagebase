@@ -45,6 +45,9 @@ label mb_post
    doing `Composing message...`
    messagebase compose
    doing
+   /* status points: bump the poster's post counter (global KV, keyed by id) */
+   set ppid = userget(`id`)
+   set ppr = kvset(`pts_` + ppid + `_posts`, int(kvget(`pts_` + ppid + `_posts`)) + 1)
    goto mb_menu
 label mb_email
    cls

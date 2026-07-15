@@ -100,6 +100,19 @@ label whoswho_view
    set line = `  ` + esc + `[0;37mDownloads : ` + esc + `[1;37m` + vdowns + esc + `[0m` + nl
    print %{line}
 
+   /* points + rank (status score - see upts() below) */
+   set vpts = upts(viewidx)
+   set vrank = 1
+   set ri = 0
+   while ri < total
+      if upts(ri) > vpts then
+         set vrank = vrank + 1
+      endif
+      set ri = ri + 1
+   endwhile
+   set line = `  ` + esc + `[0;37mPoints    : ` + esc + `[1;32m` + vpts + esc + `[0;37m   rank #` + vrank + ` of ` + total + esc + `[0m` + nl
+   print %{line}
+
    set cmts = kvget(`prof_` + vid + `_cmts`)
    if cmts != `` then
       set line = nl + `  ` + esc + `[0;36m~ comments ~` + esc + `[0m` + nl
@@ -181,4 +194,18 @@ label whoswho_edit
    goto whoswho_dir
 
 label whoswho_done
+   goto whoswho_end
+
+/* Status-points score for a user (by directory index). Computed from real
+   activity - no download gating (ratios handle that). posts is a global-KV
+   counter bumped on posting; bonus is sysop-awardable. */
+function upts(idx)
+   local id = userbyindex(idx, `id`)
+   local base = userbyindex(idx, `calls`) * 2 + userbyindex(idx, `uploads`) * 25 + userbyindex(idx, `uploadskb`) / 50
+   local posts = int(kvget(`pts_` + id + `_posts`))
+   local bonus = int(kvget(`pts_` + id + `_bonus`))
+   return base + posts * 10 + bonus
+endfunction
+
+label whoswho_end
 }
